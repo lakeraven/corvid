@@ -42,6 +42,24 @@ class Corvid::ConfigurationTest < Minitest::Test
     assert_same fake_adapter, Corvid.adapter
   end
 
+  # -- edi_adapter -----------------------------------------------------------
+
+  def test_edi_adapter_starts_nil
+    assert_nil Corvid.edi_adapter
+  end
+
+  def test_edi_adapter_can_be_set
+    fake_edi = Object.new
+    Corvid.configure { |c| c.edi_adapter = fake_edi }
+    assert_same fake_edi, Corvid.edi_adapter
+  end
+
+  def test_edi_adapter_resets_with_configuration
+    Corvid.configure { |c| c.edi_adapter = Object.new }
+    Corvid.reset_configuration!
+    assert_nil Corvid.edi_adapter
+  end
+
   # -- phi_sanitizer fail-safe default ---------------------------------------
 
   def test_phi_sanitizer_default_is_fail_safe_redact_all
