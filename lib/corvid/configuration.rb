@@ -13,10 +13,11 @@ module Corvid
   # Per ADR 0003, phi_sanitizer defaults to fail-safe redact-all so that
   # forgetting to configure it does not increase PHI exposure.
   class Configuration
-    attr_accessor :adapter, :phi_sanitizer, :on_provenance, :fetch_provenance
+    attr_accessor :adapter, :edi_adapter, :phi_sanitizer, :on_provenance, :fetch_provenance
 
     def initialize
       @adapter = nil
+      @edi_adapter = nil
       # Fail-safe redact-all default. Hosts MUST replace this with a real
       # sanitizer for human-readable error messages.
       @phi_sanitizer = ->(_msg) { "[REDACTED]" }
@@ -41,6 +42,10 @@ module Corvid
     # Convenience accessors
     def adapter
       configuration.adapter
+    end
+
+    def edi_adapter
+      configuration.edi_adapter
     end
 
     def sanitize_phi(message)
