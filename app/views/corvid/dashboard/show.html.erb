@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Corvid Dashboard</title>
+  <style>
+    body { font-family: system-ui, -apple-system, sans-serif; max-width: 800px; margin: 40px auto; padding: 0 20px; color: #1a1a1a; }
+    h1 { font-size: 1.5rem; border-bottom: 2px solid #1a1a1a; padding-bottom: 8px; }
+    h2 { font-size: 1.1rem; margin-top: 2rem; color: #444; }
+    .status { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 0.85rem; font-weight: 600; }
+    .status-ok { background: #d4edda; color: #155724; }
+    .status-error { background: #f8d7da; color: #721c24; }
+    table { width: 100%; border-collapse: collapse; margin-top: 8px; }
+    td, th { text-align: left; padding: 6px 12px; border-bottom: 1px solid #e0e0e0; }
+    th { color: #666; font-weight: 500; width: 200px; }
+    pre { background: #f5f5f5; padding: 12px; border-radius: 4px; overflow-x: auto; font-size: 0.8rem; }
+  </style>
+</head>
+<body>
+  <h1>Corvid Engine</h1>
+
+  <h2>EDI Adapter</h2>
+  <table>
+    <tr><th>Adapter</th><td><%= @edi_adapter_class %></td></tr>
+    <tr><th>Status</th><td><span class="status <%= @edi_adapter ? 'status-ok' : 'status-error' %>"><%= @edi_adapter ? 'Wired' : 'Not configured' %></span></td></tr>
+  </table>
+
+  <% if @eligibility_response %>
+    <h2>Eligibility Check (Demo)</h2>
+    <table>
+      <tr><th>Patient</th><td><%= @eligibility_response.patient_dfn %></td></tr>
+      <tr><th>Coverage Type</th><td><%= @eligibility_response.coverage_type %></td></tr>
+      <tr><th>Status</th><td><span class="status <%= @eligibility_response.enrolled? ? 'status-ok' : 'status-error' %>"><%= @eligibility_response.status %></span></td></tr>
+      <tr><th>Plan</th><td><%= @eligibility_response.plan_name %></td></tr>
+      <tr><th>Insurer</th><td><%= @eligibility_response.insurer_name %></td></tr>
+      <tr><th>Coverage Period</th><td><%= @eligibility_response.start_date %> to <%= @eligibility_response.end_date %></td></tr>
+      <tr><th>Active Coverage</th><td><span class="status <%= @eligibility_response.active_coverage? ? 'status-ok' : 'status-error' %>"><%= @eligibility_response.active_coverage? %></span></td></tr>
+    </table>
+
+    <h2>FHIR R4 Response</h2>
+    <pre><%= JSON.pretty_generate(JSON.parse(@eligibility_response.to_json)) %></pre>
+  <% end %>
+</body>
+</html>
