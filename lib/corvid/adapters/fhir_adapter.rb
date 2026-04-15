@@ -229,6 +229,24 @@ module Corvid
       end
 
       # ----------------------------------------------------------------------
+      # Enrollment verification — FHIR has no native tribal enrollment
+      # concept. Defaults to "not available" so callers degrade gracefully
+      # instead of crashing. Vendor adapters override with real lookups.
+      # ----------------------------------------------------------------------
+
+      def verify_tribal_enrollment(_patient_identifier)
+        { enrolled: false, membership_number: nil, tribe_name: nil, verified_at: Time.current }
+      end
+
+      def verify_identity_documents(_patient_identifier)
+        { ssn_present: false, dob_present: false, birthplace_present: false, verified_at: Time.current }
+      end
+
+      def verify_residency(_patient_identifier)
+        { on_reservation: false, address: nil, service_area: nil, verified_at: Time.current }
+      end
+
+      # ----------------------------------------------------------------------
       # Budget — FHIR has no native budget concept; defaults to empty.
       # Vendor adapters override.
       # ----------------------------------------------------------------------
