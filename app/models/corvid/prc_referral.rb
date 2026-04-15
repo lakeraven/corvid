@@ -111,7 +111,6 @@ module Corvid
 
       eligibility_checklist.verify_item!(
         :management_approved,
-        source: "management_review",
         by: @pending_approval_by
       )
     end
