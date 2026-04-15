@@ -227,6 +227,48 @@ module Corvid
       end
 
       # ----------------------------------------------------------------------
+      # Enrollment verification
+      # ----------------------------------------------------------------------
+
+      def verify_tribal_enrollment(patient_identifier)
+        enrollment = @enrollments[patient_identifier.to_s]
+        return { enrolled: false, membership_number: nil, tribe_name: nil, verified_at: Time.current } unless enrollment
+
+        {
+          enrolled: enrollment[:enrolled],
+          membership_number: enrollment[:membership_number],
+          tribe_name: enrollment[:tribe_name],
+          blood_quantum: enrollment[:blood_quantum],
+          member_status: enrollment[:member_status],
+          verified_at: Time.current
+        }
+      end
+
+      def verify_identity_documents(patient_identifier)
+        patient = @patients[patient_identifier.to_s]
+        return { ssn_present: false, dob_present: false, birthplace_present: false, verified_at: Time.current } unless patient
+
+        {
+          ssn_present: patient[:ssn_last4].present?,
+          dob_present: patient[:dob].present?,
+          birthplace_present: patient[:birthplace].present?,
+          verified_at: Time.current
+        }
+      end
+
+      def verify_residency(patient_identifier)
+        residency = @residencies[patient_identifier.to_s]
+        return { on_reservation: false, address: nil, service_area: nil, verified_at: Time.current } unless residency
+
+        {
+          on_reservation: residency[:on_reservation],
+          address: residency[:address],
+          service_area: residency[:service_area],
+          verified_at: Time.current
+        }
+      end
+
+      # ----------------------------------------------------------------------
       # Test helpers
       # ----------------------------------------------------------------------
 
@@ -246,12 +288,22 @@ module Corvid
         @care_teams[patient_identifier.to_s] = members
       end
 
+      def add_enrollment(patient_identifier, attrs)
+        @enrollments[patient_identifier.to_s] = attrs
+      end
+
+      def add_residency(patient_identifier, attrs)
+        @residencies[patient_identifier.to_s] = attrs
+      end
+
       def reset!
         @patients = {}
         @practitioners = {}
         @referrals = {}
         @care_teams = {}
         @text_store = {}
+        @enrollments = {}
+        @residencies = {}
       end
 
       private
