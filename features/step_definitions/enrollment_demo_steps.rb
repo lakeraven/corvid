@@ -5,12 +5,12 @@ require "corvid/adapters/enrollment_demo_adapter"
 Given("the enrollment demo adapter is active") do
   @previous_adapter = Corvid.adapter
   @adapter = Corvid::Adapters::EnrollmentDemoAdapter.new
-  Corvid.instance_variable_set(:@adapter, @adapter)
+  Corvid.configure { |c| c.adapter = @adapter }
 end
 
 After do
   if @previous_adapter
-    Corvid.instance_variable_set(:@adapter, @previous_adapter)
+    Corvid.configure { |c| c.adapter = @previous_adapter }
     @previous_adapter = nil
   end
 end
