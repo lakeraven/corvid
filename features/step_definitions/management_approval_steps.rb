@@ -9,10 +9,10 @@ Given("the referral is in {string} status") do |status|
   when "management_approval"
     @referral.submit!
     @referral.begin_eligibility_review!
-    # Need checklist with 6/7 items to advance
-    @checklist ||= Corvid::EligibilityChecklist.create!(
-      prc_referral: @referral,
-      facility_identifier: @facility,
+    # Update the auto-created checklist with 6/7 items to advance
+    @referral.reload
+    @checklist = @referral.eligibility_checklist
+    @checklist.update!(
       application_complete: true,
       identity_verified: true,
       insurance_verified: true,
@@ -27,9 +27,12 @@ Given("the referral is in {string} status") do |status|
 end
 
 Given("an eligibility checklist with all non-approval items complete") do
-  @checklist = Corvid::EligibilityChecklist.find_or_create_by!(prc_referral: @referral) do |c|
-    c.facility_identifier = @facility
-  end
+  @referral.reload
+  @checklist = @referral.eligibility_checklist ||
+    Corvid::EligibilityChecklist.create!(
+      prc_referral: @referral,
+      facility_identifier: @facility
+    )
   @checklist.update!(
     application_complete: true,
     identity_verified: true,
@@ -42,9 +45,13 @@ Given("an eligibility checklist with all non-approval items complete") do
 end
 
 Given("an eligibility checklist with only {int} items complete") do |count|
-  @checklist = Corvid::EligibilityChecklist.create!(
-    prc_referral: @referral,
-    facility_identifier: @facility,
+  @referral.reload
+  @checklist = @referral.eligibility_checklist ||
+    Corvid::EligibilityChecklist.create!(
+      prc_referral: @referral,
+      facility_identifier: @facility
+    )
+  @checklist.update!(
     application_complete: count >= 1,
     identity_verified: count >= 2,
     insurance_verified: count >= 3,

@@ -24,12 +24,16 @@ module Corvid
         populate_residency!(checklist, patient_id, adapter_name)
 
         checklist.reload
+      rescue ActiveRecord::RecordNotUnique
+        # Concurrent call already created the checklist; reload and populate
+        referral.reload
+        retry
       end
 
       # Manually verify a single checklist item.
       def verify_item!(referral, item, source: nil, by: nil)
         checklist = referral.eligibility_checklist
-        raise "No eligibility checklist for referral #{referral.referral_identifier}" unless checklist
+        raise ArgumentError, "No eligibility checklist for referral #{referral.referral_identifier}" unless checklist
 
         checklist.verify_item!(item, source: source, by: by)
       end
@@ -37,7 +41,7 @@ module Corvid
       # Record management approval on the checklist.
       def approve!(referral, by:)
         checklist = referral.eligibility_checklist
-        raise "No eligibility checklist for referral #{referral.referral_identifier}" unless checklist
+        raise ArgumentError, "No eligibility checklist for referral #{referral.referral_identifier}" unless checklist
 
         checklist.verify_item!(:management_approved, by: by)
       end

@@ -63,6 +63,12 @@ When("manager {string} approves via the service") do |manager_id|
   Corvid::EligibilityChecklistService.approve!(@referral, by: manager_id)
 end
 
+When("the referral transitions through submit and begin_eligibility_review") do
+  @referral.submit!
+  @referral.begin_eligibility_review!
+  @checklist = @referral.reload.eligibility_checklist
+end
+
 Then("the referral should have an eligibility checklist") do
   refute_nil @referral.reload.eligibility_checklist
 end
