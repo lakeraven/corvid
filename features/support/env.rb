@@ -5,7 +5,7 @@ ENV["RAILS_ENV"] = "test"
 # Load the dummy app (engine test host), not cucumber/rails which
 # expects config/environment at project root.
 require_relative "../../test/dummy/config/environment"
-require "minitest/autorun"
+require "minitest/assertions"
 
 World(Minitest::Assertions)
 

@@ -5,7 +5,7 @@ class CreateCorvidEligibilityChecklists < ActiveRecord::Migration[8.1]
     create_table :corvid_eligibility_checklists do |t|
       t.string :tenant_identifier, null: false
       t.string :facility_identifier
-      t.references :prc_referral, null: false, foreign_key: { to_table: :corvid_prc_referrals }
+      t.references :prc_referral, null: false, index: false, foreign_key: { to_table: :corvid_prc_referrals }
 
       # 1. Application (22/60 missing in FY23 audit)
       t.boolean :application_complete, default: false, null: false

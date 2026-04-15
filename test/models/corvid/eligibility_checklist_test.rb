@@ -133,7 +133,7 @@ class Corvid::EligibilityChecklistTest < ActiveSupport::TestCase
   test "verify_item! sets by field for items that track approver" do
     with_tenant(TEST_TENANT) do
       checklist = Corvid::EligibilityChecklist.create!(prc_referral: @referral)
-      checklist.verify_item!(:application_complete, source: "manual", by: "pr_mgr_001")
+      checklist.verify_item!(:application_complete, by: "pr_mgr_001")
 
       assert checklist.application_complete
       assert_not_nil checklist.application_completed_at
@@ -144,11 +144,32 @@ class Corvid::EligibilityChecklistTest < ActiveSupport::TestCase
   test "verify_item! for management_approved records approver" do
     with_tenant(TEST_TENANT) do
       checklist = Corvid::EligibilityChecklist.create!(prc_referral: @referral)
-      checklist.verify_item!(:management_approved, source: "manual", by: "pr_mgr_001")
+      checklist.verify_item!(:management_approved, by: "pr_mgr_001")
 
       assert checklist.management_approved
       assert_not_nil checklist.management_approved_at
       assert_equal "pr_mgr_001", checklist.management_approved_by
+    end
+  end
+
+  test "verify_item! raises when source is missing for source-tracked items" do
+    with_tenant(TEST_TENANT) do
+      checklist = Corvid::EligibilityChecklist.create!(prc_referral: @referral)
+      assert_raises(ArgumentError) { checklist.verify_item!(:enrollment_verified) }
+    end
+  end
+
+  test "verify_item! raises when by is missing for approver-tracked items" do
+    with_tenant(TEST_TENANT) do
+      checklist = Corvid::EligibilityChecklist.create!(prc_referral: @referral)
+      assert_raises(ArgumentError) { checklist.verify_item!(:management_approved) }
+    end
+  end
+
+  test "verify_item! raises when source passed to approver-only item" do
+    with_tenant(TEST_TENANT) do
+      checklist = Corvid::EligibilityChecklist.create!(prc_referral: @referral)
+      assert_raises(ArgumentError) { checklist.verify_item!(:application_complete, source: "manual") }
     end
   end
 
