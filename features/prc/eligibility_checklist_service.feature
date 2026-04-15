@@ -46,6 +46,13 @@ Feature: Eligibility checklist auto-population from enrollment adapter
     When manager "pr_mgr_001" approves via the service
     Then the checklist should be complete
 
+  Scenario: Auto-populates on begin_eligibility_review transition
+    When the referral transitions through submit and begin_eligibility_review
+    Then the referral should have an eligibility checklist
+    And "enrollment_verified" should be true
+    And "identity_verified" should be true
+    And "residency_verified" should be true
+
   Scenario: Non-enrolled patient gets no auto-fill for enrollment
     Given the adapter has enrollment data for patient "pt_002":
       | enrolled | membership_number | tribe_name | on_reservation | address                      | ssn_last4 | dob        |

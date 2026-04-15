@@ -38,7 +38,8 @@ module Corvid
       end
 
       event :begin_eligibility_review do
-        transitions from: :submitted, to: :eligibility_review
+        transitions from: :submitted, to: :eligibility_review,
+                    after: :auto_populate_checklist
       end
 
       event :request_management_approval do
@@ -114,6 +115,12 @@ module Corvid
     end
 
     private
+
+    def auto_populate_checklist
+      Corvid::EligibilityChecklistService.populate!(self)
+    rescue => e
+      Rails.logger.warn("PrcReferral: Failed to auto-populate checklist: #{e.message}")
+    end
 
     def record_management_approval
       return unless eligibility_checklist
