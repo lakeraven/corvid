@@ -1,10 +1,18 @@
 # frozen_string_literal: true
 
-require "corvid/adapters/baseroll_demo_adapter"
+require "corvid/adapters/enrollment_demo_adapter"
 
-Given("the Baseroll demo adapter is active") do
-  @adapter = Corvid::Adapters::BaserollDemoAdapter.new
+Given("the enrollment demo adapter is active") do
+  @previous_adapter = Corvid.adapter
+  @adapter = Corvid::Adapters::EnrollmentDemoAdapter.new
   Corvid.instance_variable_set(:@adapter, @adapter)
+end
+
+After do
+  if @previous_adapter
+    Corvid.instance_variable_set(:@adapter, @previous_adapter)
+    @previous_adapter = nil
+  end
 end
 
 When("I verify tribal enrollment for the demo patient") do
