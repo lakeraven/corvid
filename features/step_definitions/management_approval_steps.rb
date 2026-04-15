@@ -1,7 +1,6 @@
 # frozen_string_literal: true
 
 Given("the referral is in {string} status") do |status|
-  # Advance through states to reach the desired status
   case status
   when "eligibility_review"
     @referral.submit!
@@ -9,10 +8,26 @@ Given("the referral is in {string} status") do |status|
   when "management_approval"
     @referral.submit!
     @referral.begin_eligibility_review!
-    # Update the auto-created checklist with 6/7 items to advance
+    @checklist = checklist_for(@referral) do |c|
+      c.update!(
+        application_complete: true,
+        identity_verified: true,
+        insurance_verified: true,
+        residency_verified: true,
+        enrollment_verified: true,
+        clinical_necessity_documented: true,
+        management_approved: false
+      )
+    end
     @referral.reload
-    @checklist = @referral.eligibility_checklist
-    @checklist.update!(
+    @referral.request_management_approval!
+  end
+  assert_equal status, @referral.status
+end
+
+Given("an eligibility checklist with all non-approval items complete") do
+  @checklist = checklist_for(@referral) do |c|
+    c.update!(
       application_complete: true,
       identity_verified: true,
       insurance_verified: true,
@@ -21,50 +36,24 @@ Given("the referral is in {string} status") do |status|
       clinical_necessity_documented: true,
       management_approved: false
     )
-    @referral.request_management_approval!
   end
-  assert_equal status, @referral.status
-end
-
-Given("an eligibility checklist with all non-approval items complete") do
-  @referral.reload
-  @checklist = @referral.eligibility_checklist ||
-    Corvid::EligibilityChecklist.create!(
-      prc_referral: @referral,
-      facility_identifier: @facility
-    )
-  @checklist.update!(
-    application_complete: true,
-    identity_verified: true,
-    insurance_verified: true,
-    residency_verified: true,
-    enrollment_verified: true,
-    clinical_necessity_documented: true,
-    management_approved: false
-  )
 end
 
 Given("an eligibility checklist with only {int} items complete") do |count|
-  @referral.reload
-  @checklist = @referral.eligibility_checklist ||
-    Corvid::EligibilityChecklist.create!(
-      prc_referral: @referral,
-      facility_identifier: @facility
+  @checklist = checklist_for(@referral) do |c|
+    c.update!(
+      application_complete: count >= 1,
+      identity_verified: count >= 2,
+      insurance_verified: count >= 3,
+      residency_verified: false,
+      enrollment_verified: false,
+      clinical_necessity_documented: false,
+      management_approved: false
     )
-  @checklist.update!(
-    application_complete: count >= 1,
-    identity_verified: count >= 2,
-    insurance_verified: count >= 3,
-    residency_verified: false,
-    enrollment_verified: false,
-    clinical_necessity_documented: false,
-    management_approved: false
-  )
+  end
 end
 
 When("I try to advance directly to alternate resource review") do
-  # Assert no AASM event from eligibility_review leads directly to
-  # alternate_resource_review, regardless of event name.
   direct_events = @referral.class.aasm.events.select do |event|
     event.transitions.any? do |t|
       Array(t.from).include?(:eligibility_review) &&
@@ -76,6 +65,7 @@ When("I try to advance directly to alternate resource review") do
 end
 
 When("I request management approval") do
+  @referral.reload
   @referral.request_management_approval! if @referral.may_request_management_approval?
 end
 
