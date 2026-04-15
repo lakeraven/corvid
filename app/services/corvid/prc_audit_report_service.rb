@@ -45,7 +45,7 @@ module Corvid
       # against the 7 documentation categories.
       # Returns { item: { passed: N, sampled: N, percentage: F }, ... }
       def sample_audit(tenant:, sample_size: 60, date_range: nil)
-        checklists = scoped_checklists(tenant, date_range).order("RANDOM()").limit(sample_size)
+        checklists = scoped_checklists(tenant, date_range).order(Arel.sql("RANDOM()")).limit(sample_size)
         sampled = checklists.to_a
         count = sampled.size
 
