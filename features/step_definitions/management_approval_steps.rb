@@ -56,9 +56,16 @@ Given("an eligibility checklist with only {int} items complete") do |count|
 end
 
 When("I try to advance directly to alternate resource review") do
-  # verify_eligibility event no longer exists — confirm there's no direct path
-  refute @referral.respond_to?(:may_verify_eligibility?),
-         "Expected verify_eligibility event to not exist"
+  # Assert no AASM event from eligibility_review leads directly to
+  # alternate_resource_review, regardless of event name.
+  direct_events = @referral.class.aasm.events.select do |event|
+    event.transitions.any? do |t|
+      Array(t.from).include?(:eligibility_review) &&
+        t.to == :alternate_resource_review
+    end
+  end
+  assert_empty direct_events.map(&:name),
+    "Expected no direct path from eligibility_review to alternate_resource_review"
 end
 
 When("I request management approval") do

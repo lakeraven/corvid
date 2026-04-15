@@ -98,7 +98,16 @@ module Corvid
 
     # Transient attribute for the manager who approved. Set before
     # firing approve_management, read by the after callback.
-    attr_accessor :pending_approval_by
+    attr_writer :pending_approval_by
+
+    def pending_approval_by
+      @pending_approval_by
+    end
+
+    def pending_approval_by!
+      @pending_approval_by or raise ArgumentError,
+        "pending_approval_by must be set before approve_management!"
+    end
 
     def checklist_items_except_approval_complete?
       eligibility_checklist&.items_except_approval_complete? || false
@@ -111,7 +120,7 @@ module Corvid
 
       eligibility_checklist.verify_item!(
         :management_approved,
-        by: @pending_approval_by
+        by: pending_approval_by!
       )
     end
 
