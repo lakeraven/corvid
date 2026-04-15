@@ -29,7 +29,7 @@ module Corvid
 
     aasm column: :status, whiny_transitions: false do
       state :draft, initial: true
-      state :submitted, :eligibility_review, :alternate_resource_review
+      state :submitted, :eligibility_review, :management_approval, :alternate_resource_review
       state :priority_assignment, :committee_review, :exception_review
       state :authorized, :denied, :deferred, :cancelled
 
@@ -41,8 +41,14 @@ module Corvid
         transitions from: :submitted, to: :eligibility_review
       end
 
-      event :verify_eligibility do
-        transitions from: :eligibility_review, to: :alternate_resource_review
+      event :request_management_approval do
+        transitions from: :eligibility_review, to: :management_approval,
+                    guard: :checklist_items_except_approval_complete?
+      end
+
+      event :approve_management do
+        transitions from: :management_approval, to: :alternate_resource_review,
+                    after: :record_management_approval
       end
 
       event :verify_alternate_resources do
@@ -90,7 +96,25 @@ module Corvid
       Corvid.adapter.get_site_params&.dig(:committee_threshold)&.to_d || 50_000
     end
 
+    # Transient attribute for the manager who approved. Set before
+    # firing approve_management, read by the after callback.
+    attr_accessor :pending_approval_by
+
+    def checklist_items_except_approval_complete?
+      eligibility_checklist&.items_except_approval_complete? || false
+    end
+
     private
+
+    def record_management_approval
+      return unless eligibility_checklist
+
+      eligibility_checklist.verify_item!(
+        :management_approved,
+        source: "management_review",
+        by: @pending_approval_by
+      )
+    end
 
     def sync_status_to_ehr
       return unless referral_identifier.present?

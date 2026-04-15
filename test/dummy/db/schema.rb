@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_04_15_000001) do
+ActiveRecord::Schema[8.1].define(version: 2026_04_15_000002) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
@@ -205,7 +205,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_04_15_000001) do
     t.index ["case_id"], name: "index_corvid_prc_referrals_on_case_id"
     t.index ["tenant_identifier", "facility_identifier", "referral_identifier"], name: "idx_corvid_prc_referrals_tenant_referral", unique: true
     t.index ["tenant_identifier", "status"], name: "index_corvid_prc_referrals_on_tenant_identifier_and_status"
-    t.check_constraint "status::text = ANY (ARRAY['draft'::character varying::text, 'submitted'::character varying::text, 'eligibility_review'::character varying::text, 'alternate_resource_review'::character varying::text, 'priority_assignment'::character varying::text, 'committee_review'::character varying::text, 'exception_review'::character varying::text, 'authorized'::character varying::text, 'denied'::character varying::text, 'deferred'::character varying::text, 'cancelled'::character varying::text])", name: "corvid_prc_referrals_status_check"
+    t.check_constraint "status::text = ANY (ARRAY['draft'::character varying, 'submitted'::character varying, 'eligibility_review'::character varying, 'management_approval'::character varying, 'alternate_resource_review'::character varying, 'priority_assignment'::character varying, 'committee_review'::character varying, 'exception_review'::character varying, 'authorized'::character varying, 'denied'::character varying, 'deferred'::character varying, 'cancelled'::character varying]::text[])", name: "corvid_prc_referrals_status_check"
   end
 
   create_table "corvid_tasks", force: :cascade do |t|
