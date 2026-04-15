@@ -77,6 +77,10 @@ Then("{string} should be true") do |item|
   assert @checklist.send(item.to_sym), "Expected #{item} to be true"
 end
 
+Then("{string} should be false") do |item|
+  refute @checklist.send(item.to_sym), "Expected #{item} to be false"
+end
+
 Then("{string} should have a verification timestamp") do |item|
   fields = Corvid::EligibilityChecklist::ITEM_FIELDS[item.to_sym]
   refute_nil @checklist.send(fields[:at]), "Expected #{fields[:at]} to be set"
