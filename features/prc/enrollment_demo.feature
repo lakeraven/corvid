@@ -1,11 +1,11 @@
-Feature: Baseroll demo adapter for enrollment verification
+Feature: Enrollment demo adapter for eligibility verification
   As a PRC eligibility reviewer
-  I need Baseroll enrollment data to auto-fill eligibility checklist items
+  I need enrollment system data to auto-fill eligibility checklist items
   So that identity, enrollment, and residency documentation gaps are eliminated
 
   Background:
     Given a tenant "tnt_yakama" with facility "fac_toppenish"
-    And the Baseroll demo adapter is active
+    And the enrollment demo adapter is active
 
   Scenario: Enrolled member's enrollment is verified
     When I verify tribal enrollment for the demo patient

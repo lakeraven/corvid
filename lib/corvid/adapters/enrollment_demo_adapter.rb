@@ -4,41 +4,39 @@ require "corvid/adapters/mock_adapter"
 
 module Corvid
   module Adapters
-    # Demo adapter with realistic Yakama Nation enrollment data.
-    # Proves the Baseroll -> Corvid integration contract for PRC
-    # eligibility verification. Not a production adapter — real
-    # Baseroll integration will use its API when available.
-    class BaserollDemoAdapter < MockAdapter
-      # Yakama reservation zip codes
-      YAKAMA_RESERVATION_ZIPS = %w[98948 98951 98937 98952 98947].freeze
-
+    # Demo adapter with synthetic enrollment data for PRC eligibility
+    # verification demos. Proves the adapter contract works end-to-end.
+    #
+    # Production deployments wire a real enrollment adapter (e.g., a
+    # tribal enrollment system) via the SaaS shell configuration.
+    class EnrollmentDemoAdapter < MockAdapter
       private
 
       def seed!
-        # Enrolled member — on reservation in Toppenish
+        # Enrolled member — on reservation
         add_patient("pt_demo_enrolled",
-          display_name: "SMARTLOWIT,MARY J",
+          display_name: "DEMO,ENROLLED MEMBER",
           dob: Date.new(1985, 6, 15),
           sex: "F",
           ssn_last4: "4321",
-          birthplace: "Toppenish, WA"
+          birthplace: "Test City, WA"
         )
         add_enrollment("pt_demo_enrolled",
           enrolled: true,
-          membership_number: "YN-10042",
-          tribe_name: "Yakama Nation",
+          membership_number: "TEST-10042",
+          tribe_name: "Test Tribe",
           blood_quantum: "1/4",
           member_status: "enrolled"
         )
         add_residency("pt_demo_enrolled",
           on_reservation: true,
-          address: "1205 S Elm St, Toppenish, WA 98948",
-          service_area: "yakama"
+          address: "123 Main St, Test City, WA 99999",
+          service_area: "test_service_area"
         )
 
         # Non-enrolled person
         add_patient("pt_demo_nonenrolled",
-          display_name: "JOHNSON,ROBERT T",
+          display_name: "DEMO,NON ENROLLED",
           dob: Date.new(1990, 3, 1),
           sex: "M",
           ssn_last4: nil
@@ -51,22 +49,22 @@ module Corvid
         )
         add_residency("pt_demo_nonenrolled",
           on_reservation: false,
-          address: "450 Pike St, Seattle, WA 98101",
-          service_area: "seattle"
+          address: "450 First Ave, Other City, WA 98101",
+          service_area: "other"
         )
 
-        # Off-reservation enrolled member
+        # Enrolled member — off reservation
         add_patient("pt_demo_off_reservation",
-          display_name: "WILLIAMS,SARAH K",
+          display_name: "DEMO,OFF RESERVATION",
           dob: Date.new(1978, 9, 22),
           sex: "F",
           ssn_last4: "8765",
-          birthplace: "Wapato, WA"
+          birthplace: "Test City, WA"
         )
         add_enrollment("pt_demo_off_reservation",
           enrolled: true,
-          membership_number: "YN-10098",
-          tribe_name: "Yakama Nation",
+          membership_number: "TEST-10098",
+          tribe_name: "Test Tribe",
           blood_quantum: "1/8",
           member_status: "enrolled"
         )
@@ -78,13 +76,13 @@ module Corvid
 
         # Seed practitioners for demo
         add_practitioner("pr_demo_001",
-          display_name: "FIANDER,VELMA C",
-          npi: "1234567890",
+          display_name: "DEMO,PRC MANAGER",
+          npi: "0000000001",
           specialty: "PRC Manager"
         )
         add_practitioner("pr_demo_002",
-          display_name: "SALUSKIN,KATHERINE M",
-          npi: "0987654321",
+          display_name: "DEMO,HEALTH OFFICER",
+          npi: "0000000002",
           specialty: "Health Officer"
         )
       end
