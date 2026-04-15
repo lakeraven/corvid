@@ -62,12 +62,29 @@ module Corvid
     def verify_item!(item, source: nil, by: nil)
       item = item.to_sym
       fields = ITEM_FIELDS.fetch(item)
+      validate_verify_item_metadata!(item, fields, source: source, by: by)
 
       attrs = { item => true, fields[:at] => Time.current }
-      attrs[fields[:source]] = source if fields.key?(:source) && source
-      attrs[fields[:by]] = by if fields.key?(:by) && by
+      attrs[fields[:source]] = source if fields.key?(:source)
+      attrs[fields[:by]] = by if fields.key?(:by)
 
       update!(attrs)
+    end
+
+    private
+
+    def validate_verify_item_metadata!(item, fields, source:, by:)
+      if fields.key?(:source)
+        raise ArgumentError, "#{item} requires source:" if source.nil?
+      elsif !source.nil?
+        raise ArgumentError, "#{item} does not support source:"
+      end
+
+      if fields.key?(:by)
+        raise ArgumentError, "#{item} requires by:" if by.nil?
+      elsif !by.nil?
+        raise ArgumentError, "#{item} does not support by:"
+      end
     end
   end
 end

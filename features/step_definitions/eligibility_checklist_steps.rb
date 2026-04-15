@@ -36,21 +36,26 @@ Given("an eligibility checklist for the referral") do
 end
 
 When("I verify {string} with source {string}") do |item, source|
-  @checklist.verify_item!(item.to_sym, source: source)
+  fields = Corvid::EligibilityChecklist::ITEM_FIELDS[item.to_sym]
+  if fields.key?(:source)
+    @checklist.verify_item!(item.to_sym, source: source)
+  else
+    @checklist.verify_item!(item.to_sym, by: source)
+  end
 end
 
 When("I verify {string} with source {string} by {string}") do |item, source, by|
-  @checklist.verify_item!(item.to_sym, source: source, by: by)
+  @checklist.verify_item!(item.to_sym, by: by)
 end
 
 When("all 7 items are verified") do
-  @checklist.verify_item!(:application_complete, source: "manual", by: "pr_mgr_001")
+  @checklist.verify_item!(:application_complete, by: "pr_mgr_001")
   @checklist.verify_item!(:identity_verified, source: "baseroll")
   @checklist.verify_item!(:insurance_verified, source: "manual")
   @checklist.verify_item!(:residency_verified, source: "baseroll")
   @checklist.verify_item!(:enrollment_verified, source: "baseroll")
   @checklist.verify_item!(:clinical_necessity_documented, source: "manual")
-  @checklist.verify_item!(:management_approved, source: "manual", by: "pr_mgr_001")
+  @checklist.verify_item!(:management_approved, by: "pr_mgr_001")
 end
 
 Then("the checklist should have {int} of {int} items complete") do |complete, total|
