@@ -157,6 +157,28 @@ module Corvid
       def verify_eligibility(patient_identifier, resource_type)
         raise NotImplementedError, "#{self.class}#verify_eligibility not implemented"
       end
+
+      # ----------------------------------------------------------------------
+      # Enrollment verification (for PRC eligibility checklist)
+      # ----------------------------------------------------------------------
+
+      # Returns { enrolled: bool, membership_number: str|nil,
+      #           tribe_name: str|nil, verified_at: datetime }
+      def verify_tribal_enrollment(patient_identifier)
+        raise NotImplementedError, "#{self.class}#verify_tribal_enrollment not implemented"
+      end
+
+      # Returns { ssn_present: bool, dob_present: bool,
+      #           birthplace_present: bool, verified_at: datetime }
+      def verify_identity_documents(patient_identifier)
+        raise NotImplementedError, "#{self.class}#verify_identity_documents not implemented"
+      end
+
+      # Returns { on_reservation: bool, address: str|nil,
+      #           service_area: str|nil, verified_at: datetime }
+      def verify_residency(patient_identifier)
+        raise NotImplementedError, "#{self.class}#verify_residency not implemented"
+      end
     end
   end
 end
