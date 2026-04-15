@@ -19,6 +19,7 @@ module Corvid
     CHS_STATUS_DEFAULT = "P"
 
     belongs_to :case, class_name: "Corvid::Case"
+    has_one :eligibility_checklist, dependent: :destroy, class_name: "Corvid::EligibilityChecklist"
     has_many :tasks, as: :taskable, dependent: :destroy, class_name: "Corvid::Task"
     has_many :alternate_resource_checks, dependent: :destroy, class_name: "Corvid::AlternateResourceCheck"
     has_many :committee_reviews, dependent: :destroy, class_name: "Corvid::CommitteeReview"
