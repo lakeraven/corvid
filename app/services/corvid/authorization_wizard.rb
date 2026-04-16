@@ -26,10 +26,16 @@ module Corvid
                 :current_step, :data, :errors, :warnings, :messages,
                 :field_errors, :prc_referral, :alternate_resources
 
-    def initialize(patient_identifier: nil, tenant_identifier:, facility_identifier:)
+    def initialize(patient_identifier: nil, tenant_identifier: nil, facility_identifier: nil)
       @patient_identifier = patient_identifier
-      @tenant_identifier = tenant_identifier
-      @facility_identifier = facility_identifier
+      # Default tenant/facility from the ambient context (consistent with
+      # TenantScoped), so callers already inside with_tenant blocks don't
+      # have to thread the identifiers through explicitly.
+      @tenant_identifier = tenant_identifier ||
+        Corvid::TenantContext.current_tenant_identifier
+      @facility_identifier = facility_identifier ||
+        Corvid::TenantContext.current_facility_identifier
+      raise ArgumentError, "tenant_identifier required (pass explicitly or set Corvid::TenantContext)" unless @tenant_identifier
       @current_step = :patient_selection
       @data = { patient_identifier: patient_identifier }
       @errors = []

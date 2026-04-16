@@ -26,8 +26,7 @@ class Corvid::ServicesTest < ActiveSupport::TestCase
     with_tenant(TENANT) do
       wizard = Corvid::AuthorizationWizard.new(
         patient_identifier: "pt_svc_001",
-        facility_identifier: "fac_svc",
-        user_identifier: "pr_svc_001"
+        facility_identifier: "fac_svc"
       )
       wizard.data.merge!(reason_for_referral: "TEST REASON", estimated_cost: 5_000)
 
@@ -46,8 +45,7 @@ class Corvid::ServicesTest < ActiveSupport::TestCase
     with_tenant(TENANT) do
       wizard = Corvid::AuthorizationWizard.new(
         patient_identifier: "pt_svc_002",
-        facility_identifier: "fac_svc",
-        user_identifier: "pr_svc_001"
+        facility_identifier: "fac_svc"
       )
       result = wizard.submit!
       refute result[:success]
