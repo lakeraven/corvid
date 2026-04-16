@@ -27,7 +27,7 @@ end
 Given("no claim exists with Stedi ID {string}") do |stedi_id|
   refute Corvid::ClaimSubmission.exists?(claim_identifier: stedi_id)
   Corvid.adapter.add_remittance("REM_ORPHAN_#{stedi_id}", {
-    remittance_id: "REM_ORPHAN_#{stedi_id}",
+    remittance_identifier: "REM_ORPHAN_#{stedi_id}",
     payer_name: "Test Payer", payment_date: Date.current, total_paid: 100.00,
     line_items: [{ claim_identifier: stedi_id, paid_amount: 100.00 }]
   })
@@ -87,7 +87,7 @@ Given("a remittance includes payments for all three claims") do
     { claim_identifier: c.claim_identifier, paid_amount: c.billed_amount.to_f * 0.9 }
   end
   Corvid.adapter.add_remittance("REM_ALL_THREE", {
-    remittance_id: "REM_ALL_THREE",
+    remittance_identifier: "REM_ALL_THREE",
     payer_name: "Test Payer", payment_date: Date.current,
     total_paid: line_items.sum { |li| li[:paid_amount] },
     line_items: line_items
@@ -114,7 +114,7 @@ Given("a remittance includes payments:") do |table|
       paid_amount: amount_str.to_s.gsub("$", "").to_f }
   end
   Corvid.adapter.add_remittance("REM_BATCH", {
-    remittance_id: "REM_BATCH",
+    remittance_identifier: "REM_BATCH",
     payer_name: "Test Payer", payment_date: Date.current,
     total_paid: line_items.sum { |li| li[:paid_amount] },
     line_items: line_items
@@ -133,7 +133,7 @@ end
 
 Given("there are unprocessed remittances from today") do
   Corvid.adapter.add_remittance("REM_TODAY_1", {
-    remittance_id: "REM_TODAY_1", payer_name: "Test Payer",
+    remittance_identifier: "REM_TODAY_1", payer_name: "Test Payer",
     payment_date: Date.current, total_paid: 100.00, line_items: []
   })
 end
@@ -178,7 +178,7 @@ end
 
 Given("a remittance includes denial for {string} with reason {string}") do |claim_id, reason|
   Corvid.adapter.add_remittance("REM_DENY_SPEC_#{claim_id}", {
-    remittance_id: "REM_DENY_SPEC_#{claim_id}", payer_name: "Test Payer",
+    remittance_identifier: "REM_DENY_SPEC_#{claim_id}", payer_name: "Test Payer",
     payment_date: Date.current, total_paid: 0,
     line_items: [{ claim_identifier: claim_id, paid_amount: 0,
                    status: "denied", denial_reason: reason }]
@@ -203,7 +203,7 @@ Given("a remittance includes payment for {string}:") do |claim_id, table|
   codes = [adjustment_raw.split(":").first, denial_raw.split(":").first].compact.reject(&:empty?)
 
   Corvid.adapter.add_remittance("REM_ADJ_SPEC_#{claim_id}", {
-    remittance_id: "REM_ADJ_SPEC_#{claim_id}", payer_name: "Test Payer",
+    remittance_identifier: "REM_ADJ_SPEC_#{claim_id}", payer_name: "Test Payer",
     payment_date: Date.current,
     total_paid: paid_amount,
     line_items: [{
@@ -287,7 +287,7 @@ end
 Given("there are {int} unprocessed remittances") do |count|
   count.times do |i|
     Corvid.adapter.add_remittance("REM_UP_#{i}", {
-      remittance_id: "REM_UP_#{i}", payer_name: "Test Payer",
+      remittance_identifier: "REM_UP_#{i}", payer_name: "Test Payer",
       payment_date: Date.current, total_paid: 50.00, line_items: []
     })
   end
