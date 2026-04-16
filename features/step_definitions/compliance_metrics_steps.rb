@@ -35,6 +35,23 @@ When("a provider submits a FHIR PA request for service {string} with estimated c
   Corvid::PriorAuthorizationApiService.submit_from_claim(claim, app_identifier: app)
 end
 
+When("a host app reads ClaimResponse {string} as app {string}") do |identifier, app|
+  referral = Corvid::PrcReferral.find_by!(referral_identifier: identifier)
+  Corvid::PriorAuthorizationApiService.read_claim_response(referral, app_identifier: app)
+end
+
+When("a host app searches ClaimResponses for patient {string} as app {string}") do |patient, app|
+  Corvid::PriorAuthorizationApiService.bundle_for_patient(patient, app_identifier: app)
+end
+
+When("a host app requests the covered services list as app {string}") do |app|
+  Corvid::PriorAuthorizationApiService.covered_services(app_identifier: app)
+end
+
+When("a host app requests documentation requirements for {string} as app {string}") do |service, app|
+  Corvid::PriorAuthorizationApiService.documentation_requirements_for(service, app_identifier: app)
+end
+
 Then("there should be {int} API call logged for tenant {string}") do |count, tenant|
   Corvid::TenantContext.with_tenant(tenant) do
     assert_equal count, Corvid::ApiCallLog.count
@@ -83,4 +100,9 @@ end
 Then("the annual report for tenant {string} api {string} should show {int} unique patients") do |tenant, api, count|
   report = Corvid::ApiMetricsService.annual_report(tenant: tenant, year: Date.current.year, api: api)
   assert_equal count, report[:unique_patients]
+end
+
+Then("the annual report for tenant {string} api {string} should show {int} calls to {string}") do |tenant, api, count, endpoint|
+  report = Corvid::ApiMetricsService.annual_report(tenant: tenant, year: Date.current.year, api: api)
+  assert_equal count, report[:calls_by_endpoint][endpoint].to_i
 end

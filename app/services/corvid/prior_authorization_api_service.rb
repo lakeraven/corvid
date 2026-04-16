@@ -82,7 +82,21 @@ module Corvid
         claim_response_for(referral)
       end
 
-      # Generate a FHIR ClaimResponse for a PrcReferral.
+      # GET /ClaimResponse/{id} handler. Records a "read" metrics event and
+      # returns the serialized response. Internal callers that already
+      # counted a different endpoint (submit / search) should use
+      # claim_response_for directly to avoid double-counting.
+      def read_claim_response(referral, app_identifier: nil)
+        Corvid::ApiMetricsService.record!(
+          api: :pas, endpoint: "read",
+          patient_identifier: referral.case.patient_identifier,
+          app_identifier: app_identifier
+        )
+        claim_response_for(referral)
+      end
+
+      # Generate a FHIR ClaimResponse for a PrcReferral. Pure serializer —
+      # does not record a metrics event (the caller's endpoint does).
       def claim_response_for(referral)
         mapping = STATUS_TO_DISPOSITION.fetch(referral.status,
           { outcome: "queued", disposition: "pended" })
@@ -138,8 +152,14 @@ module Corvid
       # Tenant filtering happens via TenantScoped#default_scope; the
       # PrcReferral.for_patient_identifier scope centralizes the Case join
       # and eager-loads to prevent N+1 case lookups in claim_response_for.
-      def bundle_for_patient(patient_identifier)
+      def bundle_for_patient(patient_identifier, app_identifier: nil)
         referrals = Corvid::PrcReferral.for_patient_identifier(patient_identifier)
+
+        Corvid::ApiMetricsService.record!(
+          api: :pas, endpoint: "search",
+          patient_identifier: patient_identifier,
+          app_identifier: app_identifier
+        )
 
         {
           resourceType: "Bundle",
@@ -152,7 +172,11 @@ module Corvid
       end
 
       # List of covered items and services requiring prior authorization.
-      def covered_services
+      def covered_services(app_identifier: nil)
+        Corvid::ApiMetricsService.record!(
+          api: :pas, endpoint: "covered_services",
+          app_identifier: app_identifier
+        )
         {
           resourceType: "Bundle",
           type: "collection",
@@ -169,7 +193,11 @@ module Corvid
       end
 
       # Documentation requirements for a specific service (Da Vinci DTR).
-      def documentation_requirements_for(service_description)
+      def documentation_requirements_for(service_description, app_identifier: nil)
+        Corvid::ApiMetricsService.record!(
+          api: :pas, endpoint: "documentation",
+          app_identifier: app_identifier
+        )
         {
           resourceType: "Questionnaire",
           title: "Documentation requirements for #{service_description}",

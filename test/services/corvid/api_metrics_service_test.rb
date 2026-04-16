@@ -74,6 +74,29 @@ class Corvid::ApiMetricsServiceTest < ActiveSupport::TestCase
     assert_equal 1, r2026[:total_calls]
   end
 
+  test "PAS read/search/covered_services/documentation record distinct endpoints" do
+    with_tenant(TENANT) do
+      Corvid::TenantContext.current_facility_identifier = "fac_u"
+      kase = Corvid::Case.create!(patient_identifier: "pt_u_450", facility_identifier: "fac_u")
+      referral = Corvid::PrcReferral.create!(
+        case: kase, referral_identifier: "rf_u_450",
+        facility_identifier: "fac_u", status: "submitted"
+      )
+
+      Corvid::PriorAuthorizationApiService.read_claim_response(referral, app_identifier: "app_a")
+      Corvid::PriorAuthorizationApiService.bundle_for_patient("pt_u_450", app_identifier: "app_a")
+      Corvid::PriorAuthorizationApiService.covered_services(app_identifier: "app_a")
+      Corvid::PriorAuthorizationApiService.documentation_requirements_for("MRI", app_identifier: "app_a")
+    ensure
+      Corvid::TenantContext.reset!
+    end
+
+    report = Corvid::ApiMetricsService.annual_report(tenant: TENANT, year: Date.current.year, api: "pas")
+    assert_equal 4, report[:total_calls]
+    assert_equal({ "read" => 1, "search" => 1, "covered_services" => 1, "documentation" => 1 },
+      report[:calls_by_endpoint])
+  end
+
   test "annual_report does not count cross-tenant calls" do
     with_tenant(TENANT) do
       Corvid::ApiMetricsService.record!(api: :pas, endpoint: "submit",
