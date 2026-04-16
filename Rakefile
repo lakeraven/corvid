@@ -16,7 +16,7 @@ end
 Rake::TestTask.new(:test_models) do |t|
   t.libs << "test"
   t.libs << "lib"
-  t.test_files = FileList["test/models/**/*_test.rb", "test/services/**/*_test.rb"]
+  t.test_files = FileList["test/models/**/*_test.rb", "test/services/**/*_test.rb", "test/rulesets/**/*_test.rb"]
   t.verbose = false
 end
 
