@@ -6,6 +6,13 @@ class Corvid::CaseTest < ActiveSupport::TestCase
   TEST_TENANT = "tnt_test"
   OTHER_TENANT = "tnt_other"
 
+  # Cucumber runs non-transactionally against the same test DB as rake
+  # test, so residue from the last scenario can leak into absolute-count
+  # assertions. Clear Corvid::Case up front so each test is hermetic.
+  setup do
+    Corvid::Case.unscoped.delete_all
+  end
+
   test "table is corvid_cases" do
     assert_equal "corvid_cases", Corvid::Case.table_name
   end
@@ -57,18 +64,10 @@ class Corvid::CaseTest < ActiveSupport::TestCase
 
   test "all_facilities_in_tenant returns all" do
     with_tenant(TEST_TENANT) do
-      before_count = Corvid::Case.all_facilities_in_tenant.count
       Corvid::Case.create!(patient_identifier: "pt_a", facility_identifier: "fac_1")
       Corvid::Case.create!(patient_identifier: "pt_b", facility_identifier: "fac_2")
 
-      # Assert that both cases appear in the tenant-wide scope. Count-delta
-      # rather than absolute count, since prior non-transactional test runs
-      # (e.g. cucumber against the same test DB) can leave residue.
-      scope = Corvid::Case.all_facilities_in_tenant
-      assert_equal before_count + 2, scope.count
-      patients = scope.pluck(:patient_identifier)
-      assert_includes patients, "pt_a"
-      assert_includes patients, "pt_b"
+      assert_equal 2, Corvid::Case.all_facilities_in_tenant.count
     end
   end
 

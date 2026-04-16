@@ -44,6 +44,11 @@ Before do
   clean_corvid_tables!
 end
 
-After do
+# Final sweep so a subsequent `rake test` (against the same test DB)
+# doesn't observe residue from the last scenario. Runs once at the end
+# of the suite, not per-scenario — the Before hook already guarantees
+# intra-suite isolation, so doubling up in an After would just double
+# the per-scenario DELETE cost.
+AfterAll do
   clean_corvid_tables!
 end
