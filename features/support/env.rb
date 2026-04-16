@@ -20,7 +20,9 @@ end
 # Reset tenant context and adapter between scenarios
 Before do
   Corvid::TenantContext.reset!
-  Corvid.adapter.reset! if Corvid.adapter.respond_to?(:reset!)
+  # Replace adapter with fresh instance to discard any singleton methods
+  # added by scenarios (e.g., mocking submit_claim to raise).
+  Corvid.configure { |c| c.adapter = Corvid::Adapters::MockAdapter.new }
 
   # Clean corvid tables (order matters due to foreign keys)
   Corvid::Payment.unscoped.delete_all
