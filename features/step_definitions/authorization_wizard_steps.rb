@@ -162,6 +162,11 @@ end
 When("I fill in the clinical information:") do |table|
   table.rows_hash.each do |field, value|
     key = field.downcase.tr(" ", "_").to_sym
+    # Medical priority is shown in the UI as "2 - Urgent"; extract the
+    # leading integer so the model stores the option value, not the label.
+    if key == :medical_priority
+      value = value.to_s[/\A\d+/]&.to_i || value
+    end
     @wizard.data[key] = value
   end
 end
@@ -219,9 +224,11 @@ When("I set {string} status to {string}") do |resource_name, status|
 end
 
 When("I set all resources to {string} or {string}") do |status1, status2|
-  status = status1.downcase.tr(" ", "_")
-  @wizard.alternate_resources.each_key do |type|
-    @wizard.set_resource_status(type, status)
+  # Alternate between the two statuses so the scenario actually
+  # exercises a mixed state, matching the step text.
+  statuses = [ status1.downcase.tr(" ", "_"), status2.downcase.tr(" ", "_") ]
+  @wizard.alternate_resources.each_key.with_index do |type, i|
+    @wizard.set_resource_status(type, statuses[i % 2])
   end
 end
 

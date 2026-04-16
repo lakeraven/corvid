@@ -22,12 +22,23 @@ module Corvid
 
     PRIVATE_INSURANCE_FIELDS = %i[payer_name policy_number group_number coverage_start coverage_end].freeze
 
-    attr_reader :patient_identifier, :tenant_identifier, :facility_identifier,
+    attr_reader :tenant_identifier, :facility_identifier,
                 :current_step, :data, :errors, :warnings, :messages,
                 :field_errors, :prc_referral, :alternate_resources
 
+    # patient_identifier always comes from @data so callers updating the
+    # wizard in step 1 (patient selection) see the change everywhere
+    # downstream. Writing via `wizard.patient_identifier = x` or
+    # `wizard.data[:patient_identifier] = x` are both fine.
+    def patient_identifier
+      @data[:patient_identifier]
+    end
+
+    def patient_identifier=(identifier)
+      @data[:patient_identifier] = identifier
+    end
+
     def initialize(patient_identifier: nil, tenant_identifier: nil, facility_identifier: nil)
-      @patient_identifier = patient_identifier
       # Default tenant/facility from the ambient context (consistent with
       # TenantScoped), so callers already inside with_tenant blocks don't
       # have to thread the identifiers through explicitly.
@@ -53,7 +64,7 @@ module Corvid
 
     def start!
       @current_step = :patient_selection
-      check_patient_eligibility if @patient_identifier
+      check_patient_eligibility if patient_identifier
       self
     end
 
@@ -124,7 +135,10 @@ module Corvid
       cost = parse_cost(@data[:estimated_cost])
       if cost > 0 && cost >= committee_threshold
         fields << :clinical_justification
-        @messages << "Clinical justification required for costs over #{format_currency(committee_threshold)}"
+        # De-duplicate: required_fields may be called repeatedly from
+        # both the UI and validation passes; we only want one message.
+        msg = "Clinical justification required for costs over #{format_currency(committee_threshold)}"
+        @messages << msg unless @messages.include?(msg)
       end
       fields
     end
@@ -134,7 +148,7 @@ module Corvid
     # ----------------------------------------------------------------
 
     def patient
-      @patient ||= Corvid.adapter.find_patient(@patient_identifier) if @patient_identifier
+      @patient ||= Corvid.adapter.find_patient(patient_identifier) if patient_identifier
     end
 
     # STUB: defaults to "verified" until real eligibility verification is
@@ -199,7 +213,7 @@ module Corvid
       @enrollment_verification_run = true
       @alternate_resources.each do |type, resource|
         next unless resource[:status] == :not_checked
-        result = Corvid.adapter.verify_eligibility(@patient_identifier, type)
+        result = Corvid.adapter.verify_eligibility(patient_identifier, type)
         @alternate_resources[type][:status] = result&.dig(:eligible) ? :enrolled : :not_enrolled
         @alternate_resources[type][:checked_at] = Time.current
       end
@@ -234,19 +248,29 @@ module Corvid
       validate_review
       return { success: false, errors: @errors } unless @errors.empty?
 
-      kase = Corvid::TenantContext.with_tenant(@tenant_identifier) do
-        Corvid::Case.find_or_create_by!(patient_identifier: @patient_identifier) do |c|
-          c.facility_identifier = @facility_identifier
-        end
-      end
-
-      referral_id = Corvid.adapter.create_referral(@patient_identifier, {
+      # Check adapter side-effects BEFORE we create any local AR records,
+      # so a nil/blank referral_id fails closed without leaving an
+      # orphan Case or PrcReferral behind.
+      referral_id = Corvid.adapter.create_referral(patient_identifier, {
         estimated_cost: @data[:estimated_cost],
         medical_priority_level: @data[:medical_priority],
-        service_requested: @data[:service_requested]
+        service_requested: @data[:service_requested],
+        reason: @data[:reason_for_referral],
+        requesting_provider_identifier: @data[:referring_provider]
       })
+      if referral_id.nil? || referral_id.to_s.strip.empty?
+        return { success: false, errors: [ "Adapter did not return a referral identifier" ] }
+      end
 
       Corvid::TenantContext.with_tenant(@tenant_identifier) do
+        # Scope Case find by tenant (auto via TenantScoped) AND facility
+        # so patients with cases at multiple facilities don't collide
+        # (same invariant as PriorAuthorizationApiService).
+        kase = Corvid::Case.find_or_create_by!(
+          patient_identifier: patient_identifier,
+          facility_identifier: @facility_identifier
+        )
+
         @prc_referral = Corvid::PrcReferral.create!(
           case: kase,
           referral_identifier: referral_id,
@@ -331,6 +355,13 @@ module Corvid
       if @data[:medical_priority].nil? || @data[:medical_priority].to_s.strip.empty?
         @errors << "Medical priority is required"
         @field_errors[:medical_priority] = "Medical priority is required"
+      else
+        valid_values = MEDICAL_PRIORITY_OPTIONS.map { |o| o[:value] }
+        coerced = Integer(@data[:medical_priority].to_s, exception: false)
+        unless coerced && valid_values.include?(coerced)
+          @errors << "Medical priority must be one of #{valid_values.join(', ')}"
+          @field_errors[:medical_priority] = "Must be one of #{valid_values.join(', ')}"
+        end
       end
       cost = parse_cost(@data[:estimated_cost])
       if cost > 0 && cost >= committee_threshold && (@data[:clinical_justification].nil? || @data[:clinical_justification].to_s.strip.empty?)
