@@ -201,7 +201,7 @@ module Corvid
       end
 
       # Detailed eligibility check (270/271). Returns coverage details hash.
-      def check_eligibility_detailed(patient_identifier, payer_id)
+      def check_eligibility_detailed(patient_identifier, payer_identifier)
         raise NotImplementedError, "#{self.class}#check_eligibility_detailed not implemented"
       end
 
