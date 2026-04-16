@@ -284,7 +284,16 @@ module Corvid
         @prc_referral.submit!
       end
 
-      message = requires_committee_review? ? "Referral requires committee review due to cost" : "Referral submitted successfully"
+      message = if requires_committee_review?
+        cost = parse_cost(@data[:estimated_cost])
+        if cost > 0 && cost >= committee_threshold
+          "Referral requires committee review due to cost"
+        else
+          "Referral requires committee review due to medical priority"
+        end
+      else
+        "Referral submitted successfully"
+      end
       @messages << message if requires_committee_review?
 
       { success: true, message: message, referral: @prc_referral }
