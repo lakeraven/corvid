@@ -1,7 +1,7 @@
-Feature: Nuka integrated care team
+Feature: Integrated care teams
   As a care coordinator
   I want to manage integrated care teams
-  So that customer-owners have relationship-based care
+  So that patients have relationship-based care
 
   Background:
     Given a tenant "tnt_test" with facility "fac_test"
@@ -13,7 +13,7 @@ Feature: Nuka integrated care team
   Scenario: Create a care team
     When I create a care team named "Blue Team"
     Then a care team "Blue Team" should exist
-    And it should belong to facility "Southcentral Foundation"
+    And it should belong to facility "fac_test"
 
   Scenario: Care team requires a name
     When I try to create a care team without a name
@@ -110,10 +110,10 @@ Feature: Nuka integrated care team
 
   @wip
   Scenario: Care teams are facility-scoped
-    Given a facility "Cherokee Nation" with code "CHN" exists
-    And a care team "Blue Team" exists at facility "Southcentral Foundation"
-    And a care team "Red Team" exists at facility "Cherokee Nation"
-    When I am working at facility "Southcentral Foundation"
+    Given a facility "fac_other" with code "CHN" exists
+    And a care team "Blue Team" exists at facility "fac_test"
+    And a care team "Red Team" exists at facility "fac_other"
+    When I am working at facility "fac_test"
     And I view all care teams
     Then I should see care team "Blue Team"
     And I should not see care team "Red Team"

@@ -44,6 +44,12 @@ module Corvid
       Corvid.adapter.get_care_team(patient_identifier)
     end
 
+    # Lightweight FHIR R4 CareTeam projection for host apps that want a
+    # JSON preview (e.g. dashboards). NOT validated against the FHIR R4
+    # profile or any IG — status code system is omitted, participant
+    # role is a free-text CodeableConcept, and the resource is not
+    # rendered through an R4 model. Host apps that need conformance
+    # should re-serialize through fhir_models or similar.
     def to_fhir
       {
         resourceType: "CareTeam",

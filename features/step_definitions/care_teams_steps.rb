@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-# Care team step definitions (ported from rpms_redux nuka/care_teams.feature)
+# Care team step definitions
 
 When("I create a care team named {string}") do |name|
   @care_team = Corvid::CareTeam.create!(
