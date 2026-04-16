@@ -47,3 +47,6 @@ jobs:
 
       - name: Run tests
         run: bundle exec rake test
+
+      - name: Run BDD features
+        run: bundle exec cucumber --tags "not @wip" --format progress
