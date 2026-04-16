@@ -103,7 +103,7 @@ When("I submit the service request as a professional claim") do
     @result = @claim_submission.submit!
   rescue Timeout::Error, StandardError => e
     @submission_error = e
-    @claim_submission.update!(status: "rejected")
+    @claim_submission.update!(status: "error")
   end
 end
 

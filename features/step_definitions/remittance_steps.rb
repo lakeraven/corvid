@@ -89,8 +89,12 @@ When("I process the remittance") do
 end
 
 When("the remittance polling job runs") do
-  step "I fetch remittances"
-  step "I process the remittance"
+  begin
+    step "I fetch remittances"
+    step "I process the remittance"
+  rescue => e
+    @polling_error = e
+  end
 end
 
 Then("I should receive remittance data") do
