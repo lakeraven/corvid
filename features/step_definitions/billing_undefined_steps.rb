@@ -186,8 +186,12 @@ When("the claim is rejected with reason {string}") do |reason|
 end
 
 When("the claim is paid with amount {string}") do |amount|
+  paid = amount.gsub("$", "").to_f
+  adjustment = (@claim_submission.billed_amount.to_f - paid).abs
   Corvid.adapter.add_claim(@claim_submission.claim_identifier, {
-    status: "paid", paid_amount: amount.gsub("$", "").to_f, paid_date: Date.current
+    status: "paid", paid_amount: paid,
+    adjustment_amount: adjustment,
+    paid_date: Date.current
   })
   @claim_submission.check_status!
 end
@@ -299,9 +303,15 @@ Given("a claim was checked {int} hours ago") do |hours|
 end
 
 Then("only the claim checked {int} hours ago should be rechecked") do |_hours|
-  # needs_status_check uses 1-day threshold — claims checked >24h ago get rechecked
-  stale = Corvid::ClaimSubmission.needs_status_check
-  assert stale.include?(@old_claim) if @old_claim
+  # After polling, the 2h-old claim should have a fresh last_checked_at
+  # (it was picked up by needs_status_check and rechecked).
+  # The recent claim should have its original 5-minutes-ago timestamp.
+  @old_claim.reload
+  @recent_claim.reload
+  assert @old_claim.last_checked_at > 1.minute.ago,
+    "Expected 2h-old claim to have been rechecked"
+  assert @recent_claim.last_checked_at < 1.minute.ago,
+    "Expected recent claim to NOT have been rechecked"
 end
 
 Given("the Stedi API returns an error for the second claim") do
@@ -626,19 +636,15 @@ Given("a remittance includes payment for {string} with amount {string}") do |cla
 end
 
 Given("the remittance includes adjustments:") do |table|
-  claim_id = @claim_submission&.claim_identifier || "CLM_ADJ"
   adjustments = table.hashes
-  Corvid.adapter.add_remittance("REM_ADJ_#{claim_id}", {
-    remittance_id: "REM_ADJ_#{claim_id}",
-    payer_name: "Test Payer",
-    payment_date: Date.current,
-    total_paid: 0,
-    line_items: [{
-      claim_identifier: claim_id,
-      paid_amount: 0,
-      adjustment_amount: adjustments.sum { |a| a["amount"].to_s.gsub("$", "").to_f }
-    }]
-  })
+  adj_total = adjustments.sum { |a| a["amount"].to_s.gsub("$", "").to_f }
+  # Merge into the most recent remittance's last line item
+  remittances = Corvid.adapter.instance_variable_get(:@remittances)
+  last_rem = remittances.values.last
+  if last_rem && last_rem[:line_items]&.last
+    last_rem[:line_items].last[:adjustment_amount] = adj_total
+    last_rem[:line_items].last[:adjustment_codes] = adjustments.map { |a| a["code"] }
+  end
 end
 
 Then("the claim should be marked as paid") do

@@ -9,7 +9,7 @@ module Corvid
 
     include TenantScoped
 
-    STATUSES = %w[draft submitted accepted rejected paid denied appealed].freeze
+    STATUSES = %w[draft submitted accepted rejected paid denied appealed error].freeze
     CLAIM_TYPES = %w[professional institutional dental].freeze
 
     validates :patient_identifier, presence: true
@@ -22,7 +22,7 @@ module Corvid
     scope :rejected, -> { where(status: %w[rejected denied]) }
     scope :for_patient, ->(id) { where(patient_identifier: id) }
     scope :for_referral, ->(id) { where(referral_identifier: id) }
-    scope :needs_status_check, -> { pending.where("last_checked_at IS NULL OR last_checked_at < ?", 1.day.ago) }
+    scope :needs_status_check, ->(max_age = 1.hour) { pending.where("last_checked_at IS NULL OR last_checked_at < ?", max_age.ago) }
     scope :in_date_range, ->(range) { where(service_date: range) }
 
     def submit!

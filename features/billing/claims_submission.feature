@@ -84,7 +84,6 @@ Feature: Stedi Claims Submission
     And I should see status "Accepted"
     And I should see the submission date
 
-  @wip
   Scenario: Claim status updates from Stedi
     Given a claim submission exists with Stedi ID "CLM-STEDI-001"
     When Stedi reports the claim status changed to "paid"
@@ -116,7 +115,6 @@ Feature: Stedi Claims Submission
     Then the claim submission should have status "rejected"
     And I should see rejection reason "Invalid member ID"
 
-  @wip
   Scenario: Claim submission fails due to network error
     Given a service request "2025-00151" exists with status "completed"
     And the Stedi API is unavailable
