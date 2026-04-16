@@ -27,6 +27,14 @@ module Corvid
     validates :referral_identifier, presence: true
     validates :referral_identifier, uniqueness: { scope: [ :tenant_identifier, :facility_identifier ] }
 
+    # Referrals for a given patient. Joins the parent Case since the
+    # patient_identifier lives there (the referral is case-scoped).
+    # Eager-loads the case so callers iterating referrals don't N+1.
+    scope :for_patient_identifier, ->(patient_identifier) {
+      includes(:case).references(:case)
+        .where(corvid_cases: { patient_identifier: patient_identifier })
+    }
+
     aasm column: :status, whiny_transitions: false do
       state :draft, initial: true
       state :submitted, :eligibility_review, :management_approval, :alternate_resource_review

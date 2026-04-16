@@ -28,7 +28,8 @@ module Corvid
     :emergent,
     :urgent,
     :chs_approval_status,
-    :service_requested
+    :service_requested,
+    :requesting_provider_identifier
   ) do
     def emergent? = emergent == true
     def urgent? = urgent == true

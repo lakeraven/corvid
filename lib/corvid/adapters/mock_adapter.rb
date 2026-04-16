@@ -112,7 +112,8 @@ module Corvid
           emergent: false,
           urgent: false,
           chs_approval_status: "P",
-          service_requested: params[:service_requested]
+          service_requested: params[:service_requested],
+          requesting_provider_identifier: params[:requesting_provider_identifier]
         }
         token
       end
@@ -381,7 +382,8 @@ module Corvid
           emergent: attrs[:emergent],
           urgent: attrs[:urgent],
           chs_approval_status: attrs[:chs_approval_status],
-          service_requested: attrs[:service_requested]
+          service_requested: attrs[:service_requested],
+          requesting_provider_identifier: attrs[:requesting_provider_identifier]
         )
       end
 

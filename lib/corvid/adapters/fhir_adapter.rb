@@ -388,7 +388,8 @@ module Corvid
           emergent: resource["priority"] == "stat",
           urgent: resource["priority"] == "urgent",
           chs_approval_status: nil,
-          service_requested: resource.dig("code", "text") || resource.dig("code", "coding", 0, "display")
+          service_requested: resource.dig("code", "text") || resource.dig("code", "coding", 0, "display"),
+          requesting_provider_identifier: resource.dig("requester", "reference")&.split("/")&.last
         )
       end
 
