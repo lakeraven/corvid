@@ -23,6 +23,9 @@ Before do
   Corvid.adapter.reset! if Corvid.adapter.respond_to?(:reset!)
 
   # Clean corvid tables (order matters due to foreign keys)
+  Corvid::Payment.unscoped.delete_all
+  Corvid::ClaimSubmission.unscoped.delete_all
+  Corvid::BillingTransaction.unscoped.delete_all
   Corvid::EligibilityChecklist.unscoped.delete_all
   Corvid::Determination.unscoped.delete_all
   Corvid::AlternateResourceCheck.unscoped.delete_all

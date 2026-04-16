@@ -247,6 +247,40 @@ module Corvid
       end
 
       # ----------------------------------------------------------------------
+      # Billing / EDI — FHIR has no native clearinghouse concept.
+      # Defaults to "not available" so callers degrade gracefully.
+      # Vendor adapters (Stedi, etc.) override with real EDI integration.
+      # ----------------------------------------------------------------------
+
+      def submit_claim(_claim_data)
+        { claim_identifier: nil, status: "unsupported" }
+      end
+
+      def check_claim_status(_claim_identifier)
+        { status: "unsupported" }
+      end
+
+      def fetch_remittances(date_range: nil)
+        []
+      end
+
+      def check_eligibility_detailed(_patient_identifier, _payer_id)
+        { eligible: false, payer_name: nil, plan_name: nil }
+      end
+
+      def search_payers(_query)
+        []
+      end
+
+      def process_payment(amount_cents:, patient_identifier:, description:)
+        { payment_identifier: nil, status: "unsupported" }
+      end
+
+      def refund_payment(_payment_identifier)
+        { refund_identifier: nil, status: "unsupported" }
+      end
+
+      # ----------------------------------------------------------------------
       # Budget — FHIR has no native budget concept; defaults to empty.
       # Vendor adapters override.
       # ----------------------------------------------------------------------
