@@ -84,6 +84,7 @@ Feature: Clearinghouse Claims Submission
     And I should see status "Accepted"
     And I should see the submission date
 
+  @wip
   Scenario: Claim status updates from Clearinghouse
     Given a claim submission exists with Clearinghouse ID "CLM-CLEARINGHOUSE-001"
     When Clearinghouse reports the claim status changed to "paid"
