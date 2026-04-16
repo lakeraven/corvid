@@ -164,6 +164,16 @@ module Corvid
     end
 
     def deny_exception_review!(rationale:, denied_by:)
+      update!(
+        exception_approved: false,
+        exception_rationale_token: Corvid.adapter.store_text(
+          case_token: self.case&.id&.to_s || "unknown",
+          kind: :rationale,
+          text: rationale
+        ),
+        exception_reviewed_at: Time.current,
+        exception_reviewed_by_identifier: denied_by
+      )
       record_determination!(
         outcome: "denied",
         decision_method: "staff_review",
