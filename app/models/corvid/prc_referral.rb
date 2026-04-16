@@ -61,19 +61,16 @@ module Corvid
         transitions from: :priority_assignment, to: :authorized
       end
 
-      event :authorize do
-        transitions from: [ :priority_assignment, :committee_review ], to: :authorized,
-                    after: :sync_status_to_ehr
+      event :authorize, after: :sync_status_to_ehr do
+        transitions from: [ :priority_assignment, :committee_review ], to: :authorized
       end
 
-      event :mark_denied do
-        transitions from: [ :priority_assignment, :committee_review ], to: :denied,
-                    after: :sync_status_to_ehr
+      event :mark_denied, after: :sync_status_to_ehr do
+        transitions from: [ :eligibility_review, :exception_review, :priority_assignment, :committee_review ], to: :denied
       end
 
-      event :mark_deferred do
-        transitions from: [ :priority_assignment, :committee_review ], to: :deferred,
-                    after: :sync_status_to_ehr
+      event :mark_deferred, after: :sync_status_to_ehr do
+        transitions from: [ :priority_assignment, :committee_review ], to: :deferred
       end
 
       event :cancel do
@@ -114,12 +111,85 @@ module Corvid
       eligibility_checklist&.items_except_approval_complete? || false
     end
 
+    # ----------------------------------------------------------------
+    # 72-hour notification rules (ported from rpms_redux)
+    # ----------------------------------------------------------------
+
+    def notification_status
+      return "not_required" unless emergency_flag?
+      return "missing" if notification_date.nil?
+
+      hours_since_notification <= notification_grace_period ? "timely" : "late"
+    end
+
+    def hours_since_notification
+      return nil unless notification_date
+      ((Time.current - notification_date) / 1.hour).round
+    end
+
+    def notification_grace_period
+      Corvid.adapter.get_site_params&.dig(:notification_grace_period) || 72
+    end
+
+    def requires_exception_review?
+      return false unless emergency_flag?
+      return true if notification_date.nil?
+
+      hours_since_notification > notification_grace_period
+    end
+
+    def document_late_notification!(reason:, documented_by:)
+      update!(
+        late_notification_reason_token: Corvid.adapter.store_text(
+          case_token: self.case&.id&.to_s || "unknown",
+          kind: :reason,
+          text: reason
+        ),
+        late_notification_documented_at: Time.current,
+        late_notification_documented_by_identifier: documented_by
+      )
+    end
+
+    def approve_exception_review!(rationale:, approved_by:)
+      update!(
+        exception_approved: true,
+        exception_rationale_token: Corvid.adapter.store_text(
+          case_token: self.case&.id&.to_s || "unknown",
+          kind: :rationale,
+          text: rationale
+        ),
+        exception_reviewed_at: Time.current,
+        exception_reviewed_by_identifier: approved_by
+      )
+    end
+
+    def deny_exception_review!(rationale:, denied_by:)
+      record_determination!(
+        outcome: "denied",
+        decision_method: "staff_review",
+        determined_by_identifier: denied_by
+      )
+      mark_denied! if may_mark_denied?
+    end
+
     private
 
     def auto_populate_checklist
       Corvid::EligibilityChecklistService.populate!(self)
+      create_exception_review_task_if_needed
     rescue => e
       Rails.logger.warn("PrcReferral: Failed to auto-populate checklist: #{e.message}")
+    end
+
+    def create_exception_review_task_if_needed
+      return unless requires_exception_review?
+
+      tasks.create!(
+        tenant_identifier: tenant_identifier,
+        facility_identifier: facility_identifier,
+        description: "Exception review required: late notification (#{hours_since_notification || 'missing'} hours)",
+        priority: :urgent
+      )
     end
 
     def record_management_approval
