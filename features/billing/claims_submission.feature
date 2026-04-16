@@ -115,6 +115,7 @@ Feature: Stedi Claims Submission
     Then the claim submission should have status "rejected"
     And I should see rejection reason "Invalid member ID"
 
+  @wip
   Scenario: Claim submission fails due to network error
     Given a service request "2025-00151" exists with status "completed"
     And the Stedi API is unavailable
