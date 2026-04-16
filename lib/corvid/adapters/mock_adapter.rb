@@ -275,11 +275,11 @@ module Corvid
       def submit_claim(claim_data)
         ref = "CLM_#{ULID.generate}"
         @claims[ref] = claim_data.merge(status: "accepted", submitted_at: Time.current)
-        { claim_reference: ref, status: "accepted" }
+        { claim_identifier: ref, status: "accepted" }
       end
 
-      def check_claim_status(claim_reference)
-        claim = @claims[claim_reference]
+      def check_claim_status(claim_identifier)
+        claim = @claims[claim_identifier]
         return { status: "unknown" } unless claim
 
         { status: claim[:status] || "accepted",
@@ -306,15 +306,15 @@ module Corvid
         ref = "PAY_#{ULID.generate}"
         @payments_store[ref] = { amount_cents: amount_cents, patient_identifier: patient_identifier,
                                  description: description, status: "succeeded" }
-        { payment_reference: ref, status: "succeeded" }
+        { payment_identifier: ref, status: "succeeded" }
       end
 
-      def refund_payment(payment_reference)
-        payment = @payments_store[payment_reference]
-        return { refund_reference: nil, status: "not_found" } unless payment
+      def refund_payment(payment_identifier)
+        payment = @payments_store[payment_identifier]
+        return { refund_identifier: nil, status: "not_found" } unless payment
 
         payment[:status] = "refunded"
-        { refund_reference: "REF_#{ULID.generate}", status: "refunded" }
+        { refund_identifier: "REF_#{ULID.generate}", status: "refunded" }
       end
 
       # ----------------------------------------------------------------------

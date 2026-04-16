@@ -8,7 +8,7 @@ Given("there are paid claim submissions in the system") do
       tenant_identifier: @tenant,
       facility_identifier: @facility,
       patient_identifier: "pt_art6_#{i}",
-      claim_reference: "CLM_ART6_#{i}",
+      claim_identifier: "CLM_ART6_#{i}",
       claim_type: "professional",
       status: "paid",
       billed_amount: 500.00 + (i * 100),

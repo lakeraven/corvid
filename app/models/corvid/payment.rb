@@ -29,15 +29,15 @@ module Corvid
         description: description
       )
       update!(
-        payment_reference: result[:payment_reference],
+        payment_identifier: result[:payment_identifier],
         status: result[:status]
       )
       result
     end
 
     def refund!
-      return unless payment_reference
-      result = Corvid.adapter.refund_payment(payment_reference)
+      return unless payment_identifier
+      result = Corvid.adapter.refund_payment(payment_identifier)
       update!(status: "refunded") if result[:status] == "refunded"
       result
     end

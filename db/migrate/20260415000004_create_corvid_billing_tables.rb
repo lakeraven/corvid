@@ -34,7 +34,7 @@ class CreateCorvidBillingTables < ActiveRecord::Migration[8.1]
       t.string :facility_identifier
       t.string :patient_identifier, null: false
       t.string :referral_identifier
-      t.string :claim_reference
+      t.string :claim_identifier
       t.string :claim_type, null: false, default: "professional"
       t.string :status, null: false, default: "draft"
       t.decimal :billed_amount, precision: 12, scale: 2
@@ -58,7 +58,7 @@ class CreateCorvidBillingTables < ActiveRecord::Migration[8.1]
     end
     add_index :corvid_claim_submissions, [:tenant_identifier, :status]
     add_index :corvid_claim_submissions, [:tenant_identifier, :patient_identifier]
-    add_index :corvid_claim_submissions, :claim_reference, unique: true
+    add_index :corvid_claim_submissions, :claim_identifier, unique: true
     add_check_constraint :corvid_claim_submissions,
       "status IN (#{CLAIM_STATUSES.map { |s| "'#{s}'" }.join(',')})",
       name: "corvid_claim_submissions_status_check"
@@ -67,16 +67,16 @@ class CreateCorvidBillingTables < ActiveRecord::Migration[8.1]
       t.string :tenant_identifier, null: false
       t.string :facility_identifier
       t.string :patient_identifier, null: false
-      t.string :payment_reference
+      t.string :payment_identifier
       t.integer :amount_cents, null: false
       t.string :status, null: false, default: "pending"
       t.string :description
-      t.string :claim_submission_id
+      t.string :claim_submission_identifier
       t.timestamps
     end
     add_index :corvid_payments, [:tenant_identifier, :status]
     add_index :corvid_payments, [:tenant_identifier, :patient_identifier]
-    add_index :corvid_payments, :payment_reference, unique: true
+    add_index :corvid_payments, :payment_identifier, unique: true
     add_check_constraint :corvid_payments,
       "status IN (#{PAYMENT_STATUSES.map { |s| "'#{s}'" }.join(',')})",
       name: "corvid_payments_status_check"
