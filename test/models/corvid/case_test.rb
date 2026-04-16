@@ -57,10 +57,18 @@ class Corvid::CaseTest < ActiveSupport::TestCase
 
   test "all_facilities_in_tenant returns all" do
     with_tenant(TEST_TENANT) do
+      before_count = Corvid::Case.all_facilities_in_tenant.count
       Corvid::Case.create!(patient_identifier: "pt_a", facility_identifier: "fac_1")
       Corvid::Case.create!(patient_identifier: "pt_b", facility_identifier: "fac_2")
 
-      assert_equal 2, Corvid::Case.all_facilities_in_tenant.count
+      # Assert that both cases appear in the tenant-wide scope. Count-delta
+      # rather than absolute count, since prior non-transactional test runs
+      # (e.g. cucumber against the same test DB) can leave residue.
+      scope = Corvid::Case.all_facilities_in_tenant
+      assert_equal before_count + 2, scope.count
+      patients = scope.pluck(:patient_identifier)
+      assert_includes patients, "pt_a"
+      assert_includes patients, "pt_b"
     end
   end
 
