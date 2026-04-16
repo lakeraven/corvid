@@ -22,7 +22,7 @@ Feature: Case Management Dashboard
 
   Scenario: Dashboard filters by status
     Given there are 3 active cases for "Care Team A"
-    And there are 1 closed cases for "Care Team A"
+    And there is 1 closed case for "Care Team A"
     When I view the case management dashboard filtered by "active"
     Then I should see only active cases
 

@@ -16,16 +16,24 @@ module Corvid
     validates :name, presence: true
 
     def add_member!(role:, practitioner_identifier:, lead: false, start_date: nil, end_date: nil)
-      if lead
-        care_team_members.where(lead: true).update_all(lead: false)
+      # Wrap in a transaction so a validation failure on the new member
+      # doesn't leave the team lead-less (we used to demote first, then
+      # create; if create! raised, the old lead stayed demoted).
+      transaction do
+        new_member = care_team_members.create!(
+          role: role,
+          practitioner_identifier: practitioner_identifier,
+          lead: lead,
+          start_date: start_date,
+          end_date: end_date
+        )
+        if lead
+          care_team_members.where(lead: true)
+            .where.not(id: new_member.id)
+            .update_all(lead: false)
+        end
+        new_member
       end
-      care_team_members.create!(
-        role: role,
-        practitioner_identifier: practitioner_identifier,
-        lead: lead,
-        start_date: start_date,
-        end_date: end_date
-      )
     end
 
     def remove_member!(practitioner_identifier)

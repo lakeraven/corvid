@@ -164,8 +164,9 @@ Then("a care team {string} should exist") do |name|
   assert Corvid::CareTeam.exists?(name: name)
 end
 
-Then("it should belong to facility {string}") do |_facility|
-  refute_nil @care_team.facility_identifier
+Then("it should belong to facility {string}") do |facility|
+  assert_equal facility, @care_team.facility_identifier,
+    "expected care team's facility_identifier to match the scenario"
 end
 
 Then("the care team should be invalid") do

@@ -52,9 +52,14 @@ When("I create a case for the patient") do
   )
 end
 
-When("I switch to facility {string} with code {string}") do |_name, _code|
-  # Tenant isolation — scope queries to a different facility
-  @other_facility = "fac_other"
+When("I switch to facility {string} with code {string}") do |_name, code|
+  # Use the facility code (the identifier) as the active facility so
+  # subsequent queries actually see the switch. Previously this step
+  # set @other_facility to a hard-coded value and never updated @facility,
+  # which made the "Case is scoped to facility" scenario tautological.
+  @other_facility = code
+  @facility = code
+  Corvid::TenantContext.current_facility_identifier = code
 end
 
 When("I close the case") do

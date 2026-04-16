@@ -3,7 +3,9 @@
 # Case management dashboard step definitions (ported from rpms_redux)
 
 Given("I am a member of {string}") do |team_name|
-  @care_team ||= Corvid::CareTeam.find_by(name: team_name)
+  # Use find_by! so a missing team from background setup raises a clear
+  # RecordNotFound instead of a confusing NoMethodError on nil.add_member!
+  @care_team ||= Corvid::CareTeam.find_by!(name: team_name)
   @provider_identifier = "pr_dashboard_001"
   @care_team.add_member!(role: "Care Manager", practitioner_identifier: @provider_identifier)
 end
@@ -21,7 +23,15 @@ Given("there are {int} active cases for {string}") do |count, team_name|
 end
 
 Given("there are {int} closed cases for {string}") do |count, team_name|
-  team = Corvid::CareTeam.find_by(name: team_name)
+  add_closed_cases(count, team_name)
+end
+
+Given("there is {int} closed case for {string}") do |count, team_name|
+  add_closed_cases(count, team_name)
+end
+
+def add_closed_cases(count, team_name)
+  team = Corvid::CareTeam.find_by!(name: team_name)
   count.times do |i|
     Corvid::Case.create!(
       patient_identifier: "pt_dash_closed_#{i}",
@@ -105,8 +115,9 @@ Then("I should see only active cases") do
 end
 
 Then("the dashboard should indicate data is sourced from RPMS") do
-  # Data source indicator — present in the metrics object
   refute_nil @dashboard_metrics[:generated_at]
+  refute_nil @dashboard_metrics[:data_source],
+    "dashboard metrics should carry a data_source field"
 end
 
 Then("the metrics should include active case count") do
