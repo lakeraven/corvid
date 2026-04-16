@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_04_15_000006) do
+ActiveRecord::Schema[8.1].define(version: 2026_04_16_000001) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
@@ -31,6 +31,22 @@ ActiveRecord::Schema[8.1].define(version: 2026_04_15_000006) do
     t.index ["prc_referral_id"], name: "index_corvid_alternate_resource_checks_on_prc_referral_id"
     t.check_constraint "resource_type::text = ANY (ARRAY['medicare_a'::character varying::text, 'medicare_b'::character varying::text, 'medicare_d'::character varying::text, 'medicaid'::character varying::text, 'va_benefits'::character varying::text, 'private_insurance'::character varying::text, 'workers_comp'::character varying::text, 'auto_insurance'::character varying::text, 'liability_coverage'::character varying::text, 'state_program'::character varying::text, 'tribal_program'::character varying::text, 'charity_care'::character varying::text])", name: "corvid_arc_resource_type_check"
     t.check_constraint "status::text = ANY (ARRAY['not_checked'::character varying::text, 'checking'::character varying::text, 'enrolled'::character varying::text, 'not_enrolled'::character varying::text, 'denied'::character varying::text, 'exhausted'::character varying::text, 'pending_enrollment'::character varying::text])", name: "corvid_arc_status_check"
+  end
+
+  create_table "corvid_api_call_logs", force: :cascade do |t|
+    t.string "api_name", null: false
+    t.string "app_identifier"
+    t.datetime "called_at", null: false
+    t.datetime "created_at", null: false
+    t.string "endpoint", null: false
+    t.string "facility_identifier"
+    t.string "patient_identifier"
+    t.string "tenant_identifier", null: false
+    t.datetime "updated_at", null: false
+    t.index ["tenant_identifier", "api_name", "app_identifier"], name: "idx_corvid_api_calls_tenant_app"
+    t.index ["tenant_identifier", "api_name", "called_at"], name: "idx_corvid_api_calls_tenant_api_time"
+    t.index ["tenant_identifier", "api_name", "patient_identifier"], name: "idx_corvid_api_calls_tenant_patient"
+    t.check_constraint "api_name::text = ANY (ARRAY['pas'::character varying, 'patient_access'::character varying, 'provider_access'::character varying, 'payer_to_payer'::character varying]::text[])", name: "corvid_api_call_logs_api_name_check"
   end
 
   create_table "corvid_billing_transactions", force: :cascade do |t|
@@ -136,7 +152,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_04_15_000006) do
     t.index ["tenant_identifier", "patient_identifier"], name: "idx_on_tenant_identifier_patient_identifier_0a950bd516"
     t.index ["tenant_identifier", "status"], name: "index_corvid_claim_submissions_on_tenant_identifier_and_status"
     t.check_constraint "claim_type::text = ANY (ARRAY['professional'::character varying::text, 'institutional'::character varying::text, 'dental'::character varying::text])", name: "corvid_claim_submissions_type_check"
-    t.check_constraint "status::text = ANY (ARRAY['draft'::character varying, 'submitted'::character varying, 'accepted'::character varying, 'rejected'::character varying, 'paid'::character varying, 'denied'::character varying, 'appealed'::character varying, 'error'::character varying]::text[])", name: "corvid_claim_submissions_status_check"
+    t.check_constraint "status::text = ANY (ARRAY['draft'::character varying::text, 'submitted'::character varying::text, 'accepted'::character varying::text, 'rejected'::character varying::text, 'paid'::character varying::text, 'denied'::character varying::text, 'appealed'::character varying::text, 'error'::character varying::text])", name: "corvid_claim_submissions_status_check"
   end
 
   create_table "corvid_committee_reviews", force: :cascade do |t|

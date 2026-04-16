@@ -39,7 +39,10 @@ module Corvid
     class << self
       # POST /Claim/$submit handler. Accepts a FHIR Claim (as hash) and
       # creates a PrcReferral. Returns a ClaimResponse hash.
-      def submit_from_claim(fhir_claim)
+      #
+      # Hosts pass app_identifier (the authenticated OAuth client_id) so
+      # CMS-0057-F annual usage metrics (#46) can count distinct apps.
+      def submit_from_claim(fhir_claim, app_identifier: nil)
         patient_id = extract_patient_identifier(fhir_claim)
         provider_id = extract_provider_identifier(fhir_claim)
         service_description = extract_service_description(fhir_claim)
@@ -69,6 +72,12 @@ module Corvid
           current_activity: "Submitted via FHIR PAS"
         )
         referral.submit!
+
+        Corvid::ApiMetricsService.record!(
+          api: :pas, endpoint: "submit",
+          patient_identifier: patient_id,
+          app_identifier: app_identifier
+        )
 
         claim_response_for(referral)
       end
