@@ -9,8 +9,8 @@ Given("remittances are available from the clearinghouse") do
     payment_date: Date.current,
     total_paid: 450.00,
     line_items: [
-      { claim_reference: "CLM_REM_001", paid_amount: 300.00, adjustment_amount: 50.00, patient_responsibility: 0 },
-      { claim_reference: "CLM_REM_002", paid_amount: 150.00, adjustment_amount: 0, patient_responsibility: 25.00 }
+      { claim_identifier: "CLM_REM_001", paid_amount: 300.00, adjustment_amount: 50.00, patient_responsibility: 0 },
+      { claim_identifier: "CLM_REM_002", paid_amount: 150.00, adjustment_amount: 0, patient_responsibility: 25.00 }
     ]
   })
 end
@@ -20,7 +20,7 @@ Given("a paid claim {string} exists with billed amount {string}") do |ref, amoun
     tenant_identifier: @tenant,
     facility_identifier: @facility,
     patient_identifier: "pt_rem_001",
-    claim_reference: ref,
+    claim_identifier: ref,
     claim_type: "professional",
     status: "submitted",
     billed_amount: amount.gsub("$", "").to_f,
@@ -35,7 +35,7 @@ Given("remittance shows claim {string} paid {string} with adjustment {string}") 
     payment_date: Date.current,
     total_paid: paid.gsub("$", "").to_f,
     line_items: [
-      { claim_reference: ref, paid_amount: paid.gsub("$", "").to_f,
+      { claim_identifier: ref, paid_amount: paid.gsub("$", "").to_f,
         adjustment_amount: adj.gsub("$", "").to_f, patient_responsibility: 0 }
     ]
   })
@@ -48,7 +48,7 @@ Given("remittance shows claim {string} denied with reason {string}") do |ref, re
     payment_date: Date.current,
     total_paid: 0,
     line_items: [
-      { claim_reference: ref, paid_amount: 0, adjustment_amount: 0,
+      { claim_identifier: ref, paid_amount: 0, adjustment_amount: 0,
         denial_reason: reason, status: "denied" }
     ]
   })
@@ -61,7 +61,7 @@ Given("remittance shows patient responsibility of {string} for claim {string}") 
     payment_date: Date.current,
     total_paid: 0,
     line_items: [
-      { claim_reference: ref, paid_amount: 0, adjustment_amount: 0,
+      { claim_identifier: ref, paid_amount: 0, adjustment_amount: 0,
         patient_responsibility: amount.gsub("$", "").to_f }
     ]
   })
@@ -75,7 +75,7 @@ When("I process the remittance") do
   @remittances ||= Corvid.adapter.fetch_remittances
   @remittances.each do |rem|
     (rem[:line_items] || []).each do |item|
-      claim = Corvid::ClaimSubmission.find_by(claim_reference: item[:claim_reference])
+      claim = Corvid::ClaimSubmission.find_by(claim_identifier: item[:claim_identifier])
       next unless claim
       attrs = {}
       attrs[:paid_amount] = item[:paid_amount] if item[:paid_amount]
@@ -105,27 +105,27 @@ Then("the remittance should include payment details") do
 end
 
 Then("claim {string} should be updated to paid") do |ref|
-  claim = Corvid::ClaimSubmission.find_by(claim_reference: ref)
+  claim = Corvid::ClaimSubmission.find_by(claim_identifier: ref)
   assert_equal "paid", claim.status
 end
 
 Then("claim {string} should show paid amount {string}") do |ref, amount|
-  claim = Corvid::ClaimSubmission.find_by(claim_reference: ref)
+  claim = Corvid::ClaimSubmission.find_by(claim_identifier: ref)
   assert_in_delta amount.gsub("$", "").to_f, claim.paid_amount.to_f, 0.01
 end
 
 Then("claim {string} should show adjustment {string}") do |ref, amount|
-  claim = Corvid::ClaimSubmission.find_by(claim_reference: ref)
+  claim = Corvid::ClaimSubmission.find_by(claim_identifier: ref)
   assert_in_delta amount.gsub("$", "").to_f, claim.adjustment_amount.to_f, 0.01
 end
 
 Then("claim {string} should be updated to denied") do |ref|
-  claim = Corvid::ClaimSubmission.find_by(claim_reference: ref)
+  claim = Corvid::ClaimSubmission.find_by(claim_identifier: ref)
   assert_equal "denied", claim.status
 end
 
 Then("claim {string} should show patient responsibility {string}") do |ref, amount|
-  claim = Corvid::ClaimSubmission.find_by(claim_reference: ref)
+  claim = Corvid::ClaimSubmission.find_by(claim_identifier: ref)
   assert_in_delta amount.gsub("$", "").to_f, claim.patient_responsibility.to_f, 0.01
 end
 

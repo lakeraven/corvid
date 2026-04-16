@@ -7,7 +7,7 @@ Given("a submitted claim exists") do
     tenant_identifier: @tenant,
     facility_identifier: @facility,
     patient_identifier: "pt_billing_001",
-    claim_reference: "CLM_STATUS_001",
+    claim_identifier: "CLM_STATUS_001",
     claim_type: "professional",
     status: "submitted",
     billed_amount: 500.00,
@@ -20,7 +20,7 @@ Given("a submitted claim with reference {string} exists") do |ref|
     tenant_identifier: @tenant,
     facility_identifier: @facility,
     patient_identifier: "pt_billing_001",
-    claim_reference: ref,
+    claim_identifier: ref,
     claim_type: "professional",
     status: "submitted",
     billed_amount: 500.00,
@@ -30,11 +30,11 @@ end
 
 Given("Stedi reports the claim is {string}") do |status|
   mapped = status.downcase
-  Corvid.adapter.add_claim(@claim.claim_reference, { status: mapped, paid_amount: nil })
+  Corvid.adapter.add_claim(@claim.claim_identifier, { status: mapped, paid_amount: nil })
 end
 
 Given("Stedi reports the claim is {string} with amount {string}") do |status, amount|
-  Corvid.adapter.add_claim(@claim.claim_reference, {
+  Corvid.adapter.add_claim(@claim.claim_identifier, {
     status: status.downcase,
     paid_amount: amount.gsub("$", "").to_f,
     paid_date: Date.current
@@ -42,7 +42,7 @@ Given("Stedi reports the claim is {string} with amount {string}") do |status, am
 end
 
 Given("Stedi reports the claim is {string} with reason {string}") do |status, reason|
-  Corvid.adapter.add_claim(@claim.claim_reference, {
+  Corvid.adapter.add_claim(@claim.claim_identifier, {
     status: status.downcase,
     denial_reason: reason
   })
@@ -54,7 +54,7 @@ Given("the following claims are pending:") do |table|
       tenant_identifier: @tenant,
       facility_identifier: @facility,
       patient_identifier: "pt_billing_#{row['stedi_id']}",
-      claim_reference: row["stedi_id"],
+      claim_identifier: row["stedi_id"],
       claim_type: "professional",
       status: row["current_status"] || "submitted",
       billed_amount: row["billed_amount"]&.gsub("$", "")&.to_f || 100.00,
@@ -123,7 +123,7 @@ Then("all claims should have updated statuses") do
 end
 
 Then("the claim with ID {string} should be {string}") do |id, status|
-  claim = Corvid::ClaimSubmission.find_by(claim_reference: id)
+  claim = Corvid::ClaimSubmission.find_by(claim_identifier: id)
   assert_equal status.downcase, claim.status
 end
 

@@ -64,7 +64,7 @@ end
 Given("a claim submission exists for service request {string}") do |identifier|
   @claim_submission = build_claim_submission(
     referral_identifier: identifier,
-    claim_reference: "CLM_#{identifier.gsub('-', '')}",
+    claim_identifier: "CLM_#{identifier.gsub('-', '')}",
     status: "submitted",
     submitted_at: Time.current
   )
@@ -82,7 +82,7 @@ end
 Given("the payer will reject the claim with reason {string}") do |reason|
   @rejection_reason = reason
   Corvid.adapter.define_singleton_method(:submit_claim) do |_data|
-    { claim_reference: nil, status: "rejected", error: reason }
+    { claim_identifier: nil, status: "rejected", error: reason }
   end
 end
 
@@ -127,7 +127,7 @@ When("Stedi reports the claim status changed to {string}") do |new_status|
            when "paid" then "paid"
            else new_status.downcase
            end
-  Corvid.adapter.add_claim(@claim_submission.claim_reference, { status: mapped })
+  Corvid.adapter.add_claim(@claim_submission.claim_identifier, { status: mapped })
   @claim_submission.check_status!
 end
 
@@ -143,11 +143,11 @@ When("I submit all claims in batch") do
 end
 
 Then("the claim should be submitted successfully") do
-  refute_nil @claim_submission.claim_reference
+  refute_nil @claim_submission.claim_identifier
 end
 
 Then("I should see a Stedi claim ID") do
-  refute_nil @claim_submission.claim_reference
+  refute_nil @claim_submission.claim_identifier
 end
 
 Then("a claim submission record should be created with status {string}") do |status|
@@ -187,7 +187,7 @@ Then("the claim should include the type of bill") do
 end
 
 Then("I should see the Stedi claim ID") do
-  assert @viewed_claim.claim_reference.present?
+  assert @viewed_claim.claim_identifier.present?
 end
 
 Then("I should see status {string}") do |status|
@@ -213,7 +213,7 @@ Then("{int} claims should be submitted") do |count|
 end
 
 Then("each claim should have a unique Stedi claim ID") do
-  refs = @batch_results.select { |r| r[:success] }.map { |r| r[:claim].claim_reference }
+  refs = @batch_results.select { |r| r[:success] }.map { |r| r[:claim].claim_identifier }
   assert_equal refs.length, refs.uniq.length
 end
 

@@ -184,14 +184,14 @@ module Corvid
       # Billing / EDI (clearinghouse adapter contract)
       # ----------------------------------------------------------------------
 
-      # Submit an 837P/I/D claim. Returns { claim_reference: str, status: str }
+      # Submit an 837P/I/D claim. Returns { claim_identifier: str, status: str }
       def submit_claim(claim_data)
         raise NotImplementedError, "#{self.class}#submit_claim not implemented"
       end
 
       # Check claim status (276/277). Returns { status: str, paid_amount: decimal,
       #   adjustment_amount: decimal, paid_date: date }
-      def check_claim_status(claim_reference)
+      def check_claim_status(claim_identifier)
         raise NotImplementedError, "#{self.class}#check_claim_status not implemented"
       end
 
@@ -210,13 +210,13 @@ module Corvid
         raise NotImplementedError, "#{self.class}#search_payers not implemented"
       end
 
-      # Process a payment. Returns { payment_reference: str, status: str }
+      # Process a payment. Returns { payment_identifier: str, status: str }
       def process_payment(amount_cents:, patient_identifier:, description:)
         raise NotImplementedError, "#{self.class}#process_payment not implemented"
       end
 
-      # Refund a payment. Returns { refund_reference: str, status: str }
-      def refund_payment(payment_reference)
+      # Refund a payment. Returns { refund_identifier: str, status: str }
+      def refund_payment(payment_identifier)
         raise NotImplementedError, "#{self.class}#refund_payment not implemented"
       end
     end

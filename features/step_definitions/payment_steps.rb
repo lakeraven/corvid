@@ -18,7 +18,7 @@ Given("a payment of {string} was made for patient {string}") do |amount, patient
     patient_identifier: patient_id,
     amount_cents: (amount.gsub("$", "").to_f * 100).to_i,
     status: "succeeded",
-    payment_reference: "PAY_EXISTING_001",
+    payment_identifier: "PAY_EXISTING_001",
     description: "Previous payment"
   )
 end
@@ -44,7 +44,7 @@ end
 
 Then("the payment should be processed successfully") do
   assert_equal "succeeded", @payment.status
-  refute_nil @payment.payment_reference
+  refute_nil @payment.payment_identifier
 end
 
 Then("the payment status should be {string}") do |status|
@@ -71,5 +71,5 @@ Then("I should see {int} payment(s)") do |count|
 end
 
 Then("the payment should have a reference number") do
-  refute_nil @payment.payment_reference
+  refute_nil @payment.payment_identifier
 end

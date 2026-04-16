@@ -14,6 +14,7 @@ module Corvid
 
     validates :patient_identifier, presence: true
     validates :status, inclusion: { in: STATUSES }
+    validates :claim_type, inclusion: { in: CLAIM_TYPES }
 
     scope :by_status, ->(status) { where(status: status) }
     scope :pending, -> { where(status: %w[submitted accepted]) }
@@ -27,7 +28,7 @@ module Corvid
     def submit!
       result = Corvid.adapter.submit_claim(to_claim_data)
       update!(
-        claim_reference: result[:claim_reference],
+        claim_identifier: result[:claim_identifier],
         status: result[:status] == "accepted" ? "submitted" : result[:status],
         submitted_at: Time.current
       )
@@ -35,8 +36,8 @@ module Corvid
     end
 
     def check_status!
-      return unless claim_reference
-      result = Corvid.adapter.check_claim_status(claim_reference)
+      return unless claim_identifier
+      result = Corvid.adapter.check_claim_status(claim_identifier)
       attrs = { last_checked_at: Time.current }
       attrs[:status] = result[:status] if STATUSES.include?(result[:status])
       attrs[:paid_amount] = result[:paid_amount] if result[:paid_amount]
