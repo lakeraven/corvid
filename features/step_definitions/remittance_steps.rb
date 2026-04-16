@@ -4,7 +4,7 @@
 
 Given("remittances are available from the clearinghouse") do
   Corvid.adapter.add_remittance("REM_001", {
-    remittance_id: "REM_001",
+    remittance_identifier: "REM_001",
     payer_name: "Test Payer",
     payment_date: Date.current,
     total_paid: 450.00,
@@ -30,7 +30,7 @@ end
 
 Given("remittance shows claim {string} paid {string} with adjustment {string}") do |ref, paid, adj|
   Corvid.adapter.add_remittance("REM_#{ref}", {
-    remittance_id: "REM_#{ref}",
+    remittance_identifier: "REM_#{ref}",
     payer_name: "Test Payer",
     payment_date: Date.current,
     total_paid: paid.gsub("$", "").to_f,
@@ -43,7 +43,7 @@ end
 
 Given("remittance shows claim {string} denied with reason {string}") do |ref, reason|
   Corvid.adapter.add_remittance("REM_DENY_#{ref}", {
-    remittance_id: "REM_DENY_#{ref}",
+    remittance_identifier: "REM_DENY_#{ref}",
     payer_name: "Test Payer",
     payment_date: Date.current,
     total_paid: 0,
@@ -56,7 +56,7 @@ end
 
 Given("remittance shows patient responsibility of {string} for claim {string}") do |amount, ref|
   Corvid.adapter.add_remittance("REM_PR_#{ref}", {
-    remittance_id: "REM_PR_#{ref}",
+    remittance_identifier: "REM_PR_#{ref}",
     payer_name: "Test Payer",
     payment_date: Date.current,
     total_paid: 0,
