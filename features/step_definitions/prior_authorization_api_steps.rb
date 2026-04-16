@@ -170,7 +170,6 @@ end
 
 Then("the ClaimResponse should list required additional information") do
   assert_equal "pended", @claim_response[:disposition]
-  refute_nil @claim_response[:communicationRequest]
-  assert @claim_response[:communicationRequest].any?
+  refute_nil @claim_response[:processNote]
   assert @claim_response[:processNote].any? { |n| n[:text].to_s.length > 0 }
 end

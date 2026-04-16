@@ -108,8 +108,8 @@ class Corvid::PriorAuthorizationApiServiceTest < ActiveSupport::TestCase
 
       response = Corvid::PriorAuthorizationApiService.claim_response_for(referral)
       assert_equal "pended", response[:disposition]
-      assert response[:communicationRequest].any?
-      assert response[:processNote].any? { |n| n[:type] == "display" }
+      assert response[:processNote].any? { |n| n[:type] == "display" },
+        "expected a processNote carrying the info-request text"
     end
   end
 

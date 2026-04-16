@@ -109,14 +109,13 @@ module Corvid
         # Pended referrals flagged for review may require additional info.
         # Flagged-for-review overrides disposition to "pended" regardless of
         # underlying workflow state so payers see a consistent status.
-        # We surface the "more info needed" signal via standard R4 elements —
-        # a CommunicationRequest reference + a processNote — rather than a
-        # custom top-level key, so strict R4 validators accept the response.
+        # The "more info needed" signal is surfaced via processNote (a
+        # standard R4 ClaimResponse element). A top-level communicationRequest
+        # is NOT defined on ClaimResponse in base R4 — Da Vinci PAS models
+        # that pattern via Communication resources and IG extensions, which
+        # this foundation does not yet emit.
         if referral.status == "deferred" || (referral.flagged_for_review? && !referral.authorized? && !referral.denied?)
           response[:disposition] = "pended" unless referral.authorized? || referral.denied?
-          response[:communicationRequest] = [{
-            reference: "CommunicationRequest/#{referral.id}-info-request"
-          }]
           additional_info_for(referral).each do |msg|
             notes << { type: "display", text: msg }
           end
@@ -127,12 +126,11 @@ module Corvid
       end
 
       # Generate a FHIR Bundle of ClaimResponses for a patient.
-      # Tenant filtering happens via TenantScoped#default_scope; the explicit
-      # table-qualified patient filter ensures we hit the tenant-scoped cases.
-      # includes(:case) prevents N+1 case lookups in claim_response_for.
+      # Tenant filtering happens via TenantScoped#default_scope; the
+      # PrcReferral.for_patient_identifier scope centralizes the Case join
+      # and eager-loads to prevent N+1 case lookups in claim_response_for.
       def bundle_for_patient(patient_identifier)
-        referrals = Corvid::PrcReferral.includes(:case).references(:case)
-          .where(corvid_cases: { patient_identifier: patient_identifier })
+        referrals = Corvid::PrcReferral.for_patient_identifier(patient_identifier)
 
         {
           resourceType: "Bundle",
