@@ -269,6 +269,55 @@ module Corvid
       end
 
       # ----------------------------------------------------------------------
+      # Billing / EDI
+      # ----------------------------------------------------------------------
+
+      def submit_claim(claim_data)
+        ref = "CLM_#{ULID.generate}"
+        @claims[ref] = claim_data.merge(status: "accepted", submitted_at: Time.current)
+        { claim_reference: ref, status: "accepted" }
+      end
+
+      def check_claim_status(claim_reference)
+        claim = @claims[claim_reference]
+        return { status: "unknown" } unless claim
+
+        { status: claim[:status] || "accepted",
+          paid_amount: claim[:paid_amount],
+          adjustment_amount: claim[:adjustment_amount],
+          paid_date: claim[:paid_date] }
+      end
+
+      def fetch_remittances(date_range: nil)
+        @remittances.values
+      end
+
+      def check_eligibility_detailed(patient_identifier, payer_id)
+        { eligible: true, payer_name: "MOCK #{payer_id}", plan_name: "Mock Plan",
+          coverage_start: Date.new(Date.current.year, 1, 1),
+          coverage_end: Date.new(Date.current.year, 12, 31) }
+      end
+
+      def search_payers(query)
+        [{ payer_id: "MOCK_PAYER", name: "Mock Payer matching '#{query}'" }]
+      end
+
+      def process_payment(amount_cents:, patient_identifier:, description:)
+        ref = "PAY_#{ULID.generate}"
+        @payments_store[ref] = { amount_cents: amount_cents, patient_identifier: patient_identifier,
+                                 description: description, status: "succeeded" }
+        { payment_reference: ref, status: "succeeded" }
+      end
+
+      def refund_payment(payment_reference)
+        payment = @payments_store[payment_reference]
+        return { refund_reference: nil, status: "not_found" } unless payment
+
+        payment[:status] = "refunded"
+        { refund_reference: "REF_#{ULID.generate}", status: "refunded" }
+      end
+
+      # ----------------------------------------------------------------------
       # Test helpers
       # ----------------------------------------------------------------------
 
@@ -296,6 +345,14 @@ module Corvid
         @residencies[patient_identifier.to_s] = attrs
       end
 
+      def add_claim(reference, attrs)
+        @claims[reference] = attrs
+      end
+
+      def add_remittance(reference, attrs)
+        @remittances[reference] = attrs
+      end
+
       def reset!
         @patients = {}
         @practitioners = {}
@@ -304,6 +361,9 @@ module Corvid
         @text_store = {}
         @enrollments = {}
         @residencies = {}
+        @claims = {}
+        @remittances = {}
+        @payments_store = {}
       end
 
       private

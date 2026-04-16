@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_04_15_000003) do
+ActiveRecord::Schema[8.1].define(version: 2026_04_15_000004) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
@@ -31,6 +31,25 @@ ActiveRecord::Schema[8.1].define(version: 2026_04_15_000003) do
     t.index ["prc_referral_id"], name: "index_corvid_alternate_resource_checks_on_prc_referral_id"
     t.check_constraint "resource_type::text = ANY (ARRAY['medicare_a'::character varying::text, 'medicare_b'::character varying::text, 'medicare_d'::character varying::text, 'medicaid'::character varying::text, 'va_benefits'::character varying::text, 'private_insurance'::character varying::text, 'workers_comp'::character varying::text, 'auto_insurance'::character varying::text, 'liability_coverage'::character varying::text, 'state_program'::character varying::text, 'tribal_program'::character varying::text, 'charity_care'::character varying::text])", name: "corvid_arc_resource_type_check"
     t.check_constraint "status::text = ANY (ARRAY['not_checked'::character varying::text, 'checking'::character varying::text, 'enrolled'::character varying::text, 'not_enrolled'::character varying::text, 'denied'::character varying::text, 'exhausted'::character varying::text, 'pending_enrollment'::character varying::text])", name: "corvid_arc_status_check"
+  end
+
+  create_table "corvid_billing_transactions", force: :cascade do |t|
+    t.datetime "created_at", null: false
+    t.string "direction", default: "outbound", null: false
+    t.string "error_message"
+    t.string "facility_identifier"
+    t.string "patient_identifier"
+    t.string "reference_identifier"
+    t.string "request_token"
+    t.string "response_token"
+    t.string "status", default: "pending", null: false
+    t.string "tenant_identifier", null: false
+    t.string "transaction_type", null: false
+    t.datetime "updated_at", null: false
+    t.index ["tenant_identifier", "reference_identifier"], name: "idx_on_tenant_identifier_reference_identifier_6214d6a05c"
+    t.index ["tenant_identifier", "transaction_type"], name: "idx_on_tenant_identifier_transaction_type_c3e90efcf5"
+    t.check_constraint "direction::text = ANY (ARRAY['inbound'::character varying, 'outbound'::character varying]::text[])", name: "corvid_billing_tx_direction_check"
+    t.check_constraint "transaction_type::text = ANY (ARRAY['eligibility'::character varying, 'claim'::character varying, 'claim_status'::character varying, 'remittance'::character varying, 'payment'::character varying]::text[])", name: "corvid_billing_tx_type_check"
   end
 
   create_table "corvid_care_team_members", force: :cascade do |t|
@@ -83,6 +102,39 @@ ActiveRecord::Schema[8.1].define(version: 2026_04_15_000003) do
     t.index ["tenant_identifier", "status"], name: "index_corvid_cases_on_tenant_identifier_and_status"
     t.check_constraint "lifecycle_status::text = ANY (ARRAY['intake'::character varying::text, 'active_followup'::character varying::text, 'closure'::character varying::text, 'closed'::character varying::text])", name: "corvid_cases_lifecycle_check"
     t.check_constraint "status::text = ANY (ARRAY['active'::character varying::text, 'inactive'::character varying::text, 'closed'::character varying::text])", name: "corvid_cases_status_check"
+  end
+
+  create_table "corvid_claim_submissions", force: :cascade do |t|
+    t.decimal "adjustment_amount", precision: 12, scale: 2
+    t.decimal "billed_amount", precision: 12, scale: 2
+    t.string "claim_reference"
+    t.string "claim_type", default: "professional", null: false
+    t.decimal "county_share", precision: 12, scale: 2
+    t.datetime "created_at", null: false
+    t.string "denial_reason_token"
+    t.string "diagnosis_codes_token"
+    t.string "facility_identifier"
+    t.datetime "last_checked_at"
+    t.decimal "paid_amount", precision: 12, scale: 2
+    t.date "paid_date"
+    t.string "patient_identifier", null: false
+    t.decimal "patient_responsibility", precision: 12, scale: 2
+    t.string "payer_identifier"
+    t.string "payer_name_token"
+    t.string "procedure_codes_token"
+    t.string "provider_identifier"
+    t.string "provider_type"
+    t.string "referral_identifier"
+    t.date "service_date"
+    t.decimal "state_share", precision: 12, scale: 2
+    t.string "status", default: "draft", null: false
+    t.datetime "submitted_at"
+    t.string "tenant_identifier", null: false
+    t.datetime "updated_at", null: false
+    t.index ["claim_reference"], name: "index_corvid_claim_submissions_on_claim_reference", unique: true
+    t.index ["tenant_identifier", "patient_identifier"], name: "idx_on_tenant_identifier_patient_identifier_0a950bd516"
+    t.index ["tenant_identifier", "status"], name: "index_corvid_claim_submissions_on_tenant_identifier_and_status"
+    t.check_constraint "status::text = ANY (ARRAY['draft'::character varying, 'submitted'::character varying, 'accepted'::character varying, 'rejected'::character varying, 'paid'::character varying, 'denied'::character varying, 'appealed'::character varying]::text[])", name: "corvid_claim_submissions_status_check"
   end
 
   create_table "corvid_committee_reviews", force: :cascade do |t|
@@ -174,6 +226,23 @@ ActiveRecord::Schema[8.1].define(version: 2026_04_15_000003) do
     t.datetime "updated_at", null: false
     t.index ["tenant_identifier", "facility_identifier"], name: "idx_on_tenant_identifier_facility_identifier_4bbe5beaee"
     t.index ["tenant_identifier", "program"], name: "index_corvid_fee_schedules_on_tenant_identifier_and_program"
+  end
+
+  create_table "corvid_payments", force: :cascade do |t|
+    t.integer "amount_cents", null: false
+    t.string "claim_submission_id"
+    t.datetime "created_at", null: false
+    t.string "description"
+    t.string "facility_identifier"
+    t.string "patient_identifier", null: false
+    t.string "payment_reference"
+    t.string "status", default: "pending", null: false
+    t.string "tenant_identifier", null: false
+    t.datetime "updated_at", null: false
+    t.index ["payment_reference"], name: "index_corvid_payments_on_payment_reference", unique: true
+    t.index ["tenant_identifier", "patient_identifier"], name: "idx_on_tenant_identifier_patient_identifier_238e33c764"
+    t.index ["tenant_identifier", "status"], name: "index_corvid_payments_on_tenant_identifier_and_status"
+    t.check_constraint "status::text = ANY (ARRAY['pending'::character varying, 'processing'::character varying, 'succeeded'::character varying, 'failed'::character varying, 'refunded'::character varying]::text[])", name: "corvid_payments_status_check"
   end
 
   create_table "corvid_prc_referrals", force: :cascade do |t|
