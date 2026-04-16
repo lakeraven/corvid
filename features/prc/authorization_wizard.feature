@@ -141,12 +141,12 @@ Feature: PRC Authorization Wizard
     Given I have completed all wizard steps
     When I am on the review step
     Then I should see a summary including:
-      | Patient DFN          | 12345                       |
-      | Service Requested    | Cardiology Consultation     |
-      | Reason for Referral  | Chest pain evaluation       |
-      | Medical Priority     | 2                           |
-      | Estimated Cost       | 5000                        |
-      | Alternate Resources  | Verified                    |
+      | Patient Identifier           | pt_wiz_001                  |
+      | Service Requested            | Cardiology Consultation     |
+      | Reason for Referral          | Chest pain evaluation       |
+      | Medical Priority             | 2                           |
+      | Estimated Cost               | 5000                        |
+      | Alternate Resources Status   | Verified                    |
 
   Scenario: Submit referral from wizard
     Given I have completed all wizard steps
