@@ -51,7 +51,6 @@ Feature: Payment Processing
   # REFUNDS
   # =============================================================================
 
-  @wip
   Scenario: Refund a completed payment
     Given a succeeded payment of "$75.00" exists with Stripe ID "pi_test_refund"
     When I refund the payment

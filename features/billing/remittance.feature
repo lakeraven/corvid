@@ -44,7 +44,6 @@ Feature: Clearinghouse Remittance Processing (835)
     And the paid amount should be recorded
     And the payment date should be recorded
 
-  @wip
   Scenario: Match remittance with adjustment
     Given a claim exists with Clearinghouse ID "CLM-ADJUST-001" and billed amount "$150.00"
     And the claim has status "accepted"
