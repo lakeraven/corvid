@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_04_15_000002) do
+ActiveRecord::Schema[8.1].define(version: 2026_04_15_000003) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
@@ -205,7 +205,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_04_15_000002) do
     t.index ["case_id"], name: "index_corvid_prc_referrals_on_case_id"
     t.index ["tenant_identifier", "facility_identifier", "referral_identifier"], name: "idx_corvid_prc_referrals_tenant_referral", unique: true
     t.index ["tenant_identifier", "status"], name: "index_corvid_prc_referrals_on_tenant_identifier_and_status"
-    t.check_constraint "status::text = ANY (ARRAY['draft'::character varying, 'submitted'::character varying, 'eligibility_review'::character varying, 'management_approval'::character varying, 'alternate_resource_review'::character varying, 'priority_assignment'::character varying, 'committee_review'::character varying, 'exception_review'::character varying, 'authorized'::character varying, 'denied'::character varying, 'deferred'::character varying, 'cancelled'::character varying]::text[])", name: "corvid_prc_referrals_status_check"
+    t.check_constraint "status::text = ANY (ARRAY['draft'::character varying::text, 'submitted'::character varying::text, 'eligibility_review'::character varying::text, 'management_approval'::character varying::text, 'alternate_resource_review'::character varying::text, 'priority_assignment'::character varying::text, 'committee_review'::character varying::text, 'exception_review'::character varying::text, 'authorized'::character varying::text, 'denied'::character varying::text, 'deferred'::character varying::text, 'cancelled'::character varying::text])", name: "corvid_prc_referrals_status_check"
   end
 
   create_table "corvid_tasks", force: :cascade do |t|
@@ -231,8 +231,8 @@ ActiveRecord::Schema[8.1].define(version: 2026_04_15_000002) do
     t.index ["tenant_identifier", "assignee_identifier"], name: "idx_on_tenant_identifier_assignee_identifier_35adb7cf72"
     t.index ["tenant_identifier", "facility_identifier"], name: "idx_on_tenant_identifier_facility_identifier_aa1e96cb7e"
     t.index ["tenant_identifier", "status"], name: "index_corvid_tasks_on_tenant_identifier_and_status"
-    t.check_constraint "priority::text = ANY (ARRAY['asap'::character varying::text, 'urgent'::character varying::text, 'routine'::character varying::text])", name: "corvid_tasks_priority_check"
-    t.check_constraint "status::text = ANY (ARRAY['pending'::character varying::text, 'in_progress'::character varying::text, 'completed'::character varying::text, 'cancelled'::character varying::text])", name: "corvid_tasks_status_check"
+    t.check_constraint "priority::text = ANY (ARRAY['routine'::character varying, 'urgent'::character varying, 'asap'::character varying, 'stat'::character varying]::text[])", name: "corvid_tasks_priority_check"
+    t.check_constraint "status::text = ANY (ARRAY['pending'::character varying, 'in_progress'::character varying, 'completed'::character varying, 'cancelled'::character varying, 'on_hold'::character varying]::text[])", name: "corvid_tasks_status_check"
   end
 
   add_foreign_key "corvid_alternate_resource_checks", "corvid_prc_referrals", column: "prc_referral_id"
