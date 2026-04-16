@@ -87,38 +87,51 @@ module Corvid
           use: "preauthorization",
           patient: { reference: "Patient/#{referral.case.patient_identifier}" },
           created: referral.created_at.iso8601,
-          insurer: { reference: "Organization/#{referral.facility_identifier}" },
+          # insurer is required by FHIR R4 ClaimResponse profile but
+          # facility_identifier is nullable on PrcReferral; omit the reference
+          # when we can't build a valid one rather than emitting "Organization/".
+          insurer: referral.facility_identifier.present? ?
+            { reference: "Organization/#{referral.facility_identifier}" } : nil,
           outcome: mapping[:outcome],
           disposition: mapping[:disposition],
           preAuthRef: referral.authorization_number
         }.compact
 
-        # Include denial reasons from latest determination
+        # Collect processNote entries from denial reasons and info-request text.
+        # FHIR R4 ClaimResponse.processNote.type is a coded value from the
+        # `note-type` valueset (display | print | printoper). Use "display"
+        # so the note renders for human review without a constrained code-set
+        # validation failure.
+        notes = []
         latest = referral.latest_determination
-        if latest && latest.outcome == "denied"
-          response[:processNote] = [{ type: "disclaimer",
-                                      text: denial_reason(referral, latest) }]
-        end
+        notes << { type: "display", text: denial_reason(referral, latest) } if latest && latest.outcome == "denied"
 
         # Pended referrals flagged for review may require additional info.
         # Flagged-for-review overrides disposition to "pended" regardless of
         # underlying workflow state so payers see a consistent status.
+        # We surface the "more info needed" signal via standard R4 elements —
+        # a CommunicationRequest reference + a processNote — rather than a
+        # custom top-level key, so strict R4 validators accept the response.
         if referral.status == "deferred" || (referral.flagged_for_review? && !referral.authorized? && !referral.denied?)
           response[:disposition] = "pended" unless referral.authorized? || referral.denied?
           response[:communicationRequest] = [{
             reference: "CommunicationRequest/#{referral.id}-info-request"
           }]
-          response[:additionalInfoRequired] = additional_info_for(referral)
+          additional_info_for(referral).each do |msg|
+            notes << { type: "display", text: msg }
+          end
         end
 
+        response[:processNote] = notes if notes.any?
         response
       end
 
       # Generate a FHIR Bundle of ClaimResponses for a patient.
       # Tenant filtering happens via TenantScoped#default_scope; the explicit
       # table-qualified patient filter ensures we hit the tenant-scoped cases.
+      # includes(:case) prevents N+1 case lookups in claim_response_for.
       def bundle_for_patient(patient_identifier)
-        referrals = Corvid::PrcReferral.joins(:case)
+        referrals = Corvid::PrcReferral.includes(:case).references(:case)
           .where(corvid_cases: { patient_identifier: patient_identifier })
 
         {
@@ -177,9 +190,23 @@ module Corvid
       def extract_service_description(fhir_claim)
         items = fhir_claim[:item] || fhir_claim["item"] || []
         first = items.first || {}
-        first[:productOrService] || first["productOrService"] ||
-          first.dig(:productOrService, :text) ||
-          "Service"
+        raw = first[:productOrService] || first["productOrService"]
+        normalize_codeable_concept(raw) || "Service"
+      end
+
+      # productOrService is a FHIR CodeableConcept — may be a Hash with
+      # text/coding in real payloads, or a simple String in lightweight
+      # callers. Return a String suitable for persistence as service_requested.
+      def normalize_codeable_concept(value)
+        case value
+        when String
+          value
+        when Hash
+          v = value.transform_keys(&:to_sym)
+          v[:text] ||
+            v.dig(:coding, 0, :display) ||
+            v.dig(:coding, 0, :code)
+        end
       end
 
       def extract_estimated_cost(fhir_claim)

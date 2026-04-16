@@ -17,13 +17,13 @@ end
 When("a provider submits a FHIR PA request for service {string} with estimated cost {int}") do |service, cost|
   @fhir_claim = build_fhir_claim(patient_id: @case.patient_identifier, service: service, cost: cost)
   @claim_response = Corvid::PriorAuthorizationApiService.submit_from_claim(@fhir_claim)
-  @referral = Corvid::PrcReferral.order(created_at: :desc).first
+  @referral = Corvid::PrcReferral.find_by!(referral_identifier: @claim_response[:id])
 end
 
 When("a provider {string} submits a FHIR PA request for service {string}") do |provider_id, service|
   @fhir_claim = build_fhir_claim(patient_id: @case.patient_identifier, service: service, provider: provider_id)
   @claim_response = Corvid::PriorAuthorizationApiService.submit_from_claim(@fhir_claim)
-  @referral = Corvid::PrcReferral.order(created_at: :desc).first
+  @referral = Corvid::PrcReferral.find_by!(referral_identifier: @claim_response[:id])
 end
 
 Then("a PrcReferral should be created in {string} status") do |status|
@@ -38,9 +38,7 @@ end
 Then("the PrcReferral should record the requesting provider as {string}") do |provider_id|
   ref = Corvid.adapter.find_referral(@referral.referral_identifier)
   refute_nil ref, "Expected adapter to know the referral"
-  # MockAdapter stores requesting_provider_identifier in the referral attrs hash
-  stored = Corvid.adapter.instance_variable_get(:@referrals)[@referral.referral_identifier]
-  assert_equal provider_id, stored[:requesting_provider_identifier]
+  assert_equal provider_id, ref.requesting_provider_identifier
 end
 
 Then("the FHIR response should be a ClaimResponse with outcome {string}") do |outcome|
@@ -172,6 +170,7 @@ end
 
 Then("the ClaimResponse should list required additional information") do
   assert_equal "pended", @claim_response[:disposition]
-  refute_nil @claim_response[:additionalInfoRequired]
-  assert @claim_response[:additionalInfoRequired].any?
+  refute_nil @claim_response[:communicationRequest]
+  assert @claim_response[:communicationRequest].any?
+  assert @claim_response[:processNote].any? { |n| n[:text].to_s.length > 0 }
 end

@@ -382,7 +382,8 @@ module Corvid
           emergent: attrs[:emergent],
           urgent: attrs[:urgent],
           chs_approval_status: attrs[:chs_approval_status],
-          service_requested: attrs[:service_requested]
+          service_requested: attrs[:service_requested],
+          requesting_provider_identifier: attrs[:requesting_provider_identifier]
         )
       end
 
