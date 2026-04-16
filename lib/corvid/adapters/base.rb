@@ -179,6 +179,46 @@ module Corvid
       def verify_residency(patient_identifier)
         raise NotImplementedError, "#{self.class}#verify_residency not implemented"
       end
+
+      # ----------------------------------------------------------------------
+      # Billing / EDI (clearinghouse adapter contract)
+      # ----------------------------------------------------------------------
+
+      # Submit an 837P/I/D claim. Returns { claim_identifier: str, status: str }
+      def submit_claim(claim_data)
+        raise NotImplementedError, "#{self.class}#submit_claim not implemented"
+      end
+
+      # Check claim status (276/277). Returns { status: str, paid_amount: decimal,
+      #   adjustment_amount: decimal, paid_date: date }
+      def check_claim_status(claim_identifier)
+        raise NotImplementedError, "#{self.class}#check_claim_status not implemented"
+      end
+
+      # Fetch remittances (835 ERA). Returns array of remittance hashes.
+      def fetch_remittances(date_range: nil)
+        raise NotImplementedError, "#{self.class}#fetch_remittances not implemented"
+      end
+
+      # Detailed eligibility check (270/271). Returns coverage details hash.
+      def check_eligibility_detailed(patient_identifier, payer_id)
+        raise NotImplementedError, "#{self.class}#check_eligibility_detailed not implemented"
+      end
+
+      # Search payer directory. Returns array of payer hashes.
+      def search_payers(query)
+        raise NotImplementedError, "#{self.class}#search_payers not implemented"
+      end
+
+      # Process a payment. Returns { payment_identifier: str, status: str }
+      def process_payment(amount_cents:, patient_identifier:, description:)
+        raise NotImplementedError, "#{self.class}#process_payment not implemented"
+      end
+
+      # Refund a payment. Returns { refund_identifier: str, status: str }
+      def refund_payment(payment_identifier)
+        raise NotImplementedError, "#{self.class}#refund_payment not implemented"
+      end
     end
   end
 end
