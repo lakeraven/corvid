@@ -6,10 +6,17 @@ module Corvid
   # Translates between corvid's PrcReferral domain model and FHIR Claim /
   # ClaimResponse resources per the Da Vinci PAS Implementation Guide.
   #
-  # Host apps (corvid-saas, rpms_redux) wire these into FHIR endpoints:
+  # Host apps wire these into FHIR endpoints:
   #   POST /Claim/$submit           -> submit_from_claim(fhir_claim_hash)
   #   GET /ClaimResponse/{id}       -> claim_response_for(referral)
   #   GET /Bundle?ClaimResponse...  -> bundle_for_patient(patient_identifier)
+  #
+  # SCOPE: This is a PAS-shaped foundation, not a conformance-complete
+  # implementation. It emits resource shapes with the fields corvid tracks
+  # today; it does NOT yet emit Da Vinci PAS profiles, extension URLs,
+  # Insurance/coverage references, item detail, or the X12 278 bridge
+  # (issue #47). Formal CMS-0057-F certification requires IG-driven
+  # validation and a richer mapping layer.
   #
   # Reference: https://hl7.org/fhir/us/davinci-pas/
   class PriorAuthorizationApiService
@@ -38,9 +45,14 @@ module Corvid
         service_description = extract_service_description(fhir_claim)
         estimated_cost = extract_estimated_cost(fhir_claim)
 
-        kase = Corvid::Case.find_or_create_by!(patient_identifier: patient_id) do |c|
-          c.facility_identifier = Corvid::TenantContext.current_facility_identifier
-        end
+        # Scope the find by facility so patients with cases at multiple
+        # facilities in the same tenant don't attach a PA to the wrong case.
+        # Tenant is applied automatically by TenantScoped#default_scope.
+        facility_id = Corvid::TenantContext.current_facility_identifier
+        kase = Corvid::Case.find_or_create_by!(
+          patient_identifier: patient_id,
+          facility_identifier: facility_id
+        )
 
         referral_id = Corvid.adapter.create_referral(patient_id, {
           service_requested: service_description,
@@ -103,6 +115,8 @@ module Corvid
       end
 
       # Generate a FHIR Bundle of ClaimResponses for a patient.
+      # Tenant filtering happens via TenantScoped#default_scope; the explicit
+      # table-qualified patient filter ensures we hit the tenant-scoped cases.
       def bundle_for_patient(patient_identifier)
         referrals = Corvid::PrcReferral.joins(:case)
           .where(corvid_cases: { patient_identifier: patient_identifier })
@@ -173,6 +187,11 @@ module Corvid
         total[:value] || total["value"]
       end
 
+      # Resolve human-readable denial text from the vault.
+      # NOTE: today the engine stores free-text reasons in deferred_reason_token
+      # (a misnomer inherited from the referral model — it covers both
+      # deferrals and denials). A follow-up should move denial text onto the
+      # Determination's reasons_token so the two cases are separable.
       def denial_reason(referral, determination)
         return "Denial reason not recorded" unless referral.deferred_reason_token
 
