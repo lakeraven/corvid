@@ -6,6 +6,13 @@ class Corvid::CaseTest < ActiveSupport::TestCase
   TEST_TENANT = "tnt_test"
   OTHER_TENANT = "tnt_other"
 
+  # Cucumber runs non-transactionally against the same test DB as rake
+  # test, so residue from the last scenario can leak into absolute-count
+  # assertions. Clear Corvid::Case up front so each test is hermetic.
+  setup do
+    Corvid::Case.unscoped.delete_all
+  end
+
   test "table is corvid_cases" do
     assert_equal "corvid_cases", Corvid::Case.table_name
   end
