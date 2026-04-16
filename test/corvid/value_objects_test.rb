@@ -49,6 +49,7 @@ class Corvid::ValueObjectsTest < Minitest::Test
       identifier patient_identifier status reason_token
       estimated_cost medical_priority_level authorization_number
       emergent urgent chs_approval_status service_requested
+      requesting_provider_identifier
     ]
     assert_equal expected, Corvid::ReferralReference.members
   end
@@ -108,7 +109,8 @@ class Corvid::ValueObjectsTest < Minitest::Test
       emergent: false,
       urgent: false,
       chs_approval_status: "P",
-      service_requested: nil
+      service_requested: nil,
+      requesting_provider_identifier: nil
     }
     Corvid::ReferralReference.new(**defaults.merge(overrides))
   end
