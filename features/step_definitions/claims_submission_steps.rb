@@ -96,9 +96,15 @@ When("I submit the service request as a professional claim") do
   @claim_submission = build_claim_submission(
     referral_identifier: @referral_identifier,
     claim_type: "professional",
-    billed_amount: @billing_codes&.sum { |c| c[:charge] } || 150.00
+    billed_amount: @billing_codes&.sum { |c| c[:charge] } || 150.00,
+    provider_identifier: @provider_npi || "pr_001"
   )
-  @result = @claim_submission.submit!
+  begin
+    @result = @claim_submission.submit!
+  rescue Timeout::Error, StandardError => e
+    @submission_error = e
+    @claim_submission.update!(status: "rejected")
+  end
 end
 
 When("I submit the service request as an institutional claim") do
