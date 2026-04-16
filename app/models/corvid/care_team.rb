@@ -40,6 +40,12 @@ module Corvid
       care_team_members.active
     end
 
+    # Adapter-sourced care team for an external patient identifier.
+    # NOT an AR scope — this resolves the EHR-owned care team (e.g. RPMS
+    # Patient Care Team) via Corvid.adapter.get_care_team, which returns
+    # a plain data structure (array of CareTeamMemberReference), not
+    # CareTeam AR rows. Engine-owned care teams are accessed through
+    # the usual .where / instance methods.
     def self.for_patient(patient_identifier)
       Corvid.adapter.get_care_team(patient_identifier)
     end
