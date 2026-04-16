@@ -137,6 +137,9 @@ module Corvid
       @patient ||= Corvid.adapter.find_patient(@patient_identifier) if @patient_identifier
     end
 
+    # STUB: defaults to "verified" until real eligibility verification is
+    # wired through the adapter. Host apps / tests can set it explicitly.
+    # See #14 / #60 for the eligibility dashboard that will feed this.
     def patient_eligibility_status
       @patient_eligibility_status ||= "verified"
     end
@@ -222,7 +225,14 @@ module Corvid
     end
 
     def submit!
-      return { success: false, errors: @errors } unless validate_current_step
+      # Always run the full review-level validation on submit, not just
+      # the current step. Callers may invoke submit! from any step (API
+      # flows, scripts, tests) and we never want to accept a half-filled
+      # wizard just because the last-touched step was the benign one.
+      @errors = []
+      @field_errors = {}
+      validate_review
+      return { success: false, errors: @errors } unless @errors.empty?
 
       kase = Corvid::TenantContext.with_tenant(@tenant_identifier) do
         Corvid::Case.find_or_create_by!(patient_identifier: @patient_identifier) do |c|
@@ -259,7 +269,14 @@ module Corvid
     end
 
     # ----------------------------------------------------------------
-    # Accessibility
+    # Accessibility — UI contract placeholders, NOT real audits
+    #
+    # These predicates let BDD scenarios assert that the host app's
+    # wizard UI is expected to meet WCAG/508 contracts. They always
+    # return true because the engine doesn't render views — the host
+    # controller/view layer is what actually has to satisfy the
+    # contract. Treat these as "the engine does not block accessibility"
+    # rather than "accessibility is verified."
     # ----------------------------------------------------------------
 
     def keyboard_accessible? = true
@@ -310,6 +327,10 @@ module Corvid
       if @data[:reason_for_referral].nil? || @data[:reason_for_referral].to_s.strip.empty?
         @errors << "Reason for referral is required"
         @field_errors[:reason_for_referral] = "Reason for referral is required"
+      end
+      if @data[:medical_priority].nil? || @data[:medical_priority].to_s.strip.empty?
+        @errors << "Medical priority is required"
+        @field_errors[:medical_priority] = "Medical priority is required"
       end
       cost = parse_cost(@data[:estimated_cost])
       if cost > 0 && cost >= committee_threshold && (@data[:clinical_justification].nil? || @data[:clinical_justification].to_s.strip.empty?)
