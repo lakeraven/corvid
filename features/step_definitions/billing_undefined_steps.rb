@@ -551,7 +551,7 @@ end
 Given("there are remittances from the last {int} days") do |days|
   (1..3).each do |i|
     Corvid.adapter.add_remittance("REM_DAY_#{i}", {
-      remittance_id: "REM_DAY_#{i}",
+      remittance_identifier: "REM_DAY_#{i}",
       payer_name: "Test Payer",
       payment_date: (days - i * (days / 3)).days.ago.to_date,
       total_paid: 100.00 * i,
@@ -577,17 +577,17 @@ end
 
 Given("a remittance exists with ID {string}") do |id|
   Corvid.adapter.add_remittance(id, {
-    remittance_id: id,
+    remittance_identifier: id,
     payer_name: "Test Payer",
     payment_date: Date.current,
     total_paid: 250.00,
     line_items: [{ claim_identifier: "CLM_X", paid_amount: 250.00 }]
   })
-  @remittance_id = id
+  @remittance_identifier = id
 end
 
 When("I fetch remittance {string}") do |id|
-  @remittances = Corvid.adapter.fetch_remittances.select { |r| r[:remittance_id] == id }
+  @remittances = Corvid.adapter.fetch_remittances.select { |r| r[:remittance_identifier] == id }
 end
 
 Then("I should see the remittance details") do
@@ -617,7 +617,7 @@ end
 
 Given("a remittance includes payment for {string}") do |claim_id|
   Corvid.adapter.add_remittance("REM_FOR_#{claim_id}", {
-    remittance_id: "REM_FOR_#{claim_id}",
+    remittance_identifier: "REM_FOR_#{claim_id}",
     payer_name: "Test Payer",
     payment_date: Date.current,
     total_paid: 150.00,
@@ -627,7 +627,7 @@ end
 
 Given("a remittance includes payment for {string} with amount {string}") do |claim_id, amount|
   Corvid.adapter.add_remittance("REM_AMT_#{claim_id}", {
-    remittance_id: "REM_AMT_#{claim_id}",
+    remittance_identifier: "REM_AMT_#{claim_id}",
     payer_name: "Test Payer",
     payment_date: Date.current,
     total_paid: amount.gsub("$", "").to_f,

@@ -292,14 +292,14 @@ module Corvid
         @remittances.values
       end
 
-      def check_eligibility_detailed(patient_identifier, payer_id)
-        { eligible: true, payer_name: "MOCK #{payer_id}", plan_name: "Mock Plan",
+      def check_eligibility_detailed(patient_identifier, payer_identifier)
+        { eligible: true, payer_name: "MOCK #{payer_identifier}", plan_name: "Mock Plan",
           coverage_start: Date.new(Date.current.year, 1, 1),
           coverage_end: Date.new(Date.current.year, 12, 31) }
       end
 
       def search_payers(query)
-        [{ payer_id: "MOCK_PAYER", name: "Mock Payer matching '#{query}'" }]
+        [{ payer_identifier: "MOCK_PAYER", name: "Mock Payer matching '#{query}'" }]
       end
 
       def process_payment(amount_cents:, patient_identifier:, description:)
