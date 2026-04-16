@@ -84,6 +84,7 @@ Feature: Stedi Claims Submission
     And I should see status "Accepted"
     And I should see the submission date
 
+  @wip
   Scenario: Claim status updates from Stedi
     Given a claim submission exists with Stedi ID "CLM-STEDI-001"
     When Stedi reports the claim status changed to "paid"

@@ -3,7 +3,7 @@
 # Claim status step definitions (ported from rpms_redux)
 
 Given("a submitted claim exists") do
-  @claim = Corvid::ClaimSubmission.create!(
+  @claim_submission = Corvid::ClaimSubmission.create!(
     tenant_identifier: @tenant,
     facility_identifier: @facility,
     patient_identifier: "pt_billing_001",
@@ -16,7 +16,7 @@ Given("a submitted claim exists") do
 end
 
 Given("a submitted claim with reference {string} exists") do |ref|
-  @claim = Corvid::ClaimSubmission.create!(
+  @claim_submission = Corvid::ClaimSubmission.create!(
     tenant_identifier: @tenant,
     facility_identifier: @facility,
     patient_identifier: "pt_billing_001",
@@ -30,11 +30,11 @@ end
 
 Given("Stedi reports the claim is {string}") do |status|
   mapped = status.downcase
-  Corvid.adapter.add_claim(@claim.claim_identifier, { status: mapped, paid_amount: nil })
+  Corvid.adapter.add_claim(@claim_submission.claim_identifier, { status: mapped, paid_amount: nil })
 end
 
 Given("Stedi reports the claim is {string} with amount {string}") do |status, amount|
-  Corvid.adapter.add_claim(@claim.claim_identifier, {
+  Corvid.adapter.add_claim(@claim_submission.claim_identifier, {
     status: status.downcase,
     paid_amount: amount.gsub("$", "").to_f,
     paid_date: Date.current
@@ -42,7 +42,7 @@ Given("Stedi reports the claim is {string} with amount {string}") do |status, am
 end
 
 Given("Stedi reports the claim is {string} with reason {string}") do |status, reason|
-  Corvid.adapter.add_claim(@claim.claim_identifier, {
+  Corvid.adapter.add_claim(@claim_submission.claim_identifier, {
     status: status.downcase,
     denial_reason: reason
   })
@@ -72,19 +72,19 @@ Given("the following claims are pending:") do |table|
 end
 
 Given("the claim was submitted {int} days ago") do |days|
-  @claim.update!(submitted_at: days.days.ago)
+  @claim_submission.update!(submitted_at: days.days.ago)
 end
 
 Given("the claim status was last checked {int} hours ago") do |hours|
-  @claim.update!(last_checked_at: hours.hours.ago)
+  @claim_submission.update!(last_checked_at: hours.hours.ago)
 end
 
 Given("the claim has not been checked yet") do
-  @claim.update!(last_checked_at: nil)
+  @claim_submission.update!(last_checked_at: nil)
 end
 
 When("I check the claim status") do
-  @status_result = @claim.check_status!
+  @status_result = @claim_submission.check_status!
 end
 
 When("I check status for all pending claims") do
@@ -96,23 +96,23 @@ When("the claim status polling job runs") do
 end
 
 Then("the claim status should be updated to {string}") do |status|
-  @claim.reload
-  assert_equal status.downcase, @claim.status
+  @claim_submission.reload
+  assert_equal status.downcase, @claim_submission.status
 end
 
 Then("the claim should show paid amount of {string}") do |amount|
-  @claim.reload
-  assert_in_delta amount.gsub("$", "").to_f, @claim.paid_amount.to_f, 0.01
+  @claim_submission.reload
+  assert_in_delta amount.gsub("$", "").to_f, @claim_submission.paid_amount.to_f, 0.01
 end
 
 Then("the claim should show paid date") do
-  @claim.reload
-  refute_nil @claim.paid_date
+  @claim_submission.reload
+  refute_nil @claim_submission.paid_date
 end
 
 Then("the claim should show rejection reason") do
-  @claim.reload
-  assert @claim.status == "rejected" || @claim.status == "denied"
+  @claim_submission.reload
+  assert @claim_submission.status == "rejected" || @claim_submission.status == "denied"
 end
 
 Then("all claims should have updated statuses") do
@@ -138,16 +138,16 @@ Then("I should see {int} claims needing status check") do |count|
 end
 
 Then("the claim should still show status {string}") do |status|
-  @claim.reload
-  assert_equal status.downcase, @claim.status
+  @claim_submission.reload
+  assert_equal status.downcase, @claim_submission.status
 end
 
 Then("a payment alert should be generated") do
-  @claim.reload
-  assert_equal "paid", @claim.status
+  @claim_submission.reload
+  assert_equal "paid", @claim_submission.status
 end
 
 Then("a rejection alert should be generated") do
-  @claim.reload
-  assert %w[rejected denied].include?(@claim.status)
+  @claim_submission.reload
+  assert %w[rejected denied].include?(@claim_submission.status)
 end

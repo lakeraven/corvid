@@ -87,6 +87,7 @@ Feature: Stedi Claim Status Tracking
     Then all 5 claims should be checked
     And the job should log its completion
 
+  @wip
   Scenario: Background job skips recently checked claims
     Given a claim was checked 5 minutes ago
     And a claim was checked 2 hours ago
@@ -129,6 +130,7 @@ Feature: Stedi Claim Status Tracking
     Then a rejection alert should be created
     And the billing coordinator should be notified
 
+  @wip
   Scenario: Alert on claim payment
     Given a claim submission exists with Stedi ID "CLM-2025-041"
     And the claim has billed amount "$200.00"

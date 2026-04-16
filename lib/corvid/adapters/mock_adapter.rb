@@ -305,8 +305,8 @@ module Corvid
       def process_payment(amount_cents:, patient_identifier:, description:)
         ref = "PAY_#{ULID.generate}"
         @payments_store[ref] = { amount_cents: amount_cents, patient_identifier: patient_identifier,
-                                 description: description, status: "succeeded" }
-        { payment_identifier: ref, status: "succeeded" }
+                                 description: description, status: "processing" }
+        { payment_identifier: ref, status: "processing" }
       end
 
       def refund_payment(payment_identifier)
