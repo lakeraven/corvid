@@ -40,7 +40,7 @@ Feature: CMS-0057-F API usage metrics
     When I record an API call for "pas" endpoint "submit" patient "pt_m_300" app "app_a"
     And I record an API call for "pas" endpoint "read" patient "pt_m_300" app "app_a"
     And I record an API call for "pas" endpoint "read" patient "pt_m_300" app "app_a"
-    Then the annual report for tenant "tnt_metrics" should show 1 calls to "submit"
+    Then the annual report for tenant "tnt_metrics" should show 1 call to "submit"
     And the annual report for tenant "tnt_metrics" should show 2 calls to "read"
 
   # ===========================================================================
@@ -77,18 +77,18 @@ Feature: CMS-0057-F API usage metrics
     Given a patient "pt_m_700" with a PRC case
     And a PRC referral "rf_m_700" for that case
     When a host app reads ClaimResponse "rf_m_700" as app "app_ehr_a"
-    Then the annual report for tenant "tnt_metrics" api "pas" should show 1 calls to "read"
+    Then the annual report for tenant "tnt_metrics" api "pas" should show 1 call to "read"
 
   Scenario: Searching ClaimResponses records a search metrics event
     Given a patient "pt_m_800" with a PRC case
     When a host app searches ClaimResponses for patient "pt_m_800" as app "app_ehr_a"
-    Then the annual report for tenant "tnt_metrics" api "pas" should show 1 calls to "search"
+    Then the annual report for tenant "tnt_metrics" api "pas" should show 1 call to "search"
 
   Scenario: Retrieving covered services records a metrics event without a patient
     When a host app requests the covered services list as app "app_ehr_a"
-    Then the annual report for tenant "tnt_metrics" api "pas" should show 1 calls to "covered_services"
+    Then the annual report for tenant "tnt_metrics" api "pas" should show 1 call to "covered_services"
     And the annual report for tenant "tnt_metrics" api "pas" should show 0 unique patients
 
   Scenario: Retrieving documentation requirements records a metrics event
     When a host app requests documentation requirements for "MRI" as app "app_ehr_a"
-    Then the annual report for tenant "tnt_metrics" api "pas" should show 1 calls to "documentation"
+    Then the annual report for tenant "tnt_metrics" api "pas" should show 1 call to "documentation"
