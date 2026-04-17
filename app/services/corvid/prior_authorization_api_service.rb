@@ -79,25 +79,32 @@ module Corvid
           app_identifier: app_identifier
         )
 
-        claim_response_for(referral)
+        build_claim_response(referral)
       end
 
-      # GET /ClaimResponse/{id} handler. Records a "read" metrics event and
-      # returns the serialized response. Internal callers that already
-      # counted a different endpoint (submit / search) should use
-      # claim_response_for directly to avoid double-counting.
-      def read_claim_response(referral, app_identifier: nil)
+      # GET /ClaimResponse/{id} handler. Records a "read" metrics event
+      # and returns the serialized response. This is the method host
+      # FHIR controllers should call for a read endpoint so metrics are
+      # never silently missed. Internal callers (submit_from_claim,
+      # bundle_for_patient) use build_claim_response to avoid double
+      # counting against a different endpoint they already recorded.
+      def claim_response_for(referral, app_identifier: nil)
         Corvid::ApiMetricsService.record!(
           api: :pas, endpoint: "read",
           patient_identifier: referral.case.patient_identifier,
           app_identifier: app_identifier
         )
-        claim_response_for(referral)
+        build_claim_response(referral)
       end
 
-      # Generate a FHIR ClaimResponse for a PrcReferral. Pure serializer —
-      # does not record a metrics event (the caller's endpoint does).
-      def claim_response_for(referral)
+      # Backward-compatible alias for callers wired before
+      # claim_response_for itself recorded metrics.
+      alias_method :read_claim_response, :claim_response_for
+
+      # Pure serializer: build a FHIR ClaimResponse hash from a referral
+      # without recording a metrics event. Used by submit_from_claim and
+      # bundle_for_patient so their outer endpoints own the count.
+      def build_claim_response(referral)
         mapping = STATUS_TO_DISPOSITION.fetch(referral.status,
           { outcome: "queued", disposition: "pended" })
 
@@ -151,7 +158,7 @@ module Corvid
       # Generate a FHIR Bundle of ClaimResponses for a patient.
       # Tenant filtering happens via TenantScoped#default_scope; the
       # PrcReferral.for_patient_identifier scope centralizes the Case join
-      # and eager-loads to prevent N+1 case lookups in claim_response_for.
+      # and eager-loads to prevent N+1 case lookups.
       def bundle_for_patient(patient_identifier, app_identifier: nil)
         referrals = Corvid::PrcReferral.for_patient_identifier(patient_identifier)
 
@@ -166,7 +173,7 @@ module Corvid
           type: "searchset",
           total: referrals.count,
           entry: referrals.map do |ref|
-            { resource: claim_response_for(ref) }
+            { resource: build_claim_response(ref) }
           end
         }
       end

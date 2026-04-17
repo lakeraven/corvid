@@ -52,15 +52,9 @@ When("a host app requests documentation requirements for {string} as app {string
   Corvid::PriorAuthorizationApiService.documentation_requirements_for(service, app_identifier: app)
 end
 
-Then("there should be {int} API call logged for tenant {string}") do |count, tenant|
+Then(/^there should be (\d+) API calls? logged for tenant "([^"]+)"$/) do |count, tenant|
   Corvid::TenantContext.with_tenant(tenant) do
-    assert_equal count, Corvid::ApiCallLog.count
-  end
-end
-
-Then("there should be {int} API calls logged for tenant {string}") do |count, tenant|
-  Corvid::TenantContext.with_tenant(tenant) do
-    assert_equal count, Corvid::ApiCallLog.count
+    assert_equal count.to_i, Corvid::ApiCallLog.count
   end
 end
 
@@ -87,9 +81,9 @@ Then("the annual report for tenant {string} should show {int} total calls") do |
   assert_equal count, report[:total_calls]
 end
 
-Then("the annual report for tenant {string} should show {int} calls to {string}") do |tenant, count, endpoint|
+Then(/^the annual report for tenant "([^"]+)" should show (\d+) calls? to "([^"]+)"$/) do |tenant, count, endpoint|
   report = Corvid::ApiMetricsService.annual_report(tenant: tenant, year: Date.current.year)
-  assert_equal count, report[:calls_by_endpoint][endpoint].to_i
+  assert_equal count.to_i, report[:calls_by_endpoint][endpoint].to_i
 end
 
 Then("the annual report for tenant {string} api {string} should show {int} total calls") do |tenant, api, count|
@@ -102,7 +96,7 @@ Then("the annual report for tenant {string} api {string} should show {int} uniqu
   assert_equal count, report[:unique_patients]
 end
 
-Then("the annual report for tenant {string} api {string} should show {int} calls to {string}") do |tenant, api, count, endpoint|
+Then(/^the annual report for tenant "([^"]+)" api "([^"]+)" should show (\d+) calls? to "([^"]+)"$/) do |tenant, api, count, endpoint|
   report = Corvid::ApiMetricsService.annual_report(tenant: tenant, year: Date.current.year, api: api)
-  assert_equal count, report[:calls_by_endpoint][endpoint].to_i
+  assert_equal count.to_i, report[:calls_by_endpoint][endpoint].to_i
 end

@@ -46,7 +46,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_04_16_000001) do
     t.index ["tenant_identifier", "api_name", "app_identifier"], name: "idx_corvid_api_calls_tenant_app"
     t.index ["tenant_identifier", "api_name", "called_at"], name: "idx_corvid_api_calls_tenant_api_time"
     t.index ["tenant_identifier", "api_name", "patient_identifier"], name: "idx_corvid_api_calls_tenant_patient"
-    t.check_constraint "api_name::text = ANY (ARRAY['pas'::character varying, 'patient_access'::character varying, 'provider_access'::character varying, 'payer_to_payer'::character varying]::text[])", name: "corvid_api_call_logs_api_name_check"
+    t.check_constraint "api_name::text = ANY (ARRAY['pas'::character varying::text, 'patient_access'::character varying::text, 'provider_access'::character varying::text, 'payer_to_payer'::character varying::text])", name: "corvid_api_call_logs_api_name_check"
   end
 
   create_table "corvid_billing_transactions", force: :cascade do |t|

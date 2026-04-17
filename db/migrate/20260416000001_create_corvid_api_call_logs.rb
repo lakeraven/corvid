@@ -17,12 +17,19 @@ class CreateCorvidApiCallLogs < ActiveRecord::Migration[8.1]
       t.timestamps
     end
 
-    add_index :corvid_api_call_logs, [ :tenant_identifier, :api_name, :called_at ],
-      name: "idx_corvid_api_calls_tenant_api_time"
-    add_index :corvid_api_call_logs, [ :tenant_identifier, :api_name, :patient_identifier ],
-      name: "idx_corvid_api_calls_tenant_patient"
-    add_index :corvid_api_call_logs, [ :tenant_identifier, :api_name, :app_identifier ],
-      name: "idx_corvid_api_calls_tenant_app"
+    # annual_report queries filter by (tenant, api, called_at range) first,
+    # then aggregate distinct patient/app. Leading tenant+api+called_at
+    # narrows to the year window; trailing patient_identifier / app_identifier
+    # lets PG answer the count(distinct ...) from the index alone.
+    add_index :corvid_api_call_logs,
+      [ :tenant_identifier, :api_name, :called_at, :patient_identifier ],
+      name: "idx_corvid_api_calls_tenant_api_time_patient"
+    add_index :corvid_api_call_logs,
+      [ :tenant_identifier, :api_name, :called_at, :app_identifier ],
+      name: "idx_corvid_api_calls_tenant_api_time_app"
+    add_index :corvid_api_call_logs,
+      [ :tenant_identifier, :api_name, :endpoint, :called_at ],
+      name: "idx_corvid_api_calls_tenant_api_endpoint_time"
 
     add_check_constraint :corvid_api_call_logs,
       "api_name IN (#{API_NAMES.map { |s| "'#{s}'" }.join(',')})",

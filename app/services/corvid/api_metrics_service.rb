@@ -17,6 +17,12 @@ module Corvid
       # Log a single API call. Silently skips if no tenant context is set
       # so callers outside a tenant scope (e.g. background maintenance)
       # don't accidentally pollute metrics.
+      #
+      # Metrics recording MUST NOT fail a real API call. A DB hiccup or
+      # validation miss on this table is an observability problem, not a
+      # client-facing error, so we rescue and log rather than propagate.
+      # The `!` in the name matches other Corvid services; it doesn't
+      # imply the caller needs to handle exceptions.
       def record!(api:, endpoint:, patient_identifier: nil, app_identifier: nil, called_at: Time.current)
         tenant = Corvid::TenantContext.current_tenant_identifier
         return nil unless tenant
@@ -30,6 +36,9 @@ module Corvid
           app_identifier: app_identifier,
           called_at: called_at
         )
+      rescue => e
+        Rails.logger.warn("ApiMetricsService.record! failed: #{Corvid.sanitize_phi(e.message)}")
+        nil
       end
 
       # Aggregate metrics for a calendar year. Returns the shape CMS

@@ -23,8 +23,11 @@ module Corvid
 
     scope :for_api, ->(name) { where(api_name: name) }
     scope :in_year, ->(year) {
-      start_of = Time.zone.local(year, 1, 1)
-      end_of = Time.zone.local(year + 1, 1, 1)
+      # Coerce string query params ("2026") to Integer so Time.zone.local
+      # doesn't raise TypeError; raises ArgumentError for non-numeric input.
+      y = Integer(year.to_s)
+      start_of = Time.zone.local(y, 1, 1)
+      end_of = Time.zone.local(y + 1, 1, 1)
       where(called_at: start_of...end_of)
     }
   end
