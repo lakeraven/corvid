@@ -39,7 +39,10 @@ module Corvid
     class << self
       # POST /Claim/$submit handler. Accepts a FHIR Claim (as hash) and
       # creates a PrcReferral. Returns a ClaimResponse hash.
-      def submit_from_claim(fhir_claim)
+      #
+      # Hosts pass app_identifier (the authenticated OAuth client_id) so
+      # CMS-0057-F annual usage metrics (#46) can count distinct apps.
+      def submit_from_claim(fhir_claim, app_identifier: nil)
         patient_id = extract_patient_identifier(fhir_claim)
         provider_id = extract_provider_identifier(fhir_claim)
         service_description = extract_service_description(fhir_claim)
@@ -70,11 +73,38 @@ module Corvid
         )
         referral.submit!
 
-        claim_response_for(referral)
+        Corvid::ApiMetricsService.record!(
+          api: :pas, endpoint: "submit",
+          patient_identifier: patient_id,
+          app_identifier: app_identifier
+        )
+
+        build_claim_response(referral)
       end
 
-      # Generate a FHIR ClaimResponse for a PrcReferral.
-      def claim_response_for(referral)
+      # GET /ClaimResponse/{id} handler. Records a "read" metrics event
+      # and returns the serialized response. This is the method host
+      # FHIR controllers should call for a read endpoint so metrics are
+      # never silently missed. Internal callers (submit_from_claim,
+      # bundle_for_patient) use build_claim_response to avoid double
+      # counting against a different endpoint they already recorded.
+      def claim_response_for(referral, app_identifier: nil)
+        Corvid::ApiMetricsService.record!(
+          api: :pas, endpoint: "read",
+          patient_identifier: referral.case.patient_identifier,
+          app_identifier: app_identifier
+        )
+        build_claim_response(referral)
+      end
+
+      # Backward-compatible alias for callers wired before
+      # claim_response_for itself recorded metrics.
+      alias_method :read_claim_response, :claim_response_for
+
+      # Pure serializer: build a FHIR ClaimResponse hash from a referral
+      # without recording a metrics event. Used by submit_from_claim and
+      # bundle_for_patient so their outer endpoints own the count.
+      def build_claim_response(referral)
         mapping = STATUS_TO_DISPOSITION.fetch(referral.status,
           { outcome: "queued", disposition: "pended" })
 
@@ -128,22 +158,32 @@ module Corvid
       # Generate a FHIR Bundle of ClaimResponses for a patient.
       # Tenant filtering happens via TenantScoped#default_scope; the
       # PrcReferral.for_patient_identifier scope centralizes the Case join
-      # and eager-loads to prevent N+1 case lookups in claim_response_for.
-      def bundle_for_patient(patient_identifier)
+      # and eager-loads to prevent N+1 case lookups.
+      def bundle_for_patient(patient_identifier, app_identifier: nil)
         referrals = Corvid::PrcReferral.for_patient_identifier(patient_identifier)
+
+        Corvid::ApiMetricsService.record!(
+          api: :pas, endpoint: "search",
+          patient_identifier: patient_identifier,
+          app_identifier: app_identifier
+        )
 
         {
           resourceType: "Bundle",
           type: "searchset",
           total: referrals.count,
           entry: referrals.map do |ref|
-            { resource: claim_response_for(ref) }
+            { resource: build_claim_response(ref) }
           end
         }
       end
 
       # List of covered items and services requiring prior authorization.
-      def covered_services
+      def covered_services(app_identifier: nil)
+        Corvid::ApiMetricsService.record!(
+          api: :pas, endpoint: "covered_services",
+          app_identifier: app_identifier
+        )
         {
           resourceType: "Bundle",
           type: "collection",
@@ -160,7 +200,11 @@ module Corvid
       end
 
       # Documentation requirements for a specific service (Da Vinci DTR).
-      def documentation_requirements_for(service_description)
+      def documentation_requirements_for(service_description, app_identifier: nil)
+        Corvid::ApiMetricsService.record!(
+          api: :pas, endpoint: "documentation",
+          app_identifier: app_identifier
+        )
         {
           resourceType: "Questionnaire",
           title: "Documentation requirements for #{service_description}",
