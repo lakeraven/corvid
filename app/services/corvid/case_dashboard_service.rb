@@ -21,8 +21,23 @@ module Corvid
           my_incomplete_tasks_count: my_tasks.incomplete.count,
           task_counts: task_counts(all_tasks),
           referral_pipeline: referrals.group(:status).count,
+          # data_source reflects the EHR-of-record that backs these tables.
+          # Corvid's AR models are the store, but rows arrive via the
+          # configured adapter (FhirAdapter / RPMS / vendor) — hosts can
+          # surface this to users as "source of truth: RPMS".
+          data_source: data_source,
           generated_at: Time.current
         }
+      end
+
+      def data_source
+        klass = Corvid.adapter&.class&.name.to_s
+        case klass
+        when /FhirAdapter/ then "FHIR"
+        when /MockAdapter/ then "mock"
+        when /RpmsAdapter/, /VistaAdapter/ then "RPMS"
+        else "unknown"
+        end
       end
 
       private
