@@ -39,33 +39,32 @@ module Corvid
 
     # -- State machine: valid transitions -------------------------------------
 
-    test "pending → processing via mark_processing!" do
-      @payment.mark_processing!(payment_identifier: "pi_123")
+    test "pending → processing" do
+      @payment.begin_processing!
+      update_identifier("pi_123")
       assert @payment.processing?
-      assert_equal "pi_123", @payment.payment_identifier
     end
 
-    test "processing → succeeded via mark_succeeded!" do
-      @payment.mark_processing!(payment_identifier: "pi_123")
-      @payment.mark_succeeded!(receipt_url: "https://stripe.com/receipt/123")
+    test "processing → succeeded" do
+      @payment.begin_processing!
+      @payment.confirm_succeeded!(receipt_url: "https://stripe.com/receipt/123")
       assert @payment.succeeded?
       assert_equal "https://stripe.com/receipt/123", @payment.receipt_url
     end
 
-    test "pending → failed via mark_failed!" do
-      @payment.mark_failed!(message: "Card declined")
+    test "pending → failed" do
+      @payment.confirm_failed!
       assert @payment.failed?
     end
 
-    test "processing → failed via mark_failed!" do
-      @payment.mark_processing!(payment_identifier: "pi_123")
-      @payment.mark_failed!(message: "Timeout")
+    test "processing → failed" do
+      @payment.begin_processing!
+      @payment.confirm_failed!
       assert @payment.failed?
     end
 
-    test "succeeded → refunded via mark_refunded!" do
-      @payment.mark_processing!(payment_identifier: "pi_123")
-      @payment.mark_succeeded!
+    test "succeeded → refunded" do
+      move_to_succeeded!
       @payment.mark_refunded!
       assert @payment.refunded?
     end
@@ -76,21 +75,19 @@ module Corvid
       assert_raises(AASM::InvalidTransition) { @payment.mark_refunded! }
     end
 
-    test "cannot succeed a pending payment" do
+    test "cannot mark succeeded from pending" do
       assert_raises(AASM::InvalidTransition) { @payment.mark_succeeded! }
     end
 
-    test "cannot process an already succeeded payment" do
-      @payment.mark_processing!(payment_identifier: "pi_123")
-      @payment.mark_succeeded!
-      assert_raises(AASM::InvalidTransition) { @payment.mark_processing!(payment_identifier: "pi_456") }
+    test "cannot begin processing from succeeded" do
+      move_to_succeeded!
+      assert_raises(AASM::InvalidTransition) { @payment.begin_processing! }
     end
 
     # -- Predicates -----------------------------------------------------------
 
     test "refundable? true for succeeded with payment_identifier" do
-      @payment.mark_processing!(payment_identifier: "pi_123")
-      @payment.mark_succeeded!
+      move_to_succeeded!
       assert @payment.refundable?
     end
 
@@ -99,8 +96,7 @@ module Corvid
     end
 
     test "refundable? false for already refunded" do
-      @payment.mark_processing!(payment_identifier: "pi_123")
-      @payment.mark_succeeded!
+      move_to_succeeded!
       @payment.mark_refunded!
       assert_not @payment.refundable?
     end
@@ -108,14 +104,25 @@ module Corvid
     # -- Scopes ---------------------------------------------------------------
 
     test "succeeded scope" do
-      @payment.mark_processing!(payment_identifier: "pi_123")
-      @payment.mark_succeeded!
+      move_to_succeeded!
       assert_includes Payment.succeeded, @payment
     end
 
     test "for_patient scope" do
       assert_includes Payment.for_patient("pt_1"), @payment
       assert_empty Payment.for_patient("pt_999")
+    end
+
+    private
+
+    def move_to_succeeded!
+      @payment.begin_processing!
+      @payment.update!(payment_identifier: "pi_123")
+      @payment.mark_succeeded!
+    end
+
+    def update_identifier(id)
+      @payment.update!(payment_identifier: id)
     end
   end
 end

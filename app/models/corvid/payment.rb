@@ -7,7 +7,6 @@ module Corvid
     self.table_name = "corvid_payments"
 
     include TenantScoped
-
     include AASM
 
     validates :patient_identifier, presence: true
@@ -21,19 +20,19 @@ module Corvid
       state :pending, initial: true
       state :processing, :succeeded, :failed, :refunded
 
-      event :start_processing do
+      event :begin_processing do
         transitions from: :pending, to: :processing
       end
 
-      event :succeed do
+      event :mark_succeeded do
         transitions from: :processing, to: :succeeded
       end
 
-      event :fail do
+      event :mark_failed do
         transitions from: [:pending, :processing], to: :failed
       end
 
-      event :refund do
+      event :mark_refunded do
         transitions from: :succeeded, to: :refunded
       end
     end
@@ -42,44 +41,40 @@ module Corvid
       amount_cents / 100.0
     end
 
-    def mark_processing!(payment_identifier:)
-      start_processing!
-      update!(payment_identifier: payment_identifier)
-    end
-
-    def mark_succeeded!(receipt_url: nil)
-      succeed!
-      update!(receipt_url: receipt_url) if receipt_url
-    end
-
-    def mark_failed!(message: nil)
-      fail!
-    end
-
-    def mark_refunded!
-      refund!
-    end
-
     def refundable?
       succeeded? && payment_identifier.present?
     end
 
-    def process_via_adapter!
+    # -- Public API (called by steps/controllers) ----------------------------
+
+    def process!
       result = Corvid.adapter.process_payment(
         amount_cents: amount_cents,
         patient_identifier: patient_identifier,
         description: description
       )
-      mark_processing!(payment_identifier: result[:payment_identifier])
+      begin_processing!
+      update!(payment_identifier: result[:payment_identifier])
       result
     end
 
-    def refund_via_adapter!
-      return unless refundable?
+    def refund!
+      return { status: "error", message: "Not refundable" } unless refundable?
 
       result = Corvid.adapter.refund_payment(payment_identifier)
       mark_refunded! if result[:status] == "refunded"
       result
+    end
+
+    # -- Convenience for webhook/async callbacks -----------------------------
+
+    def confirm_succeeded!(receipt_url: nil)
+      mark_succeeded!
+      update!(receipt_url: receipt_url) if receipt_url
+    end
+
+    def confirm_failed!(message: nil)
+      mark_failed!
     end
   end
 end
