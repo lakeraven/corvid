@@ -53,9 +53,18 @@ module Corvid
         patient_identifier: patient_identifier,
         description: description
       )
-      begin_processing!
-      update!(payment_identifier: result[:payment_identifier])
+
+      if result[:status] == "failed" || result[:error]
+        mark_failed!
+      else
+        begin_processing!
+        update!(payment_identifier: result[:payment_identifier])
+      end
+
       result
+    rescue => e
+      mark_failed!
+      { status: "failed", error: e.message }
     end
 
     def refund!
