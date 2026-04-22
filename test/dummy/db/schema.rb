@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_04_16_000001) do
+ActiveRecord::Schema[8.1].define(version: 2026_04_21_215809) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
@@ -253,6 +253,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_04_16_000001) do
     t.string "facility_identifier"
     t.string "patient_identifier", null: false
     t.string "payment_identifier"
+    t.string "receipt_url"
     t.string "status", default: "pending", null: false
     t.string "tenant_identifier", null: false
     t.datetime "updated_at", null: false
