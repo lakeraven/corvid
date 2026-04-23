@@ -45,7 +45,36 @@ module Corvid
       "on_hold" => "on-hold"
     }.freeze
 
-    FHIR_STATUS_REVERSE_MAP = FHIR_STATUS_MAP.invert.transform_values { |v| v.tr("-", "_") }.freeze
+    FHIR_STATUS_REVERSE_MAP = FHIR_STATUS_MAP.invert.freeze
+
+    def self.resource_class
+      "Task"
+    end
+
+    def self.from_fhir_attributes(fhir_resource)
+      attrs = {}
+      attrs[:description] = fhir_resource.try(:description)
+
+      if fhir_resource.try(:status)
+        mapped = FHIR_STATUS_REVERSE_MAP[fhir_resource.status]
+        attrs[:status] = mapped if mapped
+      end
+
+      attrs[:priority] = fhir_resource.try(:priority) if fhir_resource.try(:priority)
+
+      if (owner = fhir_resource.try(:owner)) && owner.try(:reference)&.start_with?("Practitioner/")
+        raw_id = owner.reference.sub("Practitioner/", "")
+        # Strip rpms-practitioner- prefix if present
+        raw_id = raw_id.sub("rpms-practitioner-", "")
+        attrs[:assignee_id] = raw_id.to_i
+      end
+
+      if (ep = fhir_resource.try(:executionPeriod)) && ep.try(:end).present?
+        attrs[:due_at] = Time.zone.parse(ep.end)
+      end
+
+      attrs
+    end
 
     def incomplete?
       !completed? && !cancelled?
