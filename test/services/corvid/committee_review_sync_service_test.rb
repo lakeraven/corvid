@@ -17,7 +17,7 @@ class Corvid::CommitteeReviewSyncServiceTest < ActiveSupport::TestCase
 
   test "sync_decision syncs approved decision" do
     with_tenant(TENANT) do
-      review = create_review(decision: "approved", approved_amount: 75_000)
+      review = create_review_with_registered_referral(decision: "approved", approved_amount: 75_000)
       result = Corvid::CommitteeReviewSyncService.sync_decision(review)
       assert result[:success]
     end
@@ -25,7 +25,7 @@ class Corvid::CommitteeReviewSyncServiceTest < ActiveSupport::TestCase
 
   test "sync_decision includes synced_amount for approved" do
     with_tenant(TENANT) do
-      review = create_review(decision: "approved", approved_amount: 50_000)
+      review = create_review_with_registered_referral(decision: "approved", approved_amount: 50_000)
       result = Corvid::CommitteeReviewSyncService.sync_decision(review)
       assert_equal 50_000, result[:synced_amount].to_i
     end
@@ -37,7 +37,7 @@ class Corvid::CommitteeReviewSyncServiceTest < ActiveSupport::TestCase
 
   test "sync_decision syncs denied decision" do
     with_tenant(TENANT) do
-      review = create_review(decision: "denied")
+      review = create_review_with_registered_referral(decision: "denied")
       result = Corvid::CommitteeReviewSyncService.sync_decision(review)
       assert result[:success]
     end
@@ -49,7 +49,7 @@ class Corvid::CommitteeReviewSyncServiceTest < ActiveSupport::TestCase
 
   test "sync_decision syncs deferred decision" do
     with_tenant(TENANT) do
-      review = create_review(decision: "deferred")
+      review = create_review_with_registered_referral(decision: "deferred")
       result = Corvid::CommitteeReviewSyncService.sync_decision(review)
       assert result[:success]
     end
@@ -61,7 +61,7 @@ class Corvid::CommitteeReviewSyncServiceTest < ActiveSupport::TestCase
 
   test "sync_decision syncs modified decision as approved" do
     with_tenant(TENANT) do
-      review = create_review(decision: "modified", approved_amount: 40_000)
+      review = create_review_with_registered_referral(decision: "modified", approved_amount: 40_000)
       result = Corvid::CommitteeReviewSyncService.sync_decision(review)
       assert result[:success]
     end
@@ -104,7 +104,9 @@ class Corvid::CommitteeReviewSyncServiceTest < ActiveSupport::TestCase
 
   test "sync_decision includes reviewer_identifier" do
     with_tenant(TENANT) do
-      review = create_review(decision: "approved", approved_amount: 50_000, reviewer_identifier: "pr_101")
+      review = create_review_with_registered_referral(
+        decision: "approved", approved_amount: 50_000, reviewer_identifier: "pr_101"
+      )
       result = Corvid::CommitteeReviewSyncService.sync_decision(review)
       assert result[:success]
     end
@@ -120,6 +122,23 @@ class Corvid::CommitteeReviewSyncServiceTest < ActiveSupport::TestCase
   def create_review(decision: "pending", **attrs)
     Corvid::CommitteeReview.create!(
       prc_referral: create_referral,
+      committee_date: Date.current,
+      decision: decision,
+      **attrs
+    )
+  end
+
+  def create_review_with_registered_referral(decision: "approved", **attrs)
+    referral = create_referral
+    # Register referral in mock adapter under the identifier used by PrcReferral
+    # so update_referral(referral_identifier, ...) returns true
+    adapter = Corvid.adapter
+    adapter.instance_variable_get(:@referrals)[referral.referral_identifier] = {
+      patient_identifier: referral.case.patient_identifier,
+      status: "pending"
+    }
+    Corvid::CommitteeReview.create!(
+      prc_referral: referral,
       committee_date: Date.current,
       decision: decision,
       **attrs
