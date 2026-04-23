@@ -39,11 +39,11 @@ When("the committee approves with amount {string}") do |amount|
 end
 
 When("the committee denies the referral") do
-  @review.denied!
+  @review.update!(decision: :denied, rationale_token: "tok_denied", appeal_instructions_token: "tok_appeal")
 end
 
 When("the committee defers the decision") do
-  @review.deferred!
+  @review.update!(decision: :deferred, rationale_token: "tok_deferred")
 end
 
 When("the committee modifies with amount {string}") do |amount|
