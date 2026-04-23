@@ -24,6 +24,8 @@ module Corvid
     has_many :alternate_resource_checks, dependent: :destroy, class_name: "Corvid::AlternateResourceCheck"
     has_many :committee_reviews, dependent: :destroy, class_name: "Corvid::CommitteeReview"
 
+    CACHE_STALENESS_THRESHOLD = 1.hour
+
     validates :referral_identifier, presence: true
     validates :referral_identifier, uniqueness: { scope: [ :tenant_identifier, :facility_identifier ] }
 
@@ -84,6 +86,14 @@ module Corvid
       event :cancel do
         transitions to: :cancelled
       end
+    end
+
+    def medical_priority_cache_stale?
+      medical_priority_cached_at.nil? || medical_priority_cached_at <= CACHE_STALENESS_THRESHOLD.ago
+    end
+
+    def authorization_number_cache_stale?
+      authorization_number_cached_at.nil? || authorization_number_cached_at <= CACHE_STALENESS_THRESHOLD.ago
     end
 
     def service_request
