@@ -65,6 +65,58 @@ class Corvid::PrcReferralCachingTest < ActiveSupport::TestCase
   end
 
   # =============================================================================
+  # CACHE STALENESS
+  # =============================================================================
+
+  test "medical_priority_cache_stale? returns true when cached_at is nil" do
+    with_tenant(TENANT) do
+      referral = create_referral(medical_priority: 2)
+      referral.update_columns(medical_priority_cached_at: nil)
+      assert referral.medical_priority_cache_stale?
+    end
+  end
+
+  test "medical_priority_cache_stale? returns true when older than threshold" do
+    with_tenant(TENANT) do
+      referral = create_referral(medical_priority: 2)
+      referral.update_columns(medical_priority_cached_at: 2.hours.ago)
+      assert referral.medical_priority_cache_stale?
+    end
+  end
+
+  test "medical_priority_cache_stale? returns false when within threshold" do
+    with_tenant(TENANT) do
+      referral = create_referral(medical_priority: 2)
+      referral.update_columns(medical_priority_cached_at: 30.minutes.ago)
+      refute referral.medical_priority_cache_stale?
+    end
+  end
+
+  test "authorization_number_cache_stale? returns true when cached_at is nil" do
+    with_tenant(TENANT) do
+      referral = create_referral
+      referral.update_columns(authorization_number_cached_at: nil)
+      assert referral.authorization_number_cache_stale?
+    end
+  end
+
+  test "authorization_number_cache_stale? returns false when within threshold" do
+    with_tenant(TENANT) do
+      referral = create_referral
+      referral.update_columns(authorization_number_cached_at: 30.minutes.ago)
+      refute referral.authorization_number_cache_stale?
+    end
+  end
+
+  # =============================================================================
+  # CACHE THRESHOLD
+  # =============================================================================
+
+  test "CACHE_STALENESS_THRESHOLD is 1 hour" do
+    assert_equal 1.hour, Corvid::PrcReferral::CACHE_STALENESS_THRESHOLD
+  end
+
+  # =============================================================================
   # ESTIMATED COST
   # =============================================================================
 
