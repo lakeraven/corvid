@@ -70,7 +70,33 @@ module Corvid
       prc_referral.alternate_resource_checks.pending.exists?
     end
 
+    def self.pending_resources(prc_referral)
+      prc_referral.alternate_resource_checks.pending.pluck(:resource_type)
+    end
+
     # Instance methods
+
+    def exhausted_or_unavailable?
+      not_enrolled? || denied? || exhausted?
+    end
+
+    def has_coverage?
+      enrolled? || pending_enrollment?
+    end
+
+    def coverage_summary
+      case status
+      when "not_checked"        then "Not checked"
+      when "checking"           then "Checking..."
+      when "not_enrolled"       then "Not enrolled"
+      when "denied"             then "Denied"
+      when "exhausted"          then "Exhausted"
+      when "pending_enrollment" then "Pending enrollment"
+      when "enrolled"           then resource_name
+      else status.to_s.humanize
+      end
+    end
+
     def verify!
       patient_identifier = prc_referral.case&.patient_identifier
       return false unless patient_identifier

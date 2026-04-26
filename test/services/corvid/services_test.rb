@@ -77,7 +77,7 @@ class Corvid::ServicesTest < ActiveSupport::TestCase
                                   authorization_number: nil, emergent: false, urgent: false,
                                   chs_approval_status: "P", service_requested: "TEST")
       pr = Corvid::PrcReferral.create!(case: kase, referral_identifier: "rf_svc_001", estimated_cost: 75_000)
-      review = Corvid::CommitteeReview.create!(prc_referral: pr, decision: "approved", approved_amount: 75_000, reviewer_identifier: "pr_svc_001")
+      review = Corvid::CommitteeReview.create!(prc_referral: pr, committee_date: Date.current, decision: "approved", approved_amount: 75_000, reviewer_identifier: "pr_svc_001")
 
       result = Corvid::CommitteeReviewSyncService.sync_decision(review)
       assert result[:success]
