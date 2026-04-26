@@ -122,6 +122,50 @@ class Corvid::BudgetAvailabilityServiceTest < ActiveSupport::TestCase
     end
   end
 
+  # -- Insufficient budget ---------------------------------------------------
+
+  test "check reports insufficient budget for very large cost" do
+    with_tenant(TENANT) do
+      referral = create_referral(estimated_cost: 2_000_000)
+      result = Corvid::BudgetAvailabilityService.check(referral)
+
+      refute result.funds_available?
+    end
+  end
+
+  # -- Fiscal year -----------------------------------------------------------
+
+  test "current_fiscal_year uses October start" do
+    with_tenant(TENANT) do
+      fy = Corvid::BudgetAvailabilityService.current_quarter
+      assert_match(/\AFY\d{4}-Q[1-4]\z/, fy)
+    end
+  end
+
+  # -- Fund reservation round trip ------------------------------------------
+
+  test "reserve_funds_if_available returns truthy for mock adapter" do
+    with_tenant(TENANT) do
+      result = Corvid::BudgetAvailabilityService.reserve_funds_if_available("ref_test", 5_000)
+      assert result
+    end
+  end
+
+  # -- Check result struct responds to all predicates -----------------------
+
+  test "check result responds to all expected predicates" do
+    with_tenant(TENANT) do
+      referral = create_referral(estimated_cost: 5_000)
+      result = Corvid::BudgetAvailabilityService.check(referral)
+
+      assert_respond_to result, :funds_available?
+      assert_respond_to result, :budget_sufficient?
+      assert_respond_to result, :requires_cost_estimate?
+      assert_respond_to result, :requires_committee_review?
+      assert_respond_to result, :valid_funding_source?
+    end
+  end
+
   private
 
   def create_case

@@ -74,6 +74,27 @@ module Corvid
       end
     end
 
+    def summary
+      parts = ["Committee Review — #{committee_date}"]
+      parts << "Decision: #{decision_summary}"
+      parts << "Attendees: #{attendees_count}" if attendees_count > 0
+      parts << "Documents: #{documents_reviewed_count}" if documents_reviewed_count > 0
+      parts << "Conditions: #{conditions_count}" if conditions_count > 0
+      parts.join(" | ")
+    end
+
+    def attendees_count
+      attendees_data.size
+    end
+
+    def documents_reviewed_count
+      documents_reviewed_data.size
+    end
+
+    def conditions_count
+      conditions_data.size
+    end
+
     def apply_to_referral!
       return if pending?
 
@@ -85,6 +106,30 @@ module Corvid
     end
 
     private
+
+    def attendees_data
+      return [] unless attendees_token.present?
+      result = Corvid.adapter.fetch_text(attendees_token)
+      result.is_a?(Array) ? result : []
+    rescue
+      []
+    end
+
+    def documents_reviewed_data
+      return [] unless documents_reviewed_token.present?
+      result = Corvid.adapter.fetch_text(documents_reviewed_token)
+      result.is_a?(Array) ? result : []
+    rescue
+      []
+    end
+
+    def conditions_data
+      return [] unless conditions_token.present?
+      result = Corvid.adapter.fetch_text(conditions_token)
+      result.is_a?(Array) ? result : []
+    rescue
+      []
+    end
 
     def set_appeal_deadline
       self.appeal_deadline = committee_date + 30.days

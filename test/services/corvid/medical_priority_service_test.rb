@@ -180,6 +180,152 @@ class Corvid::MedicalPriorityServiceTest < ActiveSupport::TestCase
     end
   end
 
+  # -- IHS 2024 / Traditional compatibility labels ----------------------------
+
+  test "assess result for routine includes requires_clinical_review?" do
+    with_tenant(TENANT) do
+      sr = OpenStruct.new(
+        emergent?: false, urgent?: false,
+        medical_priority_level: nil,
+        reason_for_referral: "Patient needs specialist opinion",
+        diagnosis_codes: nil, procedure_codes: nil,
+        urgency: "ROUTINE"
+      )
+      result = Corvid::MedicalPriorityService.assess(sr)
+      # corvid_v1 always returns false for requires_clinical_review?
+      # (no keyword matching — that's host-layer responsibility)
+      assert_respond_to result, :requires_clinical_review?
+    end
+  end
+
+  test "assess priority 2 responds to necessary?" do
+    with_tenant(TENANT) do
+      sr = OpenStruct.new(
+        emergent?: false, urgent?: true,
+        medical_priority_level: nil,
+        reason_for_referral: "Urgent care needed",
+        diagnosis_codes: nil, procedure_codes: nil,
+        urgency: "URGENT"
+      )
+      result = Corvid::MedicalPriorityService.assess(sr)
+      assert result.necessary?
+    end
+  end
+
+  # -- Priority assignment to PRC referral -----------------------------------
+
+  test "assigns priority and updates referral record" do
+    with_tenant(TENANT) do
+      referral = create_referral_with_sr(emergent: true)
+      Corvid::MedicalPriorityService.assign(referral)
+
+      referral.reload
+      assert_not_nil referral.medical_priority
+      assert_equal "corvid_v1", referral.priority_system
+    end
+  end
+
+  test "defaults to corvid_v1 system" do
+    with_tenant(TENANT) do
+      referral = create_referral_with_sr
+      Corvid::MedicalPriorityService.assign(referral)
+
+      assert_equal "corvid_v1", referral.reload.priority_system
+    end
+  end
+
+  # -- Keyword detection responses -------------------------------------------
+
+  test "assess result responds to keywords_detected" do
+    with_tenant(TENANT) do
+      sr = OpenStruct.new(
+        emergent?: true, urgent?: false,
+        medical_priority_level: nil,
+        reason_for_referral: "Life-threatening stroke",
+        diagnosis_codes: nil, procedure_codes: nil,
+        urgency: "EMERGENT"
+      )
+      result = Corvid::MedicalPriorityService.assess(sr)
+      assert_respond_to result, :keywords_detected
+    end
+  end
+
+  # -- to_h includes requires_review key ------------------------------------
+
+  test "assess result to_h includes requires_review key" do
+    with_tenant(TENANT) do
+      sr = OpenStruct.new(
+        emergent?: false, urgent?: false,
+        medical_priority_level: nil,
+        reason_for_referral: "Routine evaluation",
+        diagnosis_codes: nil, procedure_codes: nil,
+        urgency: "ROUTINE"
+      )
+      result = Corvid::MedicalPriorityService.assess(sr)
+      hash = result.to_h
+      assert hash.key?(:requires_review)
+    end
+  end
+
+  # -- Funding score is numeric -----------------------------------------------
+
+  test "funding_priority_score for urgent is 75" do
+    with_tenant(TENANT) do
+      sr = OpenStruct.new(
+        emergent?: false, urgent?: true,
+        medical_priority_level: nil,
+        reason_for_referral: "Urgent care",
+        diagnosis_codes: nil, procedure_codes: nil,
+        urgency: "URGENT"
+      )
+      result = Corvid::MedicalPriorityService.assess(sr)
+      assert_equal 75, result.funding_priority_score
+    end
+  end
+
+  test "funding_priority_score for routine is 50" do
+    with_tenant(TENANT) do
+      sr = OpenStruct.new(
+        emergent?: false, urgent?: false,
+        medical_priority_level: nil,
+        reason_for_referral: "Routine evaluation",
+        diagnosis_codes: nil, procedure_codes: nil,
+        urgency: "ROUTINE"
+      )
+      result = Corvid::MedicalPriorityService.assess(sr)
+      assert_equal 50, result.funding_priority_score
+    end
+  end
+
+  test "funding_priority_score for emergent is 100" do
+    with_tenant(TENANT) do
+      sr = OpenStruct.new(
+        emergent?: true, urgent?: false,
+        medical_priority_level: nil,
+        reason_for_referral: "Life-threatening",
+        diagnosis_codes: nil, procedure_codes: nil,
+        urgency: "EMERGENT"
+      )
+      result = Corvid::MedicalPriorityService.assess(sr)
+      assert_equal 100, result.funding_priority_score
+    end
+  end
+
+  # -- Priority names mapping ------------------------------------------------
+
+  test "priority_name for urgent is Urgent/Necessary" do
+    with_tenant(TENANT) do
+      sr = OpenStruct.new(
+        emergent?: false, urgent?: true,
+        medical_priority_level: nil,
+        reason_for_referral: "Urgent", diagnosis_codes: nil,
+        procedure_codes: nil, urgency: "URGENT"
+      )
+      result = Corvid::MedicalPriorityService.assess(sr)
+      assert_includes result.priority_name, "Urgent"
+    end
+  end
+
   # -- Funding score ordering ------------------------------------------------
 
   test "funding priority decreases from emergent to routine" do

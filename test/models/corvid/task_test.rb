@@ -496,6 +496,106 @@ class Corvid::TaskTest < ActiveSupport::TestCase
     end
   end
 
+  # -- Priority ---------------------------------------------------------------
+
+  test "can set urgent priority" do
+    with_tenant(TENANT) do
+      task = create_task(priority: :urgent)
+      assert task.priority_urgent?
+    end
+  end
+
+  test "can set stat priority" do
+    with_tenant(TENANT) do
+      task = create_task(priority: :stat)
+      assert task.priority_stat?
+    end
+  end
+
+  # -- FHIR parsing edge cases -----------------------------------------------
+
+  test "from_fhir_attributes skips unmapped FHIR status" do
+    with_tenant(TENANT) do
+      fhir_resource = OpenStruct.new(
+        status: "draft", intent: "order", description: "Test task"
+      )
+      attrs = Corvid::Task.from_fhir_attributes(fhir_resource)
+      assert_nil attrs[:status]
+      assert_equal "Test task", attrs[:description]
+    end
+  end
+
+  test "from_fhir_attributes handles missing status" do
+    with_tenant(TENANT) do
+      fhir_resource = OpenStruct.new(
+        intent: "order", description: "No status task"
+      )
+      attrs = Corvid::Task.from_fhir_attributes(fhir_resource)
+      assert_nil attrs[:status]
+      assert_equal "No status task", attrs[:description]
+    end
+  end
+
+  test "from_fhir_attributes handles non-Practitioner owner reference" do
+    with_tenant(TENANT) do
+      fhir_resource = OpenStruct.new(
+        status: "requested", intent: "order",
+        owner: OpenStruct.new(reference: "Organization/ORG1")
+      )
+      attrs = Corvid::Task.from_fhir_attributes(fhir_resource)
+      assert_nil attrs[:assignee_identifier]
+    end
+  end
+
+  test "from_fhir_attributes handles nil executionPeriod end" do
+    with_tenant(TENANT) do
+      fhir_resource = OpenStruct.new(
+        status: "requested", intent: "order",
+        executionPeriod: OpenStruct.new(end: nil)
+      )
+      attrs = Corvid::Task.from_fhir_attributes(fhir_resource)
+      assert_nil attrs[:due_at]
+    end
+  end
+
+  test "from_fhir_attributes extracts status and priority together" do
+    with_tenant(TENANT) do
+      fhir_resource = OpenStruct.new(
+        status: "in-progress",
+        priority: "urgent",
+        description: "Follow up with patient"
+      )
+      attrs = Corvid::Task.from_fhir_attributes(fhir_resource)
+      assert_equal "in_progress", attrs[:status]
+      assert_equal "urgent", attrs[:priority]
+      assert_equal "Follow up with patient", attrs[:description]
+    end
+  end
+
+  test "from_fhir_attributes extracts due date from executionPeriod" do
+    with_tenant(TENANT) do
+      fhir_resource = OpenStruct.new(
+        status: "requested",
+        executionPeriod: OpenStruct.new(end: "2024-12-31")
+      )
+      attrs = Corvid::Task.from_fhir_attributes(fhir_resource)
+      assert_equal Date.parse("2024-12-31"), attrs[:due_at].to_date
+    end
+  end
+
+  test "to_fhir returns valid FHIR Task resource with in_progress status" do
+    with_tenant(TENANT) do
+      task = create_task(priority: :urgent)
+      task.in_progress!
+      fhir = task.to_fhir
+
+      assert_equal "Task", fhir[:resourceType]
+      assert_equal task.id.to_s, fhir[:id]
+      assert_equal "in-progress", fhir[:status]
+      assert_equal "order", fhir[:intent]
+    end
+  end
+
   # -- Multi-tenancy ---------------------------------------------------------
 
   test "tasks are scoped to current tenant" do
