@@ -15,7 +15,8 @@ class Corvid::CommitteeReviewSyncServiceTest < ActiveSupport::TestCase
     with_tenant(TENANT) do
       referral = create_referral
       review = Corvid::CommitteeReview.create!(
-        prc_referral: referral, committee_date: Date.current, decision: "approved"
+        prc_referral: referral, committee_date: Date.current,
+        decision: "approved", approved_amount: 50_000
       )
 
       assert review.finalized?
