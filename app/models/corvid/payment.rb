@@ -12,9 +12,17 @@ module Corvid
     validates :patient_identifier, presence: true
     validates :amount_cents, presence: true, numericality: { greater_than: 0 }
 
+    STATUSES = %w[pending processing succeeded failed refunded].freeze
+
+    validates :status, inclusion: { in: STATUSES }, allow_nil: true
+
     scope :by_status, ->(status) { where(status: status) }
     scope :succeeded, -> { where(status: "succeeded") }
     scope :for_patient, ->(id) { where(patient_identifier: id) }
+
+    def self.total_collected
+      succeeded.sum(:amount_cents) / 100.0
+    end
 
     aasm column: :status do
       state :pending, initial: true

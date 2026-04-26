@@ -107,4 +107,111 @@ class Corvid::CaseTest < ActiveSupport::TestCase
     refute_includes columns, "notes"
     assert_includes columns, "notes_token"
   end
+
+  # -- Status enum -----------------------------------------------------------
+
+  test "defaults to active status" do
+    with_tenant(TEST_TENANT) do
+      kase = Corvid::Case.create!(patient_identifier: "pt_status_test")
+      assert kase.active?
+    end
+  end
+
+  test "can transition to inactive" do
+    with_tenant(TEST_TENANT) do
+      kase = Corvid::Case.create!(patient_identifier: "pt_inactive")
+      kase.inactive!
+      assert kase.inactive?
+    end
+  end
+
+  test "can transition to closed" do
+    with_tenant(TEST_TENANT) do
+      kase = Corvid::Case.create!(patient_identifier: "pt_closed")
+      kase.closed!
+      assert kase.closed?
+    end
+  end
+
+  # -- Associations ----------------------------------------------------------
+
+  test "has many prc_referrals" do
+    with_tenant(TEST_TENANT) do
+      kase = Corvid::Case.create!(patient_identifier: "pt_assoc_ref")
+      assert_respond_to kase, :prc_referrals
+    end
+  end
+
+  test "has many tasks" do
+    with_tenant(TEST_TENANT) do
+      kase = Corvid::Case.create!(patient_identifier: "pt_assoc_task")
+      assert_respond_to kase, :tasks
+    end
+  end
+
+  test "belongs to care_team (optional)" do
+    with_tenant(TEST_TENANT) do
+      kase = Corvid::Case.create!(patient_identifier: "pt_no_team")
+      assert_nil kase.care_team
+    end
+  end
+
+  # -- Cached patient data ---------------------------------------------------
+
+  test "can store cached patient name" do
+    with_tenant(TEST_TENANT) do
+      kase = Corvid::Case.create!(patient_identifier: "pt_cache", patient_name_cached: "John Smith")
+      assert_equal "John Smith", kase.patient_name_cached
+    end
+  end
+
+  test "can store cached patient dob" do
+    with_tenant(TEST_TENANT) do
+      kase = Corvid::Case.create!(patient_identifier: "pt_dob", patient_dob_cached: Date.parse("1980-05-15"))
+      assert_equal Date.parse("1980-05-15"), kase.patient_dob_cached
+    end
+  end
+
+  test "cache_patient_data! stores adapter data" do
+    Corvid.adapter.add_patient("pt_cache_test", display_name: "CACHE,TEST", dob: Date.new(1985, 6, 15), sex: "M", ssn_last4: "1234")
+    with_tenant(TEST_TENANT) do
+      kase = Corvid::Case.create!(patient_identifier: "pt_cache_test")
+      kase.cache_patient_data!
+      kase.reload
+      assert_equal "CACHE,TEST", kase.patient_name_cached
+      assert_equal Date.new(1985, 6, 15), kase.patient_dob_cached
+    end
+  end
+
+  # -- program_case? ---------------------------------------------------------
+
+  test "program_case? returns true when program_type present" do
+    with_tenant(TEST_TENANT) do
+      kase = Corvid::Case.create!(patient_identifier: "pt_prog", program_type: "hep_b")
+      assert kase.program_case?
+    end
+  end
+
+  test "program_case? returns false when no program_type" do
+    with_tenant(TEST_TENANT) do
+      kase = Corvid::Case.create!(patient_identifier: "pt_no_prog")
+      refute kase.program_case?
+    end
+  end
+
+  # -- Unscoped ---------------------------------------------------------------
+
+  test "unscoped returns all cases" do
+    with_tenant(TEST_TENANT) do
+      Corvid::Case.create!(patient_identifier: "pt_us_a")
+    end
+    with_tenant(OTHER_TENANT) do
+      Corvid::Case.create!(patient_identifier: "pt_us_b")
+    end
+
+    all_cases = Corvid::Case.unscoped.all
+    patients = all_cases.pluck(:patient_identifier)
+    assert_includes patients, "pt_us_a"
+    assert_includes patients, "pt_us_b"
+  end
 end

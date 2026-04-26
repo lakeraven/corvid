@@ -428,6 +428,96 @@ class Corvid::CommitteeReviewTest < ActiveSupport::TestCase
     end
   end
 
+  # -- upcoming_reviews excludes decided -------------------------------------
+
+  test "upcoming_reviews excludes decided reviews" do
+    with_tenant(TENANT) do
+      upcoming_pending = create_review(committee_date: Date.current + 1.day)
+      upcoming_approved = create_review(committee_date: Date.current + 1.day)
+      upcoming_approved.update_column(:decision, "approved")
+      upcoming_approved.update_column(:approved_amount, 50_000)
+
+      upcoming = Corvid::CommitteeReview.upcoming_reviews(days: 7)
+
+      assert_includes upcoming, upcoming_pending
+      refute_includes upcoming, upcoming_approved
+    end
+  end
+
+  # -- Additional validations ------------------------------------------------
+
+  test "requires appeal_instructions_token when denied" do
+    with_tenant(TENANT) do
+      review = Corvid::CommitteeReview.new(
+        prc_referral: create_referral,
+        committee_date: Date.current,
+        decision: :denied,
+        rationale_token: "rt_test",
+        appeal_instructions_token: nil
+      )
+      refute review.valid?
+      assert review.errors[:appeal_instructions_token].any?
+    end
+  end
+
+  test "valid denial with all required fields" do
+    with_tenant(TENANT) do
+      review = Corvid::CommitteeReview.new(
+        prc_referral: create_referral,
+        committee_date: Date.current,
+        decision: :denied,
+        rationale_token: "rt_test",
+        appeal_instructions_token: "ai_test"
+      )
+      assert review.valid?
+    end
+  end
+
+  test "valid approval with amount" do
+    with_tenant(TENANT) do
+      review = Corvid::CommitteeReview.new(
+        prc_referral: create_referral,
+        committee_date: Date.current,
+        decision: :approved,
+        approved_amount: 75_000
+      )
+      assert review.valid?
+    end
+  end
+
+  # -- Summary ---------------------------------------------------------------
+
+  test "summary includes key information" do
+    with_tenant(TENANT) do
+      review = create_review(committee_date: Date.current)
+      review.update_column(:decision, "approved")
+      review.update_column(:approved_amount, 50_000)
+
+      summary = review.summary
+
+      assert_includes summary, "Committee Review"
+      assert_includes summary, "Approved"
+    end
+  end
+
+  # -- finalized? for deferred ------------------------------------------------
+
+  test "finalized? returns true for deferred" do
+    with_tenant(TENANT) do
+      review = create_review
+      review.update!(decision: :deferred, rationale_token: "rt_test")
+      assert review.finalized?
+    end
+  end
+
+  test "finalized? returns true for modified" do
+    with_tenant(TENANT) do
+      review = create_review
+      review.update!(decision: :modified, approved_amount: 40_000)
+      assert review.finalized?
+    end
+  end
+
   private
 
   def create_case

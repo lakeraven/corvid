@@ -214,4 +214,85 @@ class Corvid::BillingTransactionTest < ActiveSupport::TestCase
       end
     end
   end
+
+  # -- Additional validations ------------------------------------------------
+
+  test "requires transaction_type" do
+    with_tenant(TENANT) do
+      tx = Corvid::BillingTransaction.new(direction: "outbound", status: "pending")
+      refute tx.valid?
+      assert tx.errors[:transaction_type].any?
+    end
+  end
+
+  test "requires direction" do
+    with_tenant(TENANT) do
+      tx = Corvid::BillingTransaction.new(transaction_type: "eligibility", status: "pending")
+      tx.direction = nil
+      refute tx.valid?
+      assert tx.errors[:direction].any?
+    end
+  end
+
+  test "status must be valid" do
+    with_tenant(TENANT) do
+      tx = Corvid::BillingTransaction.new(transaction_type: "eligibility", direction: "outbound", status: "invalid")
+      refute tx.valid?
+      assert tx.errors[:status].any?
+    end
+  end
+
+  # -- Named scopes ----------------------------------------------------------
+
+  test "eligibility scope filters by transaction_type" do
+    with_tenant(TENANT) do
+      elig = Corvid::BillingTransaction.log_transaction!(tenant: TENANT, type: "eligibility", direction: "outbound")
+      claim = Corvid::BillingTransaction.log_transaction!(tenant: TENANT, type: "claim", direction: "outbound")
+
+      assert_includes Corvid::BillingTransaction.eligibility, elig
+      refute_includes Corvid::BillingTransaction.eligibility, claim
+    end
+  end
+
+  test "claims scope filters by transaction_type" do
+    with_tenant(TENANT) do
+      elig = Corvid::BillingTransaction.log_transaction!(tenant: TENANT, type: "eligibility", direction: "outbound")
+      claim = Corvid::BillingTransaction.log_transaction!(tenant: TENANT, type: "claim", direction: "outbound")
+
+      assert_includes Corvid::BillingTransaction.claims, claim
+      refute_includes Corvid::BillingTransaction.claims, elig
+    end
+  end
+
+  test "successful scope filters by status" do
+    with_tenant(TENANT) do
+      success = Corvid::BillingTransaction.log_transaction!(tenant: TENANT, type: "eligibility", direction: "outbound", status: "completed")
+      failed_tx = Corvid::BillingTransaction.log_transaction!(tenant: TENANT, type: "eligibility", direction: "outbound", status: "failed")
+
+      assert_includes Corvid::BillingTransaction.successful, success
+      refute_includes Corvid::BillingTransaction.successful, failed_tx
+    end
+  end
+
+  test "failed_transactions scope filters by status" do
+    with_tenant(TENANT) do
+      success = Corvid::BillingTransaction.log_transaction!(tenant: TENANT, type: "eligibility", direction: "outbound", status: "completed")
+      failed_tx = Corvid::BillingTransaction.log_transaction!(tenant: TENANT, type: "eligibility", direction: "outbound", status: "failed")
+
+      assert_includes Corvid::BillingTransaction.failed_transactions, failed_tx
+      refute_includes Corvid::BillingTransaction.failed_transactions, success
+    end
+  end
+
+  test "since scope filters by created_at" do
+    with_tenant(TENANT) do
+      old = Corvid::BillingTransaction.log_transaction!(tenant: TENANT, type: "eligibility", direction: "outbound")
+      Corvid::BillingTransaction.where(id: old.id).update_all(created_at: 2.hours.ago)
+      new_tx = Corvid::BillingTransaction.log_transaction!(tenant: TENANT, type: "eligibility", direction: "outbound")
+
+      since_1_hour = Corvid::BillingTransaction.since(1.hour.ago)
+      assert_includes since_1_hour, new_tx
+      refute_includes since_1_hour, old
+    end
+  end
 end

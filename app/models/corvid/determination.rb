@@ -23,11 +23,24 @@ module Corvid
 
     validate :determinable_in_same_tenant
     validates :determined_by_identifier, presence: true, unless: :decision_method_automated?
+    validates :reasons_token, presence: true, if: :denied?
 
     before_create :set_determined_at
 
+    scope :chronological, -> { order(created_at: :asc) }
+    scope :reverse_chronological, -> { order(created_at: :desc) }
+
     def determined_by
       Corvid.adapter.find_practitioner(determined_by_identifier) if determined_by_identifier.present?
+    end
+
+    def summary
+      parts = []
+      method_label = decision_method.to_s.humanize.sub("_", " ") + " decision"
+      parts << method_label
+      parts << outcome.to_s.humanize
+      parts << reasons_token if reasons_token.present?
+      parts.join(" — ")
     end
 
     private

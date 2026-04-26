@@ -35,19 +35,28 @@ module Corvid
         entries.sort_by { |e| e[:timestamp] || Time.at(0) }
       end
 
-      def program_compliance_summary(program_type:, facility_identifier:)
-        cases = Corvid::Case.for_facility(facility_identifier).where(program_type: program_type)
+      def program_compliance_summary(program_type:, facility_identifier: nil, facility: nil)
+        fac_id = facility_identifier || facility&.id&.to_s
+        cases = Corvid::Case.where(program_type: program_type)
+        cases = cases.for_facility(fac_id) if fac_id.present?
         case_ids = cases.pluck(:id)
 
         all_milestones = Corvid::Task.where(taskable_type: "Corvid::Case", taskable_id: case_ids).milestones
         completed = all_milestones.where(status: "completed")
+        overdue = all_milestones.overdue
+
+        total = all_milestones.count
+        completed_count = completed.count
+        rate = total > 0 ? (completed_count.to_f / total * 100).round(1) : 0.0
 
         {
           total_cases: cases.count,
           open_cases: cases.where.not(lifecycle_status: "closed").count,
           closed_cases: cases.where(lifecycle_status: "closed").count,
-          total_milestones: all_milestones.count,
-          completed_milestones: completed.count
+          total_milestones: total,
+          completed_milestones: completed_count,
+          overdue_milestones: overdue.count,
+          completion_rate: rate
         }
       end
     end

@@ -12,14 +12,22 @@ module Corvid
     TRANSACTION_TYPES = %w[eligibility claim claim_status remittance payment].freeze
     DIRECTIONS = %w[inbound outbound].freeze
 
-    validates :transaction_type, inclusion: { in: TRANSACTION_TYPES }
-    validates :direction, inclusion: { in: DIRECTIONS }
+    STATUSES = %w[pending completed failed].freeze
+
+    validates :transaction_type, presence: true, inclusion: { in: TRANSACTION_TYPES }
+    validates :direction, presence: true, inclusion: { in: DIRECTIONS }
+    validates :status, inclusion: { in: STATUSES }
 
     scope :by_type, ->(type) { where(transaction_type: type) }
     scope :by_direction, ->(dir) { where(direction: dir) }
     scope :by_status, ->(status) { where(status: status) }
     scope :for_patient, ->(identifier) { where(patient_identifier: identifier) }
     scope :recent, -> { order(created_at: :desc) }
+    scope :eligibility, -> { by_type("eligibility") }
+    scope :claims, -> { by_type("claim") }
+    scope :successful, -> { by_status("completed") }
+    scope :failed_transactions, -> { by_status("failed") }
+    scope :since, ->(time) { where("created_at >= ?", time) }
 
     def self.log_transaction!(tenant:, facility: nil, type:, direction: "outbound", reference: nil, patient: nil, request_token: nil, response_token: nil, status: "completed", error: nil)
       create!(

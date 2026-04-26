@@ -113,6 +113,50 @@ module Corvid
       assert_empty Payment.for_patient("pt_999")
     end
 
+    # -- Status validation ----------------------------------------------------
+
+    test "status must be valid" do
+      p = Payment.new(patient_identifier: "pt_1", amount_cents: 5000, status: "bogus")
+      assert_not p.valid?
+      assert p.errors[:status].any?
+    end
+
+    # -- Total collected ------------------------------------------------------
+
+    test "total_collected sums succeeded payments" do
+      Payment.create!(patient_identifier: "pt_tc", amount_cents: 5000, status: "succeeded")
+      Payment.create!(patient_identifier: "pt_tc", amount_cents: 3000, status: "succeeded")
+      Payment.create!(patient_identifier: "pt_tc", amount_cents: 2000, status: "failed")
+
+      assert_equal 80.0, Payment.total_collected
+    end
+
+    # -- Refundable? edge cases -----------------------------------------------
+
+    test "refundable? false for succeeded without payment_identifier" do
+      move_to_succeeded!
+      @payment.update_column(:payment_identifier, nil)
+      assert_not @payment.refundable?
+    end
+
+    # -- Additional state transitions -----------------------------------------
+
+    test "processing? returns true when processing" do
+      @payment.begin_processing!
+      assert @payment.processing?
+    end
+
+    test "succeeded? returns true when succeeded" do
+      move_to_succeeded!
+      assert @payment.succeeded?
+    end
+
+    test "refunded? returns true when refunded" do
+      move_to_succeeded!
+      @payment.mark_refunded!
+      assert @payment.refunded?
+    end
+
     private
 
     def move_to_succeeded!

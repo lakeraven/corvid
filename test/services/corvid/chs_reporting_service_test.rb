@@ -137,6 +137,56 @@ class Corvid::ChsReportingServiceTest < ActiveSupport::TestCase
     end
   end
 
+  # -- utilization_report by_provider ----------------------------------------
+
+  test "utilization_report includes by_provider breakdown" do
+    with_tenant(TENANT) do
+      report = Corvid::ChsReportingService.utilization_report
+      assert report.key?(:by_provider)
+    end
+  end
+
+  # -- denial_report filters by date range ----------------------------------
+
+  test "denial_report filters by date range" do
+    with_tenant(TENANT) do
+      report = Corvid::ChsReportingService.denial_report(
+        from_date: Date.new(2025, 1, 1),
+        to_date: Date.new(2025, 3, 31)
+      )
+      assert report[:period][:from].present?
+    end
+  end
+
+  # -- workload_report includes processing metrics --------------------------
+
+  test "workload_report includes processing time metrics" do
+    with_tenant(TENANT) do
+      report = Corvid::ChsReportingService.workload_report
+      assert report.key?(:processing_metrics)
+    end
+  end
+
+  # -- to_csv exports utilization report ------------------------------------
+
+  test "to_csv exports utilization report" do
+    with_tenant(TENANT) do
+      report = Corvid::ChsReportingService.utilization_report
+      csv = Corvid::ChsReportingService.to_csv(report, type: :utilization)
+      assert csv.is_a?(String)
+      assert csv.length > 0
+    end
+  end
+
+  # -- financial_report by_quarter ------------------------------------------
+
+  test "financial_report includes obligation_summary" do
+    with_tenant(TENANT) do
+      report = Corvid::ChsReportingService.financial_report
+      assert report.key?(:obligation_summary)
+    end
+  end
+
   # -- Adapter boundary ------------------------------------------------------
 
   test "ChsReportingService does not reference Rpms:: directly" do
