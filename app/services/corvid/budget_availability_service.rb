@@ -43,6 +43,57 @@ module Corvid
         when 7, 8, 9 then "FY#{year}-Q4"
         end
       end
+
+      def check(referral)
+        cost = referral.estimated_cost
+        budget = remaining_budget
+        total = fiscal_year_budget
+
+        BudgetCheckResult.new(
+          funds_available: cost.present? && cost > 0 && budget >= cost,
+          budget_sufficient: cost.present? && budget >= cost,
+          remaining_budget: budget,
+          total_budget: total,
+          fiscal_year: current_fiscal_year,
+          requires_cost_estimate: cost.nil? || cost <= 0,
+          requires_committee_review: cost.present? && cost >= COMMITTEE_REVIEW_THRESHOLD,
+          valid_funding_source: true
+        )
+      end
+
+      private
+
+      def current_fiscal_year
+        year = Date.current.year
+        Date.current.month >= 10 ? "FY#{year + 1}" : "FY#{year}"
+      end
+    end
+
+    BudgetCheckResult = Struct.new(
+      :funds_available, :budget_sufficient, :remaining_budget, :total_budget,
+      :fiscal_year, :requires_cost_estimate, :requires_committee_review,
+      :valid_funding_source,
+      keyword_init: true
+    ) do
+      def funds_available?
+        funds_available
+      end
+
+      def budget_sufficient?
+        budget_sufficient
+      end
+
+      def requires_cost_estimate?
+        requires_cost_estimate
+      end
+
+      def requires_committee_review?
+        requires_committee_review
+      end
+
+      def valid_funding_source?
+        valid_funding_source
+      end
     end
   end
 end

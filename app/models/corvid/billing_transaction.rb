@@ -35,5 +35,46 @@ module Corvid
         error_message: error
       )
     end
+
+    def self.success_rate
+      total = count
+      return 0 if total == 0
+
+      successful = where(status: "completed").count
+      (successful.to_f / total * 100).round(1)
+    end
+
+    def self.by_type_counts
+      group(:transaction_type).count
+    end
+
+    # Instance methods
+    def success?
+      status == "completed"
+    end
+
+    def failed?
+      status == "failed"
+    end
+
+    def pending?
+      status == "pending"
+    end
+
+    def eligibility?
+      transaction_type == "eligibility"
+    end
+
+    def claim?
+      transaction_type == "claim"
+    end
+
+    def mark_success!(response_token: nil)
+      update!(status: "completed", response_token: response_token)
+    end
+
+    def mark_error!(message)
+      update!(status: "failed", error_message: message)
+    end
   end
 end

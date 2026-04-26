@@ -59,6 +59,31 @@ module Corvid
       milestone_key.present?
     end
 
+    def self.from_fhir_attributes(fhir_resource)
+      attrs = {}
+      attrs[:description] = fhir_resource.description if fhir_resource.respond_to?(:description)
+      attrs[:priority] = fhir_resource.priority if fhir_resource.respond_to?(:priority) && fhir_resource.priority
+
+      if fhir_resource.respond_to?(:status) && fhir_resource.status
+        mapped = FHIR_STATUS_REVERSE_MAP[fhir_resource.status]
+        attrs[:status] = mapped if mapped
+      end
+
+      if fhir_resource.respond_to?(:owner) && fhir_resource.owner
+        ref = fhir_resource.owner.reference.to_s
+        if ref.start_with?("Practitioner/")
+          attrs[:assignee_identifier] = ref.sub("Practitioner/", "")
+        end
+      end
+
+      if fhir_resource.respond_to?(:executionPeriod) && fhir_resource.executionPeriod
+        end_date = fhir_resource.executionPeriod.end
+        attrs[:due_at] = Time.zone.parse(end_date.to_s) if end_date.present?
+      end
+
+      attrs
+    end
+
     def fhir_status
       FHIR_STATUS_MAP[status.to_s] || status.to_s
     end

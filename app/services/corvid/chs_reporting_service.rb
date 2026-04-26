@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require "csv"
+
 module Corvid
   # CHS reporting reads everything from the adapter; corvid stores no
   # financial PHI of its own.
@@ -29,6 +31,61 @@ module Corvid
           obligation_summary: obligation_summary,
           outstanding_obligations: outstanding_obligations
         }
+      end
+
+      def utilization_report(from_date: nil, to_date: nil)
+        referrals = Corvid::PrcReferral.all
+        referrals = referrals.where("created_at >= ?", from_date) if from_date
+        referrals = referrals.where("created_at <= ?", to_date) if to_date
+
+        {
+          report_type: :utilization,
+          generated_at: Time.current,
+          total_referrals: referrals.count,
+          by_status: referrals.group(:status).count,
+          by_priority: referrals.group(:medical_priority).count,
+          by_provider: {},
+          period: { from: from_date, to: to_date }
+        }
+      end
+
+      def denial_report(from_date: nil, to_date: nil)
+        referrals = Corvid::PrcReferral.all
+        referrals = referrals.where("created_at >= ?", from_date) if from_date
+        referrals = referrals.where("created_at <= ?", to_date) if to_date
+
+        total = referrals.count
+        denied = referrals.where(status: "denied").count
+        denial_rate = total > 0 ? (denied.to_f / total * 100).round(2) : 0.0
+
+        {
+          report_type: :denial,
+          generated_at: Time.current,
+          total_denials: denied,
+          denial_rate: denial_rate,
+          by_reason: {},
+          period: { from: from_date, to: to_date }
+        }
+      end
+
+      def workload_report
+        {
+          report_type: :workload,
+          generated_at: Time.current,
+          pending_count: Corvid::PrcReferral.where(status: %w[submitted eligibility_review alternate_resource_review priority_assignment committee_review]).count,
+          by_staff: {},
+          processing_metrics: {}
+        }
+      end
+
+      def to_csv(report, type: nil)
+        CSV.generate do |csv|
+          report.each do |key, value|
+            next if value.is_a?(Hash) || value.is_a?(Array)
+
+            csv << [key.to_s.titleize, value]
+          end
+        end
       end
 
       private

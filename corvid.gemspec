@@ -28,6 +28,7 @@ Gem::Specification.new do |spec|
 
   spec.add_dependency "rails", "~> 8.1"
   spec.add_dependency "aasm", "~> 5.5"
+  spec.add_dependency "csv", ">= 3.0"
   spec.add_dependency "pg", "~> 1.5"
   spec.add_dependency "ulid", "~> 1.4"
 end
