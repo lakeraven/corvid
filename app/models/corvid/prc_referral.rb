@@ -120,8 +120,85 @@ module Corvid
     end
 
     # ----------------------------------------------------------------
+    # RCIS-first caching (ported from rpms_redux)
+    # ----------------------------------------------------------------
+
+    CACHE_STALENESS_THRESHOLD_HOURS = 1
+
+    # -- medical priority caching ------------------------------------------
+
+    def medical_priority_cache_stale?
+      return true if medical_priority_cached_at.blank?
+
+      medical_priority_cached_at < CACHE_STALENESS_THRESHOLD_HOURS.hours.ago
+    end
+
+    def cached_medical_priority
+      rcis_priority = service_request&.medical_priority_level
+
+      if rcis_priority.present?
+        refresh_medical_priority_cache!(rcis_priority)
+        rcis_priority
+      else
+        medical_priority
+      end
+    end
+
+    def refresh_medical_priority_from_rcis!
+      @service_request = nil
+
+      rcis_priority = service_request&.medical_priority_level
+
+      if rcis_priority.present?
+        refresh_medical_priority_cache!(rcis_priority)
+        true
+      else
+        false
+      end
+    end
+
+    # -- authorization number caching --------------------------------------
+
+    def authorization_number_cache_stale?
+      return true if authorization_number_cached_at.blank?
+
+      authorization_number_cached_at < CACHE_STALENESS_THRESHOLD_HOURS.hours.ago
+    end
+
+    def cached_authorization_number
+      rcis_auth = service_request&.identifier
+
+      if rcis_auth.present?
+        refresh_authorization_number_cache!(rcis_auth)
+        rcis_auth
+      else
+        authorization_number
+      end
+    end
+
+    def refresh_authorization_number_from_rcis!
+      @service_request = nil
+
+      rcis_auth = service_request&.identifier
+
+      if rcis_auth.present?
+        refresh_authorization_number_cache!(rcis_auth)
+        true
+      else
+        false
+      end
+    end
+
+    # ----------------------------------------------------------------
     # 72-hour notification rules (ported from rpms_redux)
     # ----------------------------------------------------------------
+
+    def notification_within_72_hours?
+      return true unless emergency_flag?
+      return false unless notification_date.present?
+
+      hours_since_notification <= notification_grace_period
+    end
 
     def notification_status
       return "not_required" unless emergency_flag?
@@ -191,6 +268,30 @@ module Corvid
     end
 
     private
+
+    # Get authorization number from RCIS (source of truth).
+    # Falls back to local cache if RCIS unavailable.
+    def generate_authorization_number
+      cached_authorization_number
+    end
+
+    def refresh_medical_priority_cache!(priority_value)
+      return if priority_value == medical_priority && !medical_priority_cache_stale?
+
+      update_columns(
+        medical_priority: priority_value,
+        medical_priority_cached_at: Time.current
+      )
+    end
+
+    def refresh_authorization_number_cache!(auth_number_value)
+      return if auth_number_value == authorization_number && !authorization_number_cache_stale?
+
+      update_columns(
+        authorization_number: auth_number_value,
+        authorization_number_cached_at: Time.current
+      )
+    end
 
     def auto_populate_checklist
       Corvid::EligibilityChecklistService.populate!(self)

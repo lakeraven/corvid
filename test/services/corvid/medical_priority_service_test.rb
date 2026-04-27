@@ -326,6 +326,181 @@ class Corvid::MedicalPriorityServiceTest < ActiveSupport::TestCase
     end
   end
 
+  # -- assess result essential?/necessary? predicates -----------------------
+
+  test "assess result for urgent is necessary but not essential" do
+    with_tenant(TENANT) do
+      sr = OpenStruct.new(
+        emergent?: false, urgent?: true,
+        medical_priority_level: nil,
+        reason_for_referral: "Urgent care",
+        diagnosis_codes: nil, procedure_codes: nil,
+        urgency: "URGENT"
+      )
+      result = Corvid::MedicalPriorityService.assess(sr)
+      assert result.necessary?
+      refute result.essential?
+    end
+  end
+
+  test "assess result for routine is neither essential nor necessary" do
+    with_tenant(TENANT) do
+      sr = OpenStruct.new(
+        emergent?: false, urgent?: false,
+        medical_priority_level: nil,
+        reason_for_referral: "Routine evaluation",
+        diagnosis_codes: nil, procedure_codes: nil,
+        urgency: "ROUTINE"
+      )
+      result = Corvid::MedicalPriorityService.assess(sr)
+      refute result.essential?
+      refute result.necessary?
+    end
+  end
+
+  # -- assess result for emergent is essential -------------------------------
+
+  test "assess result for emergent is essential and not necessary" do
+    with_tenant(TENANT) do
+      sr = OpenStruct.new(
+        emergent?: true, urgent?: false,
+        medical_priority_level: nil,
+        reason_for_referral: "Emergency",
+        diagnosis_codes: nil, procedure_codes: nil,
+        urgency: "EMERGENT"
+      )
+      result = Corvid::MedicalPriorityService.assess(sr)
+      assert result.essential?
+      refute result.necessary?
+    end
+  end
+
+  # -- PRIORITIES constant ---------------------------------------------------
+
+  test "PRIORITIES maps emergent to 1, urgent to 2, routine to 3" do
+    assert_equal({ emergent: 1, urgent: 2, routine: 3 }, Corvid::MedicalPriorityService::PRIORITIES)
+  end
+
+  # -- PRIORITY_NAMES constant -----------------------------------------------
+
+  test "PRIORITY_NAMES maps all three levels" do
+    names = Corvid::MedicalPriorityService::PRIORITY_NAMES
+    assert_equal 3, names.size
+    assert names[1].present?
+    assert names[2].present?
+    assert names[3].present?
+  end
+
+  # -- FUNDING_SCORES constant -----------------------------------------------
+
+  test "FUNDING_SCORES maps levels to scores" do
+    scores = Corvid::MedicalPriorityService::FUNDING_SCORES
+    assert_equal 100, scores[1]
+    assert_equal 75, scores[2]
+    assert_equal 50, scores[3]
+  end
+
+  # -- PriorityResult struct -------------------------------------------------
+
+  test "PriorityResult responds to all expected methods" do
+    result = Corvid::MedicalPriorityService::PriorityResult.new(
+      priority_level: 1, priority_name: "Test",
+      priority_system: "corvid_v1", funding_priority_score: 100,
+      keywords_detected: [], requires_review: false
+    )
+    assert_respond_to result, :essential?
+    assert_respond_to result, :necessary?
+    assert_respond_to result, :requires_clinical_review?
+    assert_respond_to result, :to_h
+    assert_respond_to result, :funding_priority_score
+    assert_respond_to result, :keywords_detected
+  end
+
+  # -- assign with medical_priority_level already set -----------------------
+
+  test "assign uses medical_priority_level when present on service request" do
+    with_tenant(TENANT) do
+      referral = create_referral
+      sr = OpenStruct.new(
+        emergent?: false, urgent?: false,
+        medical_priority_level: 1
+      )
+      referral.define_singleton_method(:service_request) { sr }
+      priority = Corvid::MedicalPriorityService.assign(referral)
+      assert_equal 1, priority
+    end
+  end
+
+  # -- assess returns consistent priority_system ----------------------------
+
+  test "assess always returns corvid_v1 as priority_system" do
+    with_tenant(TENANT) do
+      %i[emergent urgent routine].each do |level|
+        sr = OpenStruct.new(
+          emergent?: level == :emergent,
+          urgent?: level == :urgent,
+          medical_priority_level: nil,
+          reason_for_referral: "Test",
+          diagnosis_codes: nil, procedure_codes: nil,
+          urgency: level.to_s.upcase
+        )
+        result = Corvid::MedicalPriorityService.assess(sr)
+        assert_equal "corvid_v1", result.priority_system
+      end
+    end
+  end
+
+  # -- requires_clinical_review? alias works --------------------------------
+
+  test "requires_clinical_review? is aliased to requires_review" do
+    result = Corvid::MedicalPriorityService::PriorityResult.new(
+      priority_level: 3, requires_review: true
+    )
+    assert result.requires_clinical_review?
+  end
+
+  # -- to_h with empty keywords_detected returns empty array ----------------
+
+  test "to_h returns empty array for keywords_detected when nil" do
+    result = Corvid::MedicalPriorityService::PriorityResult.new(
+      priority_level: 3, priority_system: "corvid_v1",
+      priority_name: "Routine", funding_priority_score: 50,
+      keywords_detected: nil, requires_review: false
+    )
+    assert_equal [], result.to_h[:keywords_detected]
+  end
+
+  # -- Unknown priority for nil service_request -----------------------------
+
+  test "assess with nil urgency flags defaults to routine" do
+    with_tenant(TENANT) do
+      sr = OpenStruct.new(
+        emergent?: false, urgent?: false,
+        medical_priority_level: nil,
+        reason_for_referral: nil,
+        diagnosis_codes: nil, procedure_codes: nil,
+        urgency: nil
+      )
+      result = Corvid::MedicalPriorityService.assess(sr)
+      assert_equal 3, result.priority_level
+    end
+  end
+
+  test "assess result to_h keys match expected set" do
+    with_tenant(TENANT) do
+      sr = OpenStruct.new(
+        emergent?: true, urgent?: false,
+        medical_priority_level: nil,
+        reason_for_referral: "Emergency",
+        diagnosis_codes: nil, procedure_codes: nil,
+        urgency: "EMERGENT"
+      )
+      result = Corvid::MedicalPriorityService.assess(sr)
+      expected_keys = %i[priority_level priority_system priority_name funding_score keywords_detected requires_review]
+      assert_equal expected_keys.sort, result.to_h.keys.sort
+    end
+  end
+
   # -- Funding score ordering ------------------------------------------------
 
   test "funding priority decreases from emergent to routine" do

@@ -168,6 +168,34 @@ class Corvid::DeterminationTest < ActiveSupport::TestCase
     assert_equal expected_keys.sort, Corvid::Determination.outcomes.keys.sort
   end
 
+  # -- Determination data via adapter -----------------------------------------
+
+  test "determination_data_token stores reference" do
+    with_tenant(TENANT) do
+      det = Corvid::Determination.create!(
+        determinable: create_referral,
+        decision_method: "automated",
+        outcome: "approved",
+        determination_data_token: "tok_data_123"
+      )
+      det.reload
+      assert_equal "tok_data_123", det.determination_data_token
+    end
+  end
+
+  test "reasons_token stores and reloads" do
+    with_tenant(TENANT) do
+      det = Corvid::Determination.create!(
+        determinable: create_referral,
+        decision_method: "automated",
+        outcome: "denied",
+        reasons_token: "tok_reasons_abc"
+      )
+      det.reload
+      assert_equal "tok_reasons_abc", det.reasons_token
+    end
+  end
+
   # -- valid with all fields --------------------------------------------------
 
   test "valid with all required fields" do

@@ -17,6 +17,7 @@ module Corvid
     belongs_to :care_team, optional: true, class_name: "Corvid::CareTeam"
     has_many :prc_referrals, dependent: :destroy, class_name: "Corvid::PrcReferral"
     has_many :tasks, as: :taskable, dependent: :destroy, class_name: "Corvid::Task"
+    has_many :case_programs, dependent: :destroy, class_name: "Corvid::CaseProgram"
 
     enum :status, { active: "active", inactive: "inactive", closed: "closed" }
     LIFECYCLE_STATUSES = %w[intake active_followup closure closed].freeze
