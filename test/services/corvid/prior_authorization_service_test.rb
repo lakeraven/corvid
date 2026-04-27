@@ -159,6 +159,24 @@ class Corvid::PriorAuthorizationServiceTest < ActiveSupport::TestCase
     end
   end
 
+  test "complete authorization workflow for expensive urgent service request" do
+    with_tenant(TENANT) do
+      sr = build_service_request(
+        urgency: "URGENT", authorization_required: true,
+        authorization_reason: "Specialized cardiac surgery",
+        estimated_cost: 150_000, requires_committee_review: true,
+        case_manager_ien: 789
+      )
+      result = Corvid::PriorAuthorizationService.check(sr)
+
+      assert_equal :prior, result.authorization_type
+      assert result.requires_prior_authorization?
+      assert result.requires_committee_review?
+      assert result.has_case_manager?
+      assert result.compliant?
+    end
+  end
+
   test "emergency service request converts to retroactive after 72 hours" do
     with_tenant(TENANT) do
       sr = build_service_request(urgency: "EMERGENT", requested_on: Date.current - 10.days, authorization_required: true)

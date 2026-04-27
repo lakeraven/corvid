@@ -187,6 +187,16 @@ class Corvid::ChsReportingServiceTest < ActiveSupport::TestCase
     end
   end
 
+  # -- financial_report total_budget from adapter ----------------------------
+
+  test "financial_report uses adapter for budget data" do
+    with_tenant(TENANT) do
+      report = Corvid::ChsReportingService.financial_report
+      assert report[:total_budget].is_a?(Numeric)
+      assert report[:total_budget] > 0, "Budget should come from adapter mock data"
+    end
+  end
+
   # -- Adapter boundary ------------------------------------------------------
 
   test "ChsReportingService does not reference Rpms:: directly" do

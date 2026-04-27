@@ -496,6 +496,22 @@ class Corvid::TaskTest < ActiveSupport::TestCase
     end
   end
 
+  # -- Milestone predicate ----------------------------------------------------
+
+  test "milestone? returns true when milestone_key is set" do
+    with_tenant(TENANT) do
+      task = create_task(milestone_key: "initial_assessment")
+      assert task.milestone?
+    end
+  end
+
+  test "milestone? returns false when milestone_key is nil" do
+    with_tenant(TENANT) do
+      task = create_task
+      refute task.milestone?
+    end
+  end
+
   # -- Priority ---------------------------------------------------------------
 
   test "can set urgent priority" do

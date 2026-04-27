@@ -151,6 +151,66 @@ class Corvid::BudgetAvailabilityServiceTest < ActiveSupport::TestCase
     end
   end
 
+  # -- check with zero cost --------------------------------------------------
+
+  test "check with zero cost reports requires_cost_estimate" do
+    with_tenant(TENANT) do
+      referral = create_referral(estimated_cost: 0)
+      result = Corvid::BudgetAvailabilityService.check(referral)
+      assert result.requires_cost_estimate?
+    end
+  end
+
+  # -- current_fiscal_year format -------------------------------------------
+
+  test "current_fiscal_year follows FY format" do
+    with_tenant(TENANT) do
+      # The check result exposes fiscal_year
+      referral = create_referral(estimated_cost: 5_000)
+      result = Corvid::BudgetAvailabilityService.check(referral)
+      assert_match(/\AFY\d{4}\z/, result.fiscal_year)
+    end
+  end
+
+  # -- BudgetCheckResult struct responds to to_h-like access ----------------
+
+  test "check result total_budget is positive" do
+    with_tenant(TENANT) do
+      referral = create_referral(estimated_cost: 5_000)
+      result = Corvid::BudgetAvailabilityService.check(referral)
+      assert result.total_budget > 0
+    end
+  end
+
+  # -- committee review threshold boundary ----------------------------------
+
+  test "cost at exactly COMMITTEE_REVIEW_THRESHOLD requires committee review" do
+    with_tenant(TENANT) do
+      threshold = Corvid::BudgetAvailabilityService::COMMITTEE_REVIEW_THRESHOLD
+      referral = create_referral(estimated_cost: threshold)
+      result = Corvid::BudgetAvailabilityService.check(referral)
+      assert result.requires_committee_review?
+    end
+  end
+
+  test "cost just below COMMITTEE_REVIEW_THRESHOLD does not require committee review" do
+    with_tenant(TENANT) do
+      threshold = Corvid::BudgetAvailabilityService::COMMITTEE_REVIEW_THRESHOLD
+      referral = create_referral(estimated_cost: threshold - 0.01)
+      result = Corvid::BudgetAvailabilityService.check(referral)
+      refute result.requires_committee_review?
+    end
+  end
+
+  # -- remaining_budget returns numeric value --------------------------------
+
+  test "remaining_budget returns a numeric" do
+    with_tenant(TENANT) do
+      result = Corvid::BudgetAvailabilityService.remaining_budget
+      assert result.is_a?(Numeric)
+    end
+  end
+
   # -- Check result struct responds to all predicates -----------------------
 
   test "check result responds to all expected predicates" do

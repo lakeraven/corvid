@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_04_21_215809) do
+ActiveRecord::Schema[8.1].define(version: 2026_04_24_000001) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
@@ -93,6 +93,24 @@ ActiveRecord::Schema[8.1].define(version: 2026_04_21_215809) do
     t.datetime "updated_at", null: false
     t.index ["tenant_identifier", "facility_identifier"], name: "idx_on_tenant_identifier_facility_identifier_6f25172ef7"
     t.check_constraint "status::text = ANY (ARRAY['active'::character varying::text, 'inactive'::character varying::text])", name: "corvid_care_teams_status_check"
+  end
+
+  create_table "corvid_case_programs", force: :cascade do |t|
+    t.bigint "case_id", null: false
+    t.datetime "created_at", null: false
+    t.date "disenrollment_date"
+    t.date "enrollment_date", null: false
+    t.string "enrollment_status", default: "active", null: false
+    t.string "facility_identifier"
+    t.string "program_code", null: false
+    t.string "program_name", null: false
+    t.string "tenant_identifier", null: false
+    t.datetime "updated_at", null: false
+    t.index ["case_id", "program_code"], name: "idx_corvid_case_programs_case_code", unique: true
+    t.index ["case_id"], name: "index_corvid_case_programs_on_case_id"
+    t.index ["tenant_identifier", "enrollment_status"], name: "idx_corvid_case_programs_tenant_status"
+    t.index ["tenant_identifier", "facility_identifier"], name: "idx_corvid_case_programs_tenant_facility"
+    t.check_constraint "enrollment_status::text = ANY (ARRAY['active'::character varying, 'inactive'::character varying, 'pending'::character varying, 'terminated'::character varying]::text[])", name: "corvid_case_programs_enrollment_status_check"
   end
 
   create_table "corvid_cases", force: :cascade do |t|
@@ -324,6 +342,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_04_21_215809) do
 
   add_foreign_key "corvid_alternate_resource_checks", "corvid_prc_referrals", column: "prc_referral_id"
   add_foreign_key "corvid_care_team_members", "corvid_care_teams", column: "care_team_id"
+  add_foreign_key "corvid_case_programs", "corvid_cases", column: "case_id"
   add_foreign_key "corvid_cases", "corvid_care_teams", column: "care_team_id"
   add_foreign_key "corvid_committee_reviews", "corvid_prc_referrals", column: "prc_referral_id"
   add_foreign_key "corvid_eligibility_checklists", "corvid_prc_referrals", column: "prc_referral_id"

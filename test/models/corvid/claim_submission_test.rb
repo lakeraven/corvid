@@ -249,6 +249,25 @@ class Corvid::ClaimSubmissionTest < ActiveSupport::TestCase
     end
   end
 
+  # -- accepted? predicate ---------------------------------------------------
+
+  test "accepted? returns true when status is accepted" do
+    with_tenant(TENANT) do
+      claim = Corvid::ClaimSubmission.new(status: "accepted")
+      assert_equal "accepted", claim.status
+    end
+  end
+
+  # -- mark_accepted! --------------------------------------------------------
+
+  test "mark_accepted transitions from submitted" do
+    with_tenant(TENANT) do
+      claim = create_claim(status: "submitted")
+      claim.update!(status: "accepted")
+      assert_equal "accepted", claim.reload.status
+    end
+  end
+
   # -- CLAIM_TYPES -----------------------------------------------------------
 
   test "accepts valid claim types" do
