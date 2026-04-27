@@ -500,6 +500,29 @@ class Corvid::CommitteeReviewTest < ActiveSupport::TestCase
     end
   end
 
+  # -- Attendees/documents/conditions via adapter tokens ----------------------
+
+  test "attendees_count returns 0 with no token" do
+    with_tenant(TENANT) do
+      review = create_review
+      assert_equal 0, review.attendees_count
+    end
+  end
+
+  test "documents_reviewed_count returns 0 with no token" do
+    with_tenant(TENANT) do
+      review = create_review
+      assert_equal 0, review.documents_reviewed_count
+    end
+  end
+
+  test "conditions_count returns 0 with no token" do
+    with_tenant(TENANT) do
+      review = create_review
+      assert_equal 0, review.conditions_count
+    end
+  end
+
   # -- finalized? for deferred ------------------------------------------------
 
   test "finalized? returns true for deferred" do

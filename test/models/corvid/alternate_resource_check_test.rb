@@ -412,6 +412,33 @@ class Corvid::AlternateResourceCheckTest < ActiveSupport::TestCase
     end
   end
 
+  test "sets checked_at when status changes from checking" do
+    with_tenant(TENANT) do
+      check = Corvid::AlternateResourceCheck.create!(
+        prc_referral: create_referral, resource_type: "medicare_a", status: "checking"
+      )
+      check.update!(status: "not_enrolled")
+      assert_not_nil check.checked_at
+    end
+  end
+
+  test "checked_at only set when transitioning from not_checked or checking" do
+    with_tenant(TENANT) do
+      check = Corvid::AlternateResourceCheck.create!(
+        prc_referral: create_referral, resource_type: "medicare_a", status: "enrolled"
+      )
+      # Starting from enrolled means checked_at should not be set by the callback
+      assert_nil check.checked_at
+    end
+  end
+
+  test "stale? returns true when never checked" do
+    with_tenant(TENANT) do
+      check = Corvid::AlternateResourceCheck.new(checked_at: nil)
+      assert check.stale?
+    end
+  end
+
   test "stores coverage details" do
     with_tenant(TENANT) do
       check = Corvid::AlternateResourceCheck.create!(

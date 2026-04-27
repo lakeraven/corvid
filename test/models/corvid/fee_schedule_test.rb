@@ -76,6 +76,24 @@ class Corvid::FeeScheduleTest < ActiveSupport::TestCase
     end
   end
 
+  test "defaults tiers to empty array via adapter" do
+    with_tenant(TENANT) do
+      fs = create_schedule
+      assert_equal [], fs.tiers
+    end
+  end
+
+  test "active scope returns only active schedules" do
+    with_tenant(TENANT) do
+      active = create_schedule(name: "Active", active: true)
+      inactive = create_schedule(name: "Inactive", active: false)
+
+      results = Corvid::FeeSchedule.current
+      assert_includes results, active
+      refute_includes results, inactive
+    end
+  end
+
   # -- Scopes -----------------------------------------------------------------
 
   test "for_program filters by program" do
