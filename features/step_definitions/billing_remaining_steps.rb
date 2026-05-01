@@ -345,6 +345,7 @@ Given("a fee schedule exists with standard FPL tiers") do
   @fee_schedule = Corvid::FeeSchedule.create!(
     tenant_identifier: @tenant, facility_identifier: @facility,
     name: "Standard Sliding Fee",
+    program: "general",
     tiers_token: Corvid.adapter.store_text(
       case_token: "fs_std", kind: :note, text: tiers.to_json
     ),
@@ -394,11 +395,13 @@ end
 Given("an expired fee schedule and a current fee schedule exist") do
   @expired_schedule = Corvid::FeeSchedule.create!(
     tenant_identifier: @tenant, facility_identifier: @facility,
-    name: "Expired", effective_date: 2.years.ago, end_date: 1.year.ago, active: false
+    name: "Expired", program: "general",
+    effective_date: 2.years.ago, end_date: 1.year.ago, active: false
   )
   @current_schedule = Corvid::FeeSchedule.create!(
     tenant_identifier: @tenant, facility_identifier: @facility,
-    name: "Current", effective_date: 1.month.ago, active: true
+    name: "Current", program: "general",
+    effective_date: 1.month.ago, active: true
   )
 end
 
