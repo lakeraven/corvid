@@ -90,6 +90,7 @@ module Corvid
       step = step.to_sym
       raise ArgumentError, "Invalid step: #{step}" unless STEPS.include?(step)
       @current_step = step
+      auto_save_draft! if STEPS.index(step) > 0
     end
 
     def next_step!

@@ -12,6 +12,7 @@ Given("a fee schedule exists with tiers:") do |table|
     tenant_identifier: @tenant,
     facility_identifier: @facility,
     name: "Standard Sliding Fee",
+    program: "general",
     tiers_token: Corvid.adapter.store_text(
       case_token: "fs_test", kind: :note, text: tiers.to_json
     ),
@@ -25,6 +26,7 @@ Given("a fee schedule {string} exists") do |name|
     tenant_identifier: @tenant,
     facility_identifier: @facility,
     name: name,
+    program: "general",
     effective_date: Date.new(Date.current.year, 1, 1),
     active: true
   )
