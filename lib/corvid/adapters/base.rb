@@ -116,6 +116,30 @@ module Corvid
         []
       end
 
+      def release_obligation(obligation_id)
+        raise NotImplementedError, "#{self.class}#release_obligation not implemented"
+      end
+
+      def get_obligation(obligation_id)
+        nil
+      end
+
+      def get_obligation_by_referral(referral_identifier)
+        nil
+      end
+
+      def record_payment(obligation_id:, amount:, payment_date: nil, check_number: nil, vendor_id: nil)
+        raise NotImplementedError, "#{self.class}#record_payment not implemented"
+      end
+
+      def get_payments(obligation_id:)
+        []
+      end
+
+      def update_obligation_status(obligation_id, status:)
+        raise NotImplementedError, "#{self.class}#update_obligation_status not implemented"
+      end
+
       # ----------------------------------------------------------------------
       # Site parameters
       # ----------------------------------------------------------------------
