@@ -512,6 +512,67 @@ class Corvid::TaskTest < ActiveSupport::TestCase
     end
   end
 
+  # -- Required milestones scope ---------------------------------------------
+
+  test "required_milestones scope returns only required milestone tasks" do
+    with_tenant(TENANT) do
+      taskable = create_case
+      required = Corvid::Task.create!(
+        taskable: taskable, description: "HBIG",
+        milestone_key: "hbig", milestone_position: 1, required: true
+      )
+      optional = Corvid::Task.create!(
+        taskable: taskable, description: "Dose 2",
+        milestone_key: "dose_2", milestone_position: 2, required: false
+      )
+
+      results = Corvid::Task.required_milestones
+      assert_includes results, required
+      refute_includes results, optional
+    end
+  end
+
+  # -- Milestone key uniqueness ----------------------------------------------
+
+  test "milestone_key is unique per taskable" do
+    with_tenant(TENANT) do
+      taskable = create_case
+      Corvid::Task.create!(
+        taskable: taskable, description: "First",
+        milestone_key: "hbig", milestone_position: 1
+      )
+
+      duplicate = Corvid::Task.new(
+        taskable: taskable, description: "Duplicate",
+        milestone_key: "hbig", milestone_position: 1
+      )
+      assert_raises(ActiveRecord::RecordNotUnique) { duplicate.save! }
+    end
+  end
+
+  test "same milestone_key allowed on different taskables" do
+    with_tenant(TENANT) do
+      case1 = create_case
+      case2 = Corvid::Case.create!(
+        patient_identifier: "pt_task_test_2",
+        lifecycle_status: "intake",
+        facility_identifier: "fac_test"
+      )
+
+      t1 = Corvid::Task.create!(
+        taskable: case1, description: "HBIG",
+        milestone_key: "hbig", milestone_position: 1
+      )
+      t2 = Corvid::Task.create!(
+        taskable: case2, description: "HBIG",
+        milestone_key: "hbig", milestone_position: 1
+      )
+
+      assert t1.persisted?
+      assert t2.persisted?
+    end
+  end
+
   # -- Priority ---------------------------------------------------------------
 
   test "can set urgent priority" do
