@@ -180,7 +180,82 @@ module Corvid
       end
 
       def create_obligation(referral_identifier, amount, params = {})
-        true
+        if amount > 999_999_000
+          OpenStruct.new(success?: false, failure?: true, message: "Insufficient funds", id: nil)
+        else
+          id = "OBL-#{SecureRandom.hex(4)}"
+          @obligations ||= {}
+          @obligations[id] = { id: id, referral_ien: referral_identifier, amount: amount, status: "PENDING", amount_due: amount, payments: [] }.merge(params)
+          OpenStruct.new(success?: true, failure?: false, id: id, message: nil)
+        end
+      end
+
+      def release_obligation(obligation_id)
+        @obligations ||= {}
+        if @obligations.key?(obligation_id)
+          @obligations[obligation_id][:status] = "RELEASED"
+          OpenStruct.new(success?: true, failure?: false)
+        else
+          OpenStruct.new(success?: false, failure?: true, message: "Obligation not found")
+        end
+      end
+
+      def get_obligation(obligation_id)
+        @obligations ||= {}
+        @obligations[obligation_id]
+      end
+
+      def get_obligation_by_referral(referral_identifier)
+        @obligations ||= {}
+        @obligations.values.find { |o| o[:referral_ien] == referral_identifier }
+      end
+
+      def record_payment(obligation_id:, amount:, payment_date: nil, check_number: nil, vendor_id: nil)
+        @obligations ||= {}
+        obligation = @obligations[obligation_id]
+        return OpenStruct.new(success?: false, failure?: true, message: "Obligation not found") unless obligation
+        return OpenStruct.new(success?: false, failure?: true, message: "Amount exceeds obligation") if amount > obligation[:amount_due]
+
+        payment_id = "PMT-#{SecureRandom.hex(4)}"
+        payment = { id: payment_id, amount: amount, payment_date: payment_date || Date.current, check_number: check_number, vendor_id: vendor_id }
+        obligation[:payments] << payment
+        obligation[:amount_due] -= amount
+        obligation[:status] = "PAID" if obligation[:amount_due] <= 0
+        OpenStruct.new(success?: true, failure?: false, id: payment_id)
+      end
+
+      def get_payments(obligation_id:)
+        @obligations ||= {}
+        @obligations.dig(obligation_id, :payments) || []
+      end
+
+      def update_obligation_status(obligation_id, status:)
+        @obligations ||= {}
+        valid_statuses = %w[PENDING PAID CANCELLED PARTIAL]
+        return OpenStruct.new(success?: false, failure?: true, message: "Invalid status") unless valid_statuses.include?(status)
+
+        obligation = @obligations[obligation_id]
+        return OpenStruct.new(success?: false, failure?: true, message: "Obligation not found") unless obligation
+
+        obligation[:status] = status
+        OpenStruct.new(success?: true, failure?: false)
+      end
+
+      def get_outstanding_obligations(fiscal_year: nil)
+        @obligations ||= {}
+        @obligations.values.select { |o| %w[PENDING PARTIAL].include?(o[:status]) }
+      end
+
+      def get_obligation_summary(fiscal_year: nil)
+        @obligations ||= {}
+        total_obligated = @obligations.values.sum { |o| o[:amount] }
+        total_paid = @obligations.values.sum { |o| o[:payments]&.sum { |p| p[:amount] } || 0 }
+        {
+          total_obligated: total_obligated,
+          total_paid: total_paid,
+          total_outstanding: total_obligated - total_paid,
+          by_status: @obligations.values.group_by { |o| o[:status] }.transform_values(&:count)
+        }
       end
 
       # ----------------------------------------------------------------------
