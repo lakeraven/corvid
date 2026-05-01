@@ -291,8 +291,10 @@ Then("a PRC referral should be created") do
 end
 
 Then("the referral status should be {string}") do |status|
-  referral = @wizard.prc_referral
-  assert_equal status, referral.status
+  referral = @wizard&.prc_referral || @referral
+  referral.reload
+  assert_equal status, referral.status,
+    "Expected referral status '#{status}' but got '#{referral.status}'"
 end
 
 Then("I should see a success message {string}") do |message|

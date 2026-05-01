@@ -130,7 +130,7 @@ When("I view active care teams") do
 end
 
 When("I view all care teams") do
-  @viewed_teams = Corvid::CareTeam.all
+  @viewed_teams = Corvid::CareTeam.for_facility(@facility)
 end
 
 Given("the care team has the following members:") do |table|

@@ -77,7 +77,7 @@ module Corvid
         transitions from: [ :eligibility_review, :exception_review, :priority_assignment, :committee_review ], to: :denied
       end
 
-      event :mark_deferred, after: :sync_status_to_ehr do
+      event :mark_deferred, after: [ :sync_status_to_ehr, :record_deferred_determination ] do
         transitions from: [ :priority_assignment, :committee_review ], to: :deferred
       end
 
@@ -318,6 +318,10 @@ module Corvid
         :management_approved,
         by: pending_approval_by!
       )
+    end
+
+    def record_deferred_determination
+      record_determination!(outcome: "deferred", decision_method: "automated")
     end
 
     def sync_status_to_ehr
