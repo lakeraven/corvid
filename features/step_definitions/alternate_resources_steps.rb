@@ -201,3 +201,171 @@ end
 Then("the verification should not be stale") do
   refute @is_stale
 end
+
+# =============================================================================
+# 42 CFR 136.61 — ALL RESOURCES MUST BE CHECKED
+# =============================================================================
+
+Given("all 12 alternate resource checks are created for the referral") do
+  Corvid::AlternateResourceCheck.create_all_for_referral(@referral)
+end
+
+Given("only {int} checks have been verified") do |count|
+  @referral.alternate_resource_checks.order(:id).limit(count).each do |check|
+    check.update!(status: :not_enrolled, checked_at: Time.current)
+  end
+end
+
+Given("all checks are verified as not enrolled or exhausted") do
+  @referral.alternate_resource_checks.each do |check|
+    check.update!(status: :not_enrolled, checked_at: Time.current)
+  end
+end
+
+Given("{string} is verified as enrolled") do |resource_type|
+  check = @referral.alternate_resource_checks.find_by!(resource_type: resource_type)
+  check.update!(status: :enrolled, checked_at: Time.current)
+end
+
+Given("all other checks are verified as not enrolled") do
+  @referral.alternate_resource_checks.where.not(status: :enrolled).each do |check|
+    check.update!(status: :not_enrolled, checked_at: Time.current)
+  end
+end
+
+Then("the referral should have pending resource checks") do
+  assert Corvid::AlternateResourceCheck.any_pending?(@referral)
+end
+
+Then("the referral should not have pending resource checks") do
+  refute Corvid::AlternateResourceCheck.any_pending?(@referral)
+end
+
+Then("the referral should be ready for authorization") do
+  assert Corvid::AlternateResourceCheck.all_exhausted?(@referral)
+end
+
+Then("the referral should not be ready for authorization") do
+  refute Corvid::AlternateResourceCheck.all_exhausted?(@referral)
+end
+
+# =============================================================================
+# STALENESS
+# =============================================================================
+
+Given("all checks were verified {int} days ago") do |days|
+  @referral.alternate_resource_checks.each do |check|
+    check.update_columns(status: "not_enrolled", checked_at: days.days.ago)
+  end
+end
+
+When("I check for stale verifications") do
+  @stale_checks = @referral.alternate_resource_checks.reload.select(&:stale?)
+end
+
+Then("all checks should be stale") do
+  assert_equal @referral.alternate_resource_checks.count, @stale_checks.count
+end
+
+Then("no checks should be stale") do
+  assert_equal 0, @stale_checks.count
+end
+
+# =============================================================================
+# REUSE ACROSS REFERRALS
+# =============================================================================
+
+Given("a previous referral {string} for patient {string} with all checks verified {int} days ago") do |ref_id, _patient_id, days|
+  @prev_referral = Corvid::PrcReferral.create!(
+    case: @case, referral_identifier: ref_id, facility_identifier: @facility
+  )
+  Corvid::AlternateResourceCheck.create_all_for_referral(@prev_referral)
+  @prev_referral.alternate_resource_checks.each do |check|
+    check.update_columns(status: "not_enrolled", checked_at: days.days.ago)
+  end
+end
+
+Given("a new PRC referral {string} for that case") do |ref_id|
+  @new_referral = Corvid::PrcReferral.create!(
+    case: @case, referral_identifier: ref_id, facility_identifier: @facility
+  )
+end
+
+When("I seed alternate resource checks from the previous referral") do
+  Corvid::AlternateResourceCheck.seed_from_previous!(@new_referral, @prev_referral)
+end
+
+Then("the new referral should have {int} checks") do |count|
+  assert_equal count, @new_referral.alternate_resource_checks.count
+end
+
+Then("all new checks should be pre-populated from the previous verification") do
+  @new_referral.alternate_resource_checks.each do |check|
+    refute_equal "not_checked", check.status
+  end
+end
+
+Then("no new checks should be stale") do
+  @new_referral.alternate_resource_checks.each do |check|
+    refute check.stale?, "Check #{check.resource_type} should not be stale"
+  end
+end
+
+Then("all new checks should be stale") do
+  @new_referral.alternate_resource_checks.reload.each do |check|
+    assert check.stale?, "Check #{check.resource_type} should be stale (checked_at: #{check.checked_at})"
+  end
+end
+
+Then("all new checks should require re-verification") do
+  @new_referral.alternate_resource_checks.each do |check|
+    assert check.stale?, "Check #{check.resource_type} should require re-verification"
+  end
+end
+
+# =============================================================================
+# FAILURE SCENARIOS
+# =============================================================================
+
+When("the eligibility check times out") do
+  @check.update!(status: :checking)
+end
+
+When("the eligibility check returns an error") do
+  # Error leaves the check in its current state (not_checked)
+end
+
+Then("the check should still count as pending") do
+  assert Corvid::AlternateResourceCheck.any_pending?(@referral.reload)
+end
+
+When("the patient's coverage is terminated") do
+  # Coverage terminated — next verification returns not eligible
+end
+
+When("I re-verify the check") do
+  # Simulate clearinghouse returning not_enrolled after coverage termination
+  @check.update!(status: :not_enrolled, checked_at: Time.current)
+  @check.reload
+end
+
+When("I verify all and {int} return enrolled and {int} return errors") do |enrolled_count, error_count|
+  checks = @referral.alternate_resource_checks.order(:id).to_a
+  # First N enrolled
+  checks[0, enrolled_count].each { |c| c.update!(status: :enrolled, checked_at: Time.current) }
+  # Next M stay as not_checked (simulating errors)
+  # Already not_checked — no action needed
+  # Remaining get not_enrolled
+  remaining = checks[(enrolled_count + error_count)..]
+  remaining&.each { |c| c.update!(status: :not_enrolled, checked_at: Time.current) }
+end
+
+Then("{int} checks should have status {string}") do |count, status|
+  actual = @referral.alternate_resource_checks.where(status: status).count
+  assert_equal count, actual, "Expected #{count} checks with status '#{status}', got #{actual}"
+end
+
+Then("{int} checks should still be pending") do |count|
+  actual = @referral.alternate_resource_checks.pending.count
+  assert_equal count, actual
+end

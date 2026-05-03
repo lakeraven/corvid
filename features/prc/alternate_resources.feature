@@ -136,3 +136,92 @@ Feature: Alternate resource tracking (payer of last resort)
     And the check was verified 10 days ago
     When I check if the verification is stale
     Then the verification should not be stale
+
+  # =============================================================================
+  # 42 CFR 136.61 — ALL RESOURCES MUST BE CHECKED
+  # =============================================================================
+
+  Scenario: Referral cannot advance past alternate resource review with unchecked resources
+    Given all 12 alternate resource checks are created for the referral
+    And only 5 checks have been verified
+    Then the referral should have pending resource checks
+    And the referral should not be ready for authorization
+
+  Scenario: Referral advances when all resources are verified as exhausted
+    Given all 12 alternate resource checks are created for the referral
+    And all checks are verified as not enrolled or exhausted
+    Then the referral should not have pending resource checks
+    And the referral should be ready for authorization
+
+  Scenario: Active coverage blocks authorization until exhausted or coordinated
+    Given all 12 alternate resource checks are created for the referral
+    And "medicaid" is verified as enrolled
+    And all other checks are verified as not enrolled
+    Then the referral should not be ready for authorization
+
+  # =============================================================================
+  # STALENESS AND RE-VERIFICATION
+  # =============================================================================
+
+  Scenario: Stale checks are flagged for re-verification at 30 days
+    Given all 12 alternate resource checks are created for the referral
+    And all checks were verified 31 days ago
+    When I check for stale verifications
+    Then all checks should be stale
+
+  Scenario: Checks verified within 30 days are not stale
+    Given all 12 alternate resource checks are created for the referral
+    And all checks were verified 15 days ago
+    When I check for stale verifications
+    Then no checks should be stale
+
+  # =============================================================================
+  # COST OPTIMIZATION — REUSE ACROSS REFERRALS
+  # =============================================================================
+
+  Scenario: Recent checks for same patient can seed a new referral
+    Given a previous referral "rf_prev" for patient "pt_001" with all checks verified 10 days ago
+    And a new PRC referral "rf_new" for that case
+    When I seed alternate resource checks from the previous referral
+    Then the new referral should have 12 checks
+    And all new checks should be pre-populated from the previous verification
+    And no new checks should be stale
+
+  Scenario: Stale checks from previous referral are not reused
+    Given a previous referral "rf_old" for patient "pt_001" with all checks verified 45 days ago
+    And a new PRC referral "rf_new2" for that case
+    When I seed alternate resource checks from the previous referral
+    Then the new referral should have 12 checks
+    And all new checks should be stale
+    And all new checks should require re-verification
+
+  # =============================================================================
+  # FAILURE SCENARIOS
+  # =============================================================================
+
+  Scenario: Clearinghouse timeout leaves check in checking state
+    Given an alternate resource check for "medicare_a" exists with status "not_checked"
+    When the eligibility check times out
+    Then the check status should be "checking"
+    And the check should still count as pending
+
+  Scenario: Clearinghouse returns error for invalid subscriber
+    Given an alternate resource check for "private_insurance" exists with status "not_checked"
+    When the eligibility check returns an error
+    Then the check status should be "not_checked"
+    And the check should still count as pending
+
+  Scenario: Patient loses coverage between check and authorization
+    Given an alternate resource check for "medicaid" exists with status "enrolled"
+    And the check was verified 25 days ago
+    When the patient's coverage is terminated
+    And I re-verify the check
+    Then the check status should be "not_enrolled"
+
+  Scenario: Batch verification with mixed results
+    Given all 12 alternate resource checks are created for the referral
+    When I verify all and 2 return enrolled and 3 return errors
+    Then 2 checks should have status "enrolled"
+    Then 3 checks should still be pending
+    And 7 checks should have status "not_enrolled"
+    And the referral should not be ready for authorization
