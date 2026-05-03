@@ -95,15 +95,43 @@ Feature: Eligibility checklist auto-population from enrollment adapter
     And "identity_verified" should be true
     And "residency_verified" should be false
 
+  Scenario: Insurance auto-verified when coverage exists
+    Given the adapter has enrollment data for patient "pt_insured":
+      | enrolled | membership_number | tribe_name   | on_reservation | address                       | ssn_last4 | dob        |
+      | true     | YN-77777          | Yakama Nation | true           | 200 Main St, Toppenish, WA    | 5678      | 1988-02-14 |
+    And the adapter has coverage data for patient "pt_insured":
+      | payer_name | plan_name   | coverage_type |
+      | Medicare   | Medicare A  | medicare      |
+    And a patient "pt_insured" with a PRC case
+    And a PRC referral "rf_insured" for that case
+    When the referral transitions through submit and begin_eligibility_review
+    Then the checklist should have 4 of 7 items complete
+    And "enrollment_verified" should be true
+    And "identity_verified" should be true
+    And "residency_verified" should be true
+    And "insurance_verified" should be true
+
+  Scenario: Insurance not verified when no coverage
+    Given the adapter has enrollment data for patient "pt_uninsured":
+      | enrolled | membership_number | tribe_name   | on_reservation | address                       | ssn_last4 | dob        |
+      | true     | YN-88888          | Yakama Nation | true           | 300 Elm St, Toppenish, WA     | 9012      | 1970-09-30 |
+    And a patient "pt_uninsured" with a PRC case
+    And a PRC referral "rf_uninsured" for that case
+    When the referral transitions through submit and begin_eligibility_review
+    Then the checklist should have 3 of 7 items complete
+    And "insurance_verified" should be false
+
   Scenario: Best case full workflow — enrollment through authorization
     Given the adapter has enrollment data for patient "pt_fullflow":
       | enrolled | membership_number | tribe_name   | on_reservation | address                       | ssn_last4 | dob        |
       | true     | YN-11111          | Yakama Nation | true           | 100 Treaty Rd, Toppenish, WA  | 1234      | 1975-08-20 |
+    And the adapter has coverage data for patient "pt_fullflow":
+      | payer_name | plan_name   | coverage_type |
+      | Medicare   | Medicare A  | medicare      |
     And a patient "pt_fullflow" with a PRC case
     And a PRC referral "rf_fullflow" for that case
     When the referral transitions through submit and begin_eligibility_review
     And I manually verify "application_complete" by "pr_clerk_001"
-    And I manually verify "insurance_verified" with source "manual"
     And I manually verify "clinical_necessity_documented" with source "manual"
     And I request management approval
     And manager "pr_mgr_cookie" approves the referral

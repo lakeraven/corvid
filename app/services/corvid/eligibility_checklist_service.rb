@@ -22,6 +22,7 @@ module Corvid
         populate_enrollment!(checklist, patient_id, adapter_name)
         populate_identity!(checklist, patient_id, adapter_name)
         populate_residency!(checklist, patient_id, adapter_name)
+        populate_insurance!(checklist, patient_id, adapter_name)
 
         checklist.reload
       rescue ActiveRecord::RecordNotUnique
@@ -73,6 +74,15 @@ module Corvid
         return unless result[:on_reservation]
 
         checklist.verify_item!(:residency_verified, source: source)
+      end
+
+      def populate_insurance!(checklist, patient_id, source)
+        return if checklist.insurance_verified
+
+        coverages = Corvid.adapter.get_coverages(patient_id)
+        return unless coverages.is_a?(Array) && coverages.any?
+
+        checklist.verify_item!(:insurance_verified, source: source)
       end
     end
   end
