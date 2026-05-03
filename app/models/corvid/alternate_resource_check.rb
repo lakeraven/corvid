@@ -74,6 +74,18 @@ module Corvid
       prc_referral.alternate_resource_checks.pending.pluck(:resource_type)
     end
 
+    # Seed checks for a new referral from a previous referral's results.
+    # Copies status and checked_at — stale checks will need re-verification.
+    def self.seed_from_previous!(new_referral, previous_referral)
+      previous_referral.alternate_resource_checks.each do |prev_check|
+        new_referral.alternate_resource_checks.find_or_create_by!(resource_type: prev_check.resource_type) do |check|
+          check.status = prev_check.status
+          check.checked_at = prev_check.checked_at
+          check.policy_token = prev_check.policy_token
+        end
+      end
+    end
+
     # Instance methods
 
     def exhausted_or_unavailable?
