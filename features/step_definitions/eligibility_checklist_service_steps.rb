@@ -21,6 +21,16 @@ Given("the adapter has enrollment data for patient {string}:") do |patient_id, t
   )
 end
 
+Given("the adapter has coverage data for patient {string}:") do |patient_id, table|
+  table.hashes.each do |row|
+    Corvid.adapter.add_coverage(patient_id,
+      payer_name: row["payer_name"],
+      plan_name: row["plan_name"],
+      coverage_type: row["coverage_type"]
+    )
+  end
+end
+
 Given("a second PRC referral {string} for patient {string}") do |referral_id, patient_id|
   @case2 = Corvid::Case.create!(
     patient_identifier: patient_id,
