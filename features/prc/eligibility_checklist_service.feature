@@ -62,3 +62,50 @@ Feature: Eligibility checklist auto-population from enrollment adapter
     Then "enrollment_verified" should be false
     And "residency_verified" should be false
     And "identity_verified" should be true
+
+  # =========================================================================
+  # DEMO SCENARIOS
+  # =========================================================================
+
+  Scenario: Best case — all data present, 3 of 7 auto-verified
+    Given the adapter has enrollment data for patient "pt_bestcase":
+      | enrolled | membership_number | tribe_name   | on_reservation | address                       | ssn_last4 | dob        |
+      | true     | YN-54321          | Yakama Nation | true           | 511 Elm St, Toppenish, WA     | 9876      | 1980-05-15 |
+    And a patient "pt_bestcase" with a PRC case
+    And a PRC referral "rf_bestcase" for that case
+    When the referral transitions through submit and begin_eligibility_review
+    Then the checklist should have 3 of 7 items complete
+    And "enrollment_verified" should be true
+    And "identity_verified" should be true
+    And "residency_verified" should be true
+    And "application_complete" should be false
+    And "insurance_verified" should be false
+    And "clinical_necessity_documented" should be false
+    And "management_approved" should be false
+
+  Scenario: Minimum data — enrolled with DOB only, no SSN, off-reservation
+    Given the adapter has enrollment data for patient "pt_mindata":
+      | enrolled | membership_number | tribe_name   | on_reservation | address | ssn_last4 | dob        |
+      | true     | YN-99999          | Yakama Nation | false          |         |           | 1992-11-03 |
+    And a patient "pt_mindata" with a PRC case
+    And a PRC referral "rf_mindata" for that case
+    When the referral transitions through submit and begin_eligibility_review
+    Then the checklist should have 2 of 7 items complete
+    And "enrollment_verified" should be true
+    And "identity_verified" should be true
+    And "residency_verified" should be false
+
+  Scenario: Best case full workflow — enrollment through authorization
+    Given the adapter has enrollment data for patient "pt_fullflow":
+      | enrolled | membership_number | tribe_name   | on_reservation | address                       | ssn_last4 | dob        |
+      | true     | YN-11111          | Yakama Nation | true           | 100 Treaty Rd, Toppenish, WA  | 1234      | 1975-08-20 |
+    And a patient "pt_fullflow" with a PRC case
+    And a PRC referral "rf_fullflow" for that case
+    When the referral transitions through submit and begin_eligibility_review
+    And I manually verify "application_complete" by "pr_clerk_001"
+    And I manually verify "insurance_verified" with source "manual"
+    And I manually verify "clinical_necessity_documented" with source "manual"
+    And I request management approval
+    And manager "pr_mgr_cookie" approves the referral
+    Then the eligibility checklist should be complete
+    And the referral should be in "alternate_resource_review" status
