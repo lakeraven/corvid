@@ -111,7 +111,7 @@ Feature: Eligibility checklist auto-population from enrollment adapter
     And "residency_verified" should be true
     And "insurance_verified" should be true
 
-  Scenario: Insurance not verified when no coverage
+  Scenario: Insurance not verified when no coverage on file
     Given the adapter has enrollment data for patient "pt_uninsured":
       | enrolled | membership_number | tribe_name   | on_reservation | address                       | ssn_last4 | dob        |
       | true     | YN-88888          | Yakama Nation | true           | 300 Elm St, Toppenish, WA     | 9012      | 1970-09-30 |
@@ -120,6 +120,28 @@ Feature: Eligibility checklist auto-population from enrollment adapter
     When the referral transitions through submit and begin_eligibility_review
     Then the checklist should have 3 of 7 items complete
     And "insurance_verified" should be false
+
+  Scenario: Staff triggers payer eligibility check when no coverage on file
+    Given the adapter has enrollment data for patient "pt_nocov":
+      | enrolled | membership_number | tribe_name   | on_reservation | address                       | ssn_last4 | dob        |
+      | true     | YN-55555          | Yakama Nation | true           | 400 Oak St, Toppenish, WA     | 3456      | 1965-04-10 |
+    And a patient "pt_nocov" with a PRC case
+    And a PRC referral "rf_nocov" for that case
+    And the referral transitions through submit and begin_eligibility_review
+    And "insurance_verified" should be false
+    When staff runs a payer eligibility check for the referral and finds coverage
+    Then "insurance_verified" should be true
+    And the insurance verification source should be "eligibility_check"
+
+  Scenario: Staff payer eligibility check finds no coverage
+    Given the adapter has enrollment data for patient "pt_nocov2":
+      | enrolled | membership_number | tribe_name   | on_reservation | address                       | ssn_last4 | dob        |
+      | true     | YN-66666          | Yakama Nation | true           | 500 Pine St, Toppenish, WA    | 7890      | 1982-12-01 |
+    And a patient "pt_nocov2" with a PRC case
+    And a PRC referral "rf_nocov2" for that case
+    And the referral transitions through submit and begin_eligibility_review
+    When staff runs a payer eligibility check for the referral and finds no coverage
+    Then "insurance_verified" should be false
 
   Scenario: Best case full workflow — enrollment through authorization
     Given the adapter has enrollment data for patient "pt_fullflow":

@@ -82,3 +82,22 @@ end
 Then("the referral should have an eligibility checklist") do
   refute_nil @referral.reload.eligibility_checklist
 end
+
+When("staff runs a payer eligibility check for the referral and finds coverage") do
+  patient_id = @referral.case.patient_identifier
+  # Simulate: staff triggers 270/271 check, payer responds with active coverage
+  Corvid.adapter.add_coverage(patient_id,
+    payer_name: "State Medicaid", plan_name: "Medicaid", coverage_type: "medicaid"
+  )
+  Corvid::EligibilityChecklistService.check_payer_eligibility!(@referral)
+end
+
+When("staff runs a payer eligibility check for the referral and finds no coverage") do
+  # No coverage added — check runs but finds nothing
+  Corvid::EligibilityChecklistService.check_payer_eligibility!(@referral)
+end
+
+Then("the insurance verification source should be {string}") do |source|
+  checklist = @referral.reload.eligibility_checklist
+  assert_equal source, checklist.insurance_verification_source
+end

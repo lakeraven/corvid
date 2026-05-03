@@ -47,6 +47,21 @@ module Corvid
         checklist.verify_item!(:management_approved, by: by)
       end
 
+      # Staff-triggered payer eligibility check. Calls get_coverages
+      # (which may hit a 270/271 clearinghouse — cost-bearing).
+      # Only called on demand, not during auto-populate.
+      def check_payer_eligibility!(referral)
+        checklist = referral.eligibility_checklist
+        raise ArgumentError, "No eligibility checklist for referral #{referral.referral_identifier}" unless checklist
+        return if checklist.insurance_verified
+
+        patient_id = referral.case.patient_identifier
+        coverages = Corvid.adapter.get_coverages(patient_id)
+        return unless coverages.is_a?(Array) && coverages.any?
+
+        checklist.verify_item!(:insurance_verified, source: "eligibility_check")
+      end
+
       private
 
       def populate_enrollment!(checklist, patient_id, source)
