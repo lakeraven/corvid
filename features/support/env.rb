@@ -22,6 +22,9 @@ end
 # runs (cucumber scenarios are not wrapped in transactions).
 def clean_corvid_tables!
   # Order matters due to foreign keys.
+  Corvid::FeeScheduleEntry.unscoped.delete_all
+  Corvid::ZipLocality.unscoped.delete_all
+  Corvid::LocalityLookup.clear_cache!
   Corvid::ApiCallLog.unscoped.delete_all
   Corvid::Payment.unscoped.delete_all
   Corvid::ClaimSubmission.unscoped.delete_all
