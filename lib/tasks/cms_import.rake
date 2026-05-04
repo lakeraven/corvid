@@ -9,9 +9,11 @@ namespace :cms do
     yy = year.to_s[-2..]
     base = Corvid::Engine.root.join("db/data/cms_fee_schedules/#{year}")
 
-    # Find the PPRRVU file
+    # Find the PPRRVU file (naming varies by year)
     rvu_file = Dir.glob(base.join("PPRRVU#{yy}*.csv")).first
-    gpci_file = Dir.glob(base.join("GPCI#{yy}*.csv")).first || Dir.glob(base.join("GPCI#{year}*.csv")).first
+    gpci_file = Dir.glob(base.join("*GPCI*#{yy}*.csv")).first ||
+      Dir.glob(base.join("*GPCI*#{year}*.csv")).first ||
+      Dir.glob(base.join("*[Gg][Pp][Cc][Ii]*.csv")).first
 
     abort "No RVU file found for #{year} in #{base}" unless rvu_file
     abort "No GPCI file found for #{year} in #{base}" unless gpci_file
@@ -87,7 +89,7 @@ def parse_gpcis(file)
   gpcis = {}
   started = false
 
-  CSV.foreach(file) do |row|
+  CSV.foreach(file, encoding: "iso-8859-1:utf-8", liberal_parsing: true) do |row|
     # Skip header rows until we see data (starts with a carrier number)
     if !started && row[1]&.strip&.match?(/^\d{2}$/)
       started = true
@@ -130,7 +132,7 @@ def parse_rvus(file, &block)
   pe_col = nil
   mp_col = nil
 
-  CSV.foreach(file) do |row|
+  CSV.foreach(file, encoding: "iso-8859-1:utf-8", liberal_parsing: true) do |row|
     # Find header row (contains "HCPCS")
     if !header_found && row.any? { |c| c&.strip == "HCPCS" }
       header_found = true
