@@ -430,6 +430,15 @@ module Corvid
         @remittances[reference] = attrs
       end
 
+      def add_coverage(patient_identifier, attrs)
+        @coverages[patient_identifier.to_s] ||= []
+        @coverages[patient_identifier.to_s] << attrs
+      end
+
+      def get_coverages(patient_identifier)
+        @coverages[patient_identifier.to_s] || []
+      end
+
       def reset!
         @patients = {}
         @practitioners = {}
@@ -438,6 +447,7 @@ module Corvid
         @text_store = {}
         @enrollments = {}
         @residencies = {}
+        @coverages = {}
         @claims = {}
         @remittances = {}
         @payments_store = {}
