@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_04_24_000001) do
+ActiveRecord::Schema[8.1].define(version: 2026_05_03_000001) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
@@ -110,7 +110,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_04_24_000001) do
     t.index ["case_id"], name: "index_corvid_case_programs_on_case_id"
     t.index ["tenant_identifier", "enrollment_status"], name: "idx_corvid_case_programs_tenant_status"
     t.index ["tenant_identifier", "facility_identifier"], name: "idx_corvid_case_programs_tenant_facility"
-    t.check_constraint "enrollment_status::text = ANY (ARRAY['active'::character varying, 'inactive'::character varying, 'pending'::character varying, 'terminated'::character varying]::text[])", name: "corvid_case_programs_enrollment_status_check"
+    t.check_constraint "enrollment_status::text = ANY (ARRAY['active'::character varying::text, 'inactive'::character varying::text, 'pending'::character varying::text, 'terminated'::character varying::text])", name: "corvid_case_programs_enrollment_status_check"
   end
 
   create_table "corvid_cases", force: :cascade do |t|
@@ -248,6 +248,25 @@ ActiveRecord::Schema[8.1].define(version: 2026_04_24_000001) do
     t.index ["tenant_identifier", "facility_identifier"], name: "idx_corvid_elig_checklists_tenant_facility"
   end
 
+  create_table "corvid_fee_schedule_entries", force: :cascade do |t|
+    t.decimal "conversion_factor", precision: 8, scale: 4
+    t.string "cpt_code", null: false
+    t.datetime "created_at", null: false
+    t.string "description"
+    t.date "effective_date", null: false
+    t.string "locality", null: false
+    t.decimal "mp_gpci", precision: 8, scale: 4
+    t.decimal "mp_rvu", precision: 8, scale: 4
+    t.decimal "pe_gpci", precision: 8, scale: 4
+    t.decimal "pe_rvu", precision: 8, scale: 4
+    t.datetime "updated_at", null: false
+    t.decimal "work_gpci", precision: 8, scale: 4
+    t.decimal "work_rvu", precision: 8, scale: 4
+    t.index ["cpt_code", "locality", "effective_date"], name: "idx_corvid_fee_schedule_unique", unique: true
+    t.index ["cpt_code"], name: "index_corvid_fee_schedule_entries_on_cpt_code"
+    t.index ["effective_date"], name: "index_corvid_fee_schedule_entries_on_effective_date"
+  end
+
   create_table "corvid_fee_schedules", force: :cascade do |t|
     t.boolean "active", default: true
     t.datetime "created_at", null: false
@@ -338,6 +357,17 @@ ActiveRecord::Schema[8.1].define(version: 2026_04_24_000001) do
     t.index ["tenant_identifier", "status"], name: "index_corvid_tasks_on_tenant_identifier_and_status"
     t.check_constraint "priority::text = ANY (ARRAY['routine'::character varying::text, 'urgent'::character varying::text, 'asap'::character varying::text, 'stat'::character varying::text])", name: "corvid_tasks_priority_check"
     t.check_constraint "status::text = ANY (ARRAY['pending'::character varying::text, 'in_progress'::character varying::text, 'completed'::character varying::text, 'cancelled'::character varying::text, 'on_hold'::character varying::text])", name: "corvid_tasks_status_check"
+  end
+
+  create_table "corvid_zip_localities", force: :cascade do |t|
+    t.datetime "created_at", null: false
+    t.string "locality", null: false
+    t.string "locality_name"
+    t.string "state"
+    t.datetime "updated_at", null: false
+    t.string "zip_code", null: false
+    t.index ["locality"], name: "index_corvid_zip_localities_on_locality"
+    t.index ["zip_code"], name: "index_corvid_zip_localities_on_zip_code", unique: true
   end
 
   add_foreign_key "corvid_alternate_resource_checks", "corvid_prc_referrals", column: "prc_referral_id"
