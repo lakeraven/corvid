@@ -5,10 +5,6 @@ require "test_helper"
 class Corvid::ClaimSubmissionTest < ActiveSupport::TestCase
   TENANT = "tnt_cs_test"
 
-  setup do
-    Corvid::ClaimSubmission.unscoped.delete_all
-  end
-
   test "creates with required fields" do
     with_tenant(TENANT) do
       claim = Corvid::ClaimSubmission.create!(

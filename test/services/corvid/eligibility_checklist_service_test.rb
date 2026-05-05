@@ -5,12 +5,6 @@ require "test_helper"
 class Corvid::EligibilityChecklistServiceTest < ActiveSupport::TestCase
   TENANT = "tnt_ecs_test"
 
-  setup do
-    Corvid::EligibilityChecklist.unscoped.delete_all
-    Corvid::PrcReferral.unscoped.delete_all
-    Corvid::Case.unscoped.delete_all
-  end
-
   test "populate! creates checklist if none exists" do
     with_tenant(TENANT) do
       referral = create_referral

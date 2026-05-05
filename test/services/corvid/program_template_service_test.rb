@@ -5,11 +5,6 @@ require "test_helper"
 class Corvid::ProgramTemplateServiceTest < ActiveSupport::TestCase
   TENANT = "tnt_pt_test"
 
-  setup do
-    Corvid::Task.unscoped.delete_all
-    Corvid::Case.unscoped.delete_all
-  end
-
   test "create_case materializes the TB milestone ladder" do
     with_tenant(TENANT) do
       kase = Corvid::ProgramTemplateService.create_case(

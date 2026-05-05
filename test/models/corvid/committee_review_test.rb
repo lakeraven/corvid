@@ -5,12 +5,6 @@ require "test_helper"
 class Corvid::CommitteeReviewTest < ActiveSupport::TestCase
   TENANT = "tnt_cr_test"
 
-  setup do
-    Corvid::CommitteeReview.unscoped.delete_all
-    Corvid::PrcReferral.unscoped.delete_all
-    Corvid::Case.unscoped.delete_all
-  end
-
   # -- Creation ---------------------------------------------------------------
 
   test "creates with referral and pending decision" do

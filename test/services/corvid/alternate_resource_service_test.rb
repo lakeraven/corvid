@@ -5,12 +5,6 @@ require "test_helper"
 class Corvid::AlternateResourceServiceTest < ActiveSupport::TestCase
   TENANT = "tnt_ars_test"
 
-  setup do
-    Corvid::AlternateResourceCheck.unscoped.delete_all
-    Corvid::PrcReferral.unscoped.delete_all
-    Corvid::Case.unscoped.delete_all
-  end
-
   test "verify_all creates checks for all resource types" do
     with_tenant(TENANT) do
       referral = create_referral
