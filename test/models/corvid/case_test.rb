@@ -192,6 +192,43 @@ class Corvid::CaseTest < ActiveSupport::TestCase
     end
   end
 
+  # -- program_type validation against registry ------------------------------
+
+  test "program_type validates against ProgramRegistry" do
+    with_tenant(TEST_TENANT) do
+      kase = Corvid::Case.new(patient_identifier: "pt_invalid", program_type: "not_a_program")
+      refute kase.valid?
+      assert kase.errors[:program_type].any?,
+             "expected program_type validation error, got: #{kase.errors.full_messages.inspect}"
+    end
+  end
+
+  test "program_type permits any code registered with ProgramRegistry" do
+    Corvid::ProgramRegistry.register("custom_test_program", display_name: "Custom Test", milestones: [])
+    with_tenant(TEST_TENANT) do
+      kase = Corvid::Case.new(patient_identifier: "pt_custom", program_type: "custom_test_program")
+      assert kase.valid?, "expected case with registered program to be valid: #{kase.errors.full_messages.inspect}"
+    end
+  ensure
+    Corvid::ProgramRegistry.reset!
+  end
+
+  test "program_type permits nil" do
+    with_tenant(TEST_TENANT) do
+      kase = Corvid::Case.new(patient_identifier: "pt_nil_prog")
+      assert kase.valid?
+    end
+  end
+
+  test "all built-in IHS programs validate" do
+    %w[immunization sti tb neonatal lead hep_b communicable_disease].each do |code|
+      with_tenant(TEST_TENANT) do
+        kase = Corvid::Case.new(patient_identifier: "pt_#{code}", program_type: code)
+        assert kase.valid?, "expected built-in program #{code} to validate: #{kase.errors.full_messages.inspect}"
+      end
+    end
+  end
+
   # -- Unscoped ---------------------------------------------------------------
 
   test "unscoped returns all cases" do

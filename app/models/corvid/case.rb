@@ -21,10 +21,9 @@ module Corvid
 
     enum :status, { active: "active", inactive: "inactive", closed: "closed" }
     LIFECYCLE_STATUSES = %w[intake active_followup closure closed].freeze
-    PROGRAM_TYPES = %w[immunization sti tb neonatal lead hep_b communicable_disease].freeze
 
     validates :patient_identifier, presence: true
-    validates :program_type, inclusion: { in: PROGRAM_TYPES }, allow_nil: true
+    validate :program_type_in_registry, if: -> { program_type.present? }
     validates :lifecycle_status, inclusion: { in: LIFECYCLE_STATUSES }
 
     scope :for_program, ->(type) { where(program_type: type) }
@@ -53,6 +52,14 @@ module Corvid
 
     def program_case?
       program_type.present?
+    end
+
+    private
+
+    def program_type_in_registry
+      return if Corvid::ProgramRegistry.exists?(program_type)
+
+      errors.add(:program_type, "is not a registered program")
     end
   end
 end
