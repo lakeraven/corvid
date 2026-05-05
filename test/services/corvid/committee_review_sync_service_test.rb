@@ -5,12 +5,6 @@ require "test_helper"
 class Corvid::CommitteeReviewSyncServiceTest < ActiveSupport::TestCase
   TENANT = "tnt_crs_test"
 
-  setup do
-    Corvid::CommitteeReview.unscoped.delete_all
-    Corvid::PrcReferral.unscoped.delete_all
-    Corvid::Case.unscoped.delete_all
-  end
-
   test "finalized review can apply to referral" do
     with_tenant(TENANT) do
       referral = create_referral

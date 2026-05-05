@@ -5,11 +5,6 @@ require "test_helper"
 class Corvid::CaseProgramTest < ActiveSupport::TestCase
   TENANT = "tnt_cp_test"
 
-  setup do
-    Corvid::CaseProgram.unscoped.delete_all
-    Corvid::Case.unscoped.delete_all
-  end
-
   # -- Creation ---------------------------------------------------------------
 
   test "creates with case and program_name" do

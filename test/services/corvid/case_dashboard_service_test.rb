@@ -5,14 +5,6 @@ require "test_helper"
 class Corvid::CaseDashboardServiceTest < ActiveSupport::TestCase
   TENANT = "tnt_dash_test"
 
-  setup do
-    Corvid::Task.unscoped.delete_all
-    Corvid::PrcReferral.unscoped.delete_all
-    Corvid::Case.unscoped.delete_all
-    Corvid::CareTeam.unscoped.delete_all
-    Corvid::CareTeamMember.unscoped.delete_all
-  end
-
   test "service class exists" do
     assert defined?(Corvid::CaseDashboardService)
   end

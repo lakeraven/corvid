@@ -5,11 +5,6 @@ require "test_helper"
 class Corvid::ProgramCaseAuditServiceTest < ActiveSupport::TestCase
   TENANT = "tnt_audit_test"
 
-  setup do
-    Corvid::Task.unscoped.delete_all
-    Corvid::Case.unscoped.delete_all
-  end
-
   test "service class exists" do
     assert defined?(Corvid::ProgramCaseAuditService)
   end
