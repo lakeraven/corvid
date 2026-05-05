@@ -5,11 +5,6 @@ require "test_helper"
 class Corvid::CareTeamMemberTest < ActiveSupport::TestCase
   TENANT = "tnt_ctm_test"
 
-  setup do
-    Corvid::CareTeamMember.unscoped.delete_all
-    Corvid::CareTeam.unscoped.delete_all
-  end
-
   def build_team
     Corvid::CareTeam.create!(name: "Team", facility_identifier: "fac_a")
   end

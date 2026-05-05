@@ -5,11 +5,6 @@ require "test_helper"
 class Corvid::CareTeamTest < ActiveSupport::TestCase
   TENANT = "tnt_ct_test"
 
-  setup do
-    Corvid::CareTeamMember.unscoped.delete_all
-    Corvid::CareTeam.unscoped.delete_all
-  end
-
   test "add_member! demotes any prior lead when adding a new lead" do
     with_tenant(TENANT) do
       team = Corvid::CareTeam.create!(name: "Team A", facility_identifier: "fac_a")

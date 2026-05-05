@@ -5,11 +5,6 @@ require "test_helper"
 class Corvid::MedicalPriorityServiceTest < ActiveSupport::TestCase
   TENANT = "tnt_mp_test"
 
-  setup do
-    Corvid::PrcReferral.unscoped.delete_all
-    Corvid::Case.unscoped.delete_all
-  end
-
   test "assigns emergent priority for emergent service request" do
     with_tenant(TENANT) do
       referral = create_referral_with_sr(emergent: true)

@@ -5,10 +5,6 @@ require "test_helper"
 class Corvid::FeeScheduleTest < ActiveSupport::TestCase
   TENANT = "tnt_fs_test"
 
-  setup do
-    Corvid::FeeSchedule.unscoped.delete_all
-  end
-
   test "creates with name" do
     with_tenant(TENANT) do
       fs = Corvid::FeeSchedule.create!(
