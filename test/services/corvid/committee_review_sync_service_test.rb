@@ -36,7 +36,7 @@ class Corvid::CommitteeReviewSyncServiceTest < ActiveSupport::TestCase
       result = Corvid::CommitteeReviewSyncService.sync_decision(review)
 
       assert result[:success]
-      assert_equal "AUTHORIZED", result[:rpms_status]
+      assert_equal "AUTHORIZED", result[:backend_status]
     end
   end
 
@@ -68,7 +68,7 @@ class Corvid::CommitteeReviewSyncServiceTest < ActiveSupport::TestCase
       result = Corvid::CommitteeReviewSyncService.sync_decision(review)
 
       assert result[:success]
-      assert_equal "DENIED", result[:rpms_status]
+      assert_equal "DENIED", result[:backend_status]
     end
   end
 
@@ -90,7 +90,7 @@ class Corvid::CommitteeReviewSyncServiceTest < ActiveSupport::TestCase
       result = Corvid::CommitteeReviewSyncService.sync_decision(review)
 
       assert result[:success]
-      assert_equal "PENDING", result[:rpms_status]
+      assert_equal "PENDING", result[:backend_status]
     end
   end
 
@@ -119,7 +119,7 @@ class Corvid::CommitteeReviewSyncServiceTest < ActiveSupport::TestCase
       result = Corvid::CommitteeReviewSyncService.sync_decision(review)
 
       assert result[:success]
-      assert_equal "AUTHORIZED", result[:rpms_status]
+      assert_equal "AUTHORIZED", result[:backend_status]
       assert_equal 75_000, result[:synced_amount]
     end
   end
@@ -180,7 +180,7 @@ class Corvid::CommitteeReviewSyncServiceTest < ActiveSupport::TestCase
       review = create_approved_review
       result = Corvid::CommitteeReviewSyncService.sync_and_apply!(review)
 
-      assert result[:rpms_synced]
+      assert result[:backend_synced]
       assert result[:referral_updated]
     end
   end
