@@ -13,7 +13,7 @@ module Corvid
     include Determinable
     include AASM
 
-    # CHS approval status codes (RPMS File 90001 field 1112).
+    # CHS approval status codes for EHR sync.
     # Engine-owned mapping — no dependency on EHR-side constants.
     CHS_STATUS_MAP = { "authorized" => "A", "denied" => "D" }.freeze
     CHS_STATUS_DEFAULT = "P"

@@ -17,7 +17,7 @@ module Corvid
         if success
           build_success_result(committee_review)
         else
-          { success: false, error: "RPMS update failed" }
+          { success: false, error: "Backend update failed" }
         end
       rescue => e
         { success: false, error: Corvid.sanitize_phi(e.message) }
@@ -25,7 +25,7 @@ module Corvid
 
       def sync_and_apply!(committee_review)
         sync_result = sync_decision(committee_review)
-        rpms_synced = sync_result[:success]
+        backend_synced = sync_result[:success]
 
         referral_updated = false
         begin
@@ -36,10 +36,10 @@ module Corvid
         end
 
         {
-          success: rpms_synced && referral_updated,
-          rpms_synced: rpms_synced,
+          success: backend_synced && referral_updated,
+          backend_synced: backend_synced,
           referral_updated: referral_updated,
-          sync_pending: !rpms_synced
+          sync_pending: !backend_synced
         }
       end
 
@@ -75,13 +75,13 @@ module Corvid
 
         case committee_review.decision
         when "approved", "modified"
-          result[:rpms_status] = "AUTHORIZED"
+          result[:backend_status] = "AUTHORIZED"
           result[:synced_amount] = committee_review.approved_amount
         when "denied"
-          result[:rpms_status] = "DENIED"
+          result[:backend_status] = "DENIED"
           result[:denial_reason] = Corvid.adapter.fetch_text(committee_review.rationale_token) if committee_review.rationale_token.present?
         when "deferred"
-          result[:rpms_status] = "PENDING"
+          result[:backend_status] = "PENDING"
           result[:defer_reason] = Corvid.adapter.fetch_text(committee_review.rationale_token) if committee_review.rationale_token.present?
         end
 
