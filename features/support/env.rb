@@ -45,6 +45,9 @@ Before do
   # Replace adapter with fresh instance to discard any singleton methods
   # added by scenarios (e.g., mocking submit_claim to raise).
   Corvid.configure { |c| c.adapter = Corvid::Adapters::MockAdapter.new }
+  # ProgramRegistry is process-global; reset to defaults so scenario-level
+  # host registrations (e.g. "access_bh") don't leak into later scenarios.
+  Corvid::ProgramRegistry.reset!
   clean_corvid_tables!
 end
 

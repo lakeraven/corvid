@@ -58,4 +58,28 @@ class Corvid::ProgramTemplateServiceTest < ActiveSupport::TestCase
       result["tb"].each { |t| assert_equal "Corvid::Case", t.taskable_type }
     end
   end
+
+  test "create_case materializes milestones for host-registered programs" do
+    Corvid::ProgramRegistry.register(
+      "access_bh",
+      display_name: "ACCESS Behavioral Health",
+      milestones: [
+        { key: "initial_phq9", description: "Initial PHQ-9", days_after_anchor: 0, required: true },
+        { key: "followup_phq9_30d", description: "30-day PHQ-9", days_after_anchor: 30, required: true }
+      ]
+    )
+
+    with_tenant(TENANT) do
+      kase = Corvid::ProgramTemplateService.create_case(
+        program_type: "access_bh",
+        patient_identifier: "pt_access_001",
+        facility_identifier: "fac_a",
+        anchor_date: Date.new(2026, 1, 1)
+      )
+      milestones = kase.tasks.order(:milestone_position).pluck(:milestone_key)
+      assert_equal %w[initial_phq9 followup_phq9_30d], milestones
+    end
+  ensure
+    Corvid::ProgramRegistry.reset!
+  end
 end
