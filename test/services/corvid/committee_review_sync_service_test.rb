@@ -203,8 +203,6 @@ class Corvid::CommitteeReviewSyncServiceTest < ActiveSupport::TestCase
         { "condition" => "Pre-auth from Medicare", "required" => true }
       ]
       token = Corvid.adapter.store_text(case_token: "ct_test", kind: :conditions, text: conditions)
-      # Store as array in mock so fetch_text returns it
-      Corvid.adapter.instance_variable_get(:@text_store)[token] = conditions
 
       review = Corvid::CommitteeReview.create!(
         prc_referral: referral, committee_date: Date.current,
@@ -229,7 +227,6 @@ class Corvid::CommitteeReviewSyncServiceTest < ActiveSupport::TestCase
         { "name" => "Jane Johnson", "role" => "Care Manager" }
       ]
       token = Corvid.adapter.store_text(case_token: "ct_test", kind: :attendees, text: attendees)
-      Corvid.adapter.instance_variable_get(:@text_store)[token] = attendees
 
       review = Corvid::CommitteeReview.create!(
         prc_referral: referral, committee_date: Date.current,
