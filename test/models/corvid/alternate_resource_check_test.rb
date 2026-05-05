@@ -5,12 +5,6 @@ require "test_helper"
 class Corvid::AlternateResourceCheckTest < ActiveSupport::TestCase
   TENANT = "tnt_arc_test"
 
-  setup do
-    Corvid::AlternateResourceCheck.unscoped.delete_all
-    Corvid::PrcReferral.unscoped.delete_all
-    Corvid::Case.unscoped.delete_all
-  end
-
   # -- Validation -------------------------------------------------------------
 
   test "valid with required fields" do

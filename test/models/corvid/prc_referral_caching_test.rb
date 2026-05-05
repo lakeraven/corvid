@@ -5,11 +5,6 @@ require "test_helper"
 class Corvid::PrcReferralCachingTest < ActiveSupport::TestCase
   TEST_TENANT = "tnt_cache"
 
-  setup do
-    Corvid::PrcReferral.unscoped.delete_all
-    Corvid::Case.unscoped.delete_all
-  end
-
   # -- helpers ---------------------------------------------------------------
 
   def build_referral(medical_priority: 2, authorization_number: nil)

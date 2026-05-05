@@ -5,10 +5,6 @@ require "test_helper"
 class Corvid::BillingTransactionTest < ActiveSupport::TestCase
   TENANT = "tnt_bt_test"
 
-  setup do
-    Corvid::BillingTransaction.unscoped.delete_all
-  end
-
   test "log_transaction! creates a record" do
     with_tenant(TENANT) do
       tx = Corvid::BillingTransaction.log_transaction!(

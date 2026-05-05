@@ -5,11 +5,6 @@ require "test_helper"
 class Corvid::TaskTest < ActiveSupport::TestCase
   TENANT = "tnt_task_test"
 
-  setup do
-    Corvid::Task.unscoped.delete_all
-    Corvid::Case.unscoped.delete_all
-  end
-
   # -- Creation ---------------------------------------------------------------
 
   test "creates task with description" do

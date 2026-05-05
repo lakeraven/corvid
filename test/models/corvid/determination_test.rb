@@ -5,12 +5,6 @@ require "test_helper"
 class Corvid::DeterminationTest < ActiveSupport::TestCase
   TENANT = "tnt_det_test"
 
-  setup do
-    Corvid::Determination.unscoped.delete_all
-    Corvid::PrcReferral.unscoped.delete_all
-    Corvid::Case.unscoped.delete_all
-  end
-
   test "creates with polymorphic determinable" do
     with_tenant(TENANT) do
       referral = create_referral
