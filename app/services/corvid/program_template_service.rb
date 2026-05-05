@@ -1,31 +1,12 @@
 # frozen_string_literal: true
 
 module Corvid
-  # Creates program-specific cases (immunization, hep_b, tb, etc.) with
-  # the right milestones, lifecycle, and adapter wiring.
+  # Creates program-specific cases (immunization, hep_b, tb, plus any
+  # host-registered programs) with the right milestones, lifecycle, and
+  # adapter wiring. Milestone templates live on Corvid::ProgramRegistry —
+  # registering a new program automatically gives it a milestone ladder
+  # without engine changes.
   class ProgramTemplateService
-    # Exposed at the class body (not inside `class << self`) so callers
-    # and documentation can reference Corvid::ProgramTemplateService::MILESTONE_TEMPLATES.
-    MILESTONE_TEMPLATES = {
-      "tb" => [
-        { key: "initial_skin_test", description: "Initial TST/IGRA test", days_after_anchor: 0, required: true },
-        { key: "chest_xray", description: "Chest X-ray", days_after_anchor: 7, required: true },
-        { key: "treatment_start", description: "Start treatment", days_after_anchor: 14, required: true },
-        { key: "followup_6mo", description: "6-month follow-up", days_after_anchor: 180, required: true }
-      ],
-      "hep_b" => [
-        { key: "hbig_administration", description: "HBIG administration within 12 hours", days_after_anchor: 0, required: true },
-        { key: "hepb_dose_1", description: "Hep B vaccine dose 1", days_after_anchor: 0, required: true },
-        { key: "hepb_dose_2", description: "Hep B vaccine dose 2", days_after_anchor: 30, required: true },
-        { key: "hepb_dose_3", description: "Hep B vaccine dose 3", days_after_anchor: 180, required: true },
-        { key: "post_vaccination_test", description: "Post-vaccination serology", days_after_anchor: 270, required: true }
-      ],
-      "immunization" => [
-        { key: "review_record", description: "Review immunization record", days_after_anchor: 0, required: true },
-        { key: "administer", description: "Administer vaccines", days_after_anchor: 1, required: true }
-      ]
-    }.freeze
-
     class << self
       def create_case(program_type:, patient_identifier:, facility_identifier: nil, anchor_date: nil, program_data: {})
         # Per ADR 0003, program_data is tokenized before persistence —
@@ -54,7 +35,8 @@ module Corvid
       end
 
       def create_milestones(kase, program_type, anchor_date)
-        template = MILESTONE_TEMPLATES[program_type.to_s] || []
+        program = Corvid::ProgramRegistry.find(program_type)
+        template = program ? program.milestones : []
         template.each_with_index do |milestone, idx|
           kase.tasks.create!(
             tenant_identifier: kase.tenant_identifier,
