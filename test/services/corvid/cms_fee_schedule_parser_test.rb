@@ -85,6 +85,42 @@ class Corvid::CmsFeeScheduleParserTest < ActiveSupport::TestCase
     end
   end
 
+  test "find_rvu_file prefers JAN release over later quarterlies when nonQPP absent" do
+    Dir.mktmpdir do |dir|
+      # Mid-year quarterly updates (B/C/D) and the original A release (JAN).
+      # Pre-2026 there is no nonQPP variant; tie-break on JAN preference so
+      # ingest does not depend on filesystem glob order.
+      File.write(File.join(dir, "PPRRVU22_OCT.csv"), "")
+      File.write(File.join(dir, "PPRRVU22_JUL.csv"), "")
+      File.write(File.join(dir, "PPRRVU22_JAN.csv"), "")
+      result = Corvid::CmsFeeScheduleParser.find_rvu_file(dir, 2022)
+      assert_match(/JAN/, result,
+                   "should prefer JAN release when no nonQPP variant exists")
+    end
+  end
+
+  test "find_gpci_file requires a year-matching token (no silent fallback)" do
+    Dir.mktmpdir do |dir|
+      # File matches the substring "GPCI" but does not include the year.
+      # Previously a catchall fallback would have picked this; now it must not.
+      File.write(File.join(dir, "GPCI_archive.csv"), "")
+      result = Corvid::CmsFeeScheduleParser.find_gpci_file(dir, 2021)
+      assert_nil result,
+                 "must not fall back to GPCI-ish file lacking the year token"
+    end
+  end
+
+  test "find_gpci_file is deterministic when multiple year-matching files exist" do
+    Dir.mktmpdir do |dir|
+      File.write(File.join(dir, "GPCI2021_revised.csv"), "")
+      File.write(File.join(dir, "GPCI2021.csv"), "")
+      result = Corvid::CmsFeeScheduleParser.find_gpci_file(dir, 2021)
+      # Sorted ascending — "GPCI2021.csv" < "GPCI2021_revised.csv" lexicographically.
+      assert_match(/GPCI2021\.csv$/, result,
+                   "should pick deterministically by sort order, not glob order")
+    end
+  end
+
   test "find_rvu_file returns nil when no file present" do
     Dir.mktmpdir do |dir|
       assert_nil Corvid::CmsFeeScheduleParser.find_rvu_file(dir, 2030)

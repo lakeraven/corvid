@@ -106,20 +106,28 @@ module Corvid
       # in 2026 — try both. When CMS publishes both QPP- and nonQPP-adjusted
       # files (2026+), prefer nonQPP: the base fee schedule before MIPS
       # performance adjustments is the canonical reference rate for repricing.
+      # Sort deterministically and prefer JAN releases when ambiguous so the
+      # ingest result does not depend on filesystem glob order.
       def find_rvu_file(base_dir, year)
         yy = year.to_s[-2..]
-        candidates = Dir.glob(File.join(base_dir, "PPRRVU#{year}*.csv")) +
-                     Dir.glob(File.join(base_dir, "PPRRVU#{yy}*.csv"))
+        candidates = (Dir.glob(File.join(base_dir, "PPRRVU#{year}*.csv")) +
+                      Dir.glob(File.join(base_dir, "PPRRVU#{yy}*.csv"))).uniq.sort
         return nil if candidates.empty?
 
-        candidates.find { |f| f =~ /nonQPP/i } || candidates.first
+        candidates.find { |f| f =~ /nonQPP/i } ||
+          candidates.find { |f| f =~ /jan/i } ||
+          candidates.first
       end
 
+      # Find the GPCI file for a given year. Require a year-matching token
+      # (4-digit or 2-digit) — never fall back to any GPCI-ish file in the
+      # folder, which could silently pick a stale or unrelated file. Sort
+      # deterministically.
       def find_gpci_file(base_dir, year)
         yy = year.to_s[-2..]
-        Dir.glob(File.join(base_dir, "*GPCI*#{year}*.csv")).first ||
-          Dir.glob(File.join(base_dir, "*GPCI*#{yy}*.csv")).first ||
-          Dir.glob(File.join(base_dir, "*[Gg][Pp][Cc][Ii]*.csv")).first
+        candidates = (Dir.glob(File.join(base_dir, "*GPCI*#{year}*.csv")) +
+                      Dir.glob(File.join(base_dir, "*GPCI*#{yy}*.csv"))).uniq.sort
+        candidates.first
       end
 
       private
