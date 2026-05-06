@@ -26,7 +26,7 @@ class Corvid::CaseProgramTest < ActiveSupport::TestCase
 
   test "requires program_name" do
     with_tenant(TENANT) do
-      cp = Corvid::CaseProgram.new(case: create_case, program_name: nil, program_code: "CHS")
+      cp = Corvid::CaseProgram.new(case: create_case, program_name: nil, program_code: "tb")
       refute cp.valid?
       assert cp.errors[:program_name].any?
     end
@@ -45,7 +45,7 @@ class Corvid::CaseProgramTest < ActiveSupport::TestCase
       assert_raises(ArgumentError) do
         Corvid::CaseProgram.new(
           case: create_case, program_name: "IHS CHS",
-          program_code: "CHS", enrollment_status: "bogus"
+          program_code: "tb", enrollment_status: "bogus"
         )
       end
     end
@@ -54,7 +54,7 @@ class Corvid::CaseProgramTest < ActiveSupport::TestCase
   test "requires enrollment_date" do
     with_tenant(TENANT) do
       cp = Corvid::CaseProgram.new(
-        case: create_case, program_name: "Medicare", program_code: "MCR",
+        case: create_case, program_name: "Medicare", program_code: "hep_b",
         enrollment_date: nil
       )
       refute cp.valid?
@@ -66,11 +66,11 @@ class Corvid::CaseProgramTest < ActiveSupport::TestCase
     with_tenant(TENANT) do
       kase = create_case
       Corvid::CaseProgram.create!(
-        case: kase, program_name: "IHS CHS", program_code: "CHS",
+        case: kase, program_name: "IHS CHS", program_code: "tb",
         enrollment_date: Date.current
       )
       dup = Corvid::CaseProgram.new(
-        case: kase, program_name: "IHS CHS", program_code: "CHS",
+        case: kase, program_name: "IHS CHS", program_code: "tb",
         enrollment_date: Date.current
       )
       refute dup.valid?
@@ -82,8 +82,8 @@ class Corvid::CaseProgramTest < ActiveSupport::TestCase
     with_tenant(TENANT) do
       c1 = create_case
       c2 = create_case
-      Corvid::CaseProgram.create!(case: c1, program_name: "CHS", program_code: "CHS", enrollment_date: Date.current)
-      cp2 = Corvid::CaseProgram.new(case: c2, program_name: "CHS", program_code: "CHS", enrollment_date: Date.current)
+      Corvid::CaseProgram.create!(case: c1, program_name: "CHS", program_code: "tb", enrollment_date: Date.current)
+      cp2 = Corvid::CaseProgram.new(case: c2, program_name: "CHS", program_code: "tb", enrollment_date: Date.current)
       assert cp2.valid?
     end
   end
@@ -91,7 +91,7 @@ class Corvid::CaseProgramTest < ActiveSupport::TestCase
   test "disenrollment_date must be on or after enrollment_date" do
     with_tenant(TENANT) do
       cp = Corvid::CaseProgram.new(
-        case: create_case, program_name: "Medicare", program_code: "MCR",
+        case: create_case, program_name: "Medicare", program_code: "hep_b",
         enrollment_date: Date.current, disenrollment_date: 1.day.ago.to_date
       )
       refute cp.valid?
@@ -102,7 +102,7 @@ class Corvid::CaseProgramTest < ActiveSupport::TestCase
   test "disenrollment_date on enrollment_date is valid" do
     with_tenant(TENANT) do
       cp = Corvid::CaseProgram.new(
-        case: create_case, program_name: "Medicare", program_code: "MCR",
+        case: create_case, program_name: "Medicare", program_code: "hep_b",
         enrollment_date: Date.current, disenrollment_date: Date.current
       )
       assert cp.valid?
@@ -128,7 +128,7 @@ class Corvid::CaseProgramTest < ActiveSupport::TestCase
   test "active_enrollment scope" do
     with_tenant(TENANT) do
       active = create_case_program(enrollment_status: "active")
-      inactive = create_case_program(program_code: "MCR", enrollment_status: "inactive")
+      inactive = create_case_program(program_code: "hep_b", enrollment_status: "inactive")
 
       assert_includes Corvid::CaseProgram.active_enrollment, active
       refute_includes Corvid::CaseProgram.active_enrollment, inactive
@@ -137,10 +137,10 @@ class Corvid::CaseProgramTest < ActiveSupport::TestCase
 
   test "for_program scope filters by program_code" do
     with_tenant(TENANT) do
-      chs = create_case_program(program_code: "CHS")
-      mcr = create_case_program(program_code: "MCR")
+      chs = create_case_program(program_code: "tb")
+      mcr = create_case_program(program_code: "hep_b")
 
-      results = Corvid::CaseProgram.for_program("CHS")
+      results = Corvid::CaseProgram.for_program("tb")
       assert_includes results, chs
       refute_includes results, mcr
     end
@@ -150,7 +150,7 @@ class Corvid::CaseProgramTest < ActiveSupport::TestCase
     with_tenant(TENANT) do
       current = create_case_program(enrollment_status: "active", disenrollment_date: nil)
       disenrolled = create_case_program(
-        program_code: "MCR", enrollment_status: "active",
+        program_code: "hep_b", enrollment_status: "active",
         enrollment_date: 1.month.ago.to_date,
         disenrollment_date: 1.day.ago.to_date
       )
@@ -215,6 +215,48 @@ class Corvid::CaseProgramTest < ActiveSupport::TestCase
     end
   end
 
+  # -- ProgramRegistry validation --------------------------------------------
+  #
+  # program_code must be registered. This validation moved here from Case
+  # in #260 so program identity lives on the enrollment, not the person.
+
+  test "program_code validates against ProgramRegistry" do
+    with_tenant(TENANT) do
+      cp = Corvid::CaseProgram.new(
+        case: create_case, program_name: "Bogus", program_code: "not_a_program",
+        enrollment_date: Date.current
+      )
+      refute cp.valid?
+      assert cp.errors[:program_code].any?,
+             "expected program_code validation error, got: #{cp.errors.full_messages.inspect}"
+    end
+  end
+
+  test "program_code permits any code registered with ProgramRegistry" do
+    Corvid::ProgramRegistry.register("custom_test_program", display_name: "Custom Test", milestones: [])
+    with_tenant(TENANT) do
+      cp = Corvid::CaseProgram.new(
+        case: create_case, program_name: "Custom Test", program_code: "custom_test_program",
+        enrollment_date: Date.current
+      )
+      assert cp.valid?, "expected case_program with registered program to be valid: #{cp.errors.full_messages.inspect}"
+    end
+  ensure
+    Corvid::ProgramRegistry.reset!
+  end
+
+  test "all built-in IHS programs validate" do
+    %w[immunization sti tb neonatal lead hep_b communicable_disease].each do |code|
+      with_tenant(TENANT) do
+        cp = Corvid::CaseProgram.new(
+          case: create_case, program_name: code.titleize, program_code: code,
+          enrollment_date: Date.current
+        )
+        assert cp.valid?, "expected built-in program #{code} to validate: #{cp.errors.full_messages.inspect}"
+      end
+    end
+  end
+
   # -- TenantScoped ----------------------------------------------------------
 
   test "case programs are scoped to current tenant" do
@@ -247,7 +289,7 @@ class Corvid::CaseProgramTest < ActiveSupport::TestCase
     )
   end
 
-  def create_case_program(program_name: "IHS CHS", program_code: "CHS", enrollment_status: "active", **attrs)
+  def create_case_program(program_name: "IHS CHS", program_code: "tb", enrollment_status: "active", **attrs)
     Corvid::CaseProgram.create!(
       case: attrs.delete(:case) || create_case,
       program_name: program_name,

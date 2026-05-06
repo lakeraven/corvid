@@ -46,7 +46,7 @@ When("I request the audit timeline") do
 end
 
 Then("a program case should exist for patient {string} with type {string}") do |patient_id, type|
-  kase = Corvid::Case.find_by(patient_identifier: patient_id, program_type: type)
+  kase = Corvid::Case.for_program(type).find_by(patient_identifier: patient_id)
   refute_nil kase
 end
 

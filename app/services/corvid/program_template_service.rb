@@ -19,16 +19,26 @@ module Corvid
           )
         end
 
-        kase = Corvid::Case.create!(
-          patient_identifier: patient_identifier,
-          facility_identifier: facility_identifier,
-          program_type: program_type,
-          lifecycle_status: "intake",
-          intake_at: Time.current,
-          program_data_token: program_data_token
-        )
-
         anchor = anchor_date || Date.current
+        program = Corvid::ProgramRegistry.find(program_type)
+
+        kase = Corvid::Case.transaction do
+          k = Corvid::Case.create!(
+            patient_identifier: patient_identifier,
+            facility_identifier: facility_identifier,
+            lifecycle_status: "intake",
+            intake_at: Time.current,
+            program_data_token: program_data_token
+          )
+          Corvid::CaseProgram.create!(
+            case: k,
+            program_code: program_type,
+            program_name: program&.display_name || program_type,
+            enrollment_date: anchor
+          )
+          k
+        end
+
         create_milestones(kase, program_type, anchor)
         record_provenance(kase)
         kase
@@ -52,14 +62,16 @@ module Corvid
       end
 
       def overdue_milestones_by_program(facility_identifier:)
-        cases = Corvid::Case.for_facility(facility_identifier).where.not(program_type: nil)
+        cases = Corvid::Case.for_facility(facility_identifier).joins(:case_programs).distinct
         case_ids = cases.pluck(:id)
 
         overdue_tasks = Corvid::Task.where(taskable_type: "Corvid::Case", taskable_id: case_ids)
                                     .milestones
                                     .overdue
 
-        overdue_tasks.includes(:taskable).group_by { |t| t.taskable.program_type }
+        overdue_tasks.includes(taskable: :case_programs).group_by do |t|
+          t.taskable.case_programs.first&.program_code
+        end
       end
 
       private
