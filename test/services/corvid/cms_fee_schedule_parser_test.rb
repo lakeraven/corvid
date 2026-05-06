@@ -123,6 +123,31 @@ class Corvid::CmsFeeScheduleParserTest < ActiveSupport::TestCase
     end
   end
 
+  test "find_gpci_file matches every observed real-CMS naming variant" do
+    # CMS GPCI naming is chaotic across years — these are real filenames
+    # observed in the 2007-2026 source set. Each must resolve correctly.
+    cases = {
+      "GPCI07.csv" => 2007,                          # legacy 2-digit, no separator
+      "gpci10.csv" => 2010,                          # lowercase variant
+      "GPCI_2011.csv" => 2011,                       # underscore separator
+      "GPCI2012.csv" => 2012,                        # 4-digit, no separator
+      "CY 2014 GPCI _12172013.csv" => 2014,          # spaces + revision date
+      "CY2015_GPCIs.csv" => 2015,                    # CY prefix, year before GPCI
+      "CY2016_GPCIs.csv" => 2016,
+      "CY2017_GPCIs.csv" => 2017,
+      "GPCI2026.csv" => 2026
+    }
+
+    cases.each do |filename, year|
+      Dir.mktmpdir do |dir|
+        File.write(File.join(dir, filename), "")
+        result = Corvid::CmsFeeScheduleParser.find_gpci_file(dir, year)
+        assert_match(/#{Regexp.escape(filename)}$/, result.to_s,
+                     "year #{year}: should resolve #{filename}, got #{result.inspect}")
+      end
+    end
+  end
+
   test "find_gpci_file does not substring-match across decades" do
     # GPCI2026.csv must NOT be returned when querying for year 2026's
     # neighbor 2025 (yy=25), and vice versa. Year tokens must be delimited.

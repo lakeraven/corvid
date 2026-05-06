@@ -137,11 +137,18 @@ module Corvid
         basename.match?(/\A#{Regexp.escape(prefix)}(?:#{year}|#{yy})(?:[._]|\.csv\z)/)
       end
 
-      # GPCI files vary: GPCI07.csv, GPCI2018.csv, gpci10.csv. Allow either
-      # year token at a clean boundary anywhere after "GPCI".
+      # GPCI naming is chaotic across years — five known shapes:
+      #   GPCI07.csv, GPCI2018.csv, gpci10.csv             (year right after GPCI)
+      #   GPCI_2011.csv                                    (underscore separator)
+      #   CY2015_GPCIs.csv                                 (year before GPCI)
+      #   CY 2014 GPCI _12172013.csv                       (spaces, year before GPCI)
+      # Match if the filename contains "GPCI" *and* contains the year (4-digit
+      # or 2-digit) anywhere at a digit boundary, so it cannot substring-match
+      # within an unrelated number like a revision date.
       def gpci_year_match?(basename, year)
         yy = year.to_s[-2..]
-        basename.match?(/GPCI(?:#{year}|#{yy})(?:[._]|\.csv\z)/i)
+        return false unless basename =~ /GPCI/i
+        basename.match?(/(?:\A|[^0-9])(?:#{year}|#{yy})(?:[^0-9]|\z)/)
       end
 
       # On the first row whose pre-name column holds a 2-digit locality code,

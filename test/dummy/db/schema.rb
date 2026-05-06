@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_05_06_000001) do
+ActiveRecord::Schema[8.1].define(version: 2026_05_06_000002) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
@@ -169,6 +169,18 @@ ActiveRecord::Schema[8.1].define(version: 2026_05_06_000001) do
     t.index ["tenant_identifier", "status"], name: "index_corvid_claim_submissions_on_tenant_identifier_and_status"
     t.check_constraint "claim_type::text = ANY (ARRAY['professional'::character varying::text, 'institutional'::character varying::text, 'dental'::character varying::text])", name: "corvid_claim_submissions_type_check"
     t.check_constraint "status::text = ANY (ARRAY['draft'::character varying::text, 'submitted'::character varying::text, 'accepted'::character varying::text, 'rejected'::character varying::text, 'paid'::character varying::text, 'denied'::character varying::text, 'appealed'::character varying::text, 'error'::character varying::text])", name: "corvid_claim_submissions_status_check"
+  end
+
+  create_table "corvid_cms_fee_schedule_releases", force: :cascade do |t|
+    t.string "cms_release_tag", null: false
+    t.datetime "created_at", null: false
+    t.datetime "ingested_at", null: false
+    t.string "parser_version", null: false
+    t.integer "row_count", default: 0, null: false
+    t.string "source_checksum_sha256", null: false
+    t.datetime "updated_at", null: false
+    t.integer "year", null: false
+    t.index ["year"], name: "index_corvid_cms_fee_schedule_releases_on_year", unique: true
   end
 
   create_table "corvid_committee_reviews", force: :cascade do |t|
