@@ -35,6 +35,7 @@ def clean_corvid_tables!
   Corvid::CommitteeReview.unscoped.delete_all
   Corvid::Task.unscoped.delete_all
   Corvid::PrcReferral.unscoped.delete_all
+  Corvid::CaseProgram.unscoped.delete_all
   Corvid::Case.unscoped.delete_all
   Corvid::CareTeamMember.unscoped.delete_all
   Corvid::CareTeam.unscoped.delete_all

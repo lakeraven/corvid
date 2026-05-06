@@ -20,6 +20,7 @@ module Corvid
     validates :program_name, presence: true
     validates :program_code, presence: true
     validates :program_code, uniqueness: { scope: :case_id }
+    validate :program_code_in_registry, if: -> { program_code.present? }
     validates :enrollment_date, presence: true
     validate :disenrollment_after_enrollment, if: -> { disenrollment_date.present? && enrollment_date.present? }
 
@@ -45,6 +46,12 @@ module Corvid
       return unless disenrollment_date < enrollment_date
 
       errors.add(:disenrollment_date, "must be on or after enrollment date")
+    end
+
+    def program_code_in_registry
+      return if Corvid::ProgramRegistry.exists?(program_code)
+
+      errors.add(:program_code, "is not a registered program")
     end
   end
 end
