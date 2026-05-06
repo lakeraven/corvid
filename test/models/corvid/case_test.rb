@@ -177,55 +177,47 @@ class Corvid::CaseTest < ActiveSupport::TestCase
   end
 
   # -- program_case? ---------------------------------------------------------
+  #
+  # Program identity lives on CaseProgram, not on Case. A Case is a person's
+  # workflow record; CaseProgram is the enrollment in a specific program.
 
-  test "program_case? returns true when program_type present" do
+  test "program_case? returns true when a CaseProgram is associated" do
     with_tenant(TEST_TENANT) do
-      kase = Corvid::Case.create!(patient_identifier: "pt_prog", program_type: "hep_b")
+      kase = Corvid::Case.create!(patient_identifier: "pt_prog")
+      Corvid::CaseProgram.create!(
+        case: kase, program_name: "Hepatitis B Perinatal", program_code: "hep_b",
+        enrollment_date: Date.current
+      )
       assert kase.program_case?
     end
   end
 
-  test "program_case? returns false when no program_type" do
+  test "program_case? returns false when no CaseProgram is associated" do
     with_tenant(TEST_TENANT) do
       kase = Corvid::Case.create!(patient_identifier: "pt_no_prog")
       refute kase.program_case?
     end
   end
 
-  # -- program_type validation against registry ------------------------------
-
-  test "program_type validates against ProgramRegistry" do
-    with_tenant(TEST_TENANT) do
-      kase = Corvid::Case.new(patient_identifier: "pt_invalid", program_type: "not_a_program")
-      refute kase.valid?
-      assert kase.errors[:program_type].any?,
-             "expected program_type validation error, got: #{kase.errors.full_messages.inspect}"
-    end
+  test "program_type column has been removed from corvid_cases" do
+    refute_includes Corvid::Case.column_names, "program_type",
+                    "program_type semantics moved to CaseProgram in #260"
   end
 
-  test "program_type permits any code registered with ProgramRegistry" do
-    Corvid::ProgramRegistry.register("custom_test_program", display_name: "Custom Test", milestones: [])
-    with_tenant(TEST_TENANT) do
-      kase = Corvid::Case.new(patient_identifier: "pt_custom", program_type: "custom_test_program")
-      assert kase.valid?, "expected case with registered program to be valid: #{kase.errors.full_messages.inspect}"
-    end
-  ensure
-    Corvid::ProgramRegistry.reset!
-  end
+  # -- for_program scope ------------------------------------------------------
 
-  test "program_type permits nil" do
+  test "for_program scope returns cases enrolled in the given program" do
     with_tenant(TEST_TENANT) do
-      kase = Corvid::Case.new(patient_identifier: "pt_nil_prog")
-      assert kase.valid?
-    end
-  end
+      enrolled = Corvid::Case.create!(patient_identifier: "pt_tb_enrolled")
+      Corvid::CaseProgram.create!(
+        case: enrolled, program_name: "Tuberculosis", program_code: "tb",
+        enrollment_date: Date.current
+      )
+      Corvid::Case.create!(patient_identifier: "pt_unenrolled")
 
-  test "all built-in IHS programs validate" do
-    %w[immunization sti tb neonatal lead hep_b communicable_disease].each do |code|
-      with_tenant(TEST_TENANT) do
-        kase = Corvid::Case.new(patient_identifier: "pt_#{code}", program_type: code)
-        assert kase.valid?, "expected built-in program #{code} to validate: #{kase.errors.full_messages.inspect}"
-      end
+      results = Corvid::Case.for_program("tb")
+      assert_includes results, enrolled
+      assert_equal 1, results.count
     end
   end
 

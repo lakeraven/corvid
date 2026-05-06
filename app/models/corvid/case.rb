@@ -23,10 +23,11 @@ module Corvid
     LIFECYCLE_STATUSES = %w[intake active_followup closure closed].freeze
 
     validates :patient_identifier, presence: true
-    validate :program_type_in_registry, if: -> { program_type.present? }
     validates :lifecycle_status, inclusion: { in: LIFECYCLE_STATUSES }
 
-    scope :for_program, ->(type) { where(program_type: type) }
+    scope :for_program, lambda { |code|
+      joins(:case_programs).where(corvid_case_programs: { program_code: code })
+    }
     scope :in_lifecycle, ->(status) { where(lifecycle_status: status) }
 
     # Resolve patient via adapter. Returns a Corvid::PatientReference or nil.
@@ -51,15 +52,7 @@ module Corvid
     end
 
     def program_case?
-      program_type.present?
-    end
-
-    private
-
-    def program_type_in_registry
-      return if Corvid::ProgramRegistry.exists?(program_type)
-
-      errors.add(:program_type, "is not a registered program")
+      case_programs.exists?
     end
   end
 end
