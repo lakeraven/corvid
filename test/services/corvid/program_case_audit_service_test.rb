@@ -13,7 +13,7 @@ class Corvid::ProgramCaseAuditServiceTest < ActiveSupport::TestCase
 
   test "case_timeline returns ordered milestone entries" do
     with_tenant(TENANT) do
-      kase = Corvid::Case.create!(patient_identifier: "pt_timeline", program_type: "hep_b", facility_identifier: "fac_test")
+      kase = create_program_case("pt_timeline", "hep_b")
       Corvid::Task.create!(taskable: kase, description: "First dose", milestone_key: "first_dose", milestone_position: 1, due_at: 1.week.from_now)
       completed_task = Corvid::Task.create!(taskable: kase, description: "Intake", milestone_key: "intake", milestone_position: 0, due_at: 1.day.ago)
       completed_task.completed!
@@ -31,10 +31,10 @@ class Corvid::ProgramCaseAuditServiceTest < ActiveSupport::TestCase
 
   test "program_compliance_summary returns completion rates and overdue counts" do
     with_tenant(TENANT) do
-      kase1 = Corvid::Case.create!(patient_identifier: "pt_comp1", program_type: "hep_b", facility_identifier: "fac_test")
+      kase1 = create_program_case("pt_comp1", "hep_b")
       Corvid::Task.create!(taskable: kase1, description: "Dose 1", milestone_key: "dose_1", milestone_position: 1, due_at: 1.year.ago, status: :pending)
 
-      kase2 = Corvid::Case.create!(patient_identifier: "pt_comp2", program_type: "hep_b", facility_identifier: "fac_test")
+      kase2 = create_program_case("pt_comp2", "hep_b")
       t = Corvid::Task.create!(taskable: kase2, description: "Dose 1", milestone_key: "dose_1", milestone_position: 1, due_at: 1.month.from_now)
       t.completed!
 
@@ -65,5 +65,18 @@ class Corvid::ProgramCaseAuditServiceTest < ActiveSupport::TestCase
       assert_equal 0, summary[:total_milestones]
       assert_equal 0.0, summary[:completion_rate]
     end
+  end
+
+  private
+
+  def create_program_case(patient_identifier, program_code)
+    kase = Corvid::Case.create!(
+      patient_identifier: patient_identifier, facility_identifier: "fac_test"
+    )
+    Corvid::CaseProgram.create!(
+      case: kase, program_name: program_code.titleize,
+      program_code: program_code, enrollment_date: Date.current
+    )
+    kase
   end
 end

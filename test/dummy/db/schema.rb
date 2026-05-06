@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_05_03_000001) do
+ActiveRecord::Schema[8.1].define(version: 2026_05_06_000001) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
@@ -127,13 +127,11 @@ ActiveRecord::Schema[8.1].define(version: 2026_05_03_000001) do
     t.string "patient_identifier", null: false
     t.string "patient_name_cached"
     t.string "program_data_token"
-    t.string "program_type"
     t.string "status", default: "active", null: false
     t.string "tenant_identifier", null: false
     t.datetime "updated_at", null: false
     t.index ["care_team_id"], name: "index_corvid_cases_on_care_team_id"
     t.index ["tenant_identifier", "facility_identifier", "patient_identifier"], name: "idx_on_tenant_identifier_facility_identifier_patien_a3dd76b8ca"
-    t.index ["tenant_identifier", "program_type"], name: "index_corvid_cases_on_tenant_identifier_and_program_type"
     t.index ["tenant_identifier", "status"], name: "index_corvid_cases_on_tenant_identifier_and_status"
     t.check_constraint "lifecycle_status::text = ANY (ARRAY['intake'::character varying::text, 'active_followup'::character varying::text, 'closure'::character varying::text, 'closed'::character varying::text])", name: "corvid_cases_lifecycle_check"
     t.check_constraint "status::text = ANY (ARRAY['active'::character varying::text, 'inactive'::character varying::text, 'closed'::character varying::text])", name: "corvid_cases_status_check"

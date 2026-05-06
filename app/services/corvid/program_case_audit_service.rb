@@ -37,7 +37,7 @@ module Corvid
 
       def program_compliance_summary(program_type:, facility_identifier: nil, facility: nil)
         fac_id = facility_identifier || facility&.id&.to_s
-        cases = Corvid::Case.where(program_type: program_type)
+        cases = Corvid::Case.for_program(program_type)
         cases = cases.for_facility(fac_id) if fac_id.present?
         case_ids = cases.pluck(:id)
 
