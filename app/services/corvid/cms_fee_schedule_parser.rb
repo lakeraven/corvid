@@ -28,8 +28,6 @@ module Corvid
     }.freeze
     DEFAULT_CONVERSION_FACTOR = 32.74
 
-    REQUIRED_GPCI_FIELDS = 3 # work, pe, mp
-
     class << self
       def conversion_factor(year)
         CONVERSION_FACTORS[year] || DEFAULT_CONVERSION_FACTOR
@@ -103,15 +101,14 @@ module Corvid
 
       # Find the PPRRVU file for a given year. CMS naming changed from
       # 2-digit year (PPRRVU25_JAN.csv) to 4-digit year (PPRRVU2026_Jan_nonQPP.csv)
-      # in 2026 — try both. When CMS publishes both QPP- and nonQPP-adjusted
-      # files (2026+), prefer nonQPP: the base fee schedule before MIPS
-      # performance adjustments is the canonical reference rate for repricing.
-      # Sort deterministically and prefer JAN releases when ambiguous so the
-      # ingest result does not depend on filesystem glob order.
+      # in 2026. Match files where the year token sits at a clean boundary
+      # (followed by `.`, `_`, or end-of-name) so a 2-digit query like 26
+      # does not substring-match a 4-digit name like PPRRVU2026_*. Sort
+      # deterministically; prefer nonQPP > JAN > first.
       def find_rvu_file(base_dir, year)
-        yy = year.to_s[-2..]
-        candidates = (Dir.glob(File.join(base_dir, "PPRRVU#{year}*.csv")) +
-                      Dir.glob(File.join(base_dir, "PPRRVU#{yy}*.csv"))).uniq.sort
+        candidates = Dir.glob(File.join(base_dir, "PPRRVU*.csv"))
+                        .select { |f| year_token_match?(File.basename(f), "PPRRVU", year) }
+                        .uniq.sort
         return nil if candidates.empty?
 
         candidates.find { |f| f =~ /nonQPP/i } ||
@@ -120,17 +117,32 @@ module Corvid
       end
 
       # Find the GPCI file for a given year. Require a year-matching token
-      # (4-digit or 2-digit) — never fall back to any GPCI-ish file in the
-      # folder, which could silently pick a stale or unrelated file. Sort
+      # (4-digit or 2-digit) at a clean boundary — never fall back to any
+      # GPCI-ish file, and never substring-match across decades. Sort
       # deterministically.
       def find_gpci_file(base_dir, year)
-        yy = year.to_s[-2..]
-        candidates = (Dir.glob(File.join(base_dir, "*GPCI*#{year}*.csv")) +
-                      Dir.glob(File.join(base_dir, "*GPCI*#{yy}*.csv"))).uniq.sort
+        candidates = Dir.glob(File.join(base_dir, "*GPCI*.csv"))
+                        .select { |f| gpci_year_match?(File.basename(f), year) }
+                        .uniq.sort
         candidates.first
       end
 
       private
+
+      # Match basenames where the year (4-digit or 2-digit) appears as a
+      # delimited token directly after `prefix`. Boundary delimiters: `.`
+      # or `_`. End-of-name (i.e. immediately before `.csv`) also counts.
+      def year_token_match?(basename, prefix, year)
+        yy = year.to_s[-2..]
+        basename.match?(/\A#{Regexp.escape(prefix)}(?:#{year}|#{yy})(?:[._]|\.csv\z)/)
+      end
+
+      # GPCI files vary: GPCI07.csv, GPCI2018.csv, gpci10.csv. Allow either
+      # year token at a clean boundary anywhere after "GPCI".
+      def gpci_year_match?(basename, year)
+        yy = year.to_s[-2..]
+        basename.match?(/GPCI(?:#{year}|#{yy})(?:[._]|\.csv\z)/i)
+      end
 
       # On the first row whose pre-name column holds a 2-digit locality code,
       # return that column index. This adapts to CMS adding the State column
