@@ -120,6 +120,39 @@ A Corvid Postgres dump viewed without vault access reveals no PHI — only opaqu
 
 The `phi_sanitizer` hook defaults to fail-safe redact-all. Forgetting to configure it will not increase PHI exposure in logs.
 
+## CMS fee schedule data
+
+Corvid ships with a derived snapshot of the Medicare Physician Fee Schedule (RVUs, GPCIs, conversion factors) so that `RepricingService` can compute Medicare-equivalent rates without reading raw CMS files at runtime.
+
+**Default path — load the bundled snapshot:**
+
+```bash
+rails db:migrate
+rake cms:snapshot:load
+```
+
+This populates `corvid_fee_schedule_entries` with all available years from the snapshot at `db/seeds/cms_fee_schedules.csv.gz`. Snapshot integrity is verified by SHA256 on load.
+
+**Advanced — re-ingest from CMS source files:**
+
+Only needed when CMS publishes a new year and you want to refresh the snapshot. Source files (PPRRVU\*.csv and GPCI\*.csv) live under `db/data/cms_fee_schedules/{year}/` and are not committed — they're large, re-fetchable, and accumulate. The canonical source zips are mirrored in the [`cms-fee-schedules-v1` GitHub Release](https://github.com/lakeraven/corvid/releases/tag/cms-fee-schedules-v1), or download fresh from [CMS PFS Relative Value Files](https://www.cms.gov/medicare/payment/fee-schedules/physician/pfs-relative-value-files).
+
+```bash
+rake cms:fetch[2026]            # download + extract one year
+rake cms:fetch_all              # mirror everything (2007-2026)
+rake cms:import[2026]           # re-ingest one year into the DB
+rake cms:import_all             # re-ingest every year directory found
+rake cms:snapshot:export        # regenerate db/seeds/cms_fee_schedules.csv.gz
+```
+
+```bash
+rake cms:import[2026]          # one year
+rake cms:import_all            # every year directory found on disk
+rake cms:snapshot:export       # regenerate db/seeds/cms_fee_schedules.csv.gz
+```
+
+Each `cms:import` writes a `Corvid::CmsFeeScheduleRelease` record capturing the source file checksum and parser version, so the provenance of every imported year is auditable.
+
 ## Architectural decisions
 
 | ADR | Topic |

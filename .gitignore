@@ -18,3 +18,10 @@ test/dummy/db/*.sqlite3-*
 test/dummy/log/*.log
 test/dummy/tmp/
 test/dummy/storage/
+
+# CMS fee schedule source files: large (~170MB) and re-fetchable from CMS.
+# Use the bundled snapshot at db/seeds/cms_fee_schedules.csv.gz at runtime;
+# download source CSVs only for re-ingestion (rake cms:import). See README
+# "CMS fee schedule data" section.
+db/data/cms_fee_schedules/[12]*/
+db/data/cms_fee_schedules/*.zip
