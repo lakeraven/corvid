@@ -110,6 +110,29 @@ class Corvid::CmsFeeScheduleParserTest < ActiveSupport::TestCase
     end
   end
 
+  test "find_rvu_file does not substring-match across decades" do
+    # PPRRVU2026_*.csv must NOT be returned when querying for year 2025
+    # (yy=25). The 2-digit prefix "PPRRVU25" is not a valid year token in
+    # "PPRRVU2026_Jan_nonQPP.csv" because the next character is a digit (2),
+    # not a delimiter.
+    Dir.mktmpdir do |dir|
+      File.write(File.join(dir, "PPRRVU2026_Jan_nonQPP.csv"), "")
+      result = Corvid::CmsFeeScheduleParser.find_rvu_file(dir, 2025)
+      assert_nil result,
+                 "must not match PPRRVU2026_* when querying for 2025 (yy=25)"
+    end
+  end
+
+  test "find_gpci_file does not substring-match across decades" do
+    # GPCI2026.csv must NOT be returned when querying for year 2026's
+    # neighbor 2025 (yy=25), and vice versa. Year tokens must be delimited.
+    Dir.mktmpdir do |dir|
+      File.write(File.join(dir, "GPCI2026.csv"), "")
+      assert_nil Corvid::CmsFeeScheduleParser.find_gpci_file(dir, 2025),
+                 "GPCI2026.csv must not be picked when querying for 2025"
+    end
+  end
+
   test "find_gpci_file is deterministic when multiple year-matching files exist" do
     Dir.mktmpdir do |dir|
       File.write(File.join(dir, "GPCI2021_revised.csv"), "")
