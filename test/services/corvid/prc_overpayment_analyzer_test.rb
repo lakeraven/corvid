@@ -20,25 +20,52 @@ class Corvid::PrcOverpaymentAnalyzerTest < ActiveSupport::TestCase
 
   # -- Inpatient hospital obligation (DRG-mapped) ---------------------------
 
-  test "inpatient hospital claim is flagged facility_repricing_pending" do
+  test "inpatient hospital claim uses IPPS stub rate (Phase 1.5)" do
     summary = analyze_single_obligation(procedure: "HIP_REPLACE_THR", paid: 42_000)
     result = summary.results.first
 
     assert_equal :ipps, result.payment_system
-    assert_equal :facility_repricing_pending, result.recovery_confidence
-    assert_nil result.overpayment, "overpayment must be nil until IPPS is ingested"
-    assert_in_delta 1371.97, result.medicare_equivalent, 0.5,
-                    "professional component should still be priced from PFS"
-    assert_match(/IPPS/, result.notes)
+    assert_equal :stub_estimate, result.recovery_confidence,
+                 "Phase 1.5 routes hospital obligations through stub providers"
+    assert_equal :stub, result.rate_source
+    refute_nil result.medicare_equivalent,
+               "stub provides a rough Medicare-equivalent rate"
+    refute_nil result.overpayment,
+               "overpayment is computable when stub returns a number"
+    assert result.overpayment.positive?,
+           "$42k paid is well above the stub rate for DRG 470 in 2009"
+    assert_match(/stub|estimate|national.average/i, result.notes)
   end
 
-  test "inpatient summary aggregates pending dollars separately from clear overpayment" do
+  test "inpatient summary aggregates stub_estimate dollars in their own bucket" do
     summary = analyze_single_obligation(procedure: "HIP_REPLACE_THR", paid: 42_000)
 
     assert_equal 0.0, summary.total_overpayment_known,
-                 "no clear overpayment without IPPS"
-    assert_equal 42_000.0, summary.total_facility_repricing_pending
-    assert_equal({ facility_repricing_pending: 1 }, summary.by_confidence)
+                 "stub-based overpayment is not :clear, not counted as 'known'"
+    assert summary.respond_to?(:total_overpayment_stub_estimate),
+           "Summary should expose the stub-estimate overpayment subtotal"
+    assert summary.total_overpayment_stub_estimate.positive?,
+           "stub overpayment dollars should be tracked separately"
+    assert_equal({ stub_estimate: 1 }, summary.by_confidence)
+  end
+
+  # -- Outpatient hospital obligation (APC-mapped) --------------------------
+
+  test "outpatient hospital claim uses OPPS stub rate (Phase 1.5)" do
+    Corvid::PrcProcedureDictionary.register(
+      "OUTPATIENT_TEST",
+      hcpcs: "12345", apc: "5012",
+      description: "Test outpatient procedure"
+    )
+
+    summary = analyze_single_obligation(procedure: "OUTPATIENT_TEST", paid: 5_000)
+    result = summary.results.first
+
+    assert_equal :opps, result.payment_system
+    assert_equal :stub_estimate, result.recovery_confidence
+    assert_equal :stub, result.rate_source
+    refute_nil result.medicare_equivalent
+    refute_nil result.overpayment
   end
 
   # -- Professional-only obligation (no DRG) --------------------------------
