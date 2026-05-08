@@ -7,11 +7,11 @@ module Corvid
   # PFS for professional services, IPPS DRG for inpatient hospital, OPPS
   # APC for hospital outpatient.
   #
-  # Phase 1 only the PFS path is fully implemented. Inpatient/outpatient
-  # hospital obligations get a recovery_confidence of :facility_repricing_pending
-  # with the flagged dollars reported separately so the operator can see
-  # the gap between "repriced today" and "potentially recoverable once
-  # IPPS/OPPS are ingested."
+  # PFS path uses real ingested CMS data and yields :clear results. Hospital
+  # obligations (DRG- or APC-mapped) currently route through the IPPS/OPPS
+  # stub rate providers and yield :stub_estimate results — directionally
+  # correct national-average dollars, replaced by real per-year locality-
+  # adjusted rates when #276 (IPPS) and #277 (OPPS) ingestion lands.
   module PrcOverpaymentAnalyzer
     # Per-obligation result.
     Result = Struct.new(
@@ -20,7 +20,7 @@ module Corvid
       :service_date, :facility_zip, :locality,
       :billed_amount, :paid_amount,
       :medicare_equivalent, :overpayment,
-      :payment_system, :recovery_confidence,
+      :payment_system, :rate_source, :recovery_confidence,
       :notes,
       keyword_init: true
     )
@@ -30,18 +30,18 @@ module Corvid
       :obligations_analyzed,
       :total_billed, :total_paid,
       :total_medicare_equivalent, :total_overpayment_known,
-      :total_facility_repricing_pending,
+      :total_overpayment_stub_estimate,
       :by_confidence,
       :results,
       keyword_init: true
     )
 
     # Recovery confidence levels.
-    #   :clear                       — Medicare equivalent computed, overpayment is final
-    #   :facility_repricing_pending  — Hospital claim, professional component priced; awaiting IPPS/OPPS
-    #   :unmapped_procedure          — Procedure description not in PrcProcedureDictionary
-    #   :unmapped_facility           — RPMS facility code not in PrcFacilityDictionary
-    #   :no_rate_for_year            — DB has no PFS row for this CPT/locality on the service date
+    #   :clear                — Medicare equivalent from real CMS data; overpayment is final
+    #   :stub_estimate        — Hospital obligation priced via stub provider; rough but actionable
+    #   :unmapped_procedure   — Procedure description not in PrcProcedureDictionary
+    #   :unmapped_facility    — RPMS facility code not in PrcFacilityDictionary
+    #   :no_rate_for_year     — DB has no PFS row for this CPT/locality on the service date
 
     class << self
       def analyze(report)
@@ -74,6 +74,7 @@ module Corvid
           return Result.new(
             base_fields(obligation, proc_info, facility).merge(
               payment_system: :pfs,
+              rate_source: :real,
               recovery_confidence: :no_rate_for_year,
               notes: "No PFS rate found for CPT #{proc_info.hcpcs} in locality " \
                      "#{facility.locality} on #{obligation.service_date}"
@@ -86,26 +87,29 @@ module Corvid
             medicare_equivalent: rate,
             overpayment: [ obligation.paid_amount.to_f - rate, 0 ].max.round(2),
             payment_system: :pfs,
+            rate_source: :real,
             recovery_confidence: :clear
           )
         )
       end
 
       def analyze_inpatient(obligation, proc_info, facility)
-        # Phase 1: price the professional component for visibility, but do
-        # not call this final — facility payment dominates. Flag clearly.
-        professional_rate_value = professional_rate(proc_info.hcpcs, facility.locality, obligation.service_date)
+        rate = Corvid::IppsStubRateProvider.rate_for(
+          drg_code: proc_info.drg,
+          locality: facility.locality,
+          date: obligation.service_date
+        )
 
         Result.new(
           base_fields(obligation, proc_info, facility).merge(
-            medicare_equivalent: professional_rate_value, # PFS only — partial
-            overpayment: nil, # cannot be computed without IPPS
+            medicare_equivalent: rate,
+            overpayment: rate ? [ obligation.paid_amount.to_f - rate, 0 ].max.round(2) : nil,
             payment_system: :ipps,
-            recovery_confidence: :facility_repricing_pending,
-            notes: "Inpatient hospital claim (DRG #{proc_info.drg}). Professional " \
-                   "component (CPT #{proc_info.hcpcs}) priced at " \
-                   "#{professional_rate_value ? "$#{professional_rate_value.round(2)}" : "n/a"}. " \
-                   "Hospital facility component awaiting IPPS DRG ingest (corvid#276)."
+            rate_source: Corvid::IppsStubRateProvider.source,
+            recovery_confidence: :stub_estimate,
+            notes: "Inpatient hospital claim (DRG #{proc_info.drg}). Stub IPPS " \
+                   "national-average estimate; replace with real CMS rate when " \
+                   "#276 (IPPS DRG ingest) lands."
           )
         )
       end
@@ -126,11 +130,22 @@ module Corvid
       end
 
       def analyze_outpatient(obligation, proc_info, facility)
+        rate = Corvid::OppsStubRateProvider.rate_for(
+          apc_code: proc_info.apc,
+          locality: facility.locality,
+          date: obligation.service_date
+        )
+
         Result.new(
           base_fields(obligation, proc_info, facility).merge(
+            medicare_equivalent: rate,
+            overpayment: rate ? [ obligation.paid_amount.to_f - rate, 0 ].max.round(2) : nil,
             payment_system: :opps,
-            recovery_confidence: :facility_repricing_pending,
-            notes: "Hospital outpatient (APC #{proc_info.apc}). Awaiting OPPS APC ingest (corvid#277)."
+            rate_source: Corvid::OppsStubRateProvider.source,
+            recovery_confidence: :stub_estimate,
+            notes: "Hospital outpatient (APC #{proc_info.apc}). Stub OPPS " \
+                   "national-average estimate; replace with real CMS rate when " \
+                   "#277 (OPPS APC ingest) lands."
           )
         )
       end
@@ -188,14 +203,16 @@ module Corvid
 
       def summarize(results)
         by_confidence = results.group_by(&:recovery_confidence).transform_values(&:size)
+        clear = results.select { |r| r.recovery_confidence == :clear }
+        stub = results.select { |r| r.recovery_confidence == :stub_estimate }
 
         Summary.new(
           obligations_analyzed: results.size,
           total_billed: sum(results, :billed_amount),
           total_paid: sum(results, :paid_amount),
-          total_medicare_equivalent: sum(results.select { |r| r.recovery_confidence == :clear }, :medicare_equivalent),
-          total_overpayment_known: sum(results.select { |r| r.recovery_confidence == :clear }, :overpayment),
-          total_facility_repricing_pending: sum(results.select { |r| r.recovery_confidence == :facility_repricing_pending }, :paid_amount),
+          total_medicare_equivalent: sum(clear, :medicare_equivalent),
+          total_overpayment_known: sum(clear, :overpayment),
+          total_overpayment_stub_estimate: sum(stub, :overpayment),
           by_confidence: by_confidence,
           results: results
         )
