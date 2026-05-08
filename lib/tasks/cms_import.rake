@@ -46,6 +46,28 @@ namespace :cms do
       end
     end
 
+    # Record provenance: which CMS source files produced this year's data,
+    # the SHA256 of the combined source bytes, and which parser version
+    # ingested it. Lets RepricingService and audit consumers answer
+    # "where did this rate come from?" without re-reading source files.
+    source_checksum = File.open(rvu_file) do |rvu_io|
+      rvu_digest = Corvid::CmsSnapshot.checksum_io(rvu_io)
+      gpci_digest = File.open(gpci_file) { |gp| Corvid::CmsSnapshot.checksum_io(gp) }
+      Digest::SHA256.hexdigest(rvu_digest + gpci_digest)
+    end
+
+    Corvid::CmsFeeScheduleRelease.upsert(
+      {
+        year: year,
+        cms_release_tag: File.basename(rvu_file, ".csv"),
+        source_checksum_sha256: source_checksum,
+        parser_version: Corvid::CmsSnapshot.parser_version,
+        ingested_at: Time.current,
+        row_count: Corvid::FeeScheduleEntry.where(effective_date: effective_date).count
+      },
+      unique_by: :year
+    )
+
     puts "  Imported #{imported} entries for #{year}"
   end
 
