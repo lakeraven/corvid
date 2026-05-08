@@ -48,11 +48,15 @@ module Corvid
       # Returns the stub IPPS rate as a Float, or nil if inputs are unusable.
       # Locality is accepted for interface compatibility with the eventual
       # real IPPS lookup but ignored by the stub.
+      #
+      # Service date is converted to federal fiscal year for the rate
+      # lookup — IPPS rates change on Oct 1, not Jan 1. A Nov 15 2024
+      # discharge bills against the FY 2025 rate, not FY 2024.
       def rate_for(drg_code:, locality: nil, date: nil)
         return nil if drg_code.nil? || date.nil?
 
-        year = date.respond_to?(:year) ? date.year : date.to_i
-        national_avg = NATIONAL_AVERAGE_BY_YEAR[year] || DEFAULT_NATIONAL_AVERAGE
+        fy = federal_fiscal_year(date)
+        national_avg = NATIONAL_AVERAGE_BY_YEAR[fy] || DEFAULT_NATIONAL_AVERAGE
         multiplier = DRG_MULTIPLIERS[drg_code.to_s] || DEFAULT_DRG_MULTIPLIER
 
         (national_avg * multiplier).round(2)
@@ -62,6 +66,15 @@ module Corvid
       # production path will return :real when #276 ingestion is available
       # for the requested year/locality.
       def source = :stub
+
+      private
+
+      # Federal fiscal year for IPPS rate lookup. CMS IPPS rates change
+      # Oct 1; service dates from Oct 1 onward use the *next* calendar
+      # year as the FY. Service dates Jan 1–Sep 30 use the current year.
+      def federal_fiscal_year(date)
+        date.month >= 10 ? date.year + 1 : date.year
+      end
     end
   end
 end

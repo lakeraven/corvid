@@ -48,4 +48,36 @@ class Corvid::IppsStubRateProviderTest < ActiveSupport::TestCase
   test "source is :stub" do
     assert_equal :stub, Corvid::IppsStubRateProvider.source
   end
+
+  # -- Federal fiscal year boundary -----------------------------------------
+
+  test "service date in Sep uses the calendar year (FY = year)" do
+    # Sep 30 2024 is FY 2024
+    rate_sep = Corvid::IppsStubRateProvider.rate_for(
+      drg_code: "470", date: Date.new(2024, 9, 30)
+    )
+    expected = Corvid::IppsStubRateProvider::NATIONAL_AVERAGE_BY_YEAR[2024] *
+               Corvid::IppsStubRateProvider::DRG_MULTIPLIERS["470"]
+    assert_in_delta expected.to_f, rate_sep, 0.01
+  end
+
+  test "service date in Oct rolls into next federal fiscal year" do
+    # Oct 1 2024 is FY 2025 — IPPS rates change Oct 1
+    rate_oct = Corvid::IppsStubRateProvider.rate_for(
+      drg_code: "470", date: Date.new(2024, 10, 1)
+    )
+    expected = Corvid::IppsStubRateProvider::NATIONAL_AVERAGE_BY_YEAR[2025] *
+               Corvid::IppsStubRateProvider::DRG_MULTIPLIERS["470"]
+    assert_in_delta expected.to_f, rate_oct, 0.01,
+                    "Oct 1 service date must use FY 2025 rate, not CY 2024"
+  end
+
+  test "service date Dec 31 uses next FY rate" do
+    rate_dec = Corvid::IppsStubRateProvider.rate_for(
+      drg_code: "470", date: Date.new(2024, 12, 31)
+    )
+    expected = Corvid::IppsStubRateProvider::NATIONAL_AVERAGE_BY_YEAR[2025] *
+               Corvid::IppsStubRateProvider::DRG_MULTIPLIERS["470"]
+    assert_in_delta expected.to_f, rate_dec, 0.01
+  end
 end

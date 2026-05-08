@@ -12,6 +12,14 @@ module Corvid
   # stub rate providers and yield :stub_estimate results — directionally
   # correct national-average dollars, replaced by real per-year locality-
   # adjusted rates when #276 (IPPS) and #277 (OPPS) ingestion lands.
+  #
+  # Public contract notes for callers:
+  #   - Result#recovery_confidence values: :clear, :stub_estimate,
+  #     :unmapped_procedure, :unmapped_facility, :no_rate_for_year
+  #   - Result#rate_source values: :real (PFS) or :stub (IPPS/OPPS Phase 1.5)
+  #   - Summary exposes total_overpayment_known (sum where confidence is
+  #     :clear) and total_overpayment_stub_estimate (sum where confidence
+  #     is :stub_estimate). Reports should label these distinctly.
   module PrcOverpaymentAnalyzer
     # Per-obligation result.
     Result = Struct.new(
