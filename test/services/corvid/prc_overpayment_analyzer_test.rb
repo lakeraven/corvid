@@ -129,6 +129,8 @@ class Corvid::PrcOverpaymentAnalyzerTest < ActiveSupport::TestCase
 
     assert_equal :no_rate_for_year, result.recovery_confidence
     assert_nil result.medicare_equivalent
+    assert_nil result.rate_source,
+              "rate_source must be nil when no Medicare rate was actually computed"
   end
 
   # -- Helpers ---------------------------------------------------------------
