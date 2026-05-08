@@ -23,6 +23,12 @@ module Corvid
     DEFAULT_NATIONAL_AVERAGE = 1_600
 
     class << self
+      # `apc_code` and `locality` are accepted for interface parity with
+      # the eventual real OPPS rate provider, which will look up per-APC
+      # weights and apply locality wage index. The stub returns the same
+      # year-only national average regardless of those inputs — this is
+      # intentional for Phase 1.5 simplicity. Callers should not assume
+      # APC differentiation from this stub.
       def rate_for(apc_code: nil, locality: nil, date: nil)
         return nil if date.nil?
 
