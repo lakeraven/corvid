@@ -1,14 +1,14 @@
 # frozen_string_literal: true
 
 module Corvid
-  # Phase 1.5 placeholder for hospital outpatient MLR repricing. Returns
-  # rough national-average OPPS payment estimates by year, optionally
-  # adjusted by APC if known. Replace at the `OppsRateProvider` facade
-  # once #277 lands.
+  # Phase 1.5 placeholder for hospital outpatient MLR repricing. Returns a
+  # rough per-year national-average OPPS payment per outpatient encounter.
+  # Does **not** adjust by APC, locality, or any other factor — those wait
+  # for the real OPPS rate provider when #277 lands.
   #
-  # Methodology: per-year national-average OPPS payment per claim line.
-  # Outpatient encounters bundle multiple lines, so a stub for a single
-  # OPPS-paid encounter is a per-encounter approximation, not per-APC.
+  # Use this for directional reporting and pipeline validation only. Do
+  # not rely on per-APC differentiation; the stub returns the same year
+  # average regardless of the APC code passed in.
   module OppsStubRateProvider
     # Approximate national-average OPPS payment per outpatient encounter
     # by year. Wide variance in reality — this is rough.
