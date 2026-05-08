@@ -82,7 +82,7 @@ module Corvid
           return Result.new(
             base_fields(obligation, proc_info, facility).merge(
               payment_system: :pfs,
-              rate_source: :real,
+              rate_source: nil, # no rate looked up successfully
               recovery_confidence: :no_rate_for_year,
               notes: "No PFS rate found for CPT #{proc_info.hcpcs} in locality " \
                      "#{facility.locality} on #{obligation.service_date}"
