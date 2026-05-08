@@ -10,9 +10,10 @@ module Corvid
   # `IppsRateProvider` facade once #276 lands.
   #
   # Methodology: hardcoded national-average per-discharge IPPS payment by
-  # year (from public CMS aggregate IPPS data) multiplied by a per-DRG
-  # relative-weight factor. Locality wage index is intentionally not
-  # applied — that level of accuracy waits for #276.
+  # **federal fiscal year** (Oct 1 – Sep 30; from public CMS aggregate IPPS
+  # data) multiplied by a per-DRG relative-weight factor. Service dates
+  # are converted to FY before lookup. Locality wage index is intentionally
+  # not applied — that level of accuracy waits for #276.
   module IppsStubRateProvider
     # National-average per-discharge IPPS payment by federal fiscal year.
     # Approximated from CMS aggregate published statistics.
