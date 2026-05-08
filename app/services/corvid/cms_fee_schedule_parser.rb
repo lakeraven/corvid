@@ -106,9 +106,11 @@ module Corvid
       # does not substring-match a 4-digit name like PPRRVU2026_*. Sort
       # deterministically; prefer nonQPP > JAN > first.
       def find_rvu_file(base_dir, year)
-        # Case-insensitive glob for cross-platform parity (macOS HFS+ is
-        # case-insensitive, Linux ext4 is not — real CMS files vary in case).
-        candidates = Dir.glob(File.join(base_dir, "PPRRVU*.csv"), File::FNM_CASEFOLD)
+        # Character-class glob for cross-platform parity. macOS HFS+ is
+        # case-insensitive at the filesystem level; Linux ext4 is not.
+        # FNM_CASEFOLD on Dir.glob is unreliable across Ruby versions, so
+        # the pattern itself spells out both cases.
+        candidates = Dir.glob(File.join(base_dir, "[Pp][Pp][Rr][Rr][Vv][Uu]*.csv"))
                         .select { |f| year_token_match?(File.basename(f), "PPRRVU", year) }
                         .uniq.sort
         return nil if candidates.empty?
@@ -123,9 +125,10 @@ module Corvid
       # GPCI-ish file, and never substring-match across decades. Sort
       # deterministically.
       def find_gpci_file(base_dir, year)
-        # Case-insensitive glob — real CMS files include both GPCI09.csv
-        # and gpci10.csv depending on year.
-        candidates = Dir.glob(File.join(base_dir, "*GPCI*.csv"), File::FNM_CASEFOLD)
+        # Character-class glob — real CMS files include both GPCI09.csv
+        # and gpci10.csv depending on year. Spelled out for cross-version
+        # / cross-platform parity (FNM_CASEFOLD unreliable on Dir.glob).
+        candidates = Dir.glob(File.join(base_dir, "*[Gg][Pp][Cc][Ii]*.csv"))
                         .select { |f| gpci_year_match?(File.basename(f), year) }
                         .uniq.sort
         candidates.first
