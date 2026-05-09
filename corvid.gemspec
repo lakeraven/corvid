@@ -20,7 +20,7 @@ Gem::Specification.new do |spec|
     "documentation_uri" => "https://github.com/lakeraven/corvid/tree/main/docs"
   }
 
-  spec.required_ruby_version = ">= 3.4.0"
+  spec.required_ruby_version = ">= 4.0.0"
 
   spec.files = Dir.chdir(File.expand_path(__dir__)) do
     Dir["{app,config,db,lib}/**/*", "MIT-LICENSE", "Rakefile", "README.md"]
@@ -30,6 +30,7 @@ Gem::Specification.new do |spec|
   spec.add_dependency "aasm", "~> 5.5"
   spec.add_dependency "csv", ">= 3.0"
   spec.add_dependency "money-rails", "~> 3.0"
+  spec.add_dependency "ostruct", "~> 0.6"
   spec.add_dependency "pg", "~> 1.5"
   spec.add_dependency "ulid", "~> 1.4"
 end
