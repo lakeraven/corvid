@@ -95,6 +95,55 @@ class Corvid::BudgetAvailabilityServiceInjectionTest < ActiveSupport::TestCase
     end
   end
 
+  test "class .check(referral, adapter:) routes through the injected adapter via shim" do
+    Corvid.configure { |c| c.adapter = poison_adapter }
+    Corvid::TenantContext.with_tenant(TENANT) do
+      ref = Corvid::PrcReferral.create!(
+        case: Corvid::Case.create!(patient_identifier: "p_cs", facility_identifier: "fac_cs"),
+        referral_identifier: "rf_classcheck_#{SecureRandom.hex(4)}",
+        estimated_cost_cents: 50_000_00, # 50_000 USD — at the committee threshold
+        currency_iso: "USD"
+      )
+
+      result = Corvid::BudgetAvailabilityService.check(ref, adapter: @fake)
+
+      assert_equal 900_000.0, result.remaining_budget
+      assert result.requires_committee_review,
+             "50_000 USD is at COMMITTEE_REVIEW_THRESHOLD"
+      assert_includes @fake.calls.map(&:first), :get_budget_summary
+    end
+  end
+
+  # -- Edge cases: degraded adapter responses --------------------------------
+
+  class NilSummaryAdapter
+    def get_budget_summary; nil; end
+  end
+
+  class EmptySummaryAdapter
+    def get_budget_summary; {}; end
+  end
+
+  test "remaining_budget falls back to 0.0 when adapter returns nil" do
+    service = Corvid::BudgetAvailabilityService.new(adapter: NilSummaryAdapter.new)
+    assert_equal 0.0, service.remaining_budget
+    assert_equal 0.0, service.reserved_funds
+  end
+
+  test "fiscal_year_budget falls back to default when adapter returns nil" do
+    service = Corvid::BudgetAvailabilityService.new(adapter: NilSummaryAdapter.new)
+    assert_equal Corvid::BudgetAvailabilityService::DEFAULT_FISCAL_YEAR_BUDGET,
+                 service.fiscal_year_budget
+  end
+
+  test "fiscal_year_budget falls back to default when adapter returns an empty payload" do
+    service = Corvid::BudgetAvailabilityService.new(adapter: EmptySummaryAdapter.new)
+    assert_equal Corvid::BudgetAvailabilityService::DEFAULT_FISCAL_YEAR_BUDGET,
+                 service.fiscal_year_budget
+    assert_equal 0.0, service.remaining_budget
+    assert_equal 0.0, service.reserved_funds
+  end
+
   private
 
   def poison_adapter
