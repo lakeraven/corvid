@@ -57,6 +57,23 @@ class Corvid::PrcMoneyTest < ActiveSupport::TestCase
     end
   end
 
+  # -- ISO 4217 validation ----------------------------------------------------
+
+  test "obligation rejects an unknown currency_iso code at validation" do
+    Corvid::TenantContext.with_tenant(TENANT_US) do
+      ob = Corvid::PrcObligation.new(
+        facility_identifier: "X",
+        obligation_id: "OBL-BOGUS",
+        billed_amount_cents: 1000,
+        currency_iso: "XYZ", # not a real ISO 4217 code
+        fiscal_year: 2026,
+        imported_at: Time.current
+      )
+      refute ob.valid?
+      assert_match(/ISO 4217/, ob.errors[:currency_iso].join)
+    end
+  end
+
   # -- Currency immutability --------------------------------------------------
 
   test "currency_iso defaults to USD on rows created without an explicit value" do
