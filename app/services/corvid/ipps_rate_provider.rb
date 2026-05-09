@@ -19,18 +19,35 @@ module Corvid
     # in the analyzer's notes/provenance instead.
     SOURCE = :ipps_real
 
+    # Result struct so callers can inspect the release_label and decide
+    # confidence. The label travels alongside the rate so a stub-derived
+    # row (release_label: "stub_v1") can be reported as :stub_estimate
+    # rather than misrepresented as :clear.
+    Lookup = Struct.new(:rate, :release_label, keyword_init: true)
+
     class << self
       def rate_for(drg_code:, locality: nil, date: nil)
+        result = lookup_for(drg_code: drg_code, locality: locality, date: date)
+        result&.rate
+      end
+
+      def lookup_for(drg_code:, locality: nil, date: nil)
         return nil if drg_code.nil? || date.nil?
 
         fy = federal_fiscal_year(date)
-        weight = IppsDrgWeight.weight_for(drg_code: drg_code, fiscal_year: fy)
-        return nil unless weight
+        weight_row = IppsDrgWeight.find_by(drg_code: drg_code.to_s, fiscal_year: fy)
+        return nil unless weight_row
 
         hospital_rate = IppsHospitalRate.lookup(fiscal_year: fy, locality: locality)
         return nil unless hospital_rate
 
-        (weight * hospital_rate.base_rate * hospital_rate.wage_index).round(2)
+        rate = (weight_row.relative_weight * hospital_rate.base_rate * hospital_rate.wage_index).round(2)
+        # Take the more conservative label between the two rows: if
+        # either is stub-derived, the resulting rate is stub-derived.
+        label = [ weight_row.release_label, hospital_rate.release_label ]
+                  .compact.find { |l| l.to_s.start_with?("stub") } ||
+                weight_row.release_label || hospital_rate.release_label
+        Lookup.new(rate: rate, release_label: label)
       end
 
       def source
