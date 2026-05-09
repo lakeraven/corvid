@@ -57,4 +57,33 @@ class Corvid::CmsIppsParserTest < ActiveSupport::TestCase
       Corvid::CmsIppsParser.parse_hospital_rates("locality,base_rate\n01,6500.00\n", fiscal_year: 2026)
     end
   end
+
+  test "parse_drg_weights skips blank lines" do
+    csv = "drg_code,relative_weight\n470,2.0743\n\n   \n469,3.6841\n"
+    rows = Corvid::CmsIppsParser.parse_drg_weights(csv, fiscal_year: 2026)
+    assert_equal [ "470", "469" ], rows.map { |r| r[:drg_code] }
+  end
+
+  test "parse_drg_weights tolerates a UTF-8 BOM on the header row" do
+    bom = (+"\xEF\xBB\xBF").force_encoding("UTF-8")
+    csv = "#{bom}drg_code,relative_weight\n470,2.0743\n"
+    rows = Corvid::CmsIppsParser.parse_drg_weights(csv, fiscal_year: 2026)
+    assert_equal 1, rows.size
+    assert_equal "470", rows[0][:drg_code]
+  end
+
+  test "parse_hospital_rates tolerates thousands-separator commas and dollar prefixes" do
+    csv = "locality,base_rate,wage_index\nNATIONAL,\"$6,500.00\",1.0000\n"
+    rows = Corvid::CmsIppsParser.parse_hospital_rates(csv, fiscal_year: 2026)
+    assert_equal BigDecimal("6500.00"), rows[0][:base_rate]
+  end
+
+  test "parse_drg_weights raises a clear MalformedFileError on un-parseable decimals" do
+    csv = "drg_code,relative_weight\n470,not-a-number\n"
+    err = assert_raises(Corvid::CmsIppsParser::MalformedFileError) do
+      Corvid::CmsIppsParser.parse_drg_weights(csv, fiscal_year: 2026)
+    end
+    assert_match(/relative_weight/, err.message)
+    assert_match(/470/, err.message, "error message names the offending row")
+  end
 end
