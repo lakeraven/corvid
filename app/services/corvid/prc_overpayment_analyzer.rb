@@ -7,19 +7,37 @@ module Corvid
   # PFS for professional services, IPPS DRG for inpatient hospital, OPPS
   # APC for hospital outpatient.
   #
-  # PFS path uses real ingested CMS data and yields :clear results. Hospital
-  # obligations (DRG- or APC-mapped) currently route through the IPPS/OPPS
-  # stub rate providers and yield :stub_estimate results — directionally
-  # correct national-average dollars, replaced by real per-year locality-
-  # adjusted rates when #276 (IPPS) and #277 (OPPS) ingestion lands.
+  # Per-payment-system data status:
+  #   - PFS uses real ingested CMS data → :clear results.
+  #   - IPPS routes through real CMS Final Rule data when loaded for the
+  #     (year, DRG, locality) — :clear / :real. When the loaded row's
+  #     release_label starts with "stub" (seed canonical CSVs from the
+  #     release), or no row is loaded and the in-code IppsStubRateProvider
+  #     fills in, results are :stub_estimate / :stub. See
+  #     docs/cms_ipps_data.md for coverage status by FY and the
+  #     production-ingest workflow.
+  #   - OPPS still routes only through OppsStubRateProvider — real APC
+  #     ingestion is #277 (next slice).
+  #
+  # **Screening estimate, not adjudication.** The IPPS pricing formula
+  # implemented here (`weight × base_rate × wage_index`) is the standard
+  # operating payment, intentionally without IME, DSH, capital, outlier,
+  # or transfer adjustments. That accuracy ceiling is fine for PRC
+  # recovery-triage screening — it is **not** a claim-adjudication
+  # amount, and demand-letter dollar figures should cite the analyzer's
+  # source/confidence labels alongside any total.
   #
   # Public contract notes for callers:
   #   - Result#recovery_confidence values: :clear, :stub_estimate,
   #     :unmapped_procedure, :unmapped_facility, :no_rate_for_year
-  #   - Result#rate_source values: :real (PFS) or :stub (IPPS/OPPS Phase 1.5)
+  #   - Result#rate_source values: :real (PFS or IPPS-with-real-data)
+  #     or :stub (IPPS-stub or OPPS Phase 1.5)
   #   - Summary exposes total_overpayment_known (sum where confidence is
   #     :clear) and total_overpayment_stub_estimate (sum where confidence
-  #     is :stub_estimate). Reports should label these distinctly.
+  #     is :stub_estimate). total_medicare_equivalent intentionally
+  #     sums only :clear results — the stub-derived equivalent dollars
+  #     belong to a different statistical population and shouldn't mix
+  #     into a single "Medicare-equivalent" figure on a report.
   module PrcOverpaymentAnalyzer
     # Per-obligation result.
     Result = Struct.new(
