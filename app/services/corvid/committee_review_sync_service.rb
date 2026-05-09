@@ -47,7 +47,7 @@ module Corvid
         committee_review.apply_to_referral!
         referral_updated = true
       rescue => e
-        Rails.logger.warn("CommitteeReviewSyncService: apply_to_referral! failed: #{e.message}")
+        Rails.logger.warn("CommitteeReviewSyncService: apply_to_referral! failed: #{Corvid.sanitize_phi(e.message)}")
       end
 
       {

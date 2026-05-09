@@ -32,6 +32,15 @@ class Corvid::CommitteeReviewSyncServiceInjectionTest < ActiveSupport::TestCase
 
   setup do
     @fake = RecordingAdapter.new
+    @original_adapter = Corvid.adapter
+  end
+
+  teardown do
+    # Each test below mutates Corvid.adapter (to poison it or replace
+    # it with a recording fake). test_helper.rb's setup re-resets the
+    # adapter for the next test, but explicit teardown here keeps this
+    # file self-contained and survives test_helper reorganizations.
+    Corvid.configure { |c| c.adapter = @original_adapter }
   end
 
   test "instance.sync_decision routes through the injected adapter, not Corvid.adapter" do
