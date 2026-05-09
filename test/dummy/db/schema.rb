@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_05_06_000002) do
+ActiveRecord::Schema[8.1].define(version: 2026_05_08_000001) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
@@ -310,6 +310,63 @@ ActiveRecord::Schema[8.1].define(version: 2026_05_06_000002) do
     t.check_constraint "status::text = ANY (ARRAY['pending'::character varying::text, 'processing'::character varying::text, 'succeeded'::character varying::text, 'failed'::character varying::text, 'refunded'::character varying::text])", name: "corvid_payments_status_check"
   end
 
+  create_table "corvid_prc_obligations", force: :cascade do |t|
+    t.decimal "balance", precision: 12, scale: 2
+    t.decimal "billed_amount", precision: 12, scale: 2
+    t.datetime "created_at", null: false
+    t.string "facility_identifier", null: false
+    t.integer "fiscal_year"
+    t.datetime "imported_at", null: false
+    t.string "obligation_id", null: false
+    t.decimal "paid_amount", precision: 12, scale: 2
+    t.string "patient_dfn"
+    t.string "procedure_code"
+    t.decimal "savings", precision: 12, scale: 2
+    t.date "service_date"
+    t.string "source_file"
+    t.string "status"
+    t.string "tenant_identifier", null: false
+    t.datetime "updated_at", null: false
+    t.string "vendor_id"
+    t.index ["tenant_identifier", "fiscal_year"], name: "idx_on_tenant_identifier_fiscal_year_4256632613"
+    t.index ["tenant_identifier", "obligation_id"], name: "idx_corvid_prc_obligations_tenant_oblig", unique: true
+    t.index ["tenant_identifier", "service_date"], name: "idx_on_tenant_identifier_service_date_6d2dcaef53"
+    t.index ["tenant_identifier", "vendor_id"], name: "idx_on_tenant_identifier_vendor_id_08d803412f"
+  end
+
+  create_table "corvid_prc_overpayment_analyses", force: :cascade do |t|
+    t.datetime "analyzed_at", null: false
+    t.string "analyzer_version", null: false
+    t.datetime "created_at", null: false
+    t.decimal "medicare_equivalent", precision: 12, scale: 2
+    t.text "notes"
+    t.decimal "overpayment", precision: 12, scale: 2
+    t.string "payment_system"
+    t.bigint "prc_obligation_id", null: false
+    t.string "rate_source"
+    t.string "rate_source_release"
+    t.string "recovery_confidence", null: false
+    t.string "tenant_identifier", null: false
+    t.datetime "updated_at", null: false
+    t.index ["prc_obligation_id", "analyzed_at"], name: "idx_corvid_prc_overpay_oblig_time"
+    t.index ["prc_obligation_id"], name: "idx_corvid_prc_overpay_oblig"
+    t.index ["tenant_identifier", "recovery_confidence"], name: "idx_corvid_prc_overpay_confidence"
+  end
+
+  create_table "corvid_prc_payments", force: :cascade do |t|
+    t.decimal "amount", precision: 12, scale: 2
+    t.string "check_number"
+    t.datetime "created_at", null: false
+    t.date "paid_date"
+    t.string "payment_id", null: false
+    t.bigint "prc_obligation_id", null: false
+    t.string "tenant_identifier", null: false
+    t.datetime "updated_at", null: false
+    t.string "vendor_name"
+    t.index ["prc_obligation_id"], name: "idx_corvid_prc_payments_oblig"
+    t.index ["tenant_identifier", "payment_id"], name: "idx_corvid_prc_payments_tenant_pmt", unique: true
+  end
+
   create_table "corvid_prc_referrals", force: :cascade do |t|
     t.string "authorization_number"
     t.datetime "authorization_number_cached_at"
@@ -386,5 +443,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_05_06_000002) do
   add_foreign_key "corvid_cases", "corvid_care_teams", column: "care_team_id"
   add_foreign_key "corvid_committee_reviews", "corvid_prc_referrals", column: "prc_referral_id"
   add_foreign_key "corvid_eligibility_checklists", "corvid_prc_referrals", column: "prc_referral_id"
+  add_foreign_key "corvid_prc_overpayment_analyses", "corvid_prc_obligations", column: "prc_obligation_id"
+  add_foreign_key "corvid_prc_payments", "corvid_prc_obligations", column: "prc_obligation_id"
   add_foreign_key "corvid_prc_referrals", "corvid_cases", column: "case_id"
 end
