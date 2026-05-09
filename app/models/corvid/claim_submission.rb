@@ -8,6 +8,14 @@ module Corvid
     self.table_name = "corvid_claim_submissions"
 
     include TenantScoped
+    include CurrencyImmutable
+
+    monetize :billed_amount_cents, with_model_currency: :currency_iso, allow_nil: true
+    monetize :paid_amount_cents, with_model_currency: :currency_iso, allow_nil: true
+    monetize :adjustment_amount_cents, with_model_currency: :currency_iso, allow_nil: true
+    monetize :patient_responsibility_cents, with_model_currency: :currency_iso, allow_nil: true
+    monetize :state_share_cents, with_model_currency: :currency_iso, allow_nil: true
+    monetize :county_share_cents, with_model_currency: :currency_iso, allow_nil: true
 
     STATUSES = %w[draft submitted accepted rejected paid denied appealed error].freeze
     CLAIM_TYPES = %w[professional institutional dental].freeze
@@ -27,12 +35,20 @@ module Corvid
     scope :needs_status_check, ->(max_age = 1.hour) { pending.where("last_checked_at IS NULL OR last_checked_at < ?", max_age.ago) }
     scope :in_date_range, ->(range) { where(service_date: range) }
 
-    def self.total_billed
-      sum(:billed_amount).to_f
+    # Per ADR 0004: aggregations across rows are bucketed by currency
+    # so mixed-currency tenants never auto-FX. Each helper returns
+    # { "USD" => Money(...), "EUR" => Money(...), ... }; an empty
+    # scope returns {}.
+    def self.totals_billed_by_currency
+      group(:currency_iso).sum(:billed_amount_cents).each_with_object({}) do |(iso, cents), out|
+        out[iso] = Money.new(cents, iso)
+      end
     end
 
-    def self.total_paid
-      sum(:paid_amount).to_f
+    def self.totals_paid_by_currency
+      group(:currency_iso).sum(:paid_amount_cents).each_with_object({}) do |(iso, cents), out|
+        out[iso] = Money.new(cents, iso)
+      end
     end
 
     def self.acceptance_rate
@@ -105,12 +121,17 @@ module Corvid
       result
     end
 
+    # All four operands share a single row's currency, so Money
+    # arithmetic is safe (the gem raises across mixed currencies, but
+    # within one row that's impossible by construction).
     def total_adjustment
-      (adjustment_amount || 0) + (patient_responsibility || 0)
+      zero = Money.new(0, currency_iso)
+      (adjustment_amount || zero) + (patient_responsibility || zero)
     end
 
     def balance_due
-      (billed_amount || 0) - (paid_amount || 0) - total_adjustment
+      zero = Money.new(0, currency_iso)
+      (billed_amount || zero) - (paid_amount || zero) - total_adjustment
     end
 
     private

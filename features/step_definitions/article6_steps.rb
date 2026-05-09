@@ -27,14 +27,21 @@ When("I generate an Article 6 summary report for the current quarter") do
   quarter_start = Date.current.beginning_of_quarter
   quarter_end = Date.current.end_of_quarter
   claims = Corvid::ClaimSubmission.paid.in_date_range(quarter_start..quarter_end)
+  # Article 6 is US-domestic state/county Medicaid reimbursement so
+  # cents → dollars is unambiguous here. For multi-currency tenants the
+  # production report path (e.g., PrcOverpaymentReportService) uses
+  # money-rails' per-currency bucketing instead.
+  to_dollars = ->(cents) { (cents || 0) / 100.0 }
   @report = {
     period: "#{quarter_start} to #{quarter_end}",
     total_claims: claims.count,
-    total_billed: claims.sum(:billed_amount),
-    total_paid: claims.sum(:paid_amount),
-    total_state_share: claims.sum(:state_share),
-    total_county_share: claims.sum(:county_share),
-    by_provider: claims.group(:provider_identifier).sum(:paid_amount)
+    total_billed: to_dollars[claims.sum(:billed_amount_cents)],
+    total_paid: to_dollars[claims.sum(:paid_amount_cents)],
+    total_state_share: to_dollars[claims.sum(:state_share_cents)],
+    total_county_share: to_dollars[claims.sum(:county_share_cents)],
+    by_provider: claims.group(:provider_identifier)
+                       .sum(:paid_amount_cents)
+                       .transform_values(&to_dollars)
   }
 end
 
@@ -44,7 +51,10 @@ When("I export the report as CSV") do
   claims = Corvid::ClaimSubmission.paid
   claims.group(:provider_identifier).each do |provider, _|
     provider_claims = claims.where(provider_identifier: provider)
-    @csv_lines << "#{provider},#{provider_claims.sum(:paid_amount)},#{provider_claims.sum(:state_share)},#{provider_claims.sum(:county_share)}"
+    paid = provider_claims.sum(:paid_amount_cents) / 100.0
+    state = provider_claims.sum(:state_share_cents) / 100.0
+    county = provider_claims.sum(:county_share_cents) / 100.0
+    @csv_lines << "#{provider},#{paid},#{state},#{county}"
   end
 end
 
