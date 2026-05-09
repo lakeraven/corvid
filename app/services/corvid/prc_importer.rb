@@ -81,8 +81,9 @@ module Corvid
               payment_system: result.payment_system&.to_s,
               rate_source: result.rate_source&.to_s,
               recovery_confidence: result.recovery_confidence.to_s,
-              medicare_equivalent: result.medicare_equivalent,
-              overpayment: result.overpayment,
+              medicare_equivalent_cents: to_cents(result.medicare_equivalent),
+              overpayment_cents: to_cents(result.overpayment),
+              currency_iso: obligation.currency_iso,
               notes: result.notes,
               analyzed_at: analyzed_at
             )
@@ -117,10 +118,11 @@ module Corvid
             procedure_code: o.procedure_code,
             service_date: o.service_date,
             status: o.status,
-            billed_amount: o.billed_amount,
-            paid_amount: o.paid_amount,
-            savings: o.savings,
-            balance: o.balance,
+            billed_amount_cents: to_cents(o.billed_amount),
+            paid_amount_cents: to_cents(o.paid_amount),
+            savings_cents: to_cents(o.savings),
+            balance_cents: to_cents(o.balance),
+            currency_iso: "USD",
             fiscal_year: o.fiscal_year,
             source_file: source_file,
             imported_at: imported_at
@@ -163,7 +165,8 @@ module Corvid
             payment_id: p.payment_id,
             paid_date: p.paid_date,
             check_number: p.check_number,
-            amount: p.amount,
+            amount_cents: to_cents(p.amount),
+            currency_iso: "USD",
             vendor_name: p.vendor_name
           }
           payment_ids_by_oblig_pk[oblig_pk] << p.payment_id
@@ -191,6 +194,16 @@ module Corvid
         end
 
         { imported: rows.size, dropped_orphan: dropped_orphan }
+      end
+
+      # Convert a BigDecimal/Numeric/nil from the PRC parser into integer
+      # subunit-cents for write to a `*_cents` column. PRC export files
+      # are always USD-denominated (US IHS), so this assumes 100 cents per
+      # dollar. International tenants don't go through this importer —
+      # they have their own ingest paths that pass currency through.
+      def to_cents(value)
+        return nil if value.nil?
+        (BigDecimal(value.to_s) * 100).to_i
       end
 
       def obligation_pks_for(obligation_external_ids)

@@ -91,14 +91,14 @@ class Corvid::PrcImporterTest < ActiveSupport::TestCase
     with_tenant(TENANT) do
       Corvid::PrcImporter.import(SAMPLE, source_file: "test.prc")
       original_paid = Corvid::PrcObligation.find_by(obligation_id: "OBL-2009-000123").paid_amount
-      assert_equal 42_000.to_d, original_paid
+      assert_equal Money.from_amount(42_000, "USD"), original_paid
 
       # Same obligation_id but paid amount has been corrected to a new value
       updated = SAMPLE.sub("42000.00", "45000.00")
       Corvid::PrcImporter.import(updated, source_file: "test_corrected.prc")
 
       reloaded = Corvid::PrcObligation.find_by(obligation_id: "OBL-2009-000123")
-      assert_equal 45_000.to_d, reloaded.paid_amount,
+      assert_equal Money.from_amount(45_000, "USD"), reloaded.paid_amount,
                    "obligation row reflects the latest export's values"
       assert_equal "test_corrected.prc", reloaded.source_file,
                    "source_file updates to the most recent import"
