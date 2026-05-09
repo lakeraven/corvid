@@ -20,6 +20,32 @@ class Corvid::PrcOverpaymentAnalyzerTest < ActiveSupport::TestCase
 
   # -- Inpatient hospital obligation (DRG-mapped) ---------------------------
 
+  test "inpatient claim with real IPPS data loaded routes to :clear / :real" do
+    # Load real DRG weight + hospital rate for FY 2009 (the fixture
+    # service_date year). With these rows present, IppsRateProvider
+    # returns a real rate and the analyzer marks recovery_confidence
+    # as :clear instead of :stub_estimate.
+    Corvid::IppsDrgWeight.create!(
+      fiscal_year: 2009, drg_code: "470", relative_weight: 2.0743
+    )
+    Corvid::IppsHospitalRate.create!(
+      fiscal_year: 2009, locality: "NATIONAL",
+      base_rate: 6_000.0, wage_index: 1.0
+    )
+
+    summary = analyze_single_obligation(procedure: "HIP_REPLACE_THR", paid: 42_000)
+    result = summary.results.first
+
+    assert_equal :ipps, result.payment_system
+    assert_equal :clear, result.recovery_confidence,
+                 "with real CMS IPPS data loaded, inpatient claim is fully priced"
+    assert_equal :real, result.rate_source
+    # 2.0743 × 6000 × 1.0 = 12_445.80
+    assert_in_delta 12_445.80, result.medicare_equivalent.to_f, 0.01
+    assert_in_delta 42_000 - 12_445.80, result.overpayment.to_f, 0.01
+    assert_match(/real CMS IPPS/, result.notes)
+  end
+
   test "inpatient hospital claim uses IPPS stub rate (Phase 1.5)" do
     summary = analyze_single_obligation(procedure: "HIP_REPLACE_THR", paid: 42_000)
     result = summary.results.first
