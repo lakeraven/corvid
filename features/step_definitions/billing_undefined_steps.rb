@@ -44,7 +44,7 @@ end
 
 When("I generate an Article {int} report grouped by provider") do |_article|
   @report = Corvid::ClaimSubmission.paid.group(:provider_identifier)
-    .pluck(:provider_identifier, Arel.sql("SUM(billed_amount)"), Arel.sql("SUM(paid_amount)"))
+    .pluck(:provider_identifier, Arel.sql("SUM(billed_amount_cents)"), Arel.sql("SUM(paid_amount_cents)"))
     .map { |prov, billed, paid| { provider: prov, billed: billed, paid: paid } }
 end
 
@@ -76,8 +76,8 @@ Then("I should receive a report with total billed and paid amounts") do
 end
 
 Then("the report should include state and county share splits") do
-  state_total = Corvid::ClaimSubmission.paid.sum(:state_share)
-  county_total = Corvid::ClaimSubmission.paid.sum(:county_share)
+  state_total = Corvid::ClaimSubmission.paid.sum(:state_share_cents)
+  county_total = Corvid::ClaimSubmission.paid.sum(:county_share_cents)
   assert state_total > 0 || county_total > 0
 end
 
@@ -96,13 +96,13 @@ Then("each quarter should have aggregated totals") do
 end
 
 Then("the billed amounts should match the sum of ClaimSubmission billed amounts") do
-  total = Corvid::ClaimSubmission.paid.sum(:billed_amount)
+  total = Corvid::ClaimSubmission.paid.sum(:billed_amount_cents)
   report_total = @report.is_a?(Hash) ? @report[:total_billed] : @report.sum { |r| r[:billed] || 0 }
   assert_in_delta total.to_f, report_total.to_f, 0.01
 end
 
 Then("the paid amounts should match the sum of ClaimSubmission paid amounts") do
-  total = Corvid::ClaimSubmission.paid.sum(:paid_amount)
+  total = Corvid::ClaimSubmission.paid.sum(:paid_amount_cents)
   report_total = @report.is_a?(Hash) ? @report[:total_paid] : @report.sum { |r| r[:paid] || 0 }
   assert_in_delta total.to_f, report_total.to_f, 0.01
 end

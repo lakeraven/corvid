@@ -30,11 +30,11 @@ When("I generate an Article 6 summary report for the current quarter") do
   @report = {
     period: "#{quarter_start} to #{quarter_end}",
     total_claims: claims.count,
-    total_billed: claims.sum(:billed_amount),
-    total_paid: claims.sum(:paid_amount),
-    total_state_share: claims.sum(:state_share),
-    total_county_share: claims.sum(:county_share),
-    by_provider: claims.group(:provider_identifier).sum(:paid_amount)
+    total_billed: claims.sum(:billed_amount_cents),
+    total_paid: claims.sum(:paid_amount_cents),
+    total_state_share: claims.sum(:state_share_cents),
+    total_county_share: claims.sum(:county_share_cents),
+    by_provider: claims.group(:provider_identifier).sum(:paid_amount_cents)
   }
 end
 
@@ -44,7 +44,7 @@ When("I export the report as CSV") do
   claims = Corvid::ClaimSubmission.paid
   claims.group(:provider_identifier).each do |provider, _|
     provider_claims = claims.where(provider_identifier: provider)
-    @csv_lines << "#{provider},#{provider_claims.sum(:paid_amount)},#{provider_claims.sum(:state_share)},#{provider_claims.sum(:county_share)}"
+    @csv_lines << "#{provider},#{provider_claims.sum(:paid_amount_cents)},#{provider_claims.sum(:state_share_cents)},#{provider_claims.sum(:county_share_cents)}"
   end
 end
 
