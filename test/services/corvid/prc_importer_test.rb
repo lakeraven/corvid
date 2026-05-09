@@ -15,12 +15,6 @@ class Corvid::PrcImporterTest < ActiveSupport::TestCase
     T^2^2^3^42180.00^0.00
   PRC
 
-  def teardown
-    Corvid::PrcOverpaymentAnalysis.unscoped.delete_all
-    Corvid::PrcPayment.unscoped.delete_all
-    Corvid::PrcObligation.unscoped.delete_all
-  end
-
   # -- Basic ingestion -------------------------------------------------------
 
   test "imports obligations from a PRC export string" do
@@ -53,6 +47,25 @@ class Corvid::PrcImporterTest < ActiveSupport::TestCase
       assert_equal 2, obligation.prc_payments.count
       assert_equal [ "PMT-2009-000001", "PMT-2009-000002" ],
                    obligation.prc_payments.order(:payment_id).pluck(:payment_id)
+    end
+  end
+
+  # -- Malformed input -------------------------------------------------------
+
+  test "raises MalformedExportError when the file has no header" do
+    no_header = "T^0^0^0^0.00^0.00\n"
+    with_tenant(TENANT) do
+      assert_raises(Corvid::PrcImporter::MalformedExportError) do
+        Corvid::PrcImporter.import(no_header, source_file: "broken.prc")
+      end
+      assert_equal 0, Corvid::PrcObligation.count,
+                   "no rows persisted when the file is malformed"
+    end
+  end
+
+  test "raises MissingTenantContextError when no tenant is set" do
+    assert_raises(Corvid::MissingTenantContextError) do
+      Corvid::PrcImporter.import(SAMPLE, source_file: "test.prc")
     end
   end
 
