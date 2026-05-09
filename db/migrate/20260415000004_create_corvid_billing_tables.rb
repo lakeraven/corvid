@@ -69,7 +69,8 @@ class CreateCorvidBillingTables < ActiveRecord::Migration[8.1]
       t.string :facility_identifier
       t.string :patient_identifier, null: false
       t.string :payment_identifier
-      t.integer :amount_cents, null: false
+      t.bigint :amount_cents, null: false
+      t.string :currency_iso, null: false, limit: 3, default: "USD"
       t.string :status, null: false, default: "pending"
       t.string :description
       t.string :claim_submission_identifier
