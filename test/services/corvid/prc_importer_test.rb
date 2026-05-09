@@ -105,6 +105,62 @@ class Corvid::PrcImporterTest < ActiveSupport::TestCase
     end
   end
 
+  # -- Reconciliation --------------------------------------------------------
+
+  test "payment removed in a corrected re-import is deleted from the DB" do
+    with_tenant(TENANT) do
+      Corvid::PrcImporter.import(SAMPLE, source_file: "test.prc")
+      assert_equal 3, Corvid::PrcPayment.count
+
+      # Corrected export drops PMT-2009-000002 (e.g., reversed in source).
+      corrected = SAMPLE.sub(
+        "P^OBL-2009-000123^PMT-2009-000002^20090701^CHK2009B^17000.00^SEA_HOSPITAL\n",
+        ""
+      )
+      Corvid::PrcImporter.import(corrected, source_file: "corrected.prc")
+
+      remaining = Corvid::PrcPayment.order(:payment_id).pluck(:payment_id)
+      assert_equal [ "PMT-2009-000001", "PMT-2009-000003" ], remaining,
+                   "payments missing from the new export are removed"
+    end
+  end
+
+  test "obligation restated with zero payments has all its payments cleared" do
+    with_tenant(TENANT) do
+      Corvid::PrcImporter.import(SAMPLE, source_file: "test.prc")
+      assert_equal 2, Corvid::PrcPayment.where(prc_obligation_id:
+        Corvid::PrcObligation.find_by(obligation_id: "OBL-2009-000123").id).count
+
+      # All P-records for OBL-2009-000123 disappear from the export.
+      stripped = SAMPLE.lines.reject { |l|
+        l.start_with?("P^OBL-2009-000123^")
+      }.join
+
+      Corvid::PrcImporter.import(stripped, source_file: "no_pmts.prc")
+
+      hip_id = Corvid::PrcObligation.find_by(obligation_id: "OBL-2009-000123").id
+      assert_equal 0, Corvid::PrcPayment.where(prc_obligation_id: hip_id).count,
+                   "all payments cleared when obligation is restated with none"
+    end
+  end
+
+  test "payment whose obligation isn't in the file is dropped and reported" do
+    with_tenant(TENANT) do
+      orphan_payment = "P^OBL-NOT-IN-FILE^PMT-ORPHAN^20090801^CHK_X^999.00^GHOST\n"
+      with_orphan = SAMPLE.sub(
+        "T^2^2^3^42180.00^0.00",
+        orphan_payment + "T^2^2^4^42180.00^0.00"
+      )
+
+      result = Corvid::PrcImporter.import(with_orphan, source_file: "with_orphan.prc")
+
+      assert_equal 4, result[:payments_parsed], "all P-records counted as parsed"
+      assert_equal 3, result[:payments_imported], "only matched payments persisted"
+      assert_equal 1, result[:payments_dropped_orphan]
+      assert_equal 3, Corvid::PrcPayment.count
+    end
+  end
+
   # -- Tenant scoping --------------------------------------------------------
 
   test "obligations are tenant-scoped" do

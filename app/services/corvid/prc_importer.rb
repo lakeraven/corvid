@@ -3,8 +3,10 @@
 module Corvid
   # Imports a PRC export file into corvid_prc_obligations + corvid_prc_payments,
   # idempotently: re-importing the same file does not duplicate rows; importing
-  # a corrected version of an obligation refreshes its fields. Source-file
-  # provenance is recorded on every obligation.
+  # a corrected version of an obligation refreshes its fields and reconciles
+  # its payments (rows missing from the new export are deleted, so reversed
+  # or removed payments don't drift from RPMS as source-of-truth).
+  # Source-file provenance is recorded on every obligation.
   #
   # Reanalysis is a separate operation — `reanalyze` runs PrcOverpaymentAnalyzer
   # over imported obligations and appends a row to corvid_prc_overpayment_analyses
@@ -12,7 +14,9 @@ module Corvid
   #
   # `import` raises MalformedExportError when the parsed file has no header,
   # so a wrong file type, truncated upload, or parser drift surfaces as a
-  # noisy failure rather than a silent zero-row "success."
+  # noisy failure rather than a silent zero-row "success." Payments whose
+  # obligation isn't in the same export are dropped, counted, and logged
+  # (under the same "complete restatement" semantic as reconciliation).
   module PrcImporter
     ANALYZER_VERSION = "phase_1.5"
 
@@ -37,13 +41,22 @@ module Corvid
             tenant: tenant, facility: facility,
             source_file: source_file, imported_at: imported_at
           )
-          payments_imported = upsert_payments(report.payments, tenant: tenant)
+
+          oblig_pks_in_file = obligation_pks_for(report.obligations.map(&:obligation_id))
+          payment_counts = reconcile_and_upsert_payments(
+            report.payments,
+            tenant: tenant,
+            oblig_pks_in_file: oblig_pks_in_file,
+            source_file: source_file
+          )
 
           {
             obligations_imported: report.obligations.size,
             obligations_inserted: obligation_counts[:inserted],
             obligations_updated: obligation_counts[:updated],
-            payments_imported: payments_imported
+            payments_parsed: report.payments.size,
+            payments_imported: payment_counts[:imported],
+            payments_dropped_orphan: payment_counts[:dropped_orphan]
           }
         end
       end
@@ -82,16 +95,19 @@ module Corvid
 
       private
 
-      # Bulk-upsert obligations in a single round trip. Pre-queries existing
-      # obligation_ids in this tenant so we can report inserted vs updated
-      # counts (upsert_all does not return per-row outcomes).
+      # Bulk-upsert obligations in a single round trip. Dedupes within the
+      # file by obligation_id (last record wins) and pre-queries existing
+      # ids so we can report inserted vs updated (upsert_all returns no
+      # per-row outcomes). When file count exceeds inserted + updated,
+      # the gap is in-file duplicates — visible directly in the result.
       def upsert_obligations(obligations, tenant:, facility:, source_file:, imported_at:)
         return { inserted: 0, updated: 0 } if obligations.empty?
 
-        ids = obligations.map(&:obligation_id)
+        unique_obligations = obligations.uniq { |o| o.obligation_id }
+        ids = unique_obligations.map(&:obligation_id)
         existing_ids = Corvid::PrcObligation.where(obligation_id: ids).pluck(:obligation_id).to_set
 
-        rows = obligations.map do |o|
+        rows = unique_obligations.map do |o|
           {
             tenant_identifier: tenant,
             facility_identifier: facility,
@@ -120,23 +136,28 @@ module Corvid
         { inserted: inserted, updated: ids.size - inserted }
       end
 
-      # Bulk-upsert payments. Preloads an obligation_id → primary-key map so
-      # we don't issue a SELECT per payment, and drops payments whose
-      # obligation hasn't been imported yet.
-      def upsert_payments(payments, tenant:)
-        return 0 if payments.empty?
+      # Reconcile payments per obligation, then bulk-upsert. Reconciliation
+      # treats every obligation in this file as a complete restatement of
+      # its payments — rows with payment_ids not in the file are deleted,
+      # and obligations listed with zero payments have all their payments
+      # dropped. Payments whose obligation isn't in this same file are
+      # treated as orphans (parser drift / truncated upload signal),
+      # dropped, counted, and logged.
+      def reconcile_and_upsert_payments(payments, tenant:, oblig_pks_in_file:, source_file:)
+        unique_payments = payments.uniq { |p| p.payment_id }
 
-        oblig_ids = payments.map(&:obligation_id).uniq
-        oblig_pk_by_external_id = Corvid::PrcObligation
-                                    .where(obligation_id: oblig_ids)
-                                    .pluck(:obligation_id, :id)
-                                    .to_h
+        rows = []
+        dropped_orphan = 0
+        payment_ids_by_oblig_pk = Hash.new { |h, k| h[k] = [] }
 
-        rows = payments.filter_map do |p|
-          oblig_pk = oblig_pk_by_external_id[p.obligation_id]
-          next unless oblig_pk
+        unique_payments.each do |p|
+          oblig_pk = oblig_pks_in_file[p.obligation_id]
+          unless oblig_pk
+            dropped_orphan += 1
+            next
+          end
 
-          {
+          rows << {
             tenant_identifier: tenant,
             prc_obligation_id: oblig_pk,
             payment_id: p.payment_id,
@@ -145,15 +166,40 @@ module Corvid
             amount: p.amount,
             vendor_name: p.vendor_name
           }
+          payment_ids_by_oblig_pk[oblig_pk] << p.payment_id
         end
 
-        return 0 if rows.empty?
+        if dropped_orphan.positive?
+          Rails.logger.warn(
+            "[PrcImporter] dropped #{dropped_orphan} orphan payment(s) " \
+            "(obligation not in same export) source=#{source_file}"
+          )
+        end
 
-        Corvid::PrcPayment.upsert_all(
-          rows,
-          unique_by: :idx_corvid_prc_payments_tenant_pmt
-        )
-        rows.size
+        oblig_pks_in_file.each_value do |oblig_pk|
+          pmt_ids_in_file = payment_ids_by_oblig_pk[oblig_pk]
+          scope = Corvid::PrcPayment.where(prc_obligation_id: oblig_pk)
+          scope = scope.where.not(payment_id: pmt_ids_in_file) if pmt_ids_in_file.any?
+          scope.delete_all
+        end
+
+        if rows.any?
+          Corvid::PrcPayment.upsert_all(
+            rows,
+            unique_by: :idx_corvid_prc_payments_tenant_pmt
+          )
+        end
+
+        { imported: rows.size, dropped_orphan: dropped_orphan }
+      end
+
+      def obligation_pks_for(obligation_external_ids)
+        return {} if obligation_external_ids.empty?
+
+        Corvid::PrcObligation
+          .where(obligation_id: obligation_external_ids)
+          .pluck(:obligation_id, :id)
+          .to_h
       end
 
       # Analyzer expects an in-memory Report struct; reconstruct one for a
