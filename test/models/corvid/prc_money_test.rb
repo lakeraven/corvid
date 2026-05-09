@@ -37,8 +37,9 @@ class Corvid::PrcMoneyTest < ActiveSupport::TestCase
   end
 
   test "JOD obligation stores fils (1000 per dinar), not 100" do
-    # Critical subunit assertion — hardcoding 100 anywhere would yield 142000 fils
-    # for 142 JOD instead of the correct 142000.
+    # Critical subunit assertion — hardcoding 100 anywhere would yield
+    # 14_200 fils for 142 JOD (interpreting it as 142 cents) instead of
+    # the correct 142_000 fils. The gem looks up the divisor by ISO code.
     Corvid::TenantContext.with_tenant(TENANT_JO) do
       ob = create_obligation("JOD", billed: 142.00)
       assert_equal 142_000, ob.billed_amount_cents,

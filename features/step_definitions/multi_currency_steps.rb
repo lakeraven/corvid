@@ -1,8 +1,5 @@
 # frozen_string_literal: true
 
-# State carried between steps: { tenant_id => Money instance }
-@multi_currency_billed ||= {}
-
 Given("a tenant {string} denominated in {string}") do |tenant_id, iso|
   @tenants ||= {}
   @tenants[tenant_id] = iso

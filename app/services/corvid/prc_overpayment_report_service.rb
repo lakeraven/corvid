@@ -225,18 +225,25 @@ module Corvid
         end
       end
 
-      # Fixed-point amount string for a Money. Drops symbol and
-      # thousands-separator and forces two decimal places — consumers
-      # (Excel, audit tools, recovery-letter mail merges) want "42000.00",
-      # not "$42,000.00" or "0.42E5". Currency code travels separately
-      # in the JSON `currency` field on each row.
+      # Fixed-point amount string for a Money, with the right number of
+      # decimal places for that currency — USD/CAD/SEK = 2 ("42000.00"),
+      # JOD = 3 ("142.000"), JPY = 0 ("4200"). Reads the exponent from
+      # the Money's currency rather than hardcoding 2 so subunit-aware
+      # currencies serialize correctly. The currency code itself travels
+      # separately in each row's `currency` field.
       def fmt_money(value)
         return nil if value.nil?
-        amount = value.is_a?(Money) ? value.amount : BigDecimal(value.to_s)
-        s = amount.round(2).to_s("F")
+        if value.is_a?(Money)
+          places = value.currency.exponent
+          amount = value.amount
+        else
+          places = 2
+          amount = BigDecimal(value.to_s)
+        end
+        s = amount.round(places).to_s("F")
         int, frac = s.split(".")
-        frac = (frac || "").ljust(2, "0")[0, 2]
-        "#{int}.#{frac}"
+        frac = (frac || "").ljust(places, "0")[0, places]
+        places.zero? ? int.to_s : "#{int}.#{frac}"
       end
 
       # Walks a hash/array tree, converting any Money values to fixed-point

@@ -289,6 +289,40 @@ class Corvid::PrcOverpaymentReportServiceTest < ActiveSupport::TestCase
     end
   end
 
+  # -- Currency-aware decimal places -----------------------------------------
+
+  test "JOD CSV money fields use 3 decimal places (fils), not 2" do
+    tenant = "tnt_jod_csv"
+    Corvid::TenantContext.with_tenant(tenant) do
+      ob = Corvid::PrcObligation.create!(
+        facility_identifier: "AMM",
+        obligation_id: "OBL-JOD-FMT",
+        billed_amount_cents: 142_000, # 142 JOD
+        paid_amount_cents: 100_000,
+        currency_iso: "JOD",
+        fiscal_year: 2026,
+        imported_at: Time.current
+      )
+      Corvid::PrcOverpaymentAnalysis.create!(
+        prc_obligation: ob,
+        analyzer_version: "phase_1.5",
+        recovery_confidence: "clear",
+        currency_iso: "JOD",
+        medicare_equivalent_cents: 80_000,
+        overpayment_cents: 20_000,
+        analyzed_at: Time.current
+      )
+    end
+
+    csv = Corvid::PrcOverpaymentReportService.to_csv_detail(tenant: tenant)
+    table = CSV.parse(csv, headers: true)
+    row = table.first
+    assert_equal "JOD", row["currency"]
+    assert_match(/\A\d+\.\d{3}\z/, row["billed_amount"],
+                 "JOD billed_amount=#{row['billed_amount'].inspect} should have 3 decimals (fils)")
+    assert_equal "142.000", row["billed_amount"]
+  end
+
   # -- Filter naming (fiscal_year vs year alias) ------------------------------
 
   test "fiscal_year: filter selects the federal-fiscal-year column" do
