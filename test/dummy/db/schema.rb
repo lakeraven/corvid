@@ -187,17 +187,18 @@ ActiveRecord::Schema[8.1].define(version: 2026_05_08_000001) do
   create_table "corvid_committee_reviews", force: :cascade do |t|
     t.date "appeal_deadline"
     t.string "appeal_instructions_token"
-    t.decimal "approved_amount", precision: 12, scale: 2
+    t.bigint "approved_amount_cents"
     t.string "attendees_token"
     t.date "committee_date"
     t.string "conditions_token"
     t.datetime "created_at", null: false
+    t.string "currency_iso", limit: 3, default: "USD", null: false
     t.string "decision", default: "pending", null: false
     t.string "documents_reviewed_token"
     t.string "facility_identifier"
     t.bigint "prc_referral_id", null: false
     t.string "rationale_token"
-    t.decimal "requested_amount", precision: 12, scale: 2
+    t.bigint "requested_amount_cents"
     t.string "reviewer_identifier"
     t.string "tenant_identifier", null: false
     t.datetime "updated_at", null: false
@@ -377,10 +378,11 @@ ActiveRecord::Schema[8.1].define(version: 2026_05_08_000001) do
     t.datetime "authorization_number_cached_at"
     t.bigint "case_id", null: false
     t.datetime "created_at", null: false
+    t.string "currency_iso", limit: 3, default: "USD", null: false
     t.string "current_activity"
     t.string "deferred_reason_token"
     t.boolean "emergency_flag", default: false
-    t.decimal "estimated_cost", precision: 12, scale: 2
+    t.bigint "estimated_cost_cents"
     t.boolean "exception_approved"
     t.string "exception_rationale_token"
     t.datetime "exception_reviewed_at"
