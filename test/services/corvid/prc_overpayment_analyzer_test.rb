@@ -46,6 +46,28 @@ class Corvid::PrcOverpaymentAnalyzerTest < ActiveSupport::TestCase
     assert_match(/real CMS IPPS/, result.notes)
   end
 
+  test "inpatient claim with stub-labeled IPPS data still routes to :stub_estimate" do
+    # Even when rows are present in the real-IPPS tables, a
+    # release_label starting with "stub" downgrades the analyzer's
+    # confidence — protects against seed canonical CSVs we ship in
+    # the release being misrepresented as recoverable-now.
+    Corvid::IppsDrgWeight.create!(
+      fiscal_year: 2009, drg_code: "470",
+      relative_weight: 2.0743, release_label: "stub_v1"
+    )
+    Corvid::IppsHospitalRate.create!(
+      fiscal_year: 2009, locality: "NATIONAL",
+      base_rate: 6_000.0, wage_index: 1.0, release_label: "stub_v1"
+    )
+
+    summary = analyze_single_obligation(procedure: "HIP_REPLACE_THR", paid: 42_000)
+    result = summary.results.first
+    assert_equal :stub_estimate, result.recovery_confidence
+    assert_equal :stub, result.rate_source
+    assert_match(/stub-derived/, result.notes)
+    assert_match(/stub_v1/, result.notes)
+  end
+
   test "inpatient hospital claim uses IPPS stub rate (Phase 1.5)" do
     summary = analyze_single_obligation(procedure: "HIP_REPLACE_THR", paid: 42_000)
     result = summary.results.first

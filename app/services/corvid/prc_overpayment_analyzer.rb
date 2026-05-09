@@ -102,27 +102,34 @@ module Corvid
       end
 
       def analyze_inpatient(obligation, proc_info, facility)
-        # Real IPPS first (#276); fall back to stub when (year, DRG,
-        # locality) data isn't loaded. Real path → :clear / "real"
-        # source. Stub path → :stub_estimate / "stub" source. Operators
-        # can drive stub→clear coverage by importing more years/DRGs
-        # via Corvid::CmsIppsParser.
-        real_rate = Corvid::IppsRateProvider.rate_for(
+        # IPPS lookup (#276): real CMS data first; fall back to in-code
+        # stub provider when no row is loaded. Recovery confidence keys
+        # off the loaded row's release_label — "stub_v1" (or any "stub_*"
+        # prefix) marks :stub_estimate so seed canonical CSVs we ship
+        # in the release don't get misrepresented as recoverable-now.
+        # Real CMS Final Rule labels (e.g., "cms_fy2026_final_rule")
+        # mark :clear / :real.
+        lookup = Corvid::IppsRateProvider.lookup_for(
           drg_code: proc_info.drg,
           locality: facility.locality,
           date: obligation.service_date
         )
 
-        if real_rate
+        if lookup
+          stub_derived = lookup.release_label.to_s.start_with?("stub")
           Result.new(
             base_fields(obligation, proc_info, facility).merge(
-              medicare_equivalent: real_rate,
-              overpayment: [ obligation.paid_amount.to_f - real_rate, 0 ].max.round(2),
+              medicare_equivalent: lookup.rate,
+              overpayment: [ obligation.paid_amount.to_f - lookup.rate, 0 ].max.round(2),
               payment_system: :ipps,
-              rate_source: :real,
-              recovery_confidence: :clear,
-              notes: "Inpatient hospital claim (DRG #{proc_info.drg}). " \
-                     "Priced via real CMS IPPS Final Rule rates."
+              rate_source: stub_derived ? :stub : :real,
+              recovery_confidence: stub_derived ? :stub_estimate : :clear,
+              notes: stub_derived ?
+                "Inpatient hospital claim (DRG #{proc_info.drg}). Priced via " \
+                "stub-derived IPPS canonical CSV (release=#{lookup.release_label}); " \
+                "replace with real CMS Final Rule data as it's normalized." :
+                "Inpatient hospital claim (DRG #{proc_info.drg}). " \
+                "Priced via real CMS IPPS Final Rule (release=#{lookup.release_label})."
             )
           )
         else

@@ -6,6 +6,12 @@ class CreateCorvidIppsTables < ActiveRecord::Migration[8.1]
       t.integer :fiscal_year, null: false
       t.string :drg_code, null: false
       t.decimal :relative_weight, precision: 8, scale: 4, null: false
+      # Identifies which release filled this row — e.g., "stub_v1"
+      # for the seed canonical CSVs we ship in the release, or
+      # "cms_fy2026_final_rule" for a hand-vetted Final Rule import.
+      # The analyzer keys recovery_confidence off this label so a
+      # stub-derived row reports :stub_estimate, not :clear.
+      t.string :release_label
       t.timestamps
     end
 
@@ -23,6 +29,7 @@ class CreateCorvidIppsTables < ActiveRecord::Migration[8.1]
       t.string :locality, null: false
       t.decimal :base_rate, precision: 12, scale: 2, null: false
       t.decimal :wage_index, precision: 8, scale: 4, null: false, default: 1.0
+      t.string :release_label
       t.timestamps
     end
 

@@ -22,7 +22,7 @@ module Corvid
     class MalformedFileError < StandardError; end
 
     class << self
-      def parse_drg_weights(io_or_string, fiscal_year:)
+      def parse_drg_weights(io_or_string, fiscal_year:, release_label: nil)
         rows = read_csv(io_or_string, required_headers: DRG_HEADERS)
         rows.filter_map do |row|
           drg_code = row["drg_code"].to_s.strip
@@ -31,12 +31,13 @@ module Corvid
           {
             fiscal_year: fiscal_year,
             drg_code: drg_code,
-            relative_weight: parse_decimal(weight_raw, column: "relative_weight", row: row)
+            relative_weight: parse_decimal(weight_raw, column: "relative_weight", row: row),
+            release_label: release_label
           }
         end
       end
 
-      def parse_hospital_rates(io_or_string, fiscal_year:)
+      def parse_hospital_rates(io_or_string, fiscal_year:, release_label: nil)
         rows = read_csv(io_or_string, required_headers: HOSPITAL_HEADERS)
         rows.filter_map do |row|
           locality = row["locality"].to_s.strip
@@ -47,7 +48,8 @@ module Corvid
             fiscal_year: fiscal_year,
             locality: locality,
             base_rate: parse_decimal(base_raw, column: "base_rate", row: row),
-            wage_index: parse_decimal(wage_raw, column: "wage_index", row: row)
+            wage_index: parse_decimal(wage_raw, column: "wage_index", row: row),
+            release_label: release_label
           }
         end
       end
