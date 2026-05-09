@@ -49,6 +49,27 @@ Twenty source files touch `Corvid.adapter` directly today — eight services and
 
 5. **Rollout is staged across PRs.** This ADR ships with one exemplar (`CommitteeReviewSyncService`). Subsequent PRs convert the remaining seven adapter-touching services in `app/services/corvid/`, one cluster per PR, with the same pattern. Each PR adds an `_injection_test.rb` asserting the service routes through the injected adapter rather than the global.
 
+## Known limitation: model callback paths
+
+A service can be DI-clean and still leak through the global if any
+method on the service triggers an ActiveRecord callback that itself
+reads `Corvid.adapter` — the AASM `after:` hooks on `PrcReferral`
+(`sync_status_to_ehr`, etc.) are the canonical example. When
+`CommitteeReviewSyncService#sync_and_apply!` calls
+`committee_review.apply_to_referral!`, the apply half goes through
+those callbacks and routes through the global adapter regardless of
+what was injected at the service.
+
+This gap is **explicitly out of scope** for #222 and gated on #264
+(model decoupling). Services that touch model callback paths should:
+1. Document the partial routing in a code comment.
+2. Add an injection test that pins down which half is DI-clean and
+   which still goes through the global, so when #264 lands the test
+   tightens automatically rather than relying on memory.
+
+Until #264 lands, per-tenant adapter routing for any flow that
+crosses a model callback boundary is not safe.
+
 ## Consequences
 
 ### Positive

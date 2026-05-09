@@ -32,6 +32,12 @@ module Corvid
       { success: false, error: Corvid.sanitize_phi(e.message) }
     end
 
+    # KNOWN LIMITATION (#264): the `apply_to_referral!` half drives AASM
+    # state transitions on PrcReferral whose `after:` callbacks call
+    # `Corvid.adapter.update_referral` directly. Until #264 lands the
+    # apply half is NOT routed through the injected `@adapter` — the
+    # `sync_decision` half is. Per-tenant adapter routing for the
+    # combined flow isn't safe yet; see ADR 0005 §"Known limitation".
     def sync_and_apply!(committee_review)
       sync_result = sync_decision(committee_review)
       backend_synced = sync_result[:success]
