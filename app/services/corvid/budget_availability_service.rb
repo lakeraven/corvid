@@ -30,7 +30,10 @@ module Corvid
       end
 
       def reserve_funds_if_available(referral_identifier, amount, params = {})
-        Corvid.adapter.create_obligation(referral_identifier, amount, params)
+        # Adapter wire format expects a numeric amount; convert at the
+        # boundary so callers can pass either a Money or a Numeric.
+        numeric_amount = amount.respond_to?(:to_d) ? amount.to_d : amount
+        Corvid.adapter.create_obligation(referral_identifier, numeric_amount, params)
       end
 
       def current_quarter
@@ -45,18 +48,24 @@ module Corvid
       end
 
       def check(referral)
+        # Budget figures are still numeric (USD-equivalent dollars). Coerce
+        # estimated_cost (now a Money) to BigDecimal-of-dollars so all the
+        # comparisons below work without a per-call currency match check.
+        # Multi-currency budgeting would belong on the tenant config when
+        # we have a concrete non-USD case.
         cost = referral.estimated_cost
+        cost_dollars = cost.respond_to?(:to_d) ? cost.to_d : cost
         budget = remaining_budget
         total = fiscal_year_budget
 
         BudgetCheckResult.new(
-          funds_available: cost.present? && cost > 0 && budget >= cost,
-          budget_sufficient: cost.present? && budget >= cost,
+          funds_available: cost_dollars.present? && cost_dollars > 0 && budget >= cost_dollars,
+          budget_sufficient: cost_dollars.present? && budget >= cost_dollars,
           remaining_budget: budget,
           total_budget: total,
           fiscal_year: current_fiscal_year,
-          requires_cost_estimate: cost.nil? || cost <= 0,
-          requires_committee_review: cost.present? && cost >= COMMITTEE_REVIEW_THRESHOLD,
+          requires_cost_estimate: cost_dollars.nil? || cost_dollars <= 0,
+          requires_committee_review: cost_dollars.present? && cost_dollars >= COMMITTEE_REVIEW_THRESHOLD,
           valid_funding_source: true
         )
       end
