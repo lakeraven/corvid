@@ -102,24 +102,48 @@ module Corvid
       end
 
       def analyze_inpatient(obligation, proc_info, facility)
-        rate = Corvid::IppsStubRateProvider.rate_for(
+        # Real IPPS first (#276); fall back to stub when (year, DRG,
+        # locality) data isn't loaded. Real path → :clear / "real"
+        # source. Stub path → :stub_estimate / "stub" source. Operators
+        # can drive stub→clear coverage by importing more years/DRGs
+        # via Corvid::CmsIppsParser.
+        real_rate = Corvid::IppsRateProvider.rate_for(
           drg_code: proc_info.drg,
           locality: facility.locality,
           date: obligation.service_date
         )
 
-        Result.new(
-          base_fields(obligation, proc_info, facility).merge(
-            medicare_equivalent: rate,
-            overpayment: rate ? [ obligation.paid_amount.to_f - rate, 0 ].max.round(2) : nil,
-            payment_system: :ipps,
-            rate_source: Corvid::IppsStubRateProvider.source,
-            recovery_confidence: :stub_estimate,
-            notes: "Inpatient hospital claim (DRG #{proc_info.drg}). Stub IPPS " \
-                   "national-average estimate; replace with real CMS rate when " \
-                   "#276 (IPPS DRG ingest) lands."
+        if real_rate
+          Result.new(
+            base_fields(obligation, proc_info, facility).merge(
+              medicare_equivalent: real_rate,
+              overpayment: [ obligation.paid_amount.to_f - real_rate, 0 ].max.round(2),
+              payment_system: :ipps,
+              rate_source: :real,
+              recovery_confidence: :clear,
+              notes: "Inpatient hospital claim (DRG #{proc_info.drg}). " \
+                     "Priced via real CMS IPPS Final Rule rates."
+            )
           )
-        )
+        else
+          stub_rate = Corvid::IppsStubRateProvider.rate_for(
+            drg_code: proc_info.drg,
+            locality: facility.locality,
+            date: obligation.service_date
+          )
+          Result.new(
+            base_fields(obligation, proc_info, facility).merge(
+              medicare_equivalent: stub_rate,
+              overpayment: stub_rate ? [ obligation.paid_amount.to_f - stub_rate, 0 ].max.round(2) : nil,
+              payment_system: :ipps,
+              rate_source: stub_rate ? :stub : nil,
+              recovery_confidence: stub_rate ? :stub_estimate : :no_rate_for_year,
+              notes: "Inpatient hospital claim (DRG #{proc_info.drg}). Real IPPS " \
+                     "rate unavailable for this (year, DRG, locality); using stub " \
+                     "national-average estimate."
+            )
+          )
+        end
       end
 
       # Look up the Medicare professional-component rate for a CPT code,
