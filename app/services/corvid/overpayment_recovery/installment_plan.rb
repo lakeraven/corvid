@@ -11,6 +11,11 @@ module Corvid
                         keyword_init: true)
 
       def self.create(demand_total:, payment_count:, first_due:)
+        unless payment_count.is_a?(Integer) && payment_count.positive?
+          raise ArgumentError,
+                "payment_count must be a positive integer (got #{payment_count.inspect})"
+        end
+
         total = BigDecimal(demand_total.to_s).round(2)
         per_payment = (total / payment_count).round(2)
 

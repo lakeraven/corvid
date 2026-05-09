@@ -17,7 +17,7 @@ module Corvid
         keyword_init: true
       )
 
-      def self.generate(kind:, original_demand:, today: Date.current)
+      def self.generate(kind:, original_demand:)
         case kind
         when :courtesy_reminder
           courtesy(original_demand: original_demand)
@@ -88,7 +88,11 @@ module Corvid
         FollowUp.new(
           kind: :escalation, body: body,
           references_original_demand: true,
-          warns_fca_liability: true, mentions_treble_damages: false,
+          # Escalation hands the matter off to counsel — it is not itself
+          # an FCA warning. Keeping warns_fca_liability=false so any
+          # downstream UI/report logic that filters on the flag matches
+          # the body text.
+          warns_fca_liability: false, mentions_treble_damages: false,
           recommends_oig_referral: true
         )
       end

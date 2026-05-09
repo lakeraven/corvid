@@ -44,7 +44,13 @@ module Corvid
         case customer_share
         when :standard            then STANDARD_CUSTOMER_SHARE
         when :corvid_subscriber   then CORVID_SUBSCRIBER_CUSTOMER_SHARE
-        when Numeric              then BigDecimal(customer_share.to_s)
+        when Numeric
+          fraction = BigDecimal(customer_share.to_s)
+          unless (0..1).cover?(fraction)
+            raise ArgumentError,
+                  "customer_share must be in 0..1 (got #{customer_share.inspect})"
+          end
+          fraction
         else
           raise ArgumentError, "customer_share must be :standard, :corvid_subscriber, or numeric (0..1)"
         end

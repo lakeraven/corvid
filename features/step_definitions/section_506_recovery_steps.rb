@@ -55,6 +55,10 @@ end
 
 Given("provider NPI {string} is not Medicare-participating") do |npi|
   @medicare_providers ||= Set.new
+  # Explicitly drop the NPI in case an earlier step or shared scenario
+  # context marked it participating — this step is a contradiction of
+  # the participating set, not a no-op.
+  @medicare_providers.delete(npi)
 end
 
 When("I check Section 506 applicability for provider {string}") do |npi|
