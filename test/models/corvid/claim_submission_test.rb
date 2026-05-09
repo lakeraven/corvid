@@ -65,7 +65,7 @@ class Corvid::ClaimSubmissionTest < ActiveSupport::TestCase
   test "balance_due calculates remaining" do
     with_tenant(TENANT) do
       claim = create_claim(billed_amount: 500.0, paid_amount: 300.0, adjustment_amount: 50.0)
-      assert_in_delta 150.0, claim.balance_due
+      assert_equal Money.from_amount(150, "USD"), claim.balance_due
     end
   end
 
@@ -201,7 +201,7 @@ class Corvid::ClaimSubmissionTest < ActiveSupport::TestCase
       claim.mark_paid!(paid_amount: 120.0)
 
       assert_equal "paid", claim.reload.status
-      assert_in_delta 120.0, claim.paid_amount
+      assert_equal Money.from_amount(120, "USD"), claim.paid_amount
     end
   end
 
@@ -217,22 +217,53 @@ class Corvid::ClaimSubmissionTest < ActiveSupport::TestCase
 
   # -- Statistics ------------------------------------------------------------
 
-  test "total_billed calculates sum" do
+  test "totals_billed_by_currency aggregates per currency" do
     with_tenant(TENANT) do
       create_claim(billed_amount: 100)
       create_claim(billed_amount: 200)
       create_claim(billed_amount: 300)
 
-      assert_in_delta 600.0, Corvid::ClaimSubmission.total_billed
+      totals = Corvid::ClaimSubmission.totals_billed_by_currency
+      assert_equal Money.from_amount(600, "USD"), totals["USD"]
     end
   end
 
-  test "total_paid calculates sum" do
+  test "totals_paid_by_currency aggregates per currency" do
     with_tenant(TENANT) do
       create_claim(status: "paid", paid_amount: 80.0)
       create_claim(status: "paid", paid_amount: 160.0)
 
-      assert_in_delta 240.0, Corvid::ClaimSubmission.total_paid
+      totals = Corvid::ClaimSubmission.totals_paid_by_currency
+      assert_equal Money.from_amount(240, "USD"), totals["USD"]
+    end
+  end
+
+  test "totals_*_by_currency split mixed-currency tenants into separate buckets" do
+    with_tenant(TENANT) do
+      # Pass cents + currency_iso explicitly so subunit interpretation
+      # is unambiguous — JOD's 1000-fils-per-dinar would otherwise
+      # decode under USD's 100-cents assumption if currency was set
+      # after the amount.
+      base = {
+        patient_identifier: "p", claim_type: "professional",
+        service_date: Date.current, status: "submitted"
+      }
+      Corvid::ClaimSubmission.create!(base.merge(currency_iso: "USD", billed_amount_cents: 10_000))
+      Corvid::ClaimSubmission.create!(base.merge(currency_iso: "EUR", billed_amount_cents: 20_000))
+      Corvid::ClaimSubmission.create!(base.merge(currency_iso: "JOD", billed_amount_cents: 142_000))
+
+      totals = Corvid::ClaimSubmission.totals_billed_by_currency
+      assert_equal Money.from_amount(100, "USD"), totals["USD"]
+      assert_equal Money.from_amount(200, "EUR"), totals["EUR"]
+      assert_equal Money.from_amount(142, "JOD"), totals["JOD"]
+    end
+  end
+
+  test "currency_iso is immutable once a row is persisted" do
+    with_tenant(TENANT) do
+      claim = create_claim
+      claim.currency_iso = "EUR"
+      assert_raises(ActiveRecord::RecordInvalid) { claim.save! }
     end
   end
 

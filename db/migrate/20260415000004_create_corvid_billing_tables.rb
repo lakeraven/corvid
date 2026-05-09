@@ -37,10 +37,13 @@ class CreateCorvidBillingTables < ActiveRecord::Migration[8.1]
       t.string :claim_identifier
       t.string :claim_type, null: false, default: "professional"
       t.string :status, null: false, default: "draft"
-      t.decimal :billed_amount, precision: 12, scale: 2
-      t.decimal :paid_amount, precision: 12, scale: 2
-      t.decimal :adjustment_amount, precision: 12, scale: 2
-      t.decimal :patient_responsibility, precision: 12, scale: 2
+      t.bigint :billed_amount_cents
+      t.bigint :paid_amount_cents
+      t.bigint :adjustment_amount_cents
+      t.bigint :patient_responsibility_cents
+      t.bigint :state_share_cents
+      t.bigint :county_share_cents
+      t.string :currency_iso, null: false, limit: 3, default: "USD"
       t.string :payer_identifier
       t.string :payer_name_token
       t.string :diagnosis_codes_token
@@ -52,8 +55,6 @@ class CreateCorvidBillingTables < ActiveRecord::Migration[8.1]
       t.string :denial_reason_token
       t.string :provider_identifier
       t.string :provider_type
-      t.decimal :state_share, precision: 12, scale: 2
-      t.decimal :county_share, precision: 12, scale: 2
       t.timestamps
     end
     add_index :corvid_claim_submissions, [:tenant_identifier, :status]

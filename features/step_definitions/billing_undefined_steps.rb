@@ -44,22 +44,29 @@ end
 
 When("I generate an Article {int} report grouped by provider") do |_article|
   @report = Corvid::ClaimSubmission.paid.group(:provider_identifier)
-    .pluck(:provider_identifier, Arel.sql("SUM(billed_amount)"), Arel.sql("SUM(paid_amount)"))
-    .map { |prov, billed, paid| { provider: prov, billed: billed, paid: paid } }
+    .pluck(:provider_identifier, Arel.sql("SUM(billed_amount_cents)"), Arel.sql("SUM(paid_amount_cents)"))
+    .map { |prov, billed_cents, paid_cents|
+      { provider: prov, billed: (billed_cents || 0) / 100.0, paid: (paid_cents || 0) / 100.0 }
+    }
 end
 
 When("I generate an Article {int} report grouped by quarter") do |_article|
   claims = Corvid::ClaimSubmission.paid.to_a
   @report = claims.group_by { |c| "#{c.paid_date.year}-Q#{((c.paid_date.month - 1) / 3) + 1}" }
-    .map { |quarter, group| { quarter: quarter, billed: group.sum(&:billed_amount), paid: group.sum(&:paid_amount) } }
+    .map { |quarter, group|
+      billed = group.sum { |c| c.billed_amount_cents || 0 } / 100.0
+      paid = group.sum { |c| c.paid_amount_cents || 0 } / 100.0
+      { quarter: quarter, billed: billed, paid: paid }
+    }
 end
 
 When("I export an Article {int} report as CSV") do |_article|
   claims = Corvid::ClaimSubmission.paid
   @csv_string = "Provider,Billed,Paid,State Share,County Share\n"
   claims.group_by(&:provider_identifier).each do |prov, group|
-    @csv_string += "#{prov},#{group.sum(&:billed_amount)},#{group.sum(&:paid_amount)},"
-    @csv_string += "#{group.sum(&:state_share)},#{group.sum(&:county_share)}\n"
+    cents_to_dollars = ->(field) { group.sum { |c| c.send(field) || 0 } / 100.0 }
+    @csv_string += "#{prov},#{cents_to_dollars[:billed_amount_cents]},#{cents_to_dollars[:paid_amount_cents]},"
+    @csv_string += "#{cents_to_dollars[:state_share_cents]},#{cents_to_dollars[:county_share_cents]}\n"
   end
 end
 
@@ -76,8 +83,8 @@ Then("I should receive a report with total billed and paid amounts") do
 end
 
 Then("the report should include state and county share splits") do
-  state_total = Corvid::ClaimSubmission.paid.sum(:state_share)
-  county_total = Corvid::ClaimSubmission.paid.sum(:county_share)
+  state_total = Corvid::ClaimSubmission.paid.sum(:state_share_cents)
+  county_total = Corvid::ClaimSubmission.paid.sum(:county_share_cents)
   assert state_total > 0 || county_total > 0
 end
 
@@ -96,15 +103,15 @@ Then("each quarter should have aggregated totals") do
 end
 
 Then("the billed amounts should match the sum of ClaimSubmission billed amounts") do
-  total = Corvid::ClaimSubmission.paid.sum(:billed_amount)
+  total_dollars = Corvid::ClaimSubmission.paid.sum(:billed_amount_cents) / 100.0
   report_total = @report.is_a?(Hash) ? @report[:total_billed] : @report.sum { |r| r[:billed] || 0 }
-  assert_in_delta total.to_f, report_total.to_f, 0.01
+  assert_in_delta total_dollars, report_total.to_f, 0.01
 end
 
 Then("the paid amounts should match the sum of ClaimSubmission paid amounts") do
-  total = Corvid::ClaimSubmission.paid.sum(:paid_amount)
+  total_dollars = Corvid::ClaimSubmission.paid.sum(:paid_amount_cents) / 100.0
   report_total = @report.is_a?(Hash) ? @report[:total_paid] : @report.sum { |r| r[:paid] || 0 }
-  assert_in_delta total.to_f, report_total.to_f, 0.01
+  assert_in_delta total_dollars, report_total.to_f, 0.01
 end
 
 Then("I should receive a CSV string with reimbursement headers") do

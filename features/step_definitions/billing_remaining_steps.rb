@@ -262,10 +262,12 @@ end
 
 When("I calculate remittance statistics") do
   claims = Corvid::ClaimSubmission.paid
+  billed_cents = claims.sum(:billed_amount_cents)
+  paid_cents = claims.sum(:paid_amount_cents)
   @stats = {
-    total_billed: claims.sum(:billed_amount),
-    total_paid: claims.sum(:paid_amount),
-    average_rate: claims.count > 0 ? (claims.sum(:paid_amount).to_f / claims.sum(:billed_amount).to_f * 100).round(1) : 0
+    total_billed: billed_cents / 100.0,
+    total_paid: paid_cents / 100.0,
+    average_rate: billed_cents > 0 ? (paid_cents.to_f / billed_cents.to_f * 100).round(1) : 0
   }
 end
 

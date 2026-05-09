@@ -138,20 +138,21 @@ ActiveRecord::Schema[8.1].define(version: 2026_05_08_000001) do
   end
 
   create_table "corvid_claim_submissions", force: :cascade do |t|
-    t.decimal "adjustment_amount", precision: 12, scale: 2
-    t.decimal "billed_amount", precision: 12, scale: 2
+    t.bigint "adjustment_amount_cents"
+    t.bigint "billed_amount_cents"
     t.string "claim_identifier"
     t.string "claim_type", default: "professional", null: false
-    t.decimal "county_share", precision: 12, scale: 2
+    t.bigint "county_share_cents"
     t.datetime "created_at", null: false
+    t.string "currency_iso", limit: 3, default: "USD", null: false
     t.string "denial_reason_token"
     t.string "diagnosis_codes_token"
     t.string "facility_identifier"
     t.datetime "last_checked_at"
-    t.decimal "paid_amount", precision: 12, scale: 2
+    t.bigint "paid_amount_cents"
     t.date "paid_date"
     t.string "patient_identifier", null: false
-    t.decimal "patient_responsibility", precision: 12, scale: 2
+    t.bigint "patient_responsibility_cents"
     t.string "payer_identifier"
     t.string "payer_name_token"
     t.string "procedure_codes_token"
@@ -159,7 +160,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_05_08_000001) do
     t.string "provider_type"
     t.string "referral_identifier"
     t.date "service_date"
-    t.decimal "state_share", precision: 12, scale: 2
+    t.bigint "state_share_cents"
     t.string "status", default: "draft", null: false
     t.datetime "submitted_at"
     t.string "tenant_identifier", null: false
