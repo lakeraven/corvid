@@ -96,7 +96,10 @@ module Corvid
       return if checklist.enrollment_verified
 
       result = @adapter.verify_tribal_enrollment(patient_id)
-      return unless result[:enrolled]
+      # Treat nil / non-hash adapter responses as "verification failed"
+      # rather than crashing — adapters reaching across network or
+      # backend boundaries can legitimately return nil on lookup miss.
+      return unless result.is_a?(Hash) && result[:enrolled]
 
       checklist.verify_item!(:enrollment_verified, source: source)
     end
@@ -105,7 +108,7 @@ module Corvid
       return if checklist.identity_verified
 
       result = @adapter.verify_identity_documents(patient_id)
-      return unless result[:ssn_present] || result[:dob_present]
+      return unless result.is_a?(Hash) && (result[:ssn_present] || result[:dob_present])
 
       checklist.verify_item!(:identity_verified, source: source)
     end
@@ -114,7 +117,7 @@ module Corvid
       return if checklist.residency_verified
 
       result = @adapter.verify_residency(patient_id)
-      return unless result[:on_reservation]
+      return unless result.is_a?(Hash) && result[:on_reservation]
 
       checklist.verify_item!(:residency_verified, source: source)
     end

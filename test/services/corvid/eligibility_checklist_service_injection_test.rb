@@ -118,6 +118,31 @@ class Corvid::EligibilityChecklistServiceInjectionTest < ActiveSupport::TestCase
     end
   end
 
+  # Adapter that returns nil instead of the expected hash/array shapes.
+  # Reaching across a network or backend boundary can legitimately
+  # produce nil on lookup miss; the service must not crash.
+  class NilReturnAdapter
+    def verify_tribal_enrollment(_id);      nil; end
+    def verify_identity_documents(_id);     nil; end
+    def verify_residency(_id);              nil; end
+    def get_coverages(_id);                 nil; end
+  end
+
+  test "populate! with nil adapter returns leaves checklist items unverified instead of raising" do
+    Corvid::TenantContext.with_tenant(TENANT) do
+      referral = build_referral_in_tenant
+      service = Corvid::EligibilityChecklistService.new(adapter: NilReturnAdapter.new)
+
+      assert_nothing_raised { service.populate!(referral) }
+
+      checklist = referral.reload.eligibility_checklist
+      refute checklist.enrollment_verified
+      refute checklist.identity_verified
+      refute checklist.residency_verified
+      refute checklist.insurance_verified
+    end
+  end
+
   test "check_payer_eligibility! with empty coverages does not flip insurance_verified" do
     Corvid::TenantContext.with_tenant(TENANT) do
       referral = build_referral_with_checklist_in_tenant
