@@ -22,7 +22,17 @@ module Corvid
         when :courtesy_reminder
           courtesy(original_demand: original_demand)
         when :fca_warning
+          # Defense in depth: Timeline.follow_up_kind already scopes
+          # this branch to Section 506 demands, but if a non-Section-506
+          # demand somehow reaches this kind we refuse to generate FCA
+          # language rather than misapply the legal threat.
+          unless original_demand.cites_section_506
+            raise ArgumentError,
+                  "FCA warning is only valid for Section 506 demands; got contractual"
+          end
           fca_warning(original_demand: original_demand)
+        when :final_notice
+          final_notice(original_demand: original_demand)
         when :escalation
           escalation(original_demand: original_demand)
         else
@@ -52,6 +62,20 @@ module Corvid
           kind: :fca_warning, body: body,
           references_original_demand: true,
           warns_fca_liability: true, mentions_treble_damages: true,
+          recommends_oig_referral: false
+        )
+      end
+
+      def self.final_notice(original_demand:)
+        body = +"FINAL NOTICE\n\n"
+        body << "The deadline from the original demand has expired without resolution. "
+        body << "If we do not receive payment shortly, we will refer this matter to counsel "
+        body << "for collection action under the terms of the referral authorization.\n"
+        FollowUp.new(
+          kind: :final_notice, body: body,
+          references_original_demand: true,
+          warns_fca_liability: false,
+          mentions_treble_damages: false,
           recommends_oig_referral: false
         )
       end

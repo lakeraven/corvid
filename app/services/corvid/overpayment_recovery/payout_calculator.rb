@@ -3,10 +3,14 @@
 module Corvid
   module OverpaymentRecovery
     # Splits collected recovery dollars between the customer and
-    # corvid per the agreed split. Two named splits today:
-    #   :standard          — customer 70%, corvid 30%
-    #   :corvid_subscriber — customer 50%, corvid 50%
-    # Custom splits are accepted as a fraction (e.g., 0.7 = customer 70%).
+    # corvid per the agreed split. The "70/30" naming convention reads
+    # as corvid-share / customer-share — the platform takes the larger
+    # cut because it does the audit, demand, follow-up, and collection
+    # work. Two named splits today:
+    #   :standard          — corvid 70%, customer 30%
+    #   :corvid_subscriber — corvid 50%, customer 50%
+    # Custom splits are accepted as a fraction representing the
+    # customer's share (e.g., 0.30 = customer 30%).
     module PayoutCalculator
       Result = Struct.new(:collected, :customer_share, :corvid_share, :remaining_in_collection,
                           keyword_init: true)

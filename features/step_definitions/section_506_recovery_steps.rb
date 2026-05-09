@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require "set"
+
 # Step definitions for features/repricing/section_506_recovery.feature.
 # Backed by the Corvid::OverpaymentRecovery::* pure-Ruby service modules
 # (no AR persistence) — all state for a scenario lives in @-vars.
@@ -311,7 +313,8 @@ end
 
 When("the deadline check runs") do
   kind = Corvid::OverpaymentRecovery::Timeline.follow_up_kind(
-    sent_on: @demand_sent_on, today: @demand_today
+    sent_on: @demand_sent_on, today: @demand_today,
+    cites_section_506: @original_demand&.cites_section_506
   )
   if kind
     @follow_up = Corvid::OverpaymentRecovery::FollowUpGenerator.generate(
@@ -378,8 +381,11 @@ end
 # -- Follow-up escalation ----------------------------------------------------
 
 When("the follow-up check runs") do
+  cites_506 = @original_demand&.cites_section_506
+  cites_506 = true if cites_506.nil?
   kind = Corvid::OverpaymentRecovery::Timeline.follow_up_kind(
-    sent_on: @demand_sent_on, today: @demand_today || Date.current
+    sent_on: @demand_sent_on, today: @demand_today || Date.current,
+    cites_section_506: cites_506
   )
   @follow_up = Corvid::OverpaymentRecovery::FollowUpGenerator.generate(
     kind: kind, original_demand: @original_demand

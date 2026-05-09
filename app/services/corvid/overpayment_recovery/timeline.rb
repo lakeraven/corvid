@@ -42,15 +42,23 @@ module Corvid
         [ elapsed - INTEREST_GRACE_DAYS, 0 ].max
       end
 
-      # Returns one of: nil, :courtesy_reminder, :fca_warning, :escalation
-      # — used by the follow-up service to decide what kind of letter to
-      # generate for a demand that hasn't been paid yet.
-      def self.follow_up_kind(sent_on:, today:)
+      # Returns one of: nil, :courtesy_reminder, :fca_warning,
+      # :final_notice, :escalation — used by the follow-up service to
+      # decide what kind of letter to generate for a demand that hasn't
+      # been paid yet.
+      #
+      # `cites_section_506` scopes the 60-day branch: only Section 506
+      # tribal demands escalate to :fca_warning (FCA / treble damages
+      # citation). Contractual / rural demands at 60 days fall back to
+      # :final_notice (firmer language without the FCA threat) since
+      # invoking the False Claims Act outside its statutory basis would
+      # be a legal/compliance risk.
+      def self.follow_up_kind(sent_on:, today:, cites_section_506: true)
         elapsed = (today - sent_on).to_i
         if elapsed >= ESCALATION_DAYS
           :escalation
         elsif elapsed >= FCA_WARNING_DAYS
-          :fca_warning
+          cites_section_506 ? :fca_warning : :final_notice
         elsif elapsed >= COURTESY_REMINDER_DAYS
           :courtesy_reminder
         end

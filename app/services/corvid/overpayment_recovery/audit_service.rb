@@ -21,7 +21,13 @@ module Corvid
 
       def self.audit(claims, today: Date.current)
         overpayments = claims.filter_map do |c|
-          rate = ::Corvid::RepricingService.reprice(cpt_code: c[:cpt_code], zip: c[:zip], date: today)&.medicare_rate
+          # Reprice on the claim's date_of_service, not today — historical
+          # claims must be valued against the fee schedule that was in
+          # effect when the service was rendered, not the latest. Wrong
+          # rate-year would misstate overpayments and the legal-basis
+          # citation in any resulting demand letter.
+          repricing_date = c[:date_of_service] || today
+          rate = ::Corvid::RepricingService.reprice(cpt_code: c[:cpt_code], zip: c[:zip], date: repricing_date)&.medicare_rate
           next unless rate
 
           paid = BigDecimal(c[:paid_amount].to_s)
