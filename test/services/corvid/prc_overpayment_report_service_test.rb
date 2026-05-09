@@ -234,6 +234,69 @@ class Corvid::PrcOverpaymentReportServiceTest < ActiveSupport::TestCase
     assert_equal csv1, csv2, "summary CSV is byte-stable across runs"
   end
 
+  # -- Money formatting -------------------------------------------------------
+
+  test "CSV money fields are fixed-point decimals, not BigDecimal scientific notation" do
+    csv = Corvid::PrcOverpaymentReportService.to_csv_detail(tenant: TENANT)
+    table = CSV.parse(csv, headers: true)
+
+    table.each do |row|
+      %w[billed_amount paid_amount medicare_equivalent overpayment].each do |col|
+        next if row[col].nil? || row[col].empty?
+        refute_match(/E/i, row[col],
+                     "#{col}=#{row[col].inspect} should be fixed-point, not scientific")
+        assert_match(/\A-?\d+\.\d{2}\z/, row[col],
+                     "#{col} should be N.NN format")
+      end
+    end
+  end
+
+  test "summary CSV money totals are fixed-point decimals" do
+    csv = Corvid::PrcOverpaymentReportService.to_csv_summary(tenant: TENANT)
+    table = CSV.parse(csv, headers: true)
+    money_cols = %w[total_billed total_paid total_medicare_equivalent
+                    total_overpayment_known total_overpayment_stub_estimate]
+    table.each do |row|
+      money_cols.each do |col|
+        refute_match(/E/i, row[col].to_s,
+                     "summary #{col}=#{row[col].inspect} should be fixed-point")
+      end
+    end
+  end
+
+  test "JSON money fields are fixed-point strings" do
+    json = Corvid::PrcOverpaymentReportService.to_json_export(tenant: TENANT)
+    parsed = JSON.parse(json)
+
+    parsed["detail"].each do |row|
+      %w[billed_amount paid_amount medicare_equivalent overpayment].each do |col|
+        next if row[col].nil?
+        assert_kind_of String, row[col]
+        refute_match(/E/i, row[col], "#{col} should not be scientific")
+        assert_match(/\A-?\d+\.\d{2}\z/, row[col])
+      end
+    end
+
+    %w[total_billed total_paid total_medicare_equivalent
+       total_overpayment_known total_overpayment_stub_estimate].each do |col|
+      assert_kind_of String, parsed["summary"][col]
+      refute_match(/E/i, parsed["summary"][col])
+    end
+  end
+
+  # -- Filter naming (fiscal_year vs year alias) ------------------------------
+
+  test "fiscal_year: filter selects the federal-fiscal-year column" do
+    summary = Corvid::PrcOverpaymentReportService.summary(tenant: TENANT, fiscal_year: 2009)
+    assert_equal 1, summary[:obligations_analyzed]
+  end
+
+  test "year: is accepted as a backward-compatible alias for fiscal_year:" do
+    by_alias = Corvid::PrcOverpaymentReportService.summary(tenant: TENANT, year: 2009)
+    by_canon = Corvid::PrcOverpaymentReportService.summary(tenant: TENANT, fiscal_year: 2009)
+    assert_equal by_canon[:obligations_analyzed], by_alias[:obligations_analyzed]
+  end
+
   # -- Tenant scoping ---------------------------------------------------------
 
   test "report is tenant-scoped — rows from other tenants are excluded" do
