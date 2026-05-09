@@ -11,10 +11,11 @@ class CreateCorvidPrcObligations < ActiveRecord::Migration[8.1]
       t.string :procedure_code
       t.date :service_date
       t.string :status
-      t.decimal :billed_amount, precision: 12, scale: 2
-      t.decimal :paid_amount, precision: 12, scale: 2
-      t.decimal :savings, precision: 12, scale: 2
-      t.decimal :balance, precision: 12, scale: 2
+      t.bigint :billed_amount_cents
+      t.bigint :paid_amount_cents
+      t.bigint :savings_cents
+      t.bigint :balance_cents
+      t.string :currency_iso, null: false, limit: 3, default: "USD"
       t.integer :fiscal_year
       t.string :source_file
       t.datetime :imported_at, null: false
@@ -39,7 +40,8 @@ class CreateCorvidPrcObligations < ActiveRecord::Migration[8.1]
       t.string :payment_id, null: false
       t.date :paid_date
       t.string :check_number
-      t.decimal :amount, precision: 12, scale: 2
+      t.bigint :amount_cents
+      t.string :currency_iso, null: false, limit: 3, default: "USD"
       t.string :vendor_name
 
       t.timestamps
@@ -61,8 +63,9 @@ class CreateCorvidPrcObligations < ActiveRecord::Migration[8.1]
       t.string :payment_system
       t.string :rate_source
       t.string :recovery_confidence, null: false
-      t.decimal :medicare_equivalent, precision: 12, scale: 2
-      t.decimal :overpayment, precision: 12, scale: 2
+      t.bigint :medicare_equivalent_cents
+      t.bigint :overpayment_cents
+      t.string :currency_iso, null: false, limit: 3, default: "USD"
       t.text :notes
       t.datetime :analyzed_at, null: false
 

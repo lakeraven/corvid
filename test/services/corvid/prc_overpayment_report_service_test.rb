@@ -60,12 +60,12 @@ class Corvid::PrcOverpaymentReportServiceTest < ActiveSupport::TestCase
     summary = Corvid::PrcOverpaymentReportService.summary(tenant: TENANT)
 
     assert_equal 2, summary[:obligations_analyzed]
-    assert_equal 65_200.to_d, summary[:total_billed]
-    assert_equal 42_180.to_d, summary[:total_paid]
-    assert_equal 18_100.to_d, summary[:total_medicare_equivalent]
-    assert_equal 80.to_d, summary[:total_overpayment_known],
+    assert_equal Money.from_amount(65_200, "USD"), summary[:total_billed]
+    assert_equal Money.from_amount(42_180, "USD"), summary[:total_paid]
+    assert_equal Money.from_amount(18_100, "USD"), summary[:total_medicare_equivalent]
+    assert_equal Money.from_amount(80, "USD"), summary[:total_overpayment_known],
                  "clear-confidence overpayment is the recoverable-now total"
-    assert_equal 24_000.to_d, summary[:total_overpayment_stub_estimate],
+    assert_equal Money.from_amount(24_000, "USD"), summary[:total_overpayment_stub_estimate],
                  "stub-confidence overpayment is directional, not yet recoverable"
   end
 
@@ -75,7 +75,7 @@ class Corvid::PrcOverpaymentReportServiceTest < ActiveSupport::TestCase
     assert_equal 2, summary[:by_payment_system].size
     ipps_row = summary[:by_payment_system].find { |r| r[:payment_system] == "ipps" }
     assert_equal 1, ipps_row[:obligations]
-    assert_equal 24_000.to_d, ipps_row[:overpayment]
+    assert_equal Money.from_amount(24_000, "USD"), ipps_row[:overpayment]
 
     assert_equal 2, summary[:by_vendor].size
     assert_equal 2, summary[:by_year].size
@@ -84,8 +84,8 @@ class Corvid::PrcOverpaymentReportServiceTest < ActiveSupport::TestCase
   test "summary filters by fiscal_year" do
     summary = Corvid::PrcOverpaymentReportService.summary(tenant: TENANT, year: 2009)
     assert_equal 1, summary[:obligations_analyzed]
-    assert_equal 0.to_d, summary[:total_overpayment_known]
-    assert_equal 24_000.to_d, summary[:total_overpayment_stub_estimate]
+    assert_nil summary[:total_overpayment_known], "no clear-confidence rows in 2009"
+    assert_equal Money.from_amount(24_000, "USD"), summary[:total_overpayment_stub_estimate]
   end
 
   test "summary filters by recovery_confidence" do
@@ -93,7 +93,7 @@ class Corvid::PrcOverpaymentReportServiceTest < ActiveSupport::TestCase
       tenant: TENANT, recovery_confidence: "clear"
     )
     assert_equal 1, summary[:obligations_analyzed]
-    assert_equal 80.to_d, summary[:total_overpayment_known]
+    assert_equal Money.from_amount(80, "USD"), summary[:total_overpayment_known]
   end
 
   test "summary filters by payment_system and vendor_id" do
@@ -116,7 +116,7 @@ class Corvid::PrcOverpaymentReportServiceTest < ActiveSupport::TestCase
     assert_equal "phase_1.5", hip_row[:analyzer_version]
     assert_equal "fy09.prc", hip_row[:source_file]
     assert_equal "stub_estimate", hip_row[:recovery_confidence]
-    assert_equal 24_000.to_d, hip_row[:overpayment]
+    assert_equal Money.from_amount(24_000, "USD"), hip_row[:overpayment]
   end
 
   test "detail uses each obligation's most recent analysis when history exists" do
@@ -137,7 +137,7 @@ class Corvid::PrcOverpaymentReportServiceTest < ActiveSupport::TestCase
     hip_row = rows.find { |r| r[:obligation_id] == "OBL-A" }
     assert_equal "phase_2.0", hip_row[:analyzer_version]
     assert_equal "clear", hip_row[:recovery_confidence]
-    assert_equal 20_000.to_d, hip_row[:overpayment]
+    assert_equal Money.from_amount(20_000, "USD"), hip_row[:overpayment]
   end
 
   # -- CSV outputs ------------------------------------------------------------

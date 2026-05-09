@@ -8,6 +8,11 @@ module Corvid
 
     include TenantScoped
 
+    monetize :billed_amount_cents, with_model_currency: :currency_iso, allow_nil: true
+    monetize :paid_amount_cents, with_model_currency: :currency_iso, allow_nil: true
+    monetize :savings_cents, with_model_currency: :currency_iso, allow_nil: true
+    monetize :balance_cents, with_model_currency: :currency_iso, allow_nil: true
+
     has_many :prc_payments,
              dependent: :destroy,
              class_name: "Corvid::PrcPayment"

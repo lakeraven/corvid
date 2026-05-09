@@ -8,6 +8,8 @@ module Corvid
 
     include TenantScoped
 
+    monetize :amount_cents, with_model_currency: :currency_iso, allow_nil: true
+
     belongs_to :prc_obligation, class_name: "Corvid::PrcObligation"
 
     validates :payment_id, presence: true
