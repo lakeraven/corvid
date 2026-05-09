@@ -25,7 +25,7 @@ module Corvid
   # sensitive recovery math downstream.
   module PrcOverpaymentReportService
     SUMMARY_CSV_HEADERS = %w[
-      fiscal_year vendor_id payment_system
+      fiscal_year vendor_id payment_system currency
       obligations_count
       total_billed total_paid total_medicare_equivalent
       total_overpayment_known total_overpayment_stub_estimate
@@ -33,7 +33,7 @@ module Corvid
 
     DETAIL_CSV_HEADERS = %w[
       obligation_id fiscal_year service_date vendor_id procedure_code
-      payment_system recovery_confidence
+      payment_system recovery_confidence currency
       billed_amount paid_amount medicare_equivalent overpayment
       analyzer_version rate_source rate_source_release
       source_file analyzed_at
@@ -89,14 +89,14 @@ module Corvid
 
       def to_csv_summary(tenant:, **filters)
         rows = detail(tenant: tenant, **filters)
-        groups = rows.group_by { |r| [ r[:fiscal_year], r[:vendor_id], r[:payment_system] ] }
+        groups = rows.group_by { |r| [ r[:fiscal_year], r[:vendor_id], r[:payment_system], r[:currency] ] }
                      .sort_by { |key, _| key.map { |v| v.to_s } }
 
         CSV.generate do |csv|
           csv << SUMMARY_CSV_HEADERS
-          groups.each do |(fy, vendor, system), group|
+          groups.each do |(fy, vendor, system, currency), group|
             csv << [
-              fy, vendor, system, group.size,
+              fy, vendor, system, currency, group.size,
               fmt_money(sum_money(group, :billed_amount)),
               fmt_money(sum_money(group, :paid_amount)),
               fmt_money(sum_money(group, :medicare_equivalent)),
@@ -149,17 +149,30 @@ module Corvid
           .order(Arel.sql("prc_obligation_id, analyzed_at DESC, id DESC"))
       end
 
+      # Summaries always partition rows by currency before summing — per
+      # ADR 0004, mixed-currency aggregation never auto-FXes. A single-
+      # currency tenant produces one entry under `by_currency`; a future
+      # multi-currency tenant produces one entry per ISO code, side by
+      # side, with their own Money totals.
       def summary_from_rows(rows)
         {
           obligations_analyzed: rows.size,
+          by_currency: rows.group_by { |r| r[:currency] }.map { |iso, group| currency_totals(iso, group) },
+          by_payment_system: group_totals(rows, :payment_system),
+          by_vendor: group_totals(rows, :vendor_id),
+          by_year: group_totals(rows, :fiscal_year)
+        }
+      end
+
+      def currency_totals(iso, rows)
+        {
+          currency: iso,
+          obligations: rows.size,
           total_billed: sum_money(rows, :billed_amount),
           total_paid: sum_money(rows, :paid_amount),
           total_medicare_equivalent: sum_money(rows, :medicare_equivalent),
           total_overpayment_known: sum_money(rows.select { |r| r[:recovery_confidence] == "clear" }, :overpayment),
-          total_overpayment_stub_estimate: sum_money(rows.select { |r| r[:recovery_confidence] == "stub_estimate" }, :overpayment),
-          by_payment_system: group_totals(rows, :payment_system),
-          by_vendor: group_totals(rows, :vendor_id),
-          by_year: group_totals(rows, :fiscal_year)
+          total_overpayment_stub_estimate: sum_money(rows.select { |r| r[:recovery_confidence] == "stub_estimate" }, :overpayment)
         }
       end
 
@@ -173,6 +186,7 @@ module Corvid
           procedure_code: obligation.procedure_code,
           payment_system: analysis.payment_system,
           recovery_confidence: analysis.recovery_confidence,
+          currency: obligation.currency_iso,
           billed_amount: obligation.billed_amount,
           paid_amount: obligation.paid_amount,
           medicare_equivalent: analysis.medicare_equivalent,
@@ -185,19 +199,24 @@ module Corvid
         }
       end
 
-      # Sum a column of Money values across rows. Same-currency rows
-      # combine; mixed currency raises Money::Bank::UnknownRate per
-      # ADR 0004 — reports group by currency rather than auto-FXing.
+      # Sum a column of Money values across rows. Callers must hand us a
+      # set that's already single-currency (we partition by currency
+      # before summing). Mixed-currency input raises Money's bank error
+      # by design — that's the loud-fail signal that something forgot
+      # to bucket by ISO code.
       def sum_money(rows, key)
         values = rows.map { |r| r[key] }.compact
         return nil if values.empty?
         values.reduce(:+)
       end
 
+      # Group breakdowns also partition by currency so the inner sums
+      # are guaranteed single-currency.
       def group_totals(rows, key)
-        rows.group_by { |r| r[key] }.map do |value, group|
+        rows.group_by { |r| [ r[key], r[:currency] ] }.map do |(value, currency), group|
           {
             key => value,
+            currency: currency,
             obligations: group.size,
             billed: sum_money(group, :billed_amount),
             paid: sum_money(group, :paid_amount),

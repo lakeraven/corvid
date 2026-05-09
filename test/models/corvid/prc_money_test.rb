@@ -94,6 +94,47 @@ class Corvid::PrcMoneyTest < ActiveSupport::TestCase
     end
   end
 
+  # -- Currency immutability --------------------------------------------------
+
+  test "currency_iso cannot be changed after a row is persisted" do
+    Corvid::TenantContext.with_tenant(TENANT_US) do
+      ob = create_obligation("USD", billed: 100, obligation_id: "OBL-LOCK-1")
+      ob.currency_iso = "EUR"
+      assert_raises(ActiveRecord::RecordInvalid) { ob.save! }
+      ob.reload
+      assert_equal "USD", ob.currency_iso, "the persisted value did not change"
+    end
+  end
+
+  test "currency_iso immutability is enforced on PrcPayment too" do
+    Corvid::TenantContext.with_tenant(TENANT_JO) do
+      ob = create_obligation("JOD", billed: 1000, obligation_id: "OBL-LOCK-PMT")
+      pmt = Corvid::PrcPayment.create!(
+        prc_obligation: ob,
+        payment_id: "PMT-LOCK-1",
+        amount_cents: 100_000,
+        currency_iso: "JOD"
+      )
+      pmt.currency_iso = "USD"
+      assert_raises(ActiveRecord::RecordInvalid) { pmt.save! }
+    end
+  end
+
+  test "currency_iso immutability is enforced on PrcOverpaymentAnalysis too" do
+    Corvid::TenantContext.with_tenant(TENANT_CA) do
+      ob = create_obligation("CAD", billed: 500, obligation_id: "OBL-LOCK-ANL")
+      anl = Corvid::PrcOverpaymentAnalysis.create!(
+        prc_obligation: ob,
+        analyzer_version: "phase_1.5",
+        recovery_confidence: "clear",
+        currency_iso: "CAD",
+        analyzed_at: Time.current
+      )
+      anl.currency_iso = "USD"
+      assert_raises(ActiveRecord::RecordInvalid) { anl.save! }
+    end
+  end
+
   # -- Payment + Analysis money fields ---------------------------------------
 
   test "PrcPayment monetizes amount with the row's currency" do

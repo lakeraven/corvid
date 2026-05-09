@@ -7,6 +7,7 @@ module Corvid
     self.table_name = "corvid_prc_payments"
 
     include TenantScoped
+    include CurrencyImmutable
 
     monetize :amount_cents, with_model_currency: :currency_iso, allow_nil: true
 

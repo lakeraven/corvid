@@ -8,6 +8,8 @@ module Corvid
 
     include TenantScoped
 
+    include CurrencyImmutable
+
     monetize :billed_amount_cents, with_model_currency: :currency_iso, allow_nil: true
     monetize :paid_amount_cents, with_model_currency: :currency_iso, allow_nil: true
     monetize :savings_cents, with_model_currency: :currency_iso, allow_nil: true

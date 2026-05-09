@@ -56,17 +56,17 @@ class Corvid::PrcOverpaymentReportServiceTest < ActiveSupport::TestCase
 
   # -- Summary ----------------------------------------------------------------
 
-  test "summary aggregates totals across all obligations" do
+  test "summary aggregates totals across all obligations, partitioned by currency" do
     summary = Corvid::PrcOverpaymentReportService.summary(tenant: TENANT)
 
     assert_equal 2, summary[:obligations_analyzed]
-    assert_equal Money.from_amount(65_200, "USD"), summary[:total_billed]
-    assert_equal Money.from_amount(42_180, "USD"), summary[:total_paid]
-    assert_equal Money.from_amount(18_100, "USD"), summary[:total_medicare_equivalent]
-    assert_equal Money.from_amount(80, "USD"), summary[:total_overpayment_known],
-                 "clear-confidence overpayment is the recoverable-now total"
-    assert_equal Money.from_amount(24_000, "USD"), summary[:total_overpayment_stub_estimate],
-                 "stub-confidence overpayment is directional, not yet recoverable"
+    assert_equal 1, summary[:by_currency].size, "single-currency tenant has one bucket"
+    usd = summary[:by_currency].find { |b| b[:currency] == "USD" }
+    assert_equal Money.from_amount(65_200, "USD"), usd[:total_billed]
+    assert_equal Money.from_amount(42_180, "USD"), usd[:total_paid]
+    assert_equal Money.from_amount(18_100, "USD"), usd[:total_medicare_equivalent]
+    assert_equal Money.from_amount(80, "USD"), usd[:total_overpayment_known]
+    assert_equal Money.from_amount(24_000, "USD"), usd[:total_overpayment_stub_estimate]
   end
 
   test "summary breaks down by payment_system, vendor, and fiscal_year" do
@@ -84,8 +84,9 @@ class Corvid::PrcOverpaymentReportServiceTest < ActiveSupport::TestCase
   test "summary filters by fiscal_year" do
     summary = Corvid::PrcOverpaymentReportService.summary(tenant: TENANT, year: 2009)
     assert_equal 1, summary[:obligations_analyzed]
-    assert_nil summary[:total_overpayment_known], "no clear-confidence rows in 2009"
-    assert_equal Money.from_amount(24_000, "USD"), summary[:total_overpayment_stub_estimate]
+    usd = summary[:by_currency].find { |b| b[:currency] == "USD" }
+    assert_nil usd[:total_overpayment_known], "no clear-confidence rows in 2009"
+    assert_equal Money.from_amount(24_000, "USD"), usd[:total_overpayment_stub_estimate]
   end
 
   test "summary filters by recovery_confidence" do
@@ -93,7 +94,8 @@ class Corvid::PrcOverpaymentReportServiceTest < ActiveSupport::TestCase
       tenant: TENANT, recovery_confidence: "clear"
     )
     assert_equal 1, summary[:obligations_analyzed]
-    assert_equal Money.from_amount(80, "USD"), summary[:total_overpayment_known]
+    usd = summary[:by_currency].find { |b| b[:currency] == "USD" }
+    assert_equal Money.from_amount(80, "USD"), usd[:total_overpayment_known]
   end
 
   test "summary filters by payment_system and vendor_id" do
@@ -277,10 +279,13 @@ class Corvid::PrcOverpaymentReportServiceTest < ActiveSupport::TestCase
       end
     end
 
+    usd_bucket = parsed["summary"]["by_currency"].find { |b| b["currency"] == "USD" }
+    refute_nil usd_bucket
     %w[total_billed total_paid total_medicare_equivalent
        total_overpayment_known total_overpayment_stub_estimate].each do |col|
-      assert_kind_of String, parsed["summary"][col]
-      refute_match(/E/i, parsed["summary"][col])
+      next if usd_bucket[col].nil? # not all confidence buckets always populate
+      assert_kind_of String, usd_bucket[col]
+      refute_match(/E/i, usd_bucket[col])
     end
   end
 
@@ -295,6 +300,97 @@ class Corvid::PrcOverpaymentReportServiceTest < ActiveSupport::TestCase
     by_alias = Corvid::PrcOverpaymentReportService.summary(tenant: TENANT, year: 2009)
     by_canon = Corvid::PrcOverpaymentReportService.summary(tenant: TENANT, fiscal_year: 2009)
     assert_equal by_canon[:obligations_analyzed], by_alias[:obligations_analyzed]
+  end
+
+  # -- Mixed-currency tenant --------------------------------------------------
+
+  test "mixed-currency tenant produces per-currency summary buckets, never auto-FX" do
+    # Hypothetical: a tenant has historical USD records (locked at write)
+    # and a recent reconfiguration that started recording new rows in EUR.
+    # Per ADR 0004, the report shows them in separate currency buckets
+    # rather than summing across — the gem's loud-fail at this seam is the
+    # whole point.
+    tenant = "tnt_mixed"
+    Corvid::TenantContext.with_tenant(tenant) do
+      eur_ob = Corvid::PrcObligation.create!(
+        facility_identifier: "EU",
+        obligation_id: "OBL-EUR-1",
+        billed_amount_cents: 50_000, # 500 EUR
+        paid_amount_cents: 50_000,
+        currency_iso: "EUR",
+        fiscal_year: 2026,
+        imported_at: Time.current
+      )
+      Corvid::PrcOverpaymentAnalysis.create!(
+        prc_obligation: eur_ob,
+        analyzer_version: "phase_1.5",
+        recovery_confidence: "clear",
+        currency_iso: "EUR",
+        medicare_equivalent_cents: 30_000,
+        overpayment_cents: 20_000,
+        analyzed_at: Time.current
+      )
+
+      usd_ob = Corvid::PrcObligation.create!(
+        facility_identifier: "US",
+        obligation_id: "OBL-USD-1",
+        billed_amount_cents: 100_00, # 100 USD
+        paid_amount_cents: 100_00,
+        currency_iso: "USD",
+        fiscal_year: 2026,
+        imported_at: Time.current
+      )
+      Corvid::PrcOverpaymentAnalysis.create!(
+        prc_obligation: usd_ob,
+        analyzer_version: "phase_1.5",
+        recovery_confidence: "clear",
+        currency_iso: "USD",
+        medicare_equivalent_cents: 50_00,
+        overpayment_cents: 50_00,
+        analyzed_at: Time.current
+      )
+    end
+
+    summary = Corvid::PrcOverpaymentReportService.summary(tenant: tenant)
+    assert_equal 2, summary[:obligations_analyzed]
+    assert_equal 2, summary[:by_currency].size, "two currency buckets, no merger"
+    assert_equal Money.from_amount(500, "EUR"),
+                 summary[:by_currency].find { |b| b[:currency] == "EUR" }[:total_billed]
+    assert_equal Money.from_amount(100, "USD"),
+                 summary[:by_currency].find { |b| b[:currency] == "USD" }[:total_billed]
+  end
+
+  test "mixed-currency CSV summary emits one row per (year, vendor, system, currency)" do
+    tenant = "tnt_mixed_csv"
+    Corvid::TenantContext.with_tenant(tenant) do
+      [ "USD", "EUR" ].each_with_index do |iso, i|
+        ob = Corvid::PrcObligation.create!(
+          facility_identifier: "F",
+          obligation_id: "OBL-#{iso}-#{i}",
+          vendor_id: "V1",
+          billed_amount_cents: 1000,
+          currency_iso: iso,
+          fiscal_year: 2026,
+          imported_at: Time.current
+        )
+        Corvid::PrcOverpaymentAnalysis.create!(
+          prc_obligation: ob,
+          analyzer_version: "phase_1.5",
+          recovery_confidence: "clear",
+          payment_system: "pfs",
+          currency_iso: iso,
+          overpayment_cents: 100,
+          analyzed_at: Time.current
+        )
+      end
+    end
+
+    csv = Corvid::PrcOverpaymentReportService.to_csv_summary(tenant: tenant)
+    table = CSV.parse(csv, headers: true)
+    assert_includes table.headers, "currency"
+    currencies = table.map { |r| r["currency"] }.sort
+    assert_equal [ "EUR", "USD" ], currencies,
+                 "mixed-currency rows split rather than summing across ISO codes"
   end
 
   # -- Tenant scoping ---------------------------------------------------------
