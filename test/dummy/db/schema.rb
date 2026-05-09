@@ -294,9 +294,10 @@ ActiveRecord::Schema[8.1].define(version: 2026_05_08_000001) do
   end
 
   create_table "corvid_payments", force: :cascade do |t|
-    t.integer "amount_cents", null: false
+    t.bigint "amount_cents", null: false
     t.string "claim_submission_identifier"
     t.datetime "created_at", null: false
+    t.string "currency_iso", limit: 3, default: "USD", null: false
     t.string "description"
     t.string "facility_identifier"
     t.string "patient_identifier", null: false
