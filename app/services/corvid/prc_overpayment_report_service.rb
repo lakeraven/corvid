@@ -54,7 +54,10 @@ module Corvid
 
       # One hash per analyzed obligation. Uses the most recent analysis
       # row per obligation so reanalysis at higher confidence supersedes
-      # earlier estimates.
+      # earlier estimates. Output is deterministically ordered by
+      # (fiscal_year, vendor_id, payment_system, obligation_id) so that
+      # two exports of unchanged data produce byte-identical artifacts —
+      # diffs of the report itself are then meaningful audit signal.
       def detail(tenant:, year: nil, vendor_id: nil, payment_system: nil, recovery_confidence: nil)
         Corvid::TenantContext.with_tenant(tenant) do
           scope = Corvid::PrcOverpaymentAnalysis
@@ -65,13 +68,22 @@ module Corvid
           scope = scope.where(payment_system: payment_system) if payment_system
           scope = scope.where(recovery_confidence: recovery_confidence) if recovery_confidence
 
-          scope.includes(:prc_obligation).map { |a| detail_row(a) }
+          scope
+            .includes(:prc_obligation)
+            .order(Arel.sql(
+              "corvid_prc_obligations.fiscal_year ASC NULLS LAST, " \
+              "corvid_prc_obligations.vendor_id ASC NULLS LAST, " \
+              "corvid_prc_overpayment_analyses.payment_system ASC NULLS LAST, " \
+              "corvid_prc_obligations.obligation_id ASC"
+            ))
+            .map { |a| detail_row(a) }
         end
       end
 
       def to_csv_summary(tenant:, **filters)
         rows = detail(tenant: tenant, **filters)
         groups = rows.group_by { |r| [ r[:fiscal_year], r[:vendor_id], r[:payment_system] ] }
+                     .sort_by { |key, _| key.map { |v| v.to_s } }
 
         CSV.generate do |csv|
           csv << SUMMARY_CSV_HEADERS
@@ -110,18 +122,16 @@ module Corvid
 
       private
 
+      # Latest-analysis-per-obligation expressed as a Postgres DISTINCT ON
+      # subquery. Embedding it in `WHERE id IN (...)` keeps the whole
+      # detail() lookup a single round trip — no N+1 SELECT-per-obligation
+      # and no Ruby-side roundtrip materializing every id. The id
+      # tiebreaker keeps results deterministic when two analyses share
+      # the same analyzed_at down to the microsecond.
       def latest_analysis_ids
         Corvid::PrcOverpaymentAnalysis
-          .group(:prc_obligation_id)
-          .maximum(:analyzed_at)
-          .map do |obligation_id, max_at|
-            Corvid::PrcOverpaymentAnalysis
-              .where(prc_obligation_id: obligation_id, analyzed_at: max_at)
-              .order(id: :desc)
-              .limit(1)
-              .pluck(:id)
-              .first
-          end.compact
+          .select(Arel.sql("DISTINCT ON (prc_obligation_id) corvid_prc_overpayment_analyses.id"))
+          .order(Arel.sql("prc_obligation_id, analyzed_at DESC, id DESC"))
       end
 
       def detail_row(analysis)

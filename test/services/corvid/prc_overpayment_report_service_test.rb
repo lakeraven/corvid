@@ -194,6 +194,46 @@ class Corvid::PrcOverpaymentReportServiceTest < ActiveSupport::TestCase
     assert_equal "phase_1.5", parsed["detail"][0]["analyzer_version"]
   end
 
+  # -- Deterministic output ---------------------------------------------------
+
+  test "detail orders rows by (fiscal_year, vendor_id, payment_system, obligation_id)" do
+    Corvid::TenantContext.with_tenant(TENANT) do
+      # Insert in non-sorted order to ensure ordering isn't insertion-coincidence
+      [ "OBL-Z", "OBL-M", "OBL-A2" ].each_with_index do |id, i|
+        ob = Corvid::PrcObligation.create!(
+          facility_identifier: "SEA",
+          obligation_id: id,
+          vendor_id: "VEND-Z",
+          billed_amount: 1, paid_amount: 1, fiscal_year: 2020,
+          imported_at: Time.current
+        )
+        Corvid::PrcOverpaymentAnalysis.create!(
+          prc_obligation: ob,
+          analyzer_version: "phase_1.5",
+          payment_system: "pfs", recovery_confidence: "clear",
+          medicare_equivalent: 1, overpayment: 0,
+          analyzed_at: Time.current + i.seconds
+        )
+      end
+    end
+
+    rows1 = Corvid::PrcOverpaymentReportService.detail(tenant: TENANT)
+    rows2 = Corvid::PrcOverpaymentReportService.detail(tenant: TENANT)
+    assert_equal rows1.map { |r| r[:obligation_id] }, rows2.map { |r| r[:obligation_id] },
+                 "two consecutive exports of unchanged data are byte-equal"
+
+    fy_2020 = rows1.select { |r| r[:fiscal_year] == 2020 }
+    assert_equal [ "OBL-A2", "OBL-M", "OBL-Z" ],
+                 fy_2020.map { |r| r[:obligation_id] },
+                 "rows within a year sort by obligation_id"
+  end
+
+  test "summary CSV orders groups deterministically" do
+    csv1 = Corvid::PrcOverpaymentReportService.to_csv_summary(tenant: TENANT)
+    csv2 = Corvid::PrcOverpaymentReportService.to_csv_summary(tenant: TENANT)
+    assert_equal csv1, csv2, "summary CSV is byte-stable across runs"
+  end
+
   # -- Tenant scoping ---------------------------------------------------------
 
   test "report is tenant-scoped — rows from other tenants are excluded" do
