@@ -299,6 +299,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_05_09_000001) do
     t.string "drg_code", null: false
     t.integer "fiscal_year", null: false
     t.decimal "relative_weight", precision: 8, scale: 4, null: false
+    t.string "release_label"
     t.datetime "updated_at", null: false
     t.index ["fiscal_year", "drg_code"], name: "idx_corvid_ipps_drg_weights_fy_drg", unique: true
   end
@@ -308,6 +309,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_05_09_000001) do
     t.datetime "created_at", null: false
     t.integer "fiscal_year", null: false
     t.string "locality", null: false
+    t.string "release_label"
     t.datetime "updated_at", null: false
     t.decimal "wage_index", precision: 8, scale: 4, default: "1.0", null: false
     t.index ["fiscal_year", "locality"], name: "idx_corvid_ipps_hospital_rates_fy_locality", unique: true
