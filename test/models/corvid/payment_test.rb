@@ -123,12 +123,30 @@ module Corvid
 
     # -- Total collected ------------------------------------------------------
 
-    test "total_collected sums succeeded payments" do
+    test "totals_collected_by_currency sums succeeded payments per currency" do
       Payment.create!(patient_identifier: "pt_tc", amount_cents: 5000, status: "succeeded")
       Payment.create!(patient_identifier: "pt_tc", amount_cents: 3000, status: "succeeded")
       Payment.create!(patient_identifier: "pt_tc", amount_cents: 2000, status: "failed")
 
-      assert_equal 80.0, Payment.total_collected
+      totals = Payment.totals_collected_by_currency
+      assert_equal Money.from_amount(80, "USD"), totals["USD"]
+    end
+
+    test "totals_collected_by_currency splits mixed-currency tenants into buckets" do
+      Payment.create!(patient_identifier: "pt_mc", amount_cents: 5000,
+                      currency_iso: "USD", status: "succeeded")
+      Payment.create!(patient_identifier: "pt_mc", amount_cents: 7000,
+                      currency_iso: "EUR", status: "succeeded")
+
+      totals = Payment.totals_collected_by_currency
+      assert_equal Money.from_amount(50, "USD"), totals["USD"]
+      assert_equal Money.from_amount(70, "EUR"), totals["EUR"]
+    end
+
+    test "currency_iso is immutable once a payment is persisted" do
+      pmt = Payment.create!(patient_identifier: "pt_lock", amount_cents: 1000, status: "pending")
+      pmt.currency_iso = "EUR"
+      assert_raises(ActiveRecord::RecordInvalid) { pmt.save! }
     end
 
     # -- Refundable? edge cases -----------------------------------------------

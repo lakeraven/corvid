@@ -7,7 +7,10 @@ module Corvid
     self.table_name = "corvid_payments"
 
     include TenantScoped
+    include CurrencyImmutable
     include AASM
+
+    monetize :amount_cents, with_model_currency: :currency_iso
 
     validates :patient_identifier, presence: true
     validates :amount_cents, presence: true, numericality: { greater_than: 0 }
@@ -20,8 +23,13 @@ module Corvid
     scope :succeeded, -> { where(status: "succeeded") }
     scope :for_patient, ->(id) { where(patient_identifier: id) }
 
-    def self.total_collected
-      succeeded.sum(:amount_cents) / 100.0
+    # Per ADR 0004: aggregations partition by currency so a multi-
+    # currency tenant never auto-FXes. Returns { iso => Money }; an
+    # empty scope returns {}.
+    def self.totals_collected_by_currency
+      succeeded.group(:currency_iso).sum(:amount_cents).each_with_object({}) do |(iso, cents), out|
+        out[iso] = Money.new(cents, iso)
+      end
     end
 
     aasm column: :status do
@@ -45,7 +53,13 @@ module Corvid
       end
     end
 
+    # Legacy convenience accessor — returns USD-equivalent dollars as
+    # a Float. Currency-aware callers should use `amount` (a Money)
+    # directly. Kept for backward compatibility with US-only call
+    # sites; raises on non-USD rows so multi-currency callers can't
+    # silently use the wrong unit.
     def amount_dollars
+      raise "amount_dollars is USD-only; use #amount for currency-aware code" unless currency_iso == "USD"
       amount_cents / 100.0
     end
 
