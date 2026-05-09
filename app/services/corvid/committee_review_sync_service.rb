@@ -52,7 +52,9 @@ module Corvid
       def build_update_params(committee_review)
         case committee_review.decision
         when "approved", "modified"
-          { committee_decision: "APPROVED", approved_amount: committee_review.approved_amount, reviewer_identifier: committee_review.reviewer_identifier }
+          # The EHR/adapter wire format takes a numeric amount, not a Money;
+          # convert at the boundary per ADR 0004.
+          { committee_decision: "APPROVED", approved_amount: committee_review.approved_amount&.to_d, reviewer_identifier: committee_review.reviewer_identifier }
         when "denied"
           { committee_decision: "DENIED", reviewer_identifier: committee_review.reviewer_identifier }
         when "deferred"
@@ -76,7 +78,9 @@ module Corvid
         case committee_review.decision
         when "approved", "modified"
           result[:backend_status] = "AUTHORIZED"
-          result[:synced_amount] = committee_review.approved_amount
+          # synced_amount is part of the result struct surface, not the
+          # internal Money type — emit numeric for downstream callers.
+          result[:synced_amount] = committee_review.approved_amount&.to_d
         when "denied"
           result[:backend_status] = "DENIED"
           result[:denial_reason] = Corvid.adapter.fetch_text(committee_review.rationale_token) if committee_review.rationale_token.present?

@@ -167,7 +167,7 @@ class Corvid::PrcReferralCachingTest < ActiveSupport::TestCase
   test "requires_committee? falls back to cached priority when RCIS unavailable" do
     with_referral(medical_priority: 3) do |ref|
       ref.define_singleton_method(:service_request) { nil }
-      ref.update_columns(flagged_for_review: false, estimated_cost: nil)
+      ref.update_columns(flagged_for_review: false, estimated_cost_cents: nil)
 
       assert ref.requires_committee?
     end

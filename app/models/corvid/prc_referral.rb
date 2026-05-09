@@ -10,8 +10,11 @@ module Corvid
     self.table_name = "corvid_prc_referrals"
 
     include TenantScoped
+    include CurrencyImmutable
     include Determinable
     include AASM
+
+    monetize :estimated_cost_cents, with_model_currency: :currency_iso, allow_nil: true
 
     # CHS approval status codes for EHR sync.
     # Engine-owned mapping — no dependency on EHR-side constants.
@@ -91,9 +94,13 @@ module Corvid
     end
 
     def requires_committee?
+      # Money's `>=` is currency-aware (raises across mismatched currencies);
+      # the threshold is a numeric (USD-equivalent dollar amount) by
+      # convention, so coerce Money → BigDecimal-of-dollars for comparison.
       cost = service_request&.estimated_cost || estimated_cost
+      cost_dollars = cost.respond_to?(:to_d) ? cost.to_d : cost
       priority = medical_priority
-      (cost.present? && cost >= committee_threshold) ||
+      (cost_dollars.present? && cost_dollars >= committee_threshold) ||
         (priority.present? && priority >= 3) ||
         flagged_for_review?
     end

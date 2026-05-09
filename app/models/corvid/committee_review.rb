@@ -5,6 +5,10 @@ module Corvid
     self.table_name = "corvid_committee_reviews"
 
     include TenantScoped
+    include CurrencyImmutable
+
+    monetize :approved_amount_cents, with_model_currency: :currency_iso, allow_nil: true
+    monetize :requested_amount_cents, with_model_currency: :currency_iso, allow_nil: true
 
     belongs_to :prc_referral, class_name: "Corvid::PrcReferral"
 
@@ -38,10 +42,14 @@ module Corvid
 
     def self.requires_committee_review?(referral)
       threshold = referral.respond_to?(:committee_threshold) ? referral.committee_threshold : 50_000
-      cost = referral.estimated_cost || 0
+      # estimated_cost is now a Money; coerce to BigDecimal-of-dollars for
+      # comparison against the numeric threshold. Multi-currency thresholds
+      # would belong on the tenant config alongside default_currency_iso —
+      # not yet a real requirement.
+      cost_dollars = referral.estimated_cost ? referral.estimated_cost.to_d : 0
       priority = referral.medical_priority
 
-      return true if cost >= threshold
+      return true if cost_dollars >= threshold
       return true if priority.present? && priority >= 3
       return true if referral.respond_to?(:flagged_for_review?) && referral.flagged_for_review?
 

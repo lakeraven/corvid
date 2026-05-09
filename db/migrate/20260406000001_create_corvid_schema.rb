@@ -78,7 +78,8 @@ class CreateCorvidSchema < ActiveRecord::Migration[8.1]
       t.string :authorization_number
       t.integer :medical_priority
       t.string :priority_system
-      t.decimal :estimated_cost, precision: 12, scale: 2
+      t.bigint :estimated_cost_cents
+      t.string :currency_iso, null: false, limit: 3, default: "USD"
       t.datetime :notification_date
       t.boolean :emergency_flag, default: false
       t.string :deferred_reason_token
@@ -142,8 +143,9 @@ class CreateCorvidSchema < ActiveRecord::Migration[8.1]
       t.date :committee_date
       t.string :decision, null: false, default: "pending"
       t.string :rationale_token
-      t.decimal :approved_amount, precision: 12, scale: 2
-      t.decimal :requested_amount, precision: 12, scale: 2
+      t.bigint :approved_amount_cents
+      t.bigint :requested_amount_cents
+      t.string :currency_iso, null: false, limit: 3, default: "USD"
       t.string :attendees_token
       t.string :documents_reviewed_token
       t.string :conditions_token

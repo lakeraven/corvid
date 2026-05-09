@@ -429,7 +429,7 @@ class Corvid::CommitteeReviewTest < ActiveSupport::TestCase
       upcoming_pending = create_review(committee_date: Date.current + 1.day)
       upcoming_approved = create_review(committee_date: Date.current + 1.day)
       upcoming_approved.update_column(:decision, "approved")
-      upcoming_approved.update_column(:approved_amount, 50_000)
+      upcoming_approved.update_column(:approved_amount_cents, 5_000_000)
 
       upcoming = Corvid::CommitteeReview.upcoming_reviews(days: 7)
 
@@ -485,7 +485,7 @@ class Corvid::CommitteeReviewTest < ActiveSupport::TestCase
     with_tenant(TENANT) do
       review = create_review(committee_date: Date.current)
       review.update_column(:decision, "approved")
-      review.update_column(:approved_amount, 50_000)
+      review.update_column(:approved_amount_cents, 5_000_000)
 
       summary = review.summary
 
@@ -563,7 +563,19 @@ class Corvid::CommitteeReviewTest < ActiveSupport::TestCase
   def create_review_with_decision(decision, **attrs)
     review = create_review
     review.update_column(:decision, decision.to_s)
-    attrs.each { |k, v| review.update_column(k, v) }
+    attrs.each do |k, v|
+      # update_column writes a real DB column; translate the monetize
+      # virtual attributes (approved_amount, requested_amount) into
+      # their underlying *_cents columns.
+      case k
+      when :approved_amount
+        review.update_column(:approved_amount_cents, (v.to_d * 100).to_i)
+      when :requested_amount
+        review.update_column(:requested_amount_cents, (v.to_d * 100).to_i)
+      else
+        review.update_column(k, v)
+      end
+    end
     review
   end
 end
