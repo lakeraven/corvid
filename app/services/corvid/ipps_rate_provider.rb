@@ -13,7 +13,11 @@ module Corvid
   # obligation still gets a directional dollar figure at :stub_estimate
   # confidence.
   module IppsRateProvider
-    SOURCE = "ipps_real"
+    # Symbol to match the contract used by IppsStubRateProvider#source
+    # and the analyzer's public Result#rate_source. The string form
+    # the data-acquisition pipeline cares about ("ipps_real") lives
+    # in the analyzer's notes/provenance instead.
+    SOURCE = :ipps_real
 
     class << self
       def rate_for(drg_code:, locality: nil, date: nil)

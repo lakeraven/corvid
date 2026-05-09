@@ -75,7 +75,7 @@ class Corvid::IppsRateProviderTest < ActiveSupport::TestCase
     assert_nil Corvid::IppsRateProvider.rate_for(drg_code: "470", locality: "01", date: nil)
   end
 
-  test "source returns ipps_real to distinguish from the stub provider" do
-    assert_equal "ipps_real", Corvid::IppsRateProvider.source
+  test "source returns :ipps_real symbol to match the rate-provider contract" do
+    assert_equal :ipps_real, Corvid::IppsRateProvider.source
   end
 end

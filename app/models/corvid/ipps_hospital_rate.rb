@@ -14,9 +14,14 @@ module Corvid
     validates :base_rate, presence: true, numericality: { greater_than: 0 }
     validates :wage_index, presence: true, numericality: { greater_than: 0 }
 
+    # Single query: load both the locality-specific row and the
+    # NATIONAL fallback in one round trip, then prefer the specific
+    # row when both exist. This is on the hot path for IPPS repricing
+    # so the second SELECT-roundtrip the previous form did adds up.
     def self.lookup(fiscal_year:, locality:)
-      find_by(fiscal_year: fiscal_year, locality: locality) ||
-        find_by(fiscal_year: fiscal_year, locality: NATIONAL_LOCALITY)
+      rows = where(fiscal_year: fiscal_year, locality: [ locality, NATIONAL_LOCALITY ])
+               .index_by(&:locality)
+      rows[locality] || rows[NATIONAL_LOCALITY]
     end
   end
 end
