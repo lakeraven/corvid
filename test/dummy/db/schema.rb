@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_05_09_000001) do
+ActiveRecord::Schema[8.1].define(version: 2026_05_10_000001) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
@@ -313,6 +313,27 @@ ActiveRecord::Schema[8.1].define(version: 2026_05_09_000001) do
     t.datetime "updated_at", null: false
     t.decimal "wage_index", precision: 8, scale: 4, default: "1.0", null: false
     t.index ["fiscal_year", "locality"], name: "idx_corvid_ipps_hospital_rates_fy_locality", unique: true
+  end
+
+  create_table "corvid_opps_apc_weights", force: :cascade do |t|
+    t.string "apc_code", null: false
+    t.integer "calendar_year", null: false
+    t.datetime "created_at", null: false
+    t.decimal "relative_weight", precision: 8, scale: 4, null: false
+    t.string "release_label"
+    t.datetime "updated_at", null: false
+    t.index ["calendar_year", "apc_code"], name: "idx_corvid_opps_apc_weights_cy_apc", unique: true
+  end
+
+  create_table "corvid_opps_conversion_factors", force: :cascade do |t|
+    t.integer "calendar_year", null: false
+    t.decimal "conversion_factor", precision: 12, scale: 4, null: false
+    t.datetime "created_at", null: false
+    t.string "locality", null: false
+    t.string "release_label"
+    t.datetime "updated_at", null: false
+    t.decimal "wage_index", precision: 8, scale: 4, default: "1.0", null: false
+    t.index ["calendar_year", "locality"], name: "idx_corvid_opps_conversion_factors_cy_locality", unique: true
   end
 
   create_table "corvid_payments", force: :cascade do |t|

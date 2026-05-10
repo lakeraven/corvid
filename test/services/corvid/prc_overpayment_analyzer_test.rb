@@ -99,6 +99,56 @@ class Corvid::PrcOverpaymentAnalyzerTest < ActiveSupport::TestCase
 
   # -- Outpatient hospital obligation (APC-mapped) --------------------------
 
+  test "outpatient claim with real OPPS data loaded routes to :clear / :real" do
+    Corvid::PrcProcedureDictionary.register(
+      "OUTPATIENT_TEST",
+      hcpcs: "12345", apc: "5071",
+      description: "Test outpatient procedure"
+    )
+    Corvid::OppsApcWeight.create!(
+      calendar_year: 2009, apc_code: "5071", relative_weight: 25.4378
+    )
+    Corvid::OppsConversionFactor.create!(
+      calendar_year: 2009, locality: "NATIONAL",
+      conversion_factor: 70.0, wage_index: 1.0
+    )
+
+    summary = analyze_single_obligation(procedure: "OUTPATIENT_TEST", paid: 5_000)
+    result = summary.results.first
+
+    assert_equal :opps, result.payment_system
+    assert_equal :clear, result.recovery_confidence,
+                 "with real CMS OPPS data loaded, outpatient claim is fully priced"
+    assert_equal :real, result.rate_source
+    # 25.4378 × 70.0 × 1.0 = 1780.65
+    assert_in_delta 1_780.65, result.medicare_equivalent.to_f, 0.01
+    assert_match(/real CMS OPPS/, result.notes)
+  end
+
+  test "outpatient claim with stub-labeled OPPS data still routes to :stub_estimate" do
+    Corvid::PrcProcedureDictionary.register(
+      "OUTPATIENT_TEST",
+      hcpcs: "12345", apc: "5071",
+      description: "Test outpatient procedure"
+    )
+    Corvid::OppsApcWeight.create!(
+      calendar_year: 2009, apc_code: "5071",
+      relative_weight: 25.4378, release_label: "stub_v1"
+    )
+    Corvid::OppsConversionFactor.create!(
+      calendar_year: 2009, locality: "NATIONAL",
+      conversion_factor: 70.0, wage_index: 1.0, release_label: "stub_v1"
+    )
+
+    summary = analyze_single_obligation(procedure: "OUTPATIENT_TEST", paid: 5_000)
+    result = summary.results.first
+
+    assert_equal :opps, result.payment_system
+    assert_equal :stub_estimate, result.recovery_confidence
+    assert_equal :stub, result.rate_source
+    assert_match(/stub-derived/, result.notes)
+  end
+
   test "outpatient hospital claim uses OPPS stub rate (Phase 1.5)" do
     Corvid::PrcProcedureDictionary.register(
       "OUTPATIENT_TEST",
