@@ -42,15 +42,15 @@ namespace :cms do
       puts "Imported #{rows.size} hospital rates for FY #{year} (label=#{label}, replaced full year snapshot)"
     end
 
-    RELEASE_BASE_URL = "https://github.com/lakeraven/corvid/releases/download/cms-fee-schedules-v1"
+    IPPS_RELEASE_BASE_URL = "https://github.com/lakeraven/corvid/releases/download/cms-fee-schedules-v1"
 
     desc "Fetch + import IPPS canonical CSVs from the cms-fee-schedules-v1 GitHub Release: rake cms:ipps:fetch_release[year]"
     task :fetch_release, [ :year ] => :environment do |_t, args|
       abort "Usage: rake cms:ipps:fetch_release[year]" unless args[:year]
       year = args[:year].to_i
 
-      drg_url = "#{RELEASE_BASE_URL}/ipps_drg_weights_FY#{year}.csv"
-      hosp_url = "#{RELEASE_BASE_URL}/ipps_hospital_rates_FY#{year}.csv"
+      drg_url = "#{IPPS_RELEASE_BASE_URL}/ipps_drg_weights_FY#{year}.csv"
+      hosp_url = "#{IPPS_RELEASE_BASE_URL}/ipps_hospital_rates_FY#{year}.csv"
 
       drg_csv = URI.open(drg_url, &:read)
       hosp_csv = URI.open(hosp_url, &:read)

@@ -187,24 +187,50 @@ module Corvid
       end
 
       def analyze_outpatient(obligation, proc_info, facility)
-        rate = Corvid::OppsStubRateProvider.rate_for(
+        # OPPS lookup (#277): real CMS data first; fall back to in-code
+        # stub provider when no row is loaded. Mirrors the IPPS analyze_
+        # inpatient pattern — release_label drives confidence label.
+        lookup = Corvid::OppsRateProvider.lookup_for(
           apc_code: proc_info.apc,
           locality: facility.locality,
           date: obligation.service_date
         )
 
-        Result.new(
-          base_fields(obligation, proc_info, facility).merge(
-            medicare_equivalent: rate,
-            overpayment: rate ? [ obligation.paid_amount.to_f - rate, 0 ].max.round(2) : nil,
-            payment_system: :opps,
-            rate_source: Corvid::OppsStubRateProvider.source,
-            recovery_confidence: :stub_estimate,
-            notes: "Hospital outpatient (APC #{proc_info.apc}). Stub OPPS " \
-                   "national-average estimate; replace with real CMS rate when " \
-                   "#277 (OPPS APC ingest) lands."
+        if lookup
+          stub_derived = lookup.release_label.to_s.start_with?("stub")
+          Result.new(
+            base_fields(obligation, proc_info, facility).merge(
+              medicare_equivalent: lookup.rate,
+              overpayment: [ obligation.paid_amount.to_f - lookup.rate, 0 ].max.round(2),
+              payment_system: :opps,
+              rate_source: stub_derived ? :stub : :real,
+              recovery_confidence: stub_derived ? :stub_estimate : :clear,
+              notes: stub_derived ?
+                "Hospital outpatient (APC #{proc_info.apc}). Priced via " \
+                "stub-derived OPPS canonical CSV (release=#{lookup.release_label})." :
+                "Hospital outpatient (APC #{proc_info.apc}). " \
+                "Priced via real CMS OPPS Final Rule (release=#{lookup.release_label})."
+            )
           )
-        )
+        else
+          stub_rate = Corvid::OppsStubRateProvider.rate_for(
+            apc_code: proc_info.apc,
+            locality: facility.locality,
+            date: obligation.service_date
+          )
+          Result.new(
+            base_fields(obligation, proc_info, facility).merge(
+              medicare_equivalent: stub_rate,
+              overpayment: stub_rate ? [ obligation.paid_amount.to_f - stub_rate, 0 ].max.round(2) : nil,
+              payment_system: :opps,
+              rate_source: stub_rate ? :stub : nil,
+              recovery_confidence: stub_rate ? :stub_estimate : :no_rate_for_year,
+              notes: "Hospital outpatient (APC #{proc_info.apc}). Real OPPS " \
+                     "rate unavailable for this (year, APC, locality); using " \
+                     "stub national-average estimate."
+            )
+          )
+        end
       end
 
       def unmapped_procedure(obligation, facility)
