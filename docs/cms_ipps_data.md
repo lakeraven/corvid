@@ -128,7 +128,54 @@ By dollar volume in tribal PRC obligations:
 
 ## Coverage status
 
+**19 of 20 fiscal years on real CMS Final Rule data** (FY 2008–2026
+contiguous). FY 2007 remains on stub fallback — see "Remaining gap"
+below.
+
 | FY | Status | release_label |
 | --- | --- | --- |
 | 2026 | Real CMS data | `cms_fy2026_final_rule` |
-| 2007–2025 | Stub fallback (in-code provider) | — |
+| 2025 | Real CMS data | `cms_fy2025_final_rule` |
+| 2024 | Real CMS data | `cms_fy2024_final_rule` |
+| 2023 | Real CMS data | `cms_fy2023_final_rule` |
+| 2022 | Real CMS data | `cms_fy2022_final_rule` |
+| 2021 | Real CMS data | `cms_fy2021_final_rule` |
+| 2020 | Real CMS data | `cms_fy2020_final_rule` |
+| 2019 | Real CMS data | `cms_fy2019_final_rule` |
+| 2018 | Real CMS data | `cms_fy2018_final_rule` |
+| 2017 | Real CMS data | `cms_fy2017_final_rule` |
+| 2016 | Real CMS data | `cms_fy2016_final_rule` |
+| 2015 | Real CMS data | `cms_fy2015_final_rule` |
+| 2014 | Real CMS data | `cms_fy2014_final_rule` |
+| 2013 | Real CMS data | `cms_fy2013_final_rule` |
+| 2012 | Real CMS data | `cms_fy2012_final_rule` |
+| 2011 | Real CMS data | `cms_fy2011_final_rule` |
+| 2010 | Real CMS data | `cms_fy2010_final_rule` |
+| 2009 | Real CMS data (Table 5 parsed from .xls; T1A from .txt) | `cms_fy2009_final_rule` |
+| 2008 | Real CMS data | `cms_fy2008_final_rule` |
+| 2007 | Stub fallback — see #308 | — |
+
+## Remaining gap: FY 2007 only
+
+CMS published the FY 2007 IPPS Final Rule under the **CMS-DRG** code
+system (the previous version of the DRG taxonomy; MS-DRG didn't take
+effect until FY 2008). Table 5 for FY 2007 is available as a download
+(`table5_fn07_sept.zip` on cms.gov), but Table 1 (national operating
+standardized amounts) wasn't published as a standalone file for that
+year — the rate appeared in the Federal Register narrative text only.
+
+Tracked in **#308**. Practical paths to backfill:
+
+1. **Federal Register PDF** — extract the operating standardized
+   amount sentence from the rule preamble (typically section II of
+   the Final Rule). Manual one-time exercise.
+2. **Skip FY 2007** — for tribal PRC recovery, FY 2007 obligations
+   are 19+ years old; statute of limitations and write-offs typically
+   eliminate recovery options. The in-code stub continues as
+   fallback at `:stub_estimate` confidence.
+
+Note: even with FY 2007 Table 1, the FY 2007 DRG codes are CMS-DRG
+not MS-DRG. The PrcProcedureDictionary maps procedure descriptions
+to MS-DRG codes; routing FY 2007 obligations through the analyzer
+would also need a CMS-DRG → MS-DRG crosswalk (CMS published one
+during the FY 2008 transition).
