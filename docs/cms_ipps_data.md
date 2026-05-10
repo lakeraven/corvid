@@ -134,31 +134,39 @@ By dollar volume in tribal PRC obligations:
 | 2025 | Real CMS data | `cms_fy2025_final_rule` |
 | 2024 | Real CMS data | `cms_fy2024_final_rule` |
 | 2023 | Real CMS data | `cms_fy2023_final_rule` |
-| 2007–2022 | Stub fallback (in-code provider) | — |
+| 2022 | Real CMS data | `cms_fy2022_final_rule` |
+| 2021 | Real CMS data | `cms_fy2021_final_rule` |
+| 2020 | Stub fallback (T5 + T1A files exist on cms.gov but URL pattern unknown; see #309) | — |
+| 2019 | Stub fallback (#309) | — |
+| 2018 | Stub fallback (#309) | — |
+| 2017 | Stub fallback (#309) | — |
+| 2016 | Stub fallback (#309) | — |
+| 2015 | Real CMS data | `cms_fy2015_final_rule` |
+| 2014 | Real CMS data | `cms_fy2014_final_rule` |
+| 2013 | Real CMS data | `cms_fy2013_final_rule` |
+| 2012 | Stub fallback (T5 missing — T1A available; #309) | — |
+| 2011 | Stub fallback (T1A parser couldn't extract national rate; #309) | — |
+| 2010 | Real CMS data | `cms_fy2010_final_rule` |
+| 2009 | Stub fallback (T5 file structure differs from common layout; #309) | — |
+| 2008 | Stub fallback (T1A file structure differs; #309) | — |
+| 2007 | Stub fallback (CMS-DRG era — different code system, pre-MS-DRG; T1A URL pattern unknown; #309) | — |
 
-## FY 2007–2022 gap
+## Remaining gap (10 years)
 
-CMS removed the FY 2007–2022 file URLs when they redesigned the site
-in late 2023. The Final Rule data still exists in the public Federal
-Register and in archived CMS pages, but the modern `cms.gov` URL space
-no longer serves them at predictable paths.
+After backfill, **FY 2007, 2008, 2009, 2011, 2012, 2016, 2017, 2018,
+2019, 2020** still fall through to the in-code stub provider. The
+files largely exist on cms.gov but at non-uniform URL paths and with
+minor table-layout differences that the canonical-CSV parser doesn't
+yet handle without per-year hand-vetting.
 
-Hands-on options to backfill these years:
+Tracked in **#309** with a per-year breakdown of what's missing
+(T5 only, T1A only, parser-needs-tuning, etc).
 
-1. **Wayback Machine** — `web.archive.org` has CMS Final Rule pages
-   archived for each year. Snapshots from January–March of each
-   fiscal year typically have working table-download links.
-2. **Federal Register** — every IPPS Final Rule is published in
-   the Federal Register with an associated docket and Table 5 in
-   the rule preamble. Federal Register's data is more durable than
-   CMS's.
-3. **Internal CMS archive** — CMS Office of the Actuary keeps an
-   internal archive that's accessible by request to a CMS contact.
-
-For tribal PRC obligations the dollar volume in 2007–2022 claims is
-generally smaller than the recent years (older obligations have
-typically been resolved or written off), so the in-code stub
-fallback may be acceptable for those years. Check
-`Corvid::PrcOverpaymentReportService.summary` per year — if any
-2007–2022 year shows large `total_overpayment_stub_estimate`, that's
-a signal to invest in real-data backfill for that specific year.
+For tribal PRC obligations the dollar volume in 2016–2020 claims is
+likely smaller than 2021+ (older obligations are typically resolved
+or written off, statute of limitations narrows recovery options),
+so the in-code stub fallback may be acceptable for those years. The
+operative check: run `Corvid::PrcOverpaymentReportService.summary`
+per year — if any year shows large `total_overpayment_stub_estimate`
+relative to recoverable workflow, that's a signal to invest in
+real-data backfill for that specific year.
