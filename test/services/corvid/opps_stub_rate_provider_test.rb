@@ -15,10 +15,14 @@ class Corvid::OppsStubRateProviderTest < ActiveSupport::TestCase
     assert rate_2026 > rate_2010
   end
 
-  test "year outside the table uses the default" do
-    rate = Corvid::OppsStubRateProvider.rate_for(date: Date.new(2099, 1, 1))
-    assert rate.is_a?(Numeric)
-    assert rate.positive?
+  test "year outside the table returns nil" do
+    # Returning nil (rather than a fabricated default) lets the analyzer's
+    # stub-fallback path route the obligation to :no_rate_for_year for
+    # service dates the stub has no opinion on. Previously the stub
+    # returned a default national-average which silently flagged
+    # those obligations as :stub_estimate — misrepresenting confidence.
+    assert_nil Corvid::OppsStubRateProvider.rate_for(date: Date.new(2099, 1, 1))
+    assert_nil Corvid::OppsStubRateProvider.rate_for(date: Date.new(1995, 1, 1))
   end
 
   test "nil date returns nil" do

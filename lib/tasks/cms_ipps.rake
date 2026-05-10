@@ -42,25 +42,29 @@ namespace :cms do
       puts "Imported #{rows.size} hospital rates for FY #{year} (label=#{label}, replaced full year snapshot)"
     end
 
-    RELEASE_BASE_URL = "https://github.com/lakeraven/corvid/releases/download/cms-fee-schedules-v1"
+    IPPS_RELEASE_BASE_URL = "https://github.com/lakeraven/corvid/releases/download/cms-fee-schedules-v1"
 
     desc "Fetch + import IPPS canonical CSVs from the cms-fee-schedules-v1 GitHub Release: rake cms:ipps:fetch_release[year]"
     task :fetch_release, [ :year ] => :environment do |_t, args|
       abort "Usage: rake cms:ipps:fetch_release[year]" unless args[:year]
       year = args[:year].to_i
 
-      drg_url = "#{RELEASE_BASE_URL}/ipps_drg_weights_FY#{year}.csv"
-      hosp_url = "#{RELEASE_BASE_URL}/ipps_hospital_rates_FY#{year}.csv"
+      drg_url = "#{IPPS_RELEASE_BASE_URL}/ipps_drg_weights_FY#{year}.csv"
+      hosp_url = "#{IPPS_RELEASE_BASE_URL}/ipps_hospital_rates_FY#{year}.csv"
 
       drg_csv = URI.open(drg_url, &:read)
       hosp_csv = URI.open(hosp_url, &:read)
 
-      # Read the release_label from a header comment if present, else
-      # default to "stub_v1" — the seed-data tag we ship today.
-      label = drg_csv[/#\s*release_label:\s*(\S+)/, 1] || "stub_v1"
+      # Read each file's release_label independently — a mismatch
+      # (e.g., real DRG weights but stub-derived hospital rates) would
+      # otherwise silently promote stub rows to :clear confidence. The
+      # rate provider's conservative-label propagation then ensures any
+      # stub-labeled row downgrades the final rate to :stub_estimate.
+      drg_label = drg_csv[/#\s*release_label:\s*(\S+)/, 1] || "stub_v1"
+      hosp_label = hosp_csv[/#\s*release_label:\s*(\S+)/, 1] || "stub_v1"
 
-      drg_rows = Corvid::CmsIppsParser.parse_drg_weights(strip_comments(drg_csv), fiscal_year: year, release_label: label)
-      hosp_rows = Corvid::CmsIppsParser.parse_hospital_rates(strip_comments(hosp_csv), fiscal_year: year, release_label: label)
+      drg_rows = Corvid::CmsIppsParser.parse_drg_weights(strip_comments(drg_csv), fiscal_year: year, release_label: drg_label)
+      hosp_rows = Corvid::CmsIppsParser.parse_hospital_rates(strip_comments(hosp_csv), fiscal_year: year, release_label: hosp_label)
 
       ActiveRecord::Base.transaction do
         Corvid::IppsDrgWeight.where(fiscal_year: year).delete_all

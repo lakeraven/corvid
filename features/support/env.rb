@@ -25,6 +25,8 @@ def clean_corvid_tables!
   Corvid::FeeScheduleEntry.unscoped.delete_all
   Corvid::IppsDrgWeight.unscoped.delete_all
   Corvid::IppsHospitalRate.unscoped.delete_all
+  Corvid::OppsApcWeight.unscoped.delete_all
+  Corvid::OppsConversionFactor.unscoped.delete_all
   Corvid::ZipLocality.unscoped.delete_all
   Corvid::LocalityLookup.clear_cache!
   Corvid::ApiCallLog.unscoped.delete_all
