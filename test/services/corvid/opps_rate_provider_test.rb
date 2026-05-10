@@ -22,19 +22,20 @@ class Corvid::OppsRateProviderTest < ActiveSupport::TestCase
   end
 
   test "rate_for computes weight × CF × wage_index for known data" do
-    # 25.4378 × 89.169 × 1.0 = 2267.99 (approx)
+    # 25.4378 × 89.169 × 1.0 = 2268.2622 → 2268.26
     rate = Corvid::OppsRateProvider.rate_for(
       apc_code: "5071", locality: "NATIONAL", date: Date.new(2026, 6, 15)
     )
-    assert_in_delta 2_268.27, rate, 1.0
+    assert_in_delta 2_268.26, rate, 0.01
   end
 
   test "rate_for applies locality-specific wage index" do
     rate = Corvid::OppsRateProvider.rate_for(
       apc_code: "5071", locality: "01", date: Date.new(2026, 6, 15)
     )
-    # 25.4378 × 89.169 × 1.085 = 2461.07 (approx)
-    assert_in_delta 2_461.07, rate, 1.5
+    # 25.4378 × 89.169 × 1.085 = 2461.0645... → 2461.06
+    # (rounds up to 2461.07 with round-half-to-even depending on BigDecimal precision)
+    assert_in_delta 2_461.06, rate, 0.02
   end
 
   test "rate_for uses CALENDAR year — Jan 1 boundary, not Oct 1" do
@@ -76,6 +77,16 @@ class Corvid::OppsRateProviderTest < ActiveSupport::TestCase
 
   test "source returns :opps_real symbol to match the rate-provider contract" do
     assert_equal :opps_real, Corvid::OppsRateProvider.source
+  end
+
+  test "rate_for normalizes nil/blank locality to NATIONAL" do
+    [ nil, "", "   " ].each do |loc|
+      rate = Corvid::OppsRateProvider.rate_for(
+        apc_code: "5071", locality: loc, date: Date.new(2026, 6, 15)
+      )
+      assert_in_delta 2_268.26, rate, 0.01,
+                      "locality=#{loc.inspect} should fall back to NATIONAL"
+    end
   end
 
   test "lookup_for returns rate + release_label so analyzer can downgrade stub-derived data" do

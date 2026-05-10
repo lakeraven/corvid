@@ -29,11 +29,19 @@ module Corvid
       def lookup_for(apc_code:, locality: nil, date: nil)
         return nil if apc_code.nil? || date.nil?
 
+        # Normalize nil/blank locality to NATIONAL at the provider
+        # boundary so the downstream IN-list never contains NULL —
+        # PG's `IN (NULL, 'NATIONAL')` behavior is surprising
+        # (matches NATIONAL only because NULL never equals anything,
+        # but easy to misread). Treating blank as "unknown facility,
+        # use the national default" matches operator intent.
+        normalized_locality = locality.to_s.strip.empty? ? OppsConversionFactor::NATIONAL_LOCALITY : locality
+
         cy = calendar_year(date)
         weight_row = OppsApcWeight.find_by(apc_code: apc_code.to_s, calendar_year: cy)
         return nil unless weight_row
 
-        cf_row = OppsConversionFactor.lookup(calendar_year: cy, locality: locality)
+        cf_row = OppsConversionFactor.lookup(calendar_year: cy, locality: normalized_locality)
         return nil unless cf_row
 
         rate = (weight_row.relative_weight * cf_row.conversion_factor * cf_row.wage_index).round(2)

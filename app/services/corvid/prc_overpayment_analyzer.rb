@@ -16,22 +16,30 @@ module Corvid
   #     fills in, results are :stub_estimate / :stub. See
   #     docs/cms_ipps_data.md for coverage status by FY and the
   #     production-ingest workflow.
-  #   - OPPS still routes only through OppsStubRateProvider — real APC
-  #     ingestion is #277 (next slice).
+  #   - OPPS routes through real CMS Final Rule data when loaded for
+  #     the (calendar year, APC, locality) — :clear / :real. When the
+  #     loaded row's release_label starts with "stub", or no row is
+  #     loaded and the in-code OppsStubRateProvider fills in, results
+  #     are :stub_estimate / :stub. OPPS uses calendar-year boundaries
+  #     (Jan 1), unlike IPPS which uses federal fiscal year.
   #
   # **Screening estimate, not adjudication.** The IPPS pricing formula
-  # implemented here (`weight × base_rate × wage_index`) is the standard
-  # operating payment, intentionally without IME, DSH, capital, outlier,
-  # or transfer adjustments. That accuracy ceiling is fine for PRC
-  # recovery-triage screening — it is **not** a claim-adjudication
-  # amount, and demand-letter dollar figures should cite the analyzer's
-  # source/confidence labels alongside any total.
+  # (`weight × base_rate × wage_index`) is the standard operating
+  # payment, intentionally without IME, DSH, capital, outlier, or
+  # transfer adjustments. The OPPS formula
+  # (`apc_weight × conversion_factor × wage_index`) similarly omits
+  # status-indicator packaging, copay/coinsurance, outlier, and
+  # device/drug pass-through adjustments. Both are recovery-triage
+  # screening estimates — not claim-adjudication amounts. Demand-letter
+  # dollar figures should cite the analyzer's source/confidence labels
+  # alongside any total.
   #
   # Public contract notes for callers:
   #   - Result#recovery_confidence values: :clear, :stub_estimate,
   #     :unmapped_procedure, :unmapped_facility, :no_rate_for_year
-  #   - Result#rate_source values: :real (PFS or IPPS-with-real-data)
-  #     or :stub (IPPS-stub or OPPS Phase 1.5)
+  #   - Result#rate_source values: :real (PFS / IPPS / OPPS with real
+  #     CMS data) or :stub (IPPS / OPPS fallback when real data isn't
+  #     loaded for the year)
   #   - Summary exposes total_overpayment_known (sum where confidence is
   #     :clear) and total_overpayment_stub_estimate (sum where confidence
   #     is :stub_estimate). total_medicare_equivalent intentionally
