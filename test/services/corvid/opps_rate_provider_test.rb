@@ -33,9 +33,8 @@ class Corvid::OppsRateProviderTest < ActiveSupport::TestCase
     rate = Corvid::OppsRateProvider.rate_for(
       apc_code: "5071", locality: "01", date: Date.new(2026, 6, 15)
     )
-    # 25.4378 × 89.169 × 1.085 = 2461.0645... → 2461.06
-    # (rounds up to 2461.07 with round-half-to-even depending on BigDecimal precision)
-    assert_in_delta 2_461.06, rate, 0.02
+    # 25.4378 × 89.169 × 1.085 = 2461.06448695 → 2461.06 (std round)
+    assert_in_delta 2_461.06, rate, 0.01
   end
 
   test "rate_for uses CALENDAR year — Jan 1 boundary, not Oct 1" do

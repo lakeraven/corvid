@@ -55,10 +55,17 @@ namespace :cms do
       apc_csv = URI.open(apc_url, &:read)
       cf_csv = URI.open(cf_url, &:read)
 
-      label = apc_csv[/#\s*release_label:\s*(\S+)/, 1] || "stub_v1"
+      # Read each file's release_label independently — a mismatch
+      # (e.g., real APC weights but stub-derived CF) would otherwise
+      # silently promote stub rows to :clear confidence. If either
+      # file is stub-labeled, both rows inherit the stub label so the
+      # analyzer's conservative-label propagation in OppsRateProvider
+      # marks the result :stub_estimate.
+      apc_label = apc_csv[/#\s*release_label:\s*(\S+)/, 1] || "stub_v1"
+      cf_label = cf_csv[/#\s*release_label:\s*(\S+)/, 1] || "stub_v1"
 
-      apc_rows = Corvid::CmsOppsParser.parse_apc_weights(strip_comments(apc_csv), calendar_year: year, release_label: label)
-      cf_rows = Corvid::CmsOppsParser.parse_conversion_factors(strip_comments(cf_csv), calendar_year: year, release_label: label)
+      apc_rows = Corvid::CmsOppsParser.parse_apc_weights(strip_comments(apc_csv), calendar_year: year, release_label: apc_label)
+      cf_rows = Corvid::CmsOppsParser.parse_conversion_factors(strip_comments(cf_csv), calendar_year: year, release_label: cf_label)
 
       ActiveRecord::Base.transaction do
         Corvid::OppsApcWeight.where(calendar_year: year).delete_all

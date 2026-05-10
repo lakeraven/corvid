@@ -33,7 +33,13 @@ module Corvid
         return nil if date.nil?
 
         year = date.respond_to?(:year) ? date.year : date.to_i
-        NATIONAL_AVERAGE_BY_YEAR[year] || DEFAULT_NATIONAL_AVERAGE
+        # Return nil for years outside the known table rather than
+        # fabricating a default — that way the analyzer's stub-fallback
+        # path can route to :no_rate_for_year instead of misrepresenting
+        # an arbitrary national-average as :stub_estimate confidence
+        # for service dates the stub has no opinion on (e.g., a 1995
+        # obligation).
+        NATIONAL_AVERAGE_BY_YEAR[year]
       end
 
       def source = :stub

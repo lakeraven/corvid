@@ -55,12 +55,16 @@ namespace :cms do
       drg_csv = URI.open(drg_url, &:read)
       hosp_csv = URI.open(hosp_url, &:read)
 
-      # Read the release_label from a header comment if present, else
-      # default to "stub_v1" — the seed-data tag we ship today.
-      label = drg_csv[/#\s*release_label:\s*(\S+)/, 1] || "stub_v1"
+      # Read each file's release_label independently — a mismatch
+      # (e.g., real DRG weights but stub-derived hospital rates) would
+      # otherwise silently promote stub rows to :clear confidence. The
+      # rate provider's conservative-label propagation then ensures any
+      # stub-labeled row downgrades the final rate to :stub_estimate.
+      drg_label = drg_csv[/#\s*release_label:\s*(\S+)/, 1] || "stub_v1"
+      hosp_label = hosp_csv[/#\s*release_label:\s*(\S+)/, 1] || "stub_v1"
 
-      drg_rows = Corvid::CmsIppsParser.parse_drg_weights(strip_comments(drg_csv), fiscal_year: year, release_label: label)
-      hosp_rows = Corvid::CmsIppsParser.parse_hospital_rates(strip_comments(hosp_csv), fiscal_year: year, release_label: label)
+      drg_rows = Corvid::CmsIppsParser.parse_drg_weights(strip_comments(drg_csv), fiscal_year: year, release_label: drg_label)
+      hosp_rows = Corvid::CmsIppsParser.parse_hospital_rates(strip_comments(hosp_csv), fiscal_year: year, release_label: hosp_label)
 
       ActiveRecord::Base.transaction do
         Corvid::IppsDrgWeight.where(fiscal_year: year).delete_all
