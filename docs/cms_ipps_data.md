@@ -128,6 +128,10 @@ By dollar volume in tribal PRC obligations:
 
 ## Coverage status
 
+**19 of 20 fiscal years on real CMS Final Rule data** (FY 2008–2026
+contiguous). FY 2007 remains on stub fallback — see "Remaining gap"
+below.
+
 | FY | Status | release_label |
 | --- | --- | --- |
 | 2026 | Real CMS data | `cms_fy2026_final_rule` |
@@ -136,37 +140,42 @@ By dollar volume in tribal PRC obligations:
 | 2023 | Real CMS data | `cms_fy2023_final_rule` |
 | 2022 | Real CMS data | `cms_fy2022_final_rule` |
 | 2021 | Real CMS data | `cms_fy2021_final_rule` |
-| 2020 | Stub fallback (T5 + T1A files exist on cms.gov but URL pattern unknown; see #309) | — |
-| 2019 | Stub fallback (#309) | — |
-| 2018 | Stub fallback (#309) | — |
-| 2017 | Stub fallback (#309) | — |
-| 2016 | Stub fallback (#309) | — |
+| 2020 | Real CMS data | `cms_fy2020_final_rule` |
+| 2019 | Real CMS data | `cms_fy2019_final_rule` |
+| 2018 | Real CMS data | `cms_fy2018_final_rule` |
+| 2017 | Real CMS data | `cms_fy2017_final_rule` |
+| 2016 | Real CMS data | `cms_fy2016_final_rule` |
 | 2015 | Real CMS data | `cms_fy2015_final_rule` |
 | 2014 | Real CMS data | `cms_fy2014_final_rule` |
 | 2013 | Real CMS data | `cms_fy2013_final_rule` |
-| 2012 | Stub fallback (T5 missing — T1A available; #309) | — |
-| 2011 | Stub fallback (T1A parser couldn't extract national rate; #309) | — |
+| 2012 | Real CMS data | `cms_fy2012_final_rule` |
+| 2011 | Real CMS data | `cms_fy2011_final_rule` |
 | 2010 | Real CMS data | `cms_fy2010_final_rule` |
-| 2009 | Stub fallback (T5 file structure differs from common layout; #309) | — |
-| 2008 | Stub fallback (T1A file structure differs; #309) | — |
-| 2007 | Stub fallback (CMS-DRG era — different code system, pre-MS-DRG; T1A URL pattern unknown; #309) | — |
+| 2009 | Real CMS data (Table 5 parsed from .xls; T1A from .txt) | `cms_fy2009_final_rule` |
+| 2008 | Real CMS data | `cms_fy2008_final_rule` |
+| 2007 | Stub fallback — see #308 | — |
 
-## Remaining gap (10 years)
+## Remaining gap: FY 2007 only
 
-After backfill, **FY 2007, 2008, 2009, 2011, 2012, 2016, 2017, 2018,
-2019, 2020** still fall through to the in-code stub provider. The
-files largely exist on cms.gov but at non-uniform URL paths and with
-minor table-layout differences that the canonical-CSV parser doesn't
-yet handle without per-year hand-vetting.
+CMS published the FY 2007 IPPS Final Rule under the **CMS-DRG** code
+system (the previous version of the DRG taxonomy; MS-DRG didn't take
+effect until FY 2008). Table 5 for FY 2007 is available as a download
+(`table5_fn07_sept.zip` on cms.gov), but Table 1 (national operating
+standardized amounts) wasn't published as a standalone file for that
+year — the rate appeared in the Federal Register narrative text only.
 
-Tracked in **#309** with a per-year breakdown of what's missing
-(T5 only, T1A only, parser-needs-tuning, etc).
+Tracked in **#308**. Practical paths to backfill:
 
-For tribal PRC obligations the dollar volume in 2016–2020 claims is
-likely smaller than 2021+ (older obligations are typically resolved
-or written off, statute of limitations narrows recovery options),
-so the in-code stub fallback may be acceptable for those years. The
-operative check: run `Corvid::PrcOverpaymentReportService.summary`
-per year — if any year shows large `total_overpayment_stub_estimate`
-relative to recoverable workflow, that's a signal to invest in
-real-data backfill for that specific year.
+1. **Federal Register PDF** — extract the operating standardized
+   amount sentence from the rule preamble (typically section II of
+   the Final Rule). Manual one-time exercise.
+2. **Skip FY 2007** — for tribal PRC recovery, FY 2007 obligations
+   are 19+ years old; statute of limitations and write-offs typically
+   eliminate recovery options. The in-code stub continues as
+   fallback at `:stub_estimate` confidence.
+
+Note: even with FY 2007 Table 1, the FY 2007 DRG codes are CMS-DRG
+not MS-DRG. The PrcProcedureDictionary maps procedure descriptions
+to MS-DRG codes; routing FY 2007 obligations through the analyzer
+would also need a CMS-DRG → MS-DRG crosswalk (CMS published one
+during the FY 2008 transition).
