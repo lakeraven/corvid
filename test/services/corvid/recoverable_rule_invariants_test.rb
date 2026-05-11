@@ -244,7 +244,80 @@ class Corvid::RecoverableRuleInvariantsTest < ActiveSupport::TestCase
     end
   end
 
+  # -- Invariant 12: multi-label set propagates through scope, predicate, and reports --
+
+  # Pin the contract under the *intended* multi-label state: when a
+  # future analyzer emits a second "real" label, widening
+  # RECOVERABLE_RATE_SOURCES alone must be enough to flow it through
+  # the model scope, the predicate, AND the report layer in lockstep.
+  # If any of those three reads the set independently or hardcodes
+  # "real", the dataset-level disagreement shows up here.
+  test "widening RECOVERABLE_RATE_SOURCES flows through scope, predicate, and report" do
+    Corvid::TenantContext.with_tenant(TENANT) do
+      ob = make_obligation("OBL-CMS-REAL", year: 2026)
+      Corvid::PrcOverpaymentAnalysis.create!(
+        prc_obligation: ob,
+        analyzer_version: "phase_2",
+        rate_source_release: "cms_fy2026_final_rule",
+        payment_system: "ipps", rate_source: "cms_real",
+        recovery_confidence: "clear",
+        currency_iso: "USD",
+        medicare_equivalent_cents: 2_000_000,
+        overpayment_cents: 750_000,
+        analyzed_at: Time.current
+      )
+    end
+
+    # With the current single-label set, the cms_real row must be in exceptions.
+    refute_includes recoverable_obligation_ids, "OBL-CMS-REAL",
+                    "baseline: cms_real not yet whitelisted, must read as exception"
+
+    with_recoverable_rate_sources(%w[real cms_real]) do
+      ids = recoverable_obligation_ids
+      assert_includes ids, "OBL-CMS-REAL",
+                      "widened set must flow through the report's recoverable filter"
+      assert_includes ids, "OBL-REAL",
+                      "original recoverable row must still pass under the wider set"
+
+      Corvid::TenantContext.with_tenant(TENANT) do
+        scope_ids = Corvid::PrcOverpaymentAnalysis.recoverable.pluck(:id).sort
+        predicate_ids = Corvid::PrcOverpaymentAnalysis
+                          .all
+                          .select { |a| Corvid::RecoverableRule.recoverable?(a) }
+                          .map(&:id).sort
+        assert_equal predicate_ids, scope_ids,
+                     "scope and predicate must agree under a multi-label set"
+      end
+    end
+
+    # After restore, the cms_real row falls back to exceptions —
+    # proves the swap was clean and nothing latched the wider set.
+    refute_includes recoverable_obligation_ids, "OBL-CMS-REAL",
+                    "restore: cms_real must return to exceptions"
+  end
+
   private
+
+  # Read the obligation_ids the report layer considers recoverable
+  # (i.e. what reaches the council-facing CSV detail).
+  def recoverable_obligation_ids
+    csv = Corvid::PrcOverpaymentReportService.to_csv_detail(tenant: TENANT)
+    CSV.parse(csv, headers: true).map { |r| r["obligation_id"] }
+  end
+
+  # Temporarily swap the recoverable rate_source set so we can exercise
+  # the multi-label state without permanently widening production rules.
+  # `remove_const` + `const_set` avoids Ruby's "already initialized" warning.
+  def with_recoverable_rate_sources(labels)
+    original = Corvid::RecoverableRule::RECOVERABLE_RATE_SOURCES
+    Corvid::RecoverableRule.send(:remove_const, :RECOVERABLE_RATE_SOURCES)
+    Corvid::RecoverableRule.const_set(:RECOVERABLE_RATE_SOURCES, labels.freeze)
+    yield
+  ensure
+    Corvid::RecoverableRule.send(:remove_const, :RECOVERABLE_RATE_SOURCES)
+    Corvid::RecoverableRule.const_set(:RECOVERABLE_RATE_SOURCES, original)
+  end
+
 
   def make_obligation(id, year:)
     Corvid::PrcObligation.create!(
