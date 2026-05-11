@@ -177,12 +177,22 @@ class Corvid::PrcImporterTest < ActiveSupport::TestCase
         O^OBL-DUP^DFN1^V1^OFFICE_VISIT_EST^20090504^A^200.00^200.00^0.00^0.00^2009
         T^2^1^0^385.00^0.00
       PRC
-      Corvid::PrcImporter.import(dup_export, source_file: "dup.prc")
+      result = Corvid::PrcImporter.import(dup_export, source_file: "dup.prc")
 
       ob = Corvid::PrcObligation.find_by(obligation_id: "OBL-DUP")
       assert_equal 200_00, ob.paid_amount_cents,
                    "the second (corrected) row must win, not the first"
       assert_equal 200_00, ob.billed_amount_cents
+
+      # Counter contract: parsed reflects raw O-line count;
+      # inserted + updated reflects unique-after-dedup rows that
+      # actually hit the DB. The gap (parsed - inserted - updated)
+      # is the silently-collapsed-duplicate count.
+      assert_equal 2, result[:obligations_imported],
+                   "both O lines counted as parsed"
+      assert_equal 1, result[:obligations_inserted],
+                   "one unique obligation lands after last-wins dedup"
+      assert_equal 0, result[:obligations_updated]
     end
   end
 
@@ -195,12 +205,18 @@ class Corvid::PrcImporterTest < ActiveSupport::TestCase
         P^OBL-DUP-P^PMT-DUP^20090519^CHK_SECOND^200.00^CLINIC
         T^1^1^2^385.00^0.00
       PRC
-      Corvid::PrcImporter.import(dup_export, source_file: "dup_p.prc")
+      result = Corvid::PrcImporter.import(dup_export, source_file: "dup_p.prc")
 
       pmt = Corvid::PrcPayment.find_by(payment_id: "PMT-DUP")
       assert_equal "CHK_SECOND", pmt.check_number,
                    "the second (corrected) payment row must win, not the first"
       assert_equal 200_00, pmt.amount_cents
+
+      assert_equal 2, result[:payments_parsed],
+                   "both P lines counted as parsed"
+      assert_equal 1, result[:payments_imported],
+                   "one unique payment lands after last-wins dedup"
+      assert_equal 0, result[:payments_dropped_orphan]
     end
   end
 
