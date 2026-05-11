@@ -13,6 +13,77 @@ module Corvid
       TRIBAL_DEADLINE_DAYS = 60
       RURAL_DEADLINE_DAYS = 30
 
+      # Raised when generate_from_analyses receives any row that fails
+      # Corvid::RecoverableRule. A Section-506 demand cites the FCA, so
+      # stub-derived dollars must never reach this path — refuse the
+      # whole batch loudly rather than letting one bad row slip through.
+      class NotRecoverableError < StandardError
+        attr_reader :offending
+
+        def initialize(offending)
+          @offending = offending
+          super(build_message(offending))
+        end
+
+        private
+
+        def build_message(offending)
+          lines = offending.map do |a|
+            "  #{a.prc_obligation.obligation_id} " \
+              "recovery_confidence=#{a.recovery_confidence} " \
+              "rate_source=#{a.rate_source.inspect}"
+          end
+          "DemandLetterGenerator refuses #{offending.size} non-recoverable " \
+            "row(s). Stub-derived or unmapped rows belong in the exceptions " \
+            "queue, not a Section 506 / FCA-citing demand letter:\n" + lines.join("\n")
+        end
+      end
+
+      # Build a demand letter from PrcOverpaymentAnalysis rows. Every
+      # input must pass Corvid::RecoverableRule; otherwise raises
+      # NotRecoverableError naming only the offending obligations.
+      # Use this entry point whenever the source of truth is an
+      # analysis row (the report layer, recovery case workflow). The
+      # raw-claims `.generate` entry point stays available for callers
+      # that have already flattened to claim hashes — but those callers
+      # are responsible for their own filtering.
+      def self.generate_from_analyses(
+        provider_name:, provider_npi: nil,
+        analyses:,
+        customer_type: :tribal,
+        medicare_participating: true,
+        authorization_reference: nil,
+        referral_authorization_terms: nil,
+        sent_on: Date.current
+      )
+        raise ArgumentError, "analyses must be non-empty" if analyses.nil? || analyses.empty?
+
+        offending = analyses.reject { |a| Corvid::RecoverableRule.recoverable?(a) }
+        raise NotRecoverableError, offending if offending.any?
+
+        claims = analyses.map { |a| claim_from_analysis(a) }
+        generate(
+          provider_name: provider_name, provider_npi: provider_npi,
+          claims: claims,
+          customer_type: customer_type,
+          medicare_participating: medicare_participating,
+          authorization_reference: authorization_reference,
+          referral_authorization_terms: referral_authorization_terms,
+          sent_on: sent_on
+        )
+      end
+
+      def self.claim_from_analysis(analysis)
+        obligation = analysis.prc_obligation
+        {
+          cpt_code: obligation.procedure_code,
+          date_of_service: obligation.service_date,
+          paid_amount: obligation.paid_amount,
+          medicare_rate: analysis.medicare_equivalent,
+          overpayment: analysis.overpayment
+        }
+      end
+
       def self.generate(
         provider_name:, provider_npi: nil,
         claims:, # Array<Hash> with cpt_code, date_of_service, paid_amount, medicare_rate, overpayment
