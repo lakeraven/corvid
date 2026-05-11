@@ -57,9 +57,9 @@ When("I export the report as JSON for {string} filtered to fiscal year {int}") d
   @report_parsed = JSON.parse(@report_json)
 end
 
-Then("the CSV includes columns for total_overpayment_known and total_overpayment_stub_estimate") do
+Then("the CSV includes columns for total_overpayment_known and total_overpayment_excluded_stub") do
   assert_includes @report_table.headers, "total_overpayment_known"
-  assert_includes @report_table.headers, "total_overpayment_stub_estimate"
+  assert_includes @report_table.headers, "total_overpayment_excluded_stub"
 end
 
 Then("there is one row per fiscal_year + vendor_id + payment_system grouping") do

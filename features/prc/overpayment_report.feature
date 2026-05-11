@@ -12,7 +12,7 @@ Feature: PRC overpayment report
 
   Scenario: Summary CSV shows recoverable-now and directional totals separately
     When I export a summary CSV for "tnt_yakama"
-    Then the CSV includes columns for total_overpayment_known and total_overpayment_stub_estimate
+    Then the CSV includes columns for total_overpayment_known and total_overpayment_excluded_stub
     And there is one row per fiscal_year + vendor_id + payment_system grouping
 
   Scenario: Detail CSV cites analyzer version and rate-source release on every row
