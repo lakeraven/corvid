@@ -162,6 +162,31 @@ module Corvid
         end
       end
 
+      # Audit packet: the council-facing / IHS-auditor bundle. Returns a
+      # Hash<String, String> mapping filename to content so the caller
+      # owns zipping / signing / shipping. Composes the existing CSV
+      # outputs plus a methodology.json manifest that pins, at the time
+      # of the export, the analyzer versions and CMS rate-source releases
+      # that contributed dollars, plus the recoverable-rule constants
+      # themselves. An auditor reading the packet in 2030 can answer
+      # "what was the rule at the time of this packet?" without having
+      # to dig into the engine's git history.
+      def to_audit_packet(tenant:, **filters)
+        rows = detail(tenant: tenant, **filters)
+        recoverable_rows = rows.select { |r| Corvid::RecoverableRule.recoverable?(r) }
+        exception_rows = rows - recoverable_rows
+
+        {
+          "summary.csv" => to_csv_summary(tenant: tenant, **filters),
+          "detail.csv" => to_csv_detail(tenant: tenant, **filters),
+          "exceptions.csv" => to_csv_exceptions(tenant: tenant, **filters),
+          "methodology.json" => methodology_manifest(
+            tenant: tenant, filters: filters,
+            recoverable_rows: recoverable_rows, exception_rows: exception_rows
+          )
+        }
+      end
+
       # JSON export defaults to recoverable-only detail so naive integrators
       # can't surface stub-derived dollars by walking the body. Summary
       # always carries the two-bucket structure (recoverable + exceptions).
@@ -180,6 +205,34 @@ module Corvid
       end
 
       private
+
+      # Provenance manifest for the audit packet. Lists every analyzer
+      # version that contributed a row (so a single packet that mixes
+      # phase_1.5 + phase_2 rows is self-documenting) and every
+      # rate_source_release used in the recoverable bucket (the dollars
+      # the auditor will actually try to verify). Also pins the rule
+      # constants so the packet is interpretable years later even if the
+      # engine widens its source set.
+      def methodology_manifest(tenant:, filters:, recoverable_rows:, exception_rows:)
+        analyzer_versions = (recoverable_rows + exception_rows).map { |r| r[:analyzer_version] }.compact.uniq.sort
+        rate_releases = recoverable_rows.map { |r| r[:rate_source_release] }.compact.uniq.sort
+
+        JSON.pretty_generate(
+          tenant: tenant,
+          generated_at: Time.current.iso8601,
+          filters: filters.compact,
+          analyzer_versions: analyzer_versions,
+          rate_source_releases: rate_releases,
+          rule: {
+            recoverable_confidence: Corvid::RecoverableRule::RECOVERABLE_CONFIDENCE,
+            recoverable_rate_sources: Corvid::RecoverableRule::RECOVERABLE_RATE_SOURCES.to_a
+          },
+          counts: {
+            recoverable: recoverable_rows.size,
+            exceptions: exception_rows.size
+          }
+        )
+      end
 
       # Latest-analysis-per-obligation expressed as a Postgres DISTINCT ON
       # subquery. Embedding it in `WHERE id IN (...)` keeps the whole
