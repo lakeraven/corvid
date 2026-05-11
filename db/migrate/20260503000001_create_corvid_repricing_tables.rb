@@ -12,6 +12,11 @@ class CreateCorvidRepricingTables < ActiveRecord::Migration[8.0]
       t.decimal :pe_gpci, precision: 8, scale: 4
       t.decimal :mp_gpci, precision: 8, scale: 4
       t.string :description
+      # Source-release attribution for audit-packet provenance. Same
+      # semantic as IppsDrgWeight#release_label: "cms_pfs_2025q2" for
+      # real CMS data, "stub_*" for canonical stub seed CSVs, nil for
+      # legacy/unknown imports.
+      t.string :release_label
       t.timestamps
     end
 

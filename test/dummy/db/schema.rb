@@ -271,6 +271,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_05_10_000001) do
     t.decimal "mp_rvu", precision: 8, scale: 4
     t.decimal "pe_gpci", precision: 8, scale: 4
     t.decimal "pe_rvu", precision: 8, scale: 4
+    t.string "release_label"
     t.datetime "updated_at", null: false
     t.decimal "work_gpci", precision: 8, scale: 4
     t.decimal "work_rvu", precision: 8, scale: 4

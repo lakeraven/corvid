@@ -77,7 +77,7 @@ module Corvid
             Corvid::PrcOverpaymentAnalysis.create!(
               prc_obligation: obligation,
               analyzer_version: ANALYZER_VERSION,
-              rate_source_release: nil, # populated when real-data ingestion lands
+              rate_source_release: result.rate_source_release,
               payment_system: result.payment_system&.to_s,
               rate_source: result.rate_source&.to_s,
               recovery_confidence: result.recovery_confidence.to_s,
