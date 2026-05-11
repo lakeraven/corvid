@@ -104,7 +104,10 @@ module Corvid
       def upsert_obligations(obligations, tenant:, facility:, source_file:, imported_at:)
         return { inserted: 0, updated: 0 } if obligations.empty?
 
-        unique_obligations = obligations.uniq { |o| o.obligation_id }
+        # Last-record-wins dedup within the file (corrected-row-after-original
+        # is a real PRC export pattern). Array#uniq keeps the FIRST occurrence,
+        # which inverts the contract, so collect by id and keep .last.
+        unique_obligations = obligations.group_by(&:obligation_id).map { |_, group| group.last }
         ids = unique_obligations.map(&:obligation_id)
         existing_ids = Corvid::PrcObligation.where(obligation_id: ids).pluck(:obligation_id).to_set
 
@@ -146,7 +149,8 @@ module Corvid
       # treated as orphans (parser drift / truncated upload signal),
       # dropped, counted, and logged.
       def reconcile_and_upsert_payments(payments, tenant:, oblig_pks_in_file:, source_file:)
-        unique_payments = payments.uniq { |p| p.payment_id }
+        # Last-record-wins dedup (same rationale as obligations above).
+        unique_payments = payments.group_by(&:payment_id).map { |_, group| group.last }
 
         rows = []
         dropped_orphan = 0
