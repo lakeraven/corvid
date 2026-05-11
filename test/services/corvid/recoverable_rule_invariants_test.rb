@@ -97,13 +97,13 @@ class Corvid::RecoverableRuleInvariantsTest < ActiveSupport::TestCase
                  "not the council-facing detail CSV"
   end
 
-  # -- Invariant 4: summary CSV's stub_estimate column is zero by default --
+  # -- Invariant 4: summary CSV's excluded_stub column is zero by default --
 
-  test "to_csv_summary default has zero stub_estimate dollars" do
+  test "to_csv_summary default has zero excluded_stub dollars" do
     csv = Corvid::PrcOverpaymentReportService.to_csv_summary(tenant: TENANT)
     table = CSV.parse(csv, headers: true)
     table.each do |row|
-      assert_equal "0.00", row["total_overpayment_stub_estimate"],
+      assert_equal "0.00", row["total_overpayment_excluded_stub"],
                    "default CSV must never carry stub dollars; got #{row.inspect}"
     end
   end

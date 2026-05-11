@@ -71,8 +71,8 @@ class Corvid::PrcOverpaymentReportServiceTest < ActiveSupport::TestCase
     assert_equal Money.from_amount(180, "USD"), usd[:total_paid]
     assert_equal Money.from_amount(100, "USD"), usd[:total_medicare_equivalent]
     assert_equal Money.from_amount(80, "USD"), usd[:total_overpayment_known]
-    assert_equal Money.new(0, "USD"), usd[:total_overpayment_stub_estimate],
-                 "legacy column always zero under the strict rule"
+    assert_equal Money.new(0, "USD"), usd[:total_overpayment_excluded_stub],
+                 "excluded_stub column always zero under the strict default rule"
 
     assert summary[:exceptions][:by_reason].keys.any?
   end
@@ -161,7 +161,7 @@ class Corvid::PrcOverpaymentReportServiceTest < ActiveSupport::TestCase
     assert_includes table.headers, "vendor_id"
     assert_includes table.headers, "payment_system"
     assert_includes table.headers, "total_overpayment_known"
-    assert_includes table.headers, "total_overpayment_stub_estimate"
+    assert_includes table.headers, "total_overpayment_excluded_stub"
     # Default summary CSV only carries recoverable rows. The stub
     # hip obligation goes to the exceptions report.
     assert_equal 1, table.size
@@ -277,7 +277,7 @@ class Corvid::PrcOverpaymentReportServiceTest < ActiveSupport::TestCase
     csv = Corvid::PrcOverpaymentReportService.to_csv_summary(tenant: TENANT)
     table = CSV.parse(csv, headers: true)
     money_cols = %w[total_billed total_paid total_medicare_equivalent
-                    total_overpayment_known total_overpayment_stub_estimate]
+                    total_overpayment_known total_overpayment_excluded_stub]
     table.each do |row|
       money_cols.each do |col|
         refute_match(/E/i, row[col].to_s,
@@ -302,7 +302,7 @@ class Corvid::PrcOverpaymentReportServiceTest < ActiveSupport::TestCase
     usd_bucket = parsed["summary"]["recoverable"]["by_currency"].find { |b| b["currency"] == "USD" }
     refute_nil usd_bucket
     %w[total_billed total_paid total_medicare_equivalent
-       total_overpayment_known total_overpayment_stub_estimate].each do |col|
+       total_overpayment_known total_overpayment_excluded_stub].each do |col|
       next if usd_bucket[col].nil? # not all confidence buckets always populate
       assert_kind_of String, usd_bucket[col]
       refute_match(/E/i, usd_bucket[col])
