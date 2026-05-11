@@ -24,5 +24,15 @@ module Corvid
     scope :stub_estimate, -> { where(recovery_confidence: "stub_estimate") }
     scope :pending_real_data,
           -> { where(recovery_confidence: %w[stub_estimate no_rate_for_year]) }
+
+    # Recoverable-now: priced from real CMS rate data with clear confidence.
+    # Single source of truth lives in Corvid::RecoverableRule — council-
+    # facing CSV/PDF reports gate dollar totals on this predicate.
+    scope :recoverable, -> { clear.where(rate_source: Corvid::RecoverableRule::RECOVERABLE_RATE_SOURCE) }
+    scope :exceptions, -> { where.not(id: recoverable) }
+
+    def recoverable?
+      Corvid::RecoverableRule.recoverable?(self)
+    end
   end
 end

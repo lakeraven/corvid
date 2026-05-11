@@ -56,45 +56,54 @@ class Corvid::PrcOverpaymentReportServiceTest < ActiveSupport::TestCase
 
   # -- Summary ----------------------------------------------------------------
 
-  test "summary aggregates totals across all obligations, partitioned by currency" do
+  test "summary partitions into recoverable and exceptions buckets" do
     summary = Corvid::PrcOverpaymentReportService.summary(tenant: TENANT)
 
     assert_equal 2, summary[:obligations_analyzed]
-    assert_equal 1, summary[:by_currency].size, "single-currency tenant has one bucket"
-    usd = summary[:by_currency].find { |b| b[:currency] == "USD" }
-    assert_equal Money.from_amount(65_200, "USD"), usd[:total_billed]
-    assert_equal Money.from_amount(42_180, "USD"), usd[:total_paid]
-    assert_equal Money.from_amount(18_100, "USD"), usd[:total_medicare_equivalent]
+    # Fixture: visit (pfs/real/clear) is recoverable; hip (ipps/stub/stub_estimate) is exception.
+    assert_equal 1, summary[:recoverable][:count]
+    assert_equal 1, summary[:exceptions][:count]
+
+    assert_equal 1, summary[:recoverable][:by_currency].size, "single-currency tenant"
+    usd = summary[:recoverable][:by_currency].find { |b| b[:currency] == "USD" }
+    # Only the recoverable office visit ($200 billed, $180 paid, $100 medicare, $80 overpayment) contributes.
+    assert_equal Money.from_amount(200, "USD"), usd[:total_billed]
+    assert_equal Money.from_amount(180, "USD"), usd[:total_paid]
+    assert_equal Money.from_amount(100, "USD"), usd[:total_medicare_equivalent]
     assert_equal Money.from_amount(80, "USD"), usd[:total_overpayment_known]
-    assert_equal Money.from_amount(24_000, "USD"), usd[:total_overpayment_stub_estimate]
+    assert_equal Money.new(0, "USD"), usd[:total_overpayment_stub_estimate],
+                 "legacy column always zero under the strict rule"
+
+    assert summary[:exceptions][:by_reason].keys.any?
   end
 
-  test "summary breaks down by payment_system, vendor, and fiscal_year" do
+  test "summary breakdowns partition recoverable rows by payment_system, vendor, year" do
     summary = Corvid::PrcOverpaymentReportService.summary(tenant: TENANT)
 
-    assert_equal 2, summary[:by_payment_system].size
-    ipps_row = summary[:by_payment_system].find { |r| r[:payment_system] == "ipps" }
-    assert_equal 1, ipps_row[:obligations]
-    assert_equal Money.from_amount(24_000, "USD"), ipps_row[:overpayment]
+    # Only the recoverable visit row is in the breakdowns now.
+    assert_equal 1, summary[:recoverable][:by_payment_system].size
+    pfs_row = summary[:recoverable][:by_payment_system].find { |r| r[:payment_system] == "pfs" }
+    assert_equal 1, pfs_row[:obligations]
+    assert_equal Money.from_amount(80, "USD"), pfs_row[:overpayment]
 
-    assert_equal 2, summary[:by_vendor].size
-    assert_equal 2, summary[:by_year].size
+    assert_equal 1, summary[:recoverable][:by_vendor].size
+    assert_equal 1, summary[:recoverable][:by_year].size
   end
 
-  test "summary filters by fiscal_year" do
+  test "summary filters by fiscal_year — 2009 has only the stub hip obligation, no recoverable" do
     summary = Corvid::PrcOverpaymentReportService.summary(tenant: TENANT, year: 2009)
     assert_equal 1, summary[:obligations_analyzed]
-    usd = summary[:by_currency].find { |b| b[:currency] == "USD" }
-    assert_nil usd[:total_overpayment_known], "no clear-confidence rows in 2009"
-    assert_equal Money.from_amount(24_000, "USD"), usd[:total_overpayment_stub_estimate]
+    assert_equal 0, summary[:recoverable][:count]
+    assert_equal 1, summary[:exceptions][:count]
   end
 
-  test "summary filters by recovery_confidence" do
+  test "summary filters by recovery_confidence — clear surfaces the recoverable visit" do
     summary = Corvid::PrcOverpaymentReportService.summary(
       tenant: TENANT, recovery_confidence: "clear"
     )
     assert_equal 1, summary[:obligations_analyzed]
-    usd = summary[:by_currency].find { |b| b[:currency] == "USD" }
+    assert_equal 1, summary[:recoverable][:count]
+    usd = summary[:recoverable][:by_currency].find { |b| b[:currency] == "USD" }
     assert_equal Money.from_amount(80, "USD"), usd[:total_overpayment_known]
   end
 
@@ -153,10 +162,12 @@ class Corvid::PrcOverpaymentReportServiceTest < ActiveSupport::TestCase
     assert_includes table.headers, "payment_system"
     assert_includes table.headers, "total_overpayment_known"
     assert_includes table.headers, "total_overpayment_stub_estimate"
-    assert_equal 2, table.size
+    # Default summary CSV only carries recoverable rows. The stub
+    # hip obligation goes to the exceptions report.
+    assert_equal 1, table.size
   end
 
-  test "to_csv_detail emits one row per obligation with provenance columns" do
+  test "to_csv_detail emits only recoverable rows by default" do
     csv = Corvid::PrcOverpaymentReportService.to_csv_detail(tenant: TENANT)
     table = CSV.parse(csv, headers: true)
 
@@ -164,10 +175,19 @@ class Corvid::PrcOverpaymentReportServiceTest < ActiveSupport::TestCase
        analyzer_version rate_source rate_source_release source_file].each do |col|
       assert_includes table.headers, col
     end
-    assert_equal 2, table.size
-    hip_row = table.find { |r| r["obligation_id"] == "OBL-A" }
-    assert_equal "ipps", hip_row["payment_system"]
-    assert_equal "fy09.prc", hip_row["source_file"]
+    assert_equal 1, table.size,
+                 "default CSV detail excludes stub-derived rows; only the recoverable visit appears"
+    visit_row = table.find { |r| r["obligation_id"] == "OBL-B" }
+    assert_equal "pfs", visit_row["payment_system"]
+    assert_equal "clear", visit_row["recovery_confidence"]
+    assert_equal "real", visit_row["rate_source"]
+  end
+
+  test "to_csv_detail with include_legacy_stub: true emits the stub row too" do
+    csv = Corvid::PrcOverpaymentReportService.to_csv_detail(tenant: TENANT, include_legacy_stub: true)
+    table = CSV.parse(csv, headers: true)
+    assert_equal 2, table.size,
+                 "forensic export surfaces every analyzed obligation"
   end
 
   test "CSV output respects filters" do
@@ -279,7 +299,7 @@ class Corvid::PrcOverpaymentReportServiceTest < ActiveSupport::TestCase
       end
     end
 
-    usd_bucket = parsed["summary"]["by_currency"].find { |b| b["currency"] == "USD" }
+    usd_bucket = parsed["summary"]["recoverable"]["by_currency"].find { |b| b["currency"] == "USD" }
     refute_nil usd_bucket
     %w[total_billed total_paid total_medicare_equivalent
        total_overpayment_known total_overpayment_stub_estimate].each do |col|
@@ -307,6 +327,7 @@ class Corvid::PrcOverpaymentReportServiceTest < ActiveSupport::TestCase
         prc_obligation: ob,
         analyzer_version: "phase_1.5",
         recovery_confidence: "clear",
+        rate_source: "real",
         currency_iso: "JOD",
         medicare_equivalent_cents: 80_000,
         overpayment_cents: 20_000,
@@ -358,7 +379,7 @@ class Corvid::PrcOverpaymentReportServiceTest < ActiveSupport::TestCase
       Corvid::PrcOverpaymentAnalysis.create!(
         prc_obligation: eur_ob,
         analyzer_version: "phase_1.5",
-        recovery_confidence: "clear",
+        recovery_confidence: "clear", rate_source: "real",
         currency_iso: "EUR",
         medicare_equivalent_cents: 30_000,
         overpayment_cents: 20_000,
@@ -377,7 +398,7 @@ class Corvid::PrcOverpaymentReportServiceTest < ActiveSupport::TestCase
       Corvid::PrcOverpaymentAnalysis.create!(
         prc_obligation: usd_ob,
         analyzer_version: "phase_1.5",
-        recovery_confidence: "clear",
+        recovery_confidence: "clear", rate_source: "real",
         currency_iso: "USD",
         medicare_equivalent_cents: 50_00,
         overpayment_cents: 50_00,
@@ -387,11 +408,11 @@ class Corvid::PrcOverpaymentReportServiceTest < ActiveSupport::TestCase
 
     summary = Corvid::PrcOverpaymentReportService.summary(tenant: tenant)
     assert_equal 2, summary[:obligations_analyzed]
-    assert_equal 2, summary[:by_currency].size, "two currency buckets, no merger"
+    assert_equal 2, summary[:recoverable][:by_currency].size, "two currency buckets, no merger"
     assert_equal Money.from_amount(500, "EUR"),
-                 summary[:by_currency].find { |b| b[:currency] == "EUR" }[:total_billed]
+                 summary[:recoverable][:by_currency].find { |b| b[:currency] == "EUR" }[:total_billed]
     assert_equal Money.from_amount(100, "USD"),
-                 summary[:by_currency].find { |b| b[:currency] == "USD" }[:total_billed]
+                 summary[:recoverable][:by_currency].find { |b| b[:currency] == "USD" }[:total_billed]
   end
 
   test "mixed-currency CSV summary emits one row per (year, vendor, system, currency)" do
@@ -410,7 +431,7 @@ class Corvid::PrcOverpaymentReportServiceTest < ActiveSupport::TestCase
         Corvid::PrcOverpaymentAnalysis.create!(
           prc_obligation: ob,
           analyzer_version: "phase_1.5",
-          recovery_confidence: "clear",
+          recovery_confidence: "clear", rate_source: "real",
           payment_system: "pfs",
           currency_iso: iso,
           overpayment_cents: 100,

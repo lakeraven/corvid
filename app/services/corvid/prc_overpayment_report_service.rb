@@ -87,34 +87,76 @@ module Corvid
         end
       end
 
-      def to_csv_summary(tenant:, **filters)
-        rows = detail(tenant: tenant, **filters)
+      # CSV summary emits only recoverable rows by default — never mixes
+      # stub-derived dollars into council-facing totals. Set
+      # `include_legacy_stub: true` for a forensic export that includes
+      # the legacy stub_estimate column (always zero in the recoverable
+      # bucket; populated only when the include_legacy_stub flag is set).
+      def to_csv_summary(tenant:, include_legacy_stub: false, **filters)
+        all_rows = detail(tenant: tenant, **filters)
+        rows = include_legacy_stub ? all_rows : all_rows.select { |r| Corvid::RecoverableRule.recoverable?(r) }
         groups = rows.group_by { |r| [ r[:fiscal_year], r[:vendor_id], r[:payment_system], r[:currency] ] }
                      .sort_by { |key, _| key.map { |v| v.to_s } }
 
         CSV.generate do |csv|
           csv << SUMMARY_CSV_HEADERS
           groups.each do |(fy, vendor, system, currency), group|
+            recoverable_rows = group.select { |r| Corvid::RecoverableRule.recoverable?(r) }
+            stub_rows = group.reject { |r| Corvid::RecoverableRule.recoverable?(r) }
+            stub_total = sum_money(stub_rows, :overpayment) || Money.new(0, currency || "USD")
             csv << [
               fy, vendor, system, currency, group.size,
-              fmt_money(sum_money(group, :billed_amount)),
-              fmt_money(sum_money(group, :paid_amount)),
-              fmt_money(sum_money(group, :medicare_equivalent)),
-              fmt_money(sum_money(group.select { |r| r[:recovery_confidence] == "clear" }, :overpayment)),
-              fmt_money(sum_money(group.select { |r| r[:recovery_confidence] == "stub_estimate" }, :overpayment))
+              fmt_money(sum_money(recoverable_rows, :billed_amount)),
+              fmt_money(sum_money(recoverable_rows, :paid_amount)),
+              fmt_money(sum_money(recoverable_rows, :medicare_equivalent)),
+              fmt_money(sum_money(recoverable_rows, :overpayment)),
+              fmt_money(stub_total)
             ]
           end
         end
       end
 
-      def to_csv_detail(tenant:, **filters)
+      # CSV detail emits only recoverable rows by default. Exceptions
+      # are inspected via `to_csv_exceptions` for the ops backlog —
+      # the two artifacts have different audiences and shouldn't be
+      # mixed into one file.
+      def to_csv_detail(tenant:, include_legacy_stub: false, **filters)
         rows = detail(tenant: tenant, **filters)
+        rows = rows.select { |r| Corvid::RecoverableRule.recoverable?(r) } unless include_legacy_stub
         CSV.generate do |csv|
           csv << DETAIL_CSV_HEADERS
           rows.each do |r|
             csv << DETAIL_CSV_HEADERS.map do |h|
               key = h.to_sym
               MONEY_KEYS.include?(key) ? fmt_money(r[key]) : r[key]
+            end
+          end
+        end
+      end
+
+      # Operations-facing backlog: every non-recoverable analyzed
+      # obligation, with the reason it fell out of the recoverable
+      # bucket. No dollar totals — these are work items, not money.
+      EXCEPTIONS_CSV_HEADERS = %w[
+        obligation_id fiscal_year service_date vendor_id procedure_code
+        payment_system recovery_confidence rate_source currency
+        reason
+        analyzer_version rate_source_release source_file analyzed_at
+      ].freeze
+
+      def to_csv_exceptions(tenant:, **filters)
+        rows = detail(tenant: tenant, **filters)
+                 .reject { |r| Corvid::RecoverableRule.recoverable?(r) }
+        CSV.generate do |csv|
+          csv << EXCEPTIONS_CSV_HEADERS
+          rows.each do |r|
+            csv << EXCEPTIONS_CSV_HEADERS.map do |h|
+              key = h.to_sym
+              if key == :reason
+                exception_reason(r)
+              else
+                r[key]
+              end
             end
           end
         end
@@ -149,31 +191,70 @@ module Corvid
           .order(Arel.sql("prc_obligation_id, analyzed_at DESC, id DESC"))
       end
 
-      # Summaries always partition rows by currency before summing — per
-      # ADR 0004, mixed-currency aggregation never auto-FXes. A single-
-      # currency tenant produces one entry under `by_currency`; a future
-      # multi-currency tenant produces one entry per ISO code, side by
-      # side, with their own Money totals.
+      # Two-bucket summary: the `recoverable` block carries dollar
+      # totals computed strictly over rows that pass
+      # Corvid::RecoverableRule (clear confidence + real rate source).
+      # The `exceptions` block enumerates everything else without
+      # dollar totals — counts and reasons only — so it's clear at a
+      # glance that those obligations are operational backlog (need
+      # dictionary update, real rate ingest, etc.), not citation-ready
+      # demand-letter dollars.
+      #
+      # Within `recoverable`, rows still partition by currency (per
+      # ADR 0004 — no auto-FX). Within `exceptions`, rows are grouped
+      # by the reason they're not recoverable.
       def summary_from_rows(rows)
+        recoverable_rows = rows.select { |r| Corvid::RecoverableRule.recoverable?(r) }
+        exception_rows = rows - recoverable_rows
+
         {
           obligations_analyzed: rows.size,
-          by_currency: rows.group_by { |r| r[:currency] }.map { |iso, group| currency_totals(iso, group) },
-          by_payment_system: group_totals(rows, :payment_system),
-          by_vendor: group_totals(rows, :vendor_id),
-          by_year: group_totals(rows, :fiscal_year)
+          recoverable: {
+            count: recoverable_rows.size,
+            by_currency: recoverable_rows.group_by { |r| r[:currency] }.map { |iso, group| currency_totals(iso, group) },
+            by_payment_system: group_totals(recoverable_rows, :payment_system),
+            by_vendor: group_totals(recoverable_rows, :vendor_id),
+            by_year: group_totals(recoverable_rows, :fiscal_year)
+          },
+          exceptions: {
+            count: exception_rows.size,
+            by_reason: exception_rows.group_by { |r| exception_reason(r) }
+                                     .transform_values(&:size)
+                                     .sort_by { |_, n| -n }
+                                     .to_h
+          }
         }
       end
 
+      # Recoverable-bucket totals carry the full money roll-up. The
+      # legacy column total_overpayment_stub_estimate (always zero
+      # under the strict rule) is preserved with a documented zero
+      # so legacy CSV consumers don't crash on schema change. New
+      # callers should ignore it and use exceptions.count instead.
       def currency_totals(iso, rows)
+        zero = Money.new(0, iso) if iso
         {
           currency: iso,
           obligations: rows.size,
           total_billed: sum_money(rows, :billed_amount),
           total_paid: sum_money(rows, :paid_amount),
           total_medicare_equivalent: sum_money(rows, :medicare_equivalent),
-          total_overpayment_known: sum_money(rows.select { |r| r[:recovery_confidence] == "clear" }, :overpayment),
-          total_overpayment_stub_estimate: sum_money(rows.select { |r| r[:recovery_confidence] == "stub_estimate" }, :overpayment)
+          total_overpayment_known: sum_money(rows, :overpayment),
+          total_overpayment_stub_estimate: zero
         }
+      end
+
+      def exception_reason(row)
+        confidence = row[:recovery_confidence].to_s
+        source = row[:rate_source].to_s
+        case confidence
+        when "stub_estimate"
+          source.start_with?("stub") ? "stub_data_loaded" : "stub_fallback"
+        when "unmapped_procedure", "unmapped_facility", "no_rate_for_year"
+          confidence
+        else
+          "unknown_#{confidence}"
+        end
       end
 
       def detail_row(analysis)
