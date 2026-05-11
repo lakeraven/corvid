@@ -27,8 +27,10 @@ module Corvid
 
     # Recoverable-now: priced from real CMS rate data with clear confidence.
     # Single source of truth lives in Corvid::RecoverableRule — council-
-    # facing CSV/PDF reports gate dollar totals on this predicate.
-    scope :recoverable, -> { clear.where(rate_source: Corvid::RecoverableRule::RECOVERABLE_RATE_SOURCE) }
+    # facing CSV/PDF reports gate dollar totals on this predicate. The
+    # scope uses the same set (IN clause) so model-level filtering can't
+    # diverge from the predicate when new "real" labels are whitelisted.
+    scope :recoverable, -> { clear.where(rate_source: Corvid::RecoverableRule::RECOVERABLE_RATE_SOURCES) }
     scope :exceptions, -> { where.not(id: recoverable) }
 
     def recoverable?

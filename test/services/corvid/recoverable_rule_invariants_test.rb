@@ -37,7 +37,7 @@ class Corvid::RecoverableRuleInvariantsTest < ActiveSupport::TestCase
         recovery_confidence: "stub_estimate",
         currency_iso: "USD",
         medicare_equivalent_cents: 100_000, # $1,000 — must NOT count
-        overpayment_cents: 999_999_99, # $9,999,999 — pathological — must NOT count
+        overpayment_cents: 999_999_900, # $9,999,999 — pathological — must NOT count
         analyzed_at: Time.current
       )
 
@@ -225,6 +225,22 @@ class Corvid::RecoverableRuleInvariantsTest < ActiveSupport::TestCase
       stub_row = Corvid::PrcOverpaymentAnalysis.find_by(rate_source: "stub")
       refute stub_row.recoverable?
       refute Corvid::RecoverableRule.recoverable?(stub_row)
+    end
+  end
+
+  # -- Invariant 11: model scope agrees with predicate over the rate_source set --
+
+  test "PrcOverpaymentAnalysis.recoverable scope reads the same set as the predicate" do
+    Corvid::TenantContext.with_tenant(TENANT) do
+      scope_ids = Corvid::PrcOverpaymentAnalysis.recoverable.pluck(:id).sort
+      predicate_ids = Corvid::PrcOverpaymentAnalysis
+                        .all
+                        .select { |a| Corvid::RecoverableRule.recoverable?(a) }
+                        .map(&:id).sort
+      assert_equal predicate_ids, scope_ids,
+                   "model scope and rule predicate must read the same source set " \
+                   "so model-level filtering can't diverge if a second \"real\" " \
+                   "label is added to RECOVERABLE_RATE_SOURCES"
     end
   end
 

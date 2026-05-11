@@ -248,10 +248,14 @@ module Corvid
 
       def exception_reason(row)
         confidence = row[:recovery_confidence].to_s
-        source = row[:rate_source].to_s
         case confidence
         when "stub_estimate"
-          source.start_with?("stub") ? "stub_data_loaded" : "stub_fallback"
+          # Both stub paths in PrcOverpaymentAnalyzer set rate_source: :stub,
+          # so it can't distinguish loaded canonical stub data from the
+          # in-code fallback. rate_source_release is set only on the loaded
+          # path (e.g., "stub_v1") and is nil for the fallback path.
+          release = row[:rate_source_release].to_s
+          release.start_with?("stub") ? "stub_data_loaded" : "stub_fallback"
         when "unmapped_procedure", "unmapped_facility", "no_rate_for_year"
           confidence
         when Corvid::RecoverableRule::RECOVERABLE_CONFIDENCE

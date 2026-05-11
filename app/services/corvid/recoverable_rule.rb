@@ -22,9 +22,9 @@ module Corvid
     # by default; expand here (e.g., add "cms_real" or another label
     # if a future analyzer emits one) rather than relaxing the rule
     # at call sites. Anything outside this set falls into exceptions.
+    # Both the predicate below and PrcOverpaymentAnalysis.recoverable
+    # read from this set so they can't drift.
     RECOVERABLE_RATE_SOURCES = %w[real].freeze
-    # Canonical label used by today's analyzer / tests.
-    RECOVERABLE_RATE_SOURCE = "real"
 
     class << self
       # Returns true iff the row (an AR record OR a detail-row hash
