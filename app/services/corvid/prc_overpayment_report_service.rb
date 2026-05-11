@@ -93,27 +93,7 @@ module Corvid
       # the legacy stub_estimate column (always zero in the recoverable
       # bucket; populated only when the include_legacy_stub flag is set).
       def to_csv_summary(tenant:, include_legacy_stub: false, **filters)
-        all_rows = detail(tenant: tenant, **filters)
-        rows = include_legacy_stub ? all_rows : all_rows.select { |r| Corvid::RecoverableRule.recoverable?(r) }
-        groups = rows.group_by { |r| [ r[:fiscal_year], r[:vendor_id], r[:payment_system], r[:currency] ] }
-                     .sort_by { |key, _| key.map { |v| v.to_s } }
-
-        CSV.generate do |csv|
-          csv << SUMMARY_CSV_HEADERS
-          groups.each do |(fy, vendor, system, currency), group|
-            recoverable_rows = group.select { |r| Corvid::RecoverableRule.recoverable?(r) }
-            stub_rows = group.reject { |r| Corvid::RecoverableRule.recoverable?(r) }
-            stub_total = sum_money(stub_rows, :overpayment) || Money.new(0, currency || "USD")
-            csv << [
-              fy, vendor, system, currency, recoverable_rows.size,
-              fmt_money(sum_money(recoverable_rows, :billed_amount)),
-              fmt_money(sum_money(recoverable_rows, :paid_amount)),
-              fmt_money(sum_money(recoverable_rows, :medicare_equivalent)),
-              fmt_money(sum_money(recoverable_rows, :overpayment)),
-              fmt_money(stub_total)
-            ]
-          end
-        end
+        csv_summary_from_rows(detail(tenant: tenant, **filters), include_legacy_stub: include_legacy_stub)
       end
 
       # CSV detail emits only recoverable rows by default. Exceptions
@@ -121,17 +101,7 @@ module Corvid
       # the two artifacts have different audiences and shouldn't be
       # mixed into one file.
       def to_csv_detail(tenant:, include_legacy_stub: false, **filters)
-        rows = detail(tenant: tenant, **filters)
-        rows = rows.select { |r| Corvid::RecoverableRule.recoverable?(r) } unless include_legacy_stub
-        CSV.generate do |csv|
-          csv << DETAIL_CSV_HEADERS
-          rows.each do |r|
-            csv << DETAIL_CSV_HEADERS.map do |h|
-              key = h.to_sym
-              MONEY_KEYS.include?(key) ? fmt_money(r[key]) : r[key]
-            end
-          end
-        end
+        csv_detail_from_rows(detail(tenant: tenant, **filters), include_legacy_stub: include_legacy_stub)
       end
 
       # Operations-facing backlog: every non-recoverable analyzed
@@ -145,41 +115,32 @@ module Corvid
       ].freeze
 
       def to_csv_exceptions(tenant:, **filters)
-        rows = detail(tenant: tenant, **filters)
-                 .reject { |r| Corvid::RecoverableRule.recoverable?(r) }
-        CSV.generate do |csv|
-          csv << EXCEPTIONS_CSV_HEADERS
-          rows.each do |r|
-            csv << EXCEPTIONS_CSV_HEADERS.map do |h|
-              key = h.to_sym
-              if key == :reason
-                exception_reason(r)
-              else
-                r[key]
-              end
-            end
-          end
-        end
+        csv_exceptions_from_rows(detail(tenant: tenant, **filters))
       end
 
       # Audit packet: the council-facing / IHS-auditor bundle. Returns a
       # Hash<String, String> mapping filename to content so the caller
-      # owns zipping / signing / shipping. Composes the existing CSV
-      # outputs plus a methodology.json manifest that pins, at the time
-      # of the export, the analyzer versions and CMS rate-source releases
-      # that contributed dollars, plus the recoverable-rule constants
-      # themselves. An auditor reading the packet in 2030 can answer
-      # "what was the rule at the time of this packet?" without having
-      # to dig into the engine's git history.
+      # owns zipping / signing / shipping. All four artifacts are built
+      # from a single in-memory row snapshot taken at the top of this
+      # method; without that, a write landing between calls could let
+      # methodology.json's recoverable count disagree with the row count
+      # in detail.csv — unacceptable for an auditor-facing bundle that
+      # claims provenance integrity.
+      #
+      # The methodology.json manifest pins, at the time of the export,
+      # the analyzer versions and CMS rate-source releases that
+      # contributed dollars, plus the recoverable-rule constants. An
+      # auditor reading the packet in 2030 can answer "what was the
+      # rule at the time of this packet?" without digging into git.
       def to_audit_packet(tenant:, **filters)
         rows = detail(tenant: tenant, **filters)
         recoverable_rows = rows.select { |r| Corvid::RecoverableRule.recoverable?(r) }
         exception_rows = rows - recoverable_rows
 
         {
-          "summary.csv" => to_csv_summary(tenant: tenant, **filters),
-          "detail.csv" => to_csv_detail(tenant: tenant, **filters),
-          "exceptions.csv" => to_csv_exceptions(tenant: tenant, **filters),
+          "summary.csv" => csv_summary_from_rows(rows, include_legacy_stub: false),
+          "detail.csv" => csv_detail_from_rows(rows, include_legacy_stub: false),
+          "exceptions.csv" => csv_exceptions_from_rows(rows),
           "methodology.json" => methodology_manifest(
             tenant: tenant, filters: filters,
             recoverable_rows: recoverable_rows, exception_rows: exception_rows
@@ -205,6 +166,62 @@ module Corvid
       end
 
       private
+
+      # Build summary CSV from a pre-fetched row set. Same logic as
+      # to_csv_summary but doesn't hit the DB — used by to_audit_packet
+      # to share one snapshot across all four artifacts.
+      def csv_summary_from_rows(all_rows, include_legacy_stub:)
+        rows = include_legacy_stub ? all_rows : all_rows.select { |r| Corvid::RecoverableRule.recoverable?(r) }
+        groups = rows.group_by { |r| [ r[:fiscal_year], r[:vendor_id], r[:payment_system], r[:currency] ] }
+                     .sort_by { |key, _| key.map { |v| v.to_s } }
+
+        CSV.generate do |csv|
+          csv << SUMMARY_CSV_HEADERS
+          groups.each do |(fy, vendor, system, currency), group|
+            recoverable_rows = group.select { |r| Corvid::RecoverableRule.recoverable?(r) }
+            stub_rows = group.reject { |r| Corvid::RecoverableRule.recoverable?(r) }
+            stub_total = sum_money(stub_rows, :overpayment) || Money.new(0, currency || "USD")
+            csv << [
+              fy, vendor, system, currency, recoverable_rows.size,
+              fmt_money(sum_money(recoverable_rows, :billed_amount)),
+              fmt_money(sum_money(recoverable_rows, :paid_amount)),
+              fmt_money(sum_money(recoverable_rows, :medicare_equivalent)),
+              fmt_money(sum_money(recoverable_rows, :overpayment)),
+              fmt_money(stub_total)
+            ]
+          end
+        end
+      end
+
+      def csv_detail_from_rows(all_rows, include_legacy_stub:)
+        rows = include_legacy_stub ? all_rows : all_rows.select { |r| Corvid::RecoverableRule.recoverable?(r) }
+        CSV.generate do |csv|
+          csv << DETAIL_CSV_HEADERS
+          rows.each do |r|
+            csv << DETAIL_CSV_HEADERS.map do |h|
+              key = h.to_sym
+              MONEY_KEYS.include?(key) ? fmt_money(r[key]) : r[key]
+            end
+          end
+        end
+      end
+
+      def csv_exceptions_from_rows(all_rows)
+        rows = all_rows.reject { |r| Corvid::RecoverableRule.recoverable?(r) }
+        CSV.generate do |csv|
+          csv << EXCEPTIONS_CSV_HEADERS
+          rows.each do |r|
+            csv << EXCEPTIONS_CSV_HEADERS.map do |h|
+              key = h.to_sym
+              if key == :reason
+                exception_reason(r)
+              else
+                r[key]
+              end
+            end
+          end
+        end
+      end
 
       # Provenance manifest for the audit packet. Lists every analyzer
       # version that contributed a row (so a single packet that mixes
