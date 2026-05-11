@@ -328,7 +328,8 @@ module Corvid
           # path (e.g., "stub_v1") and is nil for the fallback path.
           release = row[:rate_source_release].to_s
           release.start_with?("stub") ? "stub_data_loaded" : "stub_fallback"
-        when "unmapped_procedure", "unmapped_facility", "no_rate_for_year"
+        when "unmapped_procedure", "unmapped_facility", "no_rate_for_year",
+             "missing_service_date"
           confidence
         when Corvid::RecoverableRule::RECOVERABLE_CONFIDENCE
           # Clear confidence but a rate_source outside the recoverable set
