@@ -106,4 +106,43 @@ class Corvid::AuditPacketTest < ActiveSupport::TestCase
     meta = JSON.parse(packet["methodology.json"])
     assert_equal({ "fiscal_year" => 2026 }, meta["filters"])
   end
+
+  # -- Snapshot consistency --
+  # If a new analysis row lands during packet generation, the four
+  # artifacts must all reflect the same snapshot — an auditor-facing
+  # bundle can't have the manifest claim "1 recoverable" while
+  # detail.csv shows 2.
+
+  test "to_audit_packet calls detail exactly once across all artifacts" do
+    call_count = 0
+    original = Corvid::PrcOverpaymentReportService.method(:detail)
+    Corvid::PrcOverpaymentReportService.define_singleton_method(:detail) do |**kwargs|
+      call_count += 1
+      original.call(**kwargs)
+    end
+
+    begin
+      Corvid::PrcOverpaymentReportService.to_audit_packet(tenant: TENANT)
+    ensure
+      Corvid::PrcOverpaymentReportService.singleton_class.send(:remove_method, :detail)
+      Corvid::PrcOverpaymentReportService.define_singleton_method(:detail, original)
+    end
+
+    assert_equal 1, call_count,
+                 "all four packet artifacts must share one row snapshot — calling " \
+                 "detail() per artifact lets a concurrent write make the manifest " \
+                 "disagree with detail.csv"
+  end
+
+  test "manifest count and detail.csv row count stay aligned" do
+    packet = Corvid::PrcOverpaymentReportService.to_audit_packet(tenant: TENANT)
+    meta = JSON.parse(packet["methodology.json"])
+    detail_rows = CSV.parse(packet["detail.csv"], headers: true)
+    exception_rows = CSV.parse(packet["exceptions.csv"], headers: true)
+
+    assert_equal meta["counts"]["recoverable"], detail_rows.size,
+                 "manifest recoverable count must equal detail.csv row count"
+    assert_equal meta["counts"]["exceptions"], exception_rows.size,
+                 "manifest exceptions count must equal exceptions.csv row count"
+  end
 end
