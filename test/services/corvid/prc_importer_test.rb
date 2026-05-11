@@ -161,6 +161,38 @@ class Corvid::PrcImporterTest < ActiveSupport::TestCase
     end
   end
 
+  # -- Sub-cent precision detection ------------------------------------------
+  # Money is integer-cents by design, so $185.0099 truncates to $185.00
+  # on import. Truncation itself is fine; silent truncation is not. An
+  # ETL passing 4-decimal intermediate values shouldn't lose precision
+  # without a signal. Detect at the boundary, count, log once.
+
+  test "no sub-cent values: sub_cent_truncations is 0" do
+    with_tenant(TENANT) do
+      result = Corvid::PrcImporter.import(SAMPLE, source_file: "ok.prc")
+      assert_equal 0, result[:sub_cent_truncations]
+    end
+  end
+
+  test "obligation/payment with > 2-decimal amount: counted and logged" do
+    with_tenant(TENANT) do
+      sub_cent = <<~PRC
+        H^PRC_EXPORT^SEA^20090506^1
+        O^OBL-PREC^DFN1^V1^OFFICE_VISIT_EST^20090504^A^185.0099^185.0099^0.0000^0.0000^2009
+        P^OBL-PREC^PMT-PREC^20090518^CHK^185.0099^CLINIC
+        T^1^1^1^185.0099^0.00
+      PRC
+      logs = capture_warns do
+        result = Corvid::PrcImporter.import(sub_cent, source_file: "subcent.prc")
+        # billed + paid on the obligation = 2 fields; payment amount = 1.
+        # savings/balance are 0 so don't trigger.
+        assert_equal 3, result[:sub_cent_truncations]
+      end
+      assert_match(/sub.?cent/i, logs,
+                   "warning must surface the truncation so an oncall reader sees it")
+    end
+  end
+
   # -- Trailer integrity check -----------------------------------------------
   # The trailer's obligation_count / payment_count / total_paid is
   # upstream RPMS's self-report of what it emitted. If our parsed

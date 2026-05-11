@@ -57,9 +57,43 @@ module Corvid
             payments_parsed: report.payments.size,
             payments_imported: payment_counts[:imported],
             payments_dropped_orphan: payment_counts[:dropped_orphan],
-            trailer_check: check_trailer(report, source_file: source_file)
+            trailer_check: check_trailer(report, source_file: source_file),
+            sub_cent_truncations: detect_sub_cent_truncations(report, source_file: source_file)
           }
         end
+      end
+
+      # Money columns are integer-cents (USD has a 2-decimal subunit), so an
+      # input like 185.0099 truncates to 18500 cents = $185.00. The fix is
+      # to surface this in the result + log once, not to change rounding
+      # semantics (downstream auditors would see different numbers).
+      # Counts fields, not rows — three fields each carrying .0099 is
+      # three signals of upstream sub-cent precision.
+      SUB_CENT_OBLIGATION_FIELDS = %i[billed_amount paid_amount savings balance].freeze
+
+      def detect_sub_cent_truncations(report, source_file:)
+        count = 0
+        report.obligations.each do |o|
+          SUB_CENT_OBLIGATION_FIELDS.each do |f|
+            count += 1 if sub_cent?(o.public_send(f))
+          end
+        end
+        report.payments.each { |p| count += 1 if sub_cent?(p.amount) }
+
+        if count.positive?
+          Rails.logger.warn(
+            "[PrcImporter] sub-cent precision truncated on #{count} field(s) " \
+            "source=#{source_file} — upstream values with > 2 decimal places " \
+            "are floored to integer cents"
+          )
+        end
+        count
+      end
+
+      def sub_cent?(value)
+        return false if value.nil?
+        v = BigDecimal(value.to_s)
+        v != v.truncate(2)
       end
 
       # Compare the trailer's self-reported counts/total against what we
