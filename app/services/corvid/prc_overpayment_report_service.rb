@@ -28,7 +28,7 @@ module Corvid
       fiscal_year vendor_id payment_system currency
       obligations_count
       total_billed total_paid total_medicare_equivalent
-      total_overpayment_known total_overpayment_stub_estimate
+      total_overpayment_known total_overpayment_excluded_stub
     ].freeze
 
     DETAIL_CSV_HEADERS = %w[
@@ -42,7 +42,7 @@ module Corvid
     MONEY_KEYS = %i[
       billed_amount paid_amount medicare_equivalent overpayment
       total_billed total_paid total_medicare_equivalent
-      total_overpayment_known total_overpayment_stub_estimate
+      total_overpayment_known total_overpayment_excluded_stub
       billed paid
     ].freeze
 
@@ -299,10 +299,12 @@ module Corvid
       end
 
       # Recoverable-bucket totals carry the full money roll-up. The
-      # legacy column total_overpayment_stub_estimate (always zero
-      # under the strict rule) is preserved with a documented zero
-      # so legacy CSV consumers don't crash on schema change. New
-      # callers should ignore it and use exceptions.count instead.
+      # column total_overpayment_excluded_stub is the dollars-in-the-
+      # exceptions-bucket figure: zero in the council-facing default
+      # mode (recoverable rows by definition exclude stub) and
+      # populated only by the forensic CSV via include_legacy_stub.
+      # New callers wanting the operational backlog should use
+      # exceptions.count or to_csv_exceptions instead.
       def currency_totals(iso, rows)
         zero = Money.new(0, iso) if iso
         {
@@ -312,7 +314,7 @@ module Corvid
           total_paid: sum_money(rows, :paid_amount),
           total_medicare_equivalent: sum_money(rows, :medicare_equivalent),
           total_overpayment_known: sum_money(rows, :overpayment),
-          total_overpayment_stub_estimate: zero
+          total_overpayment_excluded_stub: zero
         }
       end
 
