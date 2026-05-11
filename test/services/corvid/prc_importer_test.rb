@@ -231,6 +231,44 @@ class Corvid::PrcImporterTest < ActiveSupport::TestCase
     end
   end
 
+  # Regression: reanalyze previously hardcoded rate_source_release: nil
+  # with a stale TODO, even after real CMS data ingestion landed.
+  # Result: audit-packet methodology.json carried "rate_source_releases":
+  # [] despite every recoverable dollar being priced from a labeled
+  # CMS release. This test pins the analyzer→importer thread so the
+  # provenance gap can't reopen silently.
+  test "reanalyze persists the analyzer's rate_source_release on the analysis row" do
+    with_tenant(TENANT) do
+      Corvid::PrcImporter.import(SAMPLE, source_file: "test.prc")
+      Corvid::FeeScheduleEntry.create!(
+        cpt_code: "99213", locality: "02",
+        effective_date: Date.new(2009, 5, 4),
+        work_rvu: 0.92, pe_rvu: 0.74, mp_rvu: 0.07,
+        work_gpci: 1.014, pe_gpci: 1.085, mp_gpci: 0.706,
+        conversion_factor: 36.0666,
+        release_label: "cms_pfs_2009q2"
+      )
+      Corvid::IppsDrgWeight.create!(
+        fiscal_year: 2009, drg_code: "470",
+        relative_weight: 2.0743, release_label: "cms_fy2009_final_rule"
+      )
+      Corvid::IppsHospitalRate.create!(
+        fiscal_year: 2009, locality: "NATIONAL",
+        base_rate: 6_000.0, wage_index: 1.0,
+        release_label: "cms_fy2009_final_rule"
+      )
+      Corvid::PrcImporter.reanalyze(tenant: TENANT)
+
+      hip_analysis = Corvid::PrcObligation.find_by(obligation_id: "OBL-2009-000123").latest_analysis
+      office_analysis = Corvid::PrcObligation.find_by(obligation_id: "OBL-2009-000124").latest_analysis
+
+      assert_equal "cms_fy2009_final_rule", hip_analysis.rate_source_release,
+                   "IPPS release_label must persist so methodology.json can attribute it"
+      assert_equal "cms_pfs_2009q2", office_analysis.rate_source_release,
+                   "PFS release_label must persist so methodology.json can attribute it"
+    end
+  end
+
   private
 
   def seed_pfs_for_office_visit

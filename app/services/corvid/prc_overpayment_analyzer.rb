@@ -47,7 +47,13 @@ module Corvid
   #     belong to a different statistical population and shouldn't mix
   #     into a single "Medicare-equivalent" figure on a report.
   module PrcOverpaymentAnalyzer
-    # Per-obligation result.
+    # Per-obligation result. rate_source_release carries the
+    # release_label of the underlying rate row (PFS FeeScheduleEntry,
+    # IppsDrgWeight/IppsHospitalRate, OppsApcWeight/OppsConversionFactor)
+    # so PrcImporter.reanalyze can persist provenance and the audit
+    # packet's methodology.json can attribute each recoverable dollar
+    # to a specific CMS release. Nil for in-code stub fallback or
+    # exception paths (no source release to attribute).
     Result = Struct.new(
       :obligation_id, :patient_dfn, :vendor_id,
       :procedure_code, :hcpcs, :drg, :apc, :procedure_description,
@@ -55,6 +61,7 @@ module Corvid
       :billed_amount, :paid_amount,
       :medicare_equivalent, :overpayment,
       :payment_system, :rate_source, :recovery_confidence,
+      :rate_source_release,
       :notes,
       keyword_init: true
     )
@@ -102,9 +109,9 @@ module Corvid
       private
 
       def analyze_professional(obligation, proc_info, facility)
-        rate = professional_rate(proc_info.hcpcs, facility.locality, obligation.service_date)
+        entry = professional_entry(proc_info.hcpcs, facility.locality, obligation.service_date)
 
-        if rate.nil?
+        if entry.nil?
           return Result.new(
             base_fields(obligation, proc_info, facility).merge(
               payment_system: :pfs,
@@ -116,13 +123,15 @@ module Corvid
           )
         end
 
+        rate = entry.medicare_rate.to_f.round(2)
         Result.new(
           base_fields(obligation, proc_info, facility).merge(
             medicare_equivalent: rate,
             overpayment: [ obligation.paid_amount.to_f - rate, 0 ].max.round(2),
             payment_system: :pfs,
             rate_source: :real,
-            recovery_confidence: :clear
+            recovery_confidence: :clear,
+            rate_source_release: entry.release_label
           )
         )
       end
@@ -150,6 +159,7 @@ module Corvid
               payment_system: :ipps,
               rate_source: stub_derived ? :stub : :real,
               recovery_confidence: stub_derived ? :stub_estimate : :clear,
+              rate_source_release: lookup.release_label,
               notes: stub_derived ?
                 "Inpatient hospital claim (DRG #{proc_info.drg}). Priced via " \
                 "stub-derived IPPS canonical CSV (release=#{lookup.release_label}); " \
@@ -183,15 +193,14 @@ module Corvid
       # locality, and service date directly via FeeScheduleEntry. Bypasses
       # RepricingService's ZIP-to-locality step because the PRC dictionary
       # already gives us the locality.
-      def professional_rate(cpt_code, locality, service_date)
+      def professional_entry(cpt_code, locality, service_date)
         return nil if cpt_code.nil? || locality.nil? || service_date.nil?
 
-        entry = Corvid::FeeScheduleEntry.rate_for(
+        Corvid::FeeScheduleEntry.rate_for(
           cpt_code: cpt_code,
           locality: locality,
           date: service_date
         )
-        entry&.medicare_rate&.to_f&.round(2)
       end
 
       def analyze_outpatient(obligation, proc_info, facility)
@@ -213,6 +222,7 @@ module Corvid
               payment_system: :opps,
               rate_source: stub_derived ? :stub : :real,
               recovery_confidence: stub_derived ? :stub_estimate : :clear,
+              rate_source_release: lookup.release_label,
               notes: stub_derived ?
                 "Hospital outpatient (APC #{proc_info.apc}). Priced via " \
                 "stub-derived OPPS canonical CSV (release=#{lookup.release_label})." :

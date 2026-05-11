@@ -188,6 +188,45 @@ class Corvid::PrcOverpaymentAnalyzerTest < ActiveSupport::TestCase
     assert_equal 0, result.overpayment, "underpayment is not a recoverable overpayment"
   end
 
+  # -- Provenance: rate_source_release threads through the Result ------------
+
+  test "inpatient :clear result carries the IPPS release_label on Result#rate_source_release" do
+    Corvid::IppsDrgWeight.create!(
+      fiscal_year: 2009, drg_code: "470",
+      relative_weight: 2.0743, release_label: "cms_fy2009_final_rule"
+    )
+    Corvid::IppsHospitalRate.create!(
+      fiscal_year: 2009, locality: "NATIONAL",
+      base_rate: 6_000.0, wage_index: 1.0, release_label: "cms_fy2009_final_rule"
+    )
+
+    summary = analyze_single_obligation(procedure: "HIP_REPLACE_THR", paid: 42_000)
+    result = summary.results.first
+    assert_equal "cms_fy2009_final_rule", result.rate_source_release,
+                 "real IPPS lookup must carry its release label out of the analyzer " \
+                 "so the audit-packet manifest can attribute each recoverable dollar"
+  end
+
+  test "professional-only :clear result carries the PFS release_label on Result#rate_source_release" do
+    Corvid::FeeScheduleEntry.where(cpt_code: "99213", locality: TEST_LOCALITY).update_all(
+      release_label: "cms_pfs_2009q2"
+    )
+    summary = analyze_single_obligation(procedure: "OFFICE_VISIT_EST", paid: 250)
+    result = summary.results.first
+    assert_equal "cms_pfs_2009q2", result.rate_source_release
+  end
+
+  test "stub-fallback (no IPPS row loaded) leaves rate_source_release nil" do
+    # No IPPS rows loaded; analyzer falls back to IppsStubRateProvider,
+    # which is in-code data with no release label to attribute.
+    summary = analyze_single_obligation(procedure: "HIP_REPLACE_THR", paid: 42_000)
+    result = summary.results.first
+    assert_equal :stub_estimate, result.recovery_confidence
+    assert_nil result.rate_source_release,
+               "in-code stub fallback has no source release; leave nil rather than " \
+               "inventing a label that an auditor could chase"
+  end
+
   # -- Unmapped inputs -------------------------------------------------------
 
   test "unmapped procedure code yields :unmapped_procedure" do
