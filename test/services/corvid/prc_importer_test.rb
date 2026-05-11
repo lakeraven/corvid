@@ -161,6 +161,48 @@ class Corvid::PrcImporterTest < ActiveSupport::TestCase
     end
   end
 
+  # -- Trailer integrity check -----------------------------------------------
+  # The trailer's obligation_count / payment_count / total_paid is
+  # upstream RPMS's self-report of what it emitted. If our parsed
+  # counts disagree, something corrupted the file in transit (ETL
+  # truncation, line drop, encoding) — silent acceptance would let
+  # short imports masquerade as clean. Pre-prod stance is warn-only:
+  # surface the discrepancy in the result + log, don't raise.
+
+  test "well-formed file: trailer_check is :ok" do
+    with_tenant(TENANT) do
+      result = Corvid::PrcImporter.import(SAMPLE, source_file: "ok.prc")
+      assert_equal :ok, result[:trailer_check],
+                   "all trailer counts and total_paid match the parsed records"
+    end
+  end
+
+  test "missing-trailer file: trailer_check is :missing and a warning is logged" do
+    with_tenant(TENANT) do
+      no_trailer = SAMPLE.lines.reject { |l| l.start_with?("T^") }.join
+      logs = capture_warns do
+        result = Corvid::PrcImporter.import(no_trailer, source_file: "no_trailer.prc")
+        assert_equal :missing, result[:trailer_check]
+      end
+      assert_match(/trailer.*missing/i, logs,
+                   "missing-trailer must log so an oncall reader sees the degraded state")
+    end
+  end
+
+  test "mismatched trailer: trailer_check is :mismatched, warning details the discrepancy" do
+    with_tenant(TENANT) do
+      # Stated payment_count: 4 (real: 3). Stated total_paid: 99999.99 (real: 42180.00).
+      tampered = SAMPLE.sub("T^2^2^3^42180.00^0.00", "T^2^2^4^99999.99^0.00")
+      logs = capture_warns do
+        result = Corvid::PrcImporter.import(tampered, source_file: "bad_trailer.prc")
+        assert_equal :mismatched, result[:trailer_check]
+      end
+      assert_match(/payment_count/i, logs,
+                   "warning must name the field that disagrees so triage is fast")
+      assert_match(/total_paid/i, logs)
+    end
+  end
+
   # -- Within-file duplicate IDs: last-wins dedup ----------------------------
   # Regression: PrcImporter.upsert_obligations used Array#uniq, which
   # keeps the FIRST occurrence per key. Both the FORMAT_MATRIX.md
@@ -329,6 +371,20 @@ class Corvid::PrcImporterTest < ActiveSupport::TestCase
   end
 
   private
+
+  # Capture Rails.logger.warn output for the duration of the block.
+  # Returns the captured string. The importer logs trailer mismatches
+  # there, so we read it back instead of poking at the logger globals.
+  def capture_warns
+    captured = StringIO.new
+    original_logger = Rails.logger
+    Rails.logger = ActiveSupport::Logger.new(captured)
+    Rails.logger.level = ::Logger::WARN
+    yield
+    captured.string
+  ensure
+    Rails.logger = original_logger if original_logger
+  end
 
   def seed_pfs_for_office_visit
     Corvid::FeeScheduleEntry.create!(

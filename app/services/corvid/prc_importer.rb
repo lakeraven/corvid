@@ -56,8 +56,47 @@ module Corvid
             obligations_updated: obligation_counts[:updated],
             payments_parsed: report.payments.size,
             payments_imported: payment_counts[:imported],
-            payments_dropped_orphan: payment_counts[:dropped_orphan]
+            payments_dropped_orphan: payment_counts[:dropped_orphan],
+            trailer_check: check_trailer(report, source_file: source_file)
           }
+        end
+      end
+
+      # Compare the trailer's self-reported counts/total against what we
+      # actually parsed. The trailer is upstream RPMS's integrity claim;
+      # a mismatch usually means the file truncated in transit or an ETL
+      # hop dropped rows. Pre-prod stance is warn-only — surface the
+      # discrepancy in the result so the caller (and an oncall reader)
+      # can see it, but don't raise and lock the import.
+      #
+      # Returns :ok / :mismatched / :missing.
+      def check_trailer(report, source_file:)
+        if report.trailer.nil?
+          Rails.logger.warn(
+            "[PrcImporter] trailer missing — no integrity check available " \
+            "for source=#{source_file}"
+          )
+          return :missing
+        end
+
+        t = report.trailer
+        parsed_total_paid = report.payments.sum { |p| p.amount || 0.to_d }
+        discrepancies = []
+        discrepancies << "obligation_count stated=#{t.obligation_count} parsed=#{report.obligations.size}" \
+          if t.obligation_count && t.obligation_count != report.obligations.size
+        discrepancies << "payment_count stated=#{t.payment_count} parsed=#{report.payments.size}" \
+          if t.payment_count && t.payment_count != report.payments.size
+        discrepancies << "total_paid stated=#{t.total_paid} parsed=#{parsed_total_paid}" \
+          if t.total_paid && t.total_paid != parsed_total_paid
+
+        if discrepancies.any?
+          Rails.logger.warn(
+            "[PrcImporter] trailer mismatch source=#{source_file} — " +
+            discrepancies.join("; ")
+          )
+          :mismatched
+        else
+          :ok
         end
       end
 
