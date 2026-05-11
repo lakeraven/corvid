@@ -216,6 +216,17 @@ class Corvid::PrcOverpaymentAnalyzerTest < ActiveSupport::TestCase
     assert_equal "cms_pfs_2009q2", result.rate_source_release
   end
 
+  test "blank release_label on the rate row collapses to nil on Result#rate_source_release" do
+    # A row carrying release_label: "" (or whitespace) must not leak
+    # into methodology.json's rate_source_releases — the manifest
+    # would show an empty string and reduce audit clarity.
+    Corvid::FeeScheduleEntry.where(cpt_code: "99213", locality: TEST_LOCALITY).update_all(release_label: "")
+    summary = analyze_single_obligation(procedure: "OFFICE_VISIT_EST", paid: 250)
+    result = summary.results.first
+    assert_nil result.rate_source_release,
+               "blank label must normalize to nil at the analyzer boundary"
+  end
+
   test "stub-fallback (no IPPS row loaded) leaves rate_source_release nil" do
     # No IPPS rows loaded; analyzer falls back to IppsStubRateProvider,
     # which is in-code data with no release label to attribute.
