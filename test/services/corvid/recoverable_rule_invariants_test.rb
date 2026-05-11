@@ -187,6 +187,39 @@ class Corvid::RecoverableRuleInvariantsTest < ActiveSupport::TestCase
                  "recoverable-only dollar totals"
   end
 
+  # -- Invariant 8.5: missing_service_date is a distinct exception reason --
+
+  test "to_csv_exceptions labels nil-service-date rows as missing_service_date" do
+    Corvid::TenantContext.with_tenant(TENANT) do
+      ob = Corvid::PrcObligation.create!(
+        facility_identifier: "SEA",
+        obligation_id: "OBL-NO-SD",
+        billed_amount_cents: 2_000_00,
+        paid_amount_cents: 1_500_00,
+        currency_iso: "USD",
+        fiscal_year: 2026,
+        service_date: nil,
+        imported_at: Time.current
+      )
+      Corvid::PrcOverpaymentAnalysis.create!(
+        prc_obligation: ob,
+        analyzer_version: "phase_1.5",
+        payment_system: nil, rate_source: nil,
+        recovery_confidence: "missing_service_date",
+        currency_iso: "USD",
+        analyzed_at: Time.current
+      )
+    end
+
+    csv = Corvid::PrcOverpaymentReportService.to_csv_exceptions(tenant: TENANT)
+    table = CSV.parse(csv, headers: true)
+    row = table.find { |r| r["obligation_id"] == "OBL-NO-SD" }
+    refute_nil row, "nil-service-date row must appear in exceptions"
+    assert_equal "missing_service_date", row["reason"],
+                 "distinct reason so ops triage points at the obligation, " \
+                 "not at fee-schedule coverage"
+  end
+
   # -- Invariant 9: clear_non_real_source reason is explicit, not "unknown_clear" --
 
   test "to_csv_exceptions labels clear + non-real source as clear_non_real_source" do

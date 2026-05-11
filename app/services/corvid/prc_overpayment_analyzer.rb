@@ -78,11 +78,14 @@ module Corvid
     )
 
     # Recovery confidence levels.
-    #   :clear                — Medicare equivalent from real CMS data; overpayment is final
-    #   :stub_estimate        — Hospital obligation priced via stub provider; rough but actionable
-    #   :unmapped_procedure   — Procedure description not in PrcProcedureDictionary
-    #   :unmapped_facility    — RPMS facility code not in PrcFacilityDictionary
-    #   :no_rate_for_year     — DB has no PFS row for this CPT/locality on the service date
+    #   :clear                  — Medicare equivalent from real CMS data; overpayment is final
+    #   :stub_estimate          — Hospital obligation priced via stub provider; rough but actionable
+    #   :unmapped_procedure     — Procedure description not in PrcProcedureDictionary
+    #   :unmapped_facility      — RPMS facility code not in PrcFacilityDictionary
+    #   :no_rate_for_year       — DB has no PFS row for this CPT/locality on the service date
+    #   :missing_service_date   — Obligation has no parseable service_date (malformed
+    #                             YYYYMMDD upstream); ops must clean the obligation itself,
+    #                             distinct from a fee-schedule gap.
 
     class << self
       def analyze(report)
@@ -91,6 +94,13 @@ module Corvid
       end
 
       def analyze_obligation(obligation, header)
+        # Short-circuit before procedure/facility lookup: without a
+        # service_date, none of the downstream rate paths can do
+        # anything sensible. Route this to its own ops-triage reason
+        # rather than letting it fall through to :no_rate_for_year,
+        # which would mislead ops into looking for missing rate data.
+        return missing_service_date(obligation) if obligation.service_date.nil?
+
         proc_info = Corvid::PrcProcedureDictionary.lookup(obligation.procedure_code)
         facility = Corvid::PrcFacilityDictionary.lookup(header.facility)
 
@@ -281,6 +291,21 @@ module Corvid
           paid_amount: obligation.paid_amount.to_f,
           recovery_confidence: :unmapped_facility,
           notes: "Facility code not in PrcFacilityDictionary; cannot determine locality."
+        )
+      end
+
+      def missing_service_date(obligation)
+        Result.new(
+          obligation_id: obligation.obligation_id,
+          patient_dfn: obligation.patient_dfn,
+          vendor_id: obligation.vendor_id,
+          procedure_code: obligation.procedure_code,
+          service_date: nil,
+          billed_amount: obligation.billed_amount.to_f,
+          paid_amount: obligation.paid_amount.to_f,
+          recovery_confidence: :missing_service_date,
+          notes: "Obligation has no parseable service_date (upstream date malformed); " \
+                 "cannot select a fee schedule. Clean the obligation row, then re-import."
         )
       end
 

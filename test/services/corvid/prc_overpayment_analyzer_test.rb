@@ -227,6 +227,31 @@ class Corvid::PrcOverpaymentAnalyzerTest < ActiveSupport::TestCase
                "inventing a label that an auditor could chase"
   end
 
+  # -- Missing service_date: distinct reason, not no_rate_for_year ----------
+
+  # A nil service_date (parser failed on a malformed YYYYMMDD like
+  # 20250230 or BADDATE) is a different operational problem from
+  # "no PFS row exists for this year." Conflating them sends ops
+  # triage hunting for missing fee-schedule data when the obligation
+  # itself is the input that needs cleaning. Distinct reason short-
+  # circuits before procedure/facility lookup.
+
+  test "obligation with nil service_date yields :missing_service_date" do
+    sample = <<~PRC
+      H^PRC_EXPORT^SEA^20090506^1
+      O^OBL-NOSD^DFN1^V1^OFFICE_VISIT_EST^BADDATE^A^200.00^180.00^20.00^0.00^2009
+      T^1^1^0^180.00^0.00
+    PRC
+    report = Corvid::PrcReportParser.parse(sample)
+    summary = Corvid::PrcOverpaymentAnalyzer.analyze(report)
+    result = summary.results.first
+
+    assert_equal :missing_service_date, result.recovery_confidence,
+                 "nil service_date is its own ops-triage reason, not no_rate_for_year"
+    assert_nil result.medicare_equivalent
+    assert_match(/service_date/i, result.notes)
+  end
+
   # -- Unmapped inputs -------------------------------------------------------
 
   test "unmapped procedure code yields :unmapped_procedure" do
