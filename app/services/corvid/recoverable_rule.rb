@@ -18,6 +18,12 @@ module Corvid
   # operators force-include via an explicit forensic flag.
   module RecoverableRule
     RECOVERABLE_CONFIDENCE = "clear"
+    # Set of rate_source values that count as "real" CMS data. Strict
+    # by default; expand here (e.g., add "cms_real" or another label
+    # if a future analyzer emits one) rather than relaxing the rule
+    # at call sites. Anything outside this set falls into exceptions.
+    RECOVERABLE_RATE_SOURCES = %w[real].freeze
+    # Canonical label used by today's analyzer / tests.
     RECOVERABLE_RATE_SOURCE = "real"
 
     class << self
@@ -27,7 +33,7 @@ module Corvid
       def recoverable?(row)
         confidence = read_attr(row, :recovery_confidence)
         source = read_attr(row, :rate_source)
-        confidence.to_s == RECOVERABLE_CONFIDENCE && source.to_s == RECOVERABLE_RATE_SOURCE
+        confidence.to_s == RECOVERABLE_CONFIDENCE && RECOVERABLE_RATE_SOURCES.include?(source.to_s)
       end
 
       private

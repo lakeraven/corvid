@@ -2,6 +2,7 @@
 
 require "test_helper"
 require "csv"
+require "json"
 
 # Council-facing contract tests. These assert the "recoverable" rule
 # can't be silently weakened — every test here protects against a
@@ -134,7 +135,86 @@ class Corvid::RecoverableRuleInvariantsTest < ActiveSupport::TestCase
     refute_includes table.headers, "total_overpayment_known"
   end
 
-  # -- Invariant 7: PrcOverpaymentAnalysis#recoverable? matches the rule --
+  # -- Invariant 7: JSON detail defaults to recoverable-only --
+
+  test "to_json_export default detail excludes stub rows" do
+    json = Corvid::PrcOverpaymentReportService.to_json_export(tenant: TENANT)
+    parsed = JSON.parse(json)
+    ids = parsed["detail"].map { |r| r["obligation_id"] }
+    assert_equal [ "OBL-REAL" ], ids,
+                 "JSON detail must mirror CSV detail — naive integrators must not " \
+                 "be able to surface stub-derived dollars by walking the body"
+  end
+
+  test "to_json_export with include_legacy_stub: true emits all rows" do
+    json = Corvid::PrcOverpaymentReportService.to_json_export(
+      tenant: TENANT, include_legacy_stub: true
+    )
+    parsed = JSON.parse(json)
+    assert parsed["detail"].size >= 3,
+           "forensic JSON export carries every analyzed row"
+  end
+
+  # -- Invariant 8: summary CSV count matches recoverable dollars even in forensic mode --
+
+  test "to_csv_summary obligations_count equals recoverable-only count in forensic mode" do
+    # Add a stub-only obligation with a distinct vendor so it forms its
+    # own grouping row and we can assert the count semantics directly.
+    Corvid::TenantContext.with_tenant(TENANT) do
+      ob = make_obligation("OBL-STUB-ONLY", year: 2026)
+      ob.update!(vendor_id: "VEND-STUB-ONLY")
+      Corvid::PrcOverpaymentAnalysis.create!(
+        prc_obligation: ob,
+        analyzer_version: "phase_1.5",
+        rate_source_release: "stub_v1",
+        payment_system: "ipps", rate_source: "stub",
+        recovery_confidence: "stub_estimate",
+        currency_iso: "USD",
+        overpayment_cents: 700_000_00,
+        analyzed_at: Time.current
+      )
+    end
+
+    csv = Corvid::PrcOverpaymentReportService.to_csv_summary(
+      tenant: TENANT, include_legacy_stub: true
+    )
+    table = CSV.parse(csv, headers: true)
+    stub_only_row = table.find { |r| r["vendor_id"] == "VEND-STUB-ONLY" }
+    refute_nil stub_only_row, "forensic mode must emit a row for the stub-only group"
+    assert_equal 0, stub_only_row["obligations_count"].to_i,
+                 "stub-only group has zero recoverable rows; count must reflect that " \
+                 "so a spreadsheet reader can't divide stub-inclusive counts by " \
+                 "recoverable-only dollar totals"
+  end
+
+  # -- Invariant 9: clear_non_real_source reason is explicit, not "unknown_clear" --
+
+  test "to_csv_exceptions labels clear + non-real source as clear_non_real_source" do
+    Corvid::TenantContext.with_tenant(TENANT) do
+      ob = make_obligation("OBL-CLEAR-NONREAL", year: 2026)
+      Corvid::PrcOverpaymentAnalysis.create!(
+        prc_obligation: ob,
+        analyzer_version: "phase_1.5",
+        rate_source_release: "cms_fy2026_final_rule",
+        payment_system: "ipps", rate_source: "fictional_label",
+        recovery_confidence: "clear",
+        currency_iso: "USD",
+        medicare_equivalent_cents: 1_000_000,
+        overpayment_cents: 500_000,
+        analyzed_at: Time.current
+      )
+    end
+
+    csv = Corvid::PrcOverpaymentReportService.to_csv_exceptions(tenant: TENANT)
+    table = CSV.parse(csv, headers: true)
+    nonreal_row = table.find { |r| r["obligation_id"] == "OBL-CLEAR-NONREAL" }
+    refute_nil nonreal_row, "clear+non-real row must appear in exceptions, not recoverable"
+    assert_equal "clear_non_real_source", nonreal_row["reason"],
+                 "ops triage needs an explicit label here — 'unknown_clear' would " \
+                 "look like a data bug rather than a whitelist gap"
+  end
+
+  # -- Invariant 10: PrcOverpaymentAnalysis#recoverable? matches the rule --
 
   test "recoverable? predicate matches Corvid::RecoverableRule" do
     Corvid::TenantContext.with_tenant(TENANT) do

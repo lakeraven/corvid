@@ -105,7 +105,7 @@ module Corvid
             stub_rows = group.reject { |r| Corvid::RecoverableRule.recoverable?(r) }
             stub_total = sum_money(stub_rows, :overpayment) || Money.new(0, currency || "USD")
             csv << [
-              fy, vendor, system, currency, group.size,
+              fy, vendor, system, currency, recoverable_rows.size,
               fmt_money(sum_money(recoverable_rows, :billed_amount)),
               fmt_money(sum_money(recoverable_rows, :paid_amount)),
               fmt_money(sum_money(recoverable_rows, :medicare_equivalent)),
@@ -162,18 +162,20 @@ module Corvid
         end
       end
 
-      # Computes detail once and derives summary from the same in-memory
-      # set so the JSON payload's summary and detail are consistent and
-      # we don't repeat DB work — important for large tenants where
-      # detail() is the dominant cost.
-      def to_json_export(tenant:, **filters)
+      # JSON export defaults to recoverable-only detail so naive integrators
+      # can't surface stub-derived dollars by walking the body. Summary
+      # always carries the two-bucket structure (recoverable + exceptions).
+      # Set `include_legacy_stub: true` for the forensic payload that
+      # includes every analyzed row in `detail`.
+      def to_json_export(tenant:, include_legacy_stub: false, **filters)
         rows = detail(tenant: tenant, **filters)
+        detail_rows = include_legacy_stub ? rows : rows.select { |r| Corvid::RecoverableRule.recoverable?(r) }
         {
           tenant: tenant,
           generated_at: Time.current.iso8601,
           filters: filters.compact,
           summary: serialize_money(summary_from_rows(rows)),
-          detail: rows.map { |r| serialize_money(r) }
+          detail: detail_rows.map { |r| serialize_money(r) }
         }.to_json
       end
 
@@ -252,6 +254,11 @@ module Corvid
           source.start_with?("stub") ? "stub_data_loaded" : "stub_fallback"
         when "unmapped_procedure", "unmapped_facility", "no_rate_for_year"
           confidence
+        when Corvid::RecoverableRule::RECOVERABLE_CONFIDENCE
+          # Clear confidence but a rate_source outside the recoverable set
+          # (e.g., a new analyzer label not yet whitelisted). Surface
+          # explicitly so ops can decide whether to widen RECOVERABLE_RATE_SOURCES.
+          "clear_non_real_source"
         else
           "unknown_#{confidence}"
         end
