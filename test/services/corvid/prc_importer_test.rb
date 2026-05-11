@@ -161,6 +161,49 @@ class Corvid::PrcImporterTest < ActiveSupport::TestCase
     end
   end
 
+  # -- Within-file duplicate IDs: last-wins dedup ----------------------------
+  # Regression: PrcImporter.upsert_obligations used Array#uniq, which
+  # keeps the FIRST occurrence per key. Both the FORMAT_MATRIX.md
+  # contract and the importer's own comment said "last record wins."
+  # If a PRC export emits the same obligation_id twice (e.g., an ETL
+  # appended a corrected row after the original), the corrected row
+  # is what should land.
+
+  test "within-file duplicate obligation_id: last record wins" do
+    with_tenant(TENANT) do
+      dup_export = <<~PRC
+        H^PRC_EXPORT^SEA^20090506^1
+        O^OBL-DUP^DFN1^V1^OFFICE_VISIT_EST^20090504^A^185.00^185.00^0.00^0.00^2009
+        O^OBL-DUP^DFN1^V1^OFFICE_VISIT_EST^20090504^A^200.00^200.00^0.00^0.00^2009
+        T^2^1^0^385.00^0.00
+      PRC
+      Corvid::PrcImporter.import(dup_export, source_file: "dup.prc")
+
+      ob = Corvid::PrcObligation.find_by(obligation_id: "OBL-DUP")
+      assert_equal 200_00, ob.paid_amount_cents,
+                   "the second (corrected) row must win, not the first"
+      assert_equal 200_00, ob.billed_amount_cents
+    end
+  end
+
+  test "within-file duplicate payment_id: last record wins" do
+    with_tenant(TENANT) do
+      dup_export = <<~PRC
+        H^PRC_EXPORT^SEA^20090506^1
+        O^OBL-DUP-P^DFN1^V1^OFFICE_VISIT_EST^20090504^A^200.00^200.00^0.00^0.00^2009
+        P^OBL-DUP-P^PMT-DUP^20090518^CHK_FIRST^185.00^CLINIC
+        P^OBL-DUP-P^PMT-DUP^20090519^CHK_SECOND^200.00^CLINIC
+        T^1^1^2^385.00^0.00
+      PRC
+      Corvid::PrcImporter.import(dup_export, source_file: "dup_p.prc")
+
+      pmt = Corvid::PrcPayment.find_by(payment_id: "PMT-DUP")
+      assert_equal "CHK_SECOND", pmt.check_number,
+                   "the second (corrected) payment row must win, not the first"
+      assert_equal 200_00, pmt.amount_cents
+    end
+  end
+
   # -- Tenant scoping --------------------------------------------------------
 
   test "obligations are tenant-scoped" do
