@@ -90,7 +90,29 @@ module Corvid
     class << self
       def analyze(report)
         results = report.obligations.map { |o| analyze_obligation(o, report.header) }
+        results.each { |r| apply_cah_adjustment(r) }
         summarize(results)
+      end
+
+      # Critical Access Hospitals are paid by Medicare at 101% of reasonable
+      # cost. Apply the same 1.01× ceiling at the analyzer boundary when the
+      # obligation's vendor is on the CAH registry and the CAH designation
+      # was in effect on the service date. The underlying rate row's
+      # release_label is preserved so audit-packet provenance is unchanged.
+      def apply_cah_adjustment(result)
+        return result if result.medicare_equivalent.nil?
+        return result unless Corvid::CahFacility.applies?(
+          vendor_id: result.vendor_id, on: result.service_date
+        )
+
+        adjusted = (BigDecimal(result.medicare_equivalent.to_s) * BigDecimal("1.01")).round(2).to_f
+        paid = result.paid_amount.to_f
+        result.medicare_equivalent = adjusted
+        result.overpayment = [ paid - adjusted, 0 ].max.round(2)
+        existing = result.notes.to_s
+        suffix = " [CAH 1.01× multiplier applied]"
+        result.notes = existing.empty? ? suffix.strip : "#{existing}#{suffix}"
+        result
       end
 
       def analyze_obligation(obligation, header)

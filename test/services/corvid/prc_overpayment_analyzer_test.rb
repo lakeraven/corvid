@@ -227,6 +227,55 @@ class Corvid::PrcOverpaymentAnalyzerTest < ActiveSupport::TestCase
                "inventing a label that an auditor could chase"
   end
 
+  # -- CAH 1.01× multiplier --------------------------------------------------
+  # Critical Access Hospitals are paid by Medicare at 101% of reasonable
+  # cost. For PRC MLR purposes the equivalent ceiling is 101% of the
+  # rate that would have applied at a non-CAH facility. Misclassifying
+  # a CAH claim under-recovers; missing the rule over-recovers.
+
+  test "professional rate at a CAH vendor is multiplied by 1.01" do
+    Corvid::CahFacility.create!(
+      ccn: "CAH-001", facility_name: "Test CAH",
+      effective_date: Date.new(2009, 1, 1)
+    )
+    summary = analyze_single_obligation(
+      procedure: "OFFICE_VISIT_EST", paid: 250, vendor_id: "CAH-001"
+    )
+    result = summary.results.first
+
+    non_cah_rate = office_99213_rate
+    assert_in_delta non_cah_rate * 1.01, result.medicare_equivalent.to_f, 0.01,
+                    "CAH ceiling is 101% of the base Medicare-allowable rate"
+    assert_match(/CAH/i, result.notes,
+                 "audit trail must surface that the CAH rule applied")
+  end
+
+  test "non-CAH vendor: rate is unchanged" do
+    Corvid::CahFacility.create!(
+      ccn: "OTHER-CCN", effective_date: Date.new(2009, 1, 1)
+    )
+    summary = analyze_single_obligation(
+      procedure: "OFFICE_VISIT_EST", paid: 250, vendor_id: "REGULAR-VENDOR"
+    )
+    result = summary.results.first
+    assert_in_delta office_99213_rate, result.medicare_equivalent.to_f, 0.01,
+                    "non-CAH vendor pays the standard rate"
+    refute_match(/CAH/i, result.notes)
+  end
+
+  test "CAH multiplier respects effective_date" do
+    Corvid::CahFacility.create!(
+      ccn: "CAH-LATE",
+      effective_date: Date.new(2099, 1, 1)  # not yet effective on the test service date
+    )
+    summary = analyze_single_obligation(
+      procedure: "OFFICE_VISIT_EST", paid: 250, vendor_id: "CAH-LATE"
+    )
+    result = summary.results.first
+    assert_in_delta office_99213_rate, result.medicare_equivalent.to_f, 0.01,
+                    "CAH designation not yet effective; no multiplier"
+  end
+
   # -- Missing service_date: distinct reason, not no_rate_for_year ----------
 
   # A nil service_date (parser failed on a malformed YYYYMMDD like
@@ -299,15 +348,21 @@ class Corvid::PrcOverpaymentAnalyzerTest < ActiveSupport::TestCase
 
   private
 
-  def analyze_single_obligation(procedure:, paid:, service_date: TEST_DATE)
+  def analyze_single_obligation(procedure:, paid:, service_date: TEST_DATE, vendor_id: "V01")
     paid_str = format("%.2f", paid)
     sample = <<~PRC
       H^PRC_EXPORT^SEA^#{service_date.strftime("%Y%m%d")}^1
-      O^OBL-TEST-1^DFN001^V01^#{procedure}^#{service_date.strftime("%Y%m%d")}^A^#{paid_str}^#{paid_str}^0.00^0.00^#{service_date.year}
+      O^OBL-TEST-1^DFN001^#{vendor_id}^#{procedure}^#{service_date.strftime("%Y%m%d")}^A^#{paid_str}^#{paid_str}^0.00^0.00^#{service_date.year}
       T^1^1^0^#{paid_str}^0.00
     PRC
     report = Corvid::PrcReportParser.parse(sample)
     Corvid::PrcOverpaymentAnalyzer.analyze(report)
+  end
+
+  # Computed 2009 PFS rate for CPT 99213 in locality 02 (matches office_99213_inputs).
+  def office_99213_rate
+    i = office_99213_inputs
+    (i[:work_rvu] * i[:work_gpci] + i[:pe_rvu] * i[:pe_gpci] + i[:mp_rvu] * i[:mp_gpci]) * i[:conversion_factor]
   end
 
   def seed_pfs_rate(cpt:, rate_components:)
