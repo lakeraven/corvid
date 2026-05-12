@@ -80,5 +80,17 @@ namespace :cms do
     def strip_comments(csv_text)
       csv_text.lines.reject { |l| l.lstrip.start_with?("#") }.join
     end
+
+    desc "Normalize a CMS OPPS Addendum A CSV/zip into the canonical apc_weights CSV: rake cms:opps:normalize_addendum_a[year,/path/to/addendum_a.csv,/path/to/output.csv,release_label]"
+    task :normalize_addendum_a, [ :year, :input, :output, :label ] => :environment do |_t, args|
+      abort "Usage: rake cms:opps:normalize_addendum_a[year,input.csv,output.csv,release_label]" unless args[:year] && args[:input] && args[:output]
+      abort "Input not found: #{args[:input]}" unless File.exist?(args[:input])
+
+      label = args[:label] || "cms_opps_cy#{args[:year]}_final_rule"
+      rows = Corvid::CmsOppsAddendumANormalizer.normalize(args[:input])
+      csv = Corvid::CmsOppsAddendumANormalizer.render(rows, release_label: label)
+      File.write(args[:output], csv)
+      puts "Wrote #{rows.size} APC weights to #{args[:output]} (label=#{label})"
+    end
   end
 end

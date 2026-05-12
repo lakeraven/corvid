@@ -53,7 +53,12 @@ module Corvid
 
       def read_csv(io_or_string, required_headers:)
         text = io_or_string.respond_to?(:read) ? io_or_string.read : io_or_string.to_s
-        table = CSV.parse(text.sub(/\A\xEF\xBB\xBF/, ""), headers: true)
+        # Strip BOM + comment lines. Canonical files carry a
+        # `# release_label: ...` marker on the first line; older callers
+        # (cms:opps:import_*) read raw, so the parser handles it unconditionally.
+        stripped = text.sub(/\A\xEF\xBB\xBF/, "")
+                       .lines.reject { |l| l.lstrip.start_with?("#") }.join
+        table = CSV.parse(stripped, headers: true)
         missing = required_headers - (table.headers || []).map { |h| h.to_s.strip }
         if missing.any?
           raise MalformedFileError,
