@@ -14,15 +14,10 @@ namespace :cms do
       rows = result[:rows]
       rejects = result[:rejects]
 
-      # Dedup within the file, last-wins (consistent with PrcImporter's
-      # within-file dedup convention). CCN-keyed rows dedup by
-      # (ccn, effective_date); NPI-only rows dedup by (npi, effective_date).
-      # Splitting prevents the ccn-IS-NULL bucket from collapsing every
-      # NPI-only row into one group.
-      ccn_keyed, npi_only = rows.partition { |r| r[:ccn] }
-      deduped_ccn = ccn_keyed.group_by { |r| [ r[:ccn], r[:effective_date] ] }.map { |_, g| g.last }
-      deduped_npi = npi_only.group_by { |r| [ r[:npi], r[:effective_date] ] }.map { |_, g| g.last }
-      deduped = deduped_ccn + deduped_npi
+      # Within-file last-wins dedup that respects both partial unique
+      # indexes — same NPI/date with different CCNs would otherwise
+      # survive and crash insert_all.
+      deduped = Corvid::CmsCahListParser.dedup_last_wins(rows)
 
       # Safety: a file where every parsed row got rejected (and the
       # current label has existing rows) would otherwise silently wipe

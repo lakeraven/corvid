@@ -88,6 +88,24 @@ module Corvid
       { rows: rows, rejects: rejects }
     end
 
+    # Dedup parsed rows last-wins, respecting both unique-index
+    # dimensions: (ccn, effective_date) and (npi, effective_date).
+    # A row conflicts with a prior row when EITHER identifier matches
+    # on the same effective_date. Without considering both axes, two
+    # rows with the same NPI but different CCNs would survive dedup
+    # and crash on the partial unique index at insert time.
+    def self.dedup_last_wins(rows)
+      result = []
+      rows.each do |r|
+        result.reject! do |prior|
+          (r[:ccn] && prior[:ccn] == r[:ccn] && prior[:effective_date] == r[:effective_date]) ||
+          (r[:npi] && prior[:npi] == r[:npi] && prior[:effective_date] == r[:effective_date])
+        end
+        result << r
+      end
+      result
+    end
+
     def self.parse_date(value)
       return nil if value.nil? || value.strip.empty?
       Date.parse(value.strip)

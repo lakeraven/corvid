@@ -138,6 +138,38 @@ class Corvid::CmsCahListParserTest < ActiveSupport::TestCase
            "reject reason names the offending field for ops triage")
   end
 
+  # -- dedup_last_wins: both unique-index dimensions ------------------------
+
+  test "dedup_last_wins collapses (ccn, effective_date) duplicates last-wins" do
+    rows = [
+      { ccn: "451301", npi: nil, effective_date: Date.new(2025, 1, 1), facility_name: "Older" },
+      { ccn: "451301", npi: nil, effective_date: Date.new(2025, 1, 1), facility_name: "Newer" }
+    ]
+    out = Corvid::CmsCahListParser.dedup_last_wins(rows)
+    assert_equal 1, out.size
+    assert_equal "Newer", out[0][:facility_name]
+  end
+
+  test "dedup_last_wins drops a prior row that conflicts on (npi, effective_date) even with different ccn" do
+    rows = [
+      { ccn: "451301", npi: "1234567890", effective_date: Date.new(2025, 1, 1), facility_name: "First" },
+      { ccn: "451302", npi: "1234567890", effective_date: Date.new(2025, 1, 1), facility_name: "Second" }
+    ]
+    out = Corvid::CmsCahListParser.dedup_last_wins(rows)
+    assert_equal 1, out.size, "shared NPI/date forces last-wins despite different CCNs; " \
+                              "would otherwise crash the (npi, effective_date) partial unique index"
+    assert_equal "Second", out[0][:facility_name]
+  end
+
+  test "dedup_last_wins keeps independent identifiers in different effective_dates" do
+    rows = [
+      { ccn: "451301", npi: nil, effective_date: Date.new(2015, 1, 1) },
+      { ccn: "451301", npi: nil, effective_date: Date.new(2020, 1, 1) }
+    ]
+    out = Corvid::CmsCahListParser.dedup_last_wins(rows)
+    assert_equal 2, out.size, "different effective_dates are distinct historical periods"
+  end
+
   test "malformed end_date does not reject the row (end_date is optional)" do
     csv = <<~CSV
       ccn,effective_date,end_date
