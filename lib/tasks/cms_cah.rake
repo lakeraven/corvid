@@ -8,7 +8,15 @@ namespace :cms do
       abort "File not found: #{args[:path]}" unless File.exist?(args[:path])
 
       label = args[:label] || "manual"
-      rows = Corvid::CmsCahListParser.parse(File.read(args[:path]), release_label: label)
+      result = Corvid::CmsCahListParser.parse(File.read(args[:path]), release_label: label)
+      rows = result[:rows]
+      rejects = result[:rejects]
+
+      # Dedup within the file by (ccn, effective_date), last-wins
+      # (consistent with PrcImporter's within-file dedup convention).
+      # Without this, repeated (ccn, effective_date) pairs would
+      # violate idx_corvid_cah_ccn_effective on insert.
+      deduped = rows.group_by { |r| [ r[:ccn], r[:effective_date] ] }.map { |_, g| g.last }
 
       now = Time.current
       ActiveRecord::Base.transaction do
@@ -18,11 +26,17 @@ namespace :cms do
         # (different vintages, manual overrides) are preserved.
         Corvid::CahFacility.where(source_release: label).delete_all
         Corvid::CahFacility.insert_all(
-          rows.map { |r| r.merge(created_at: now, updated_at: now) }
-        ) if rows.any?
+          deduped.map { |r| r.merge(created_at: now, updated_at: now) }
+        ) if deduped.any?
       end
 
-      puts "Imported #{rows.size} CAH facilities (label=#{label})"
+      puts "Imported #{deduped.size} CAH facilities (label=#{label})"
+      collapsed = rows.size - deduped.size
+      puts "  collapsed #{collapsed} within-file duplicate(s) by (ccn, effective_date)" if collapsed.positive?
+      if rejects.any?
+        puts "  skipped #{rejects.size} invalid row(s):"
+        rejects.each { |r| puts "    row #{r[:row_number]}: #{r[:reason]}" }
+      end
     end
   end
 end
