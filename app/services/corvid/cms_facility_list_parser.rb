@@ -92,20 +92,30 @@ module Corvid
       { rows: rows, rejects: rejects }
     end
 
-    # Replace-by-identifier-conflict: for each incoming row, delete any
-    # existing row in `model_class` that conflicts on (ccn, effective_date)
-    # or (npi, effective_date), then bulk-insert the new rows. Source
-    # release is provenance metadata, not a row-grouping key — there is
-    # one truth per (identifier, effective_date), and the latest import
-    # is canonical.
+    # Canonical-snapshot upsert. Each import is treated as the complete
+    # truth for its source_release, so:
     #
-    # Replaces an earlier "delete by source_release then insert" pattern
-    # that collided with the partial unique indexes when a new release
-    # republished an existing (identifier, effective_date) tuple.
-    def self.replace_by_identifier_conflict(model_class:, rows:)
+    #   1. All prior rows tagged with the incoming source_release are
+    #      wiped — a facility absent from the new snapshot must not
+    #      remain in the registry.
+    #   2. Rows in OTHER releases that conflict on (ccn, effective_date)
+    #      or (npi, effective_date) are deleted so the partial unique
+    #      indexes don't crash on insert and the latest publication is
+    #      canonical.
+    #   3. The new rows are bulk-inserted.
+    #
+    # source_release is the provenance label for the import; manual
+    # rows tagged with a different source_release survive unless they
+    # conflict with an incoming identifier/date tuple.
+    #
+    # An empty `rows` is a no-op even when source_release is given —
+    # an accidentally-empty file should not silently wipe history.
+    def self.replace_by_identifier_conflict(model_class:, rows:, source_release: nil)
       return if rows.empty?
       now = Time.current
       ActiveRecord::Base.transaction do
+        model_class.where(source_release: source_release).delete_all if source_release
+
         rows.each do |r|
           conds = []
           vals = []
@@ -120,6 +130,7 @@ module Corvid
           next if conds.empty?
           model_class.where(conds.join(" OR "), *vals).delete_all
         end
+
         model_class.insert_all(
           rows.map { |r| r.merge(created_at: now, updated_at: now) }
         )

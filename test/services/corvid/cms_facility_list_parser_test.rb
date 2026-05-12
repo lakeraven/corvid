@@ -230,6 +230,56 @@ class Corvid::CmsFacilityListParserTest < ActiveSupport::TestCase
                  "different identifiers at the same date coexist; only conflicts are replaced"
   end
 
+  test "replace_by_identifier_conflict prunes prior rows of the same source_release that are absent from the new snapshot" do
+    # Prior import: two facilities in release_a.
+    Corvid::CahFacility.create!(
+      ccn: "PRIOR-IN-NEW", effective_date: Date.new(2025, 1, 1),
+      source_release: "release_a"
+    )
+    Corvid::CahFacility.create!(
+      ccn: "PRIOR-GONE", effective_date: Date.new(2025, 1, 1),
+      source_release: "release_a"
+    )
+
+    # New snapshot for release_a contains only one of them, plus a new addition.
+    Corvid::CmsFacilityListParser.replace_by_identifier_conflict(
+      model_class: Corvid::CahFacility,
+      source_release: "release_a",
+      rows: [
+        { ccn: "PRIOR-IN-NEW", npi: nil, facility_name: nil,
+          effective_date: Date.new(2025, 1, 1), end_date: nil,
+          source_release: "release_a" },
+        { ccn: "NEW-ADDITION", npi: nil, facility_name: nil,
+          effective_date: Date.new(2025, 1, 1), end_date: nil,
+          source_release: "release_a" }
+      ]
+    )
+
+    ccns = Corvid::CahFacility.pluck(:ccn).sort
+    assert_equal [ "NEW-ADDITION", "PRIOR-IN-NEW" ], ccns,
+                 "PRIOR-GONE was tagged release_a and isn't in the new snapshot, " \
+                 "so canonical-snapshot semantics drop it"
+  end
+
+  test "replace_by_identifier_conflict preserves rows in other source_releases" do
+    Corvid::CahFacility.create!(
+      ccn: "MANUAL-OVERRIDE", effective_date: Date.new(2025, 6, 1),
+      source_release: "manual"
+    )
+    Corvid::CmsFacilityListParser.replace_by_identifier_conflict(
+      model_class: Corvid::CahFacility,
+      source_release: "release_a",
+      rows: [ {
+        ccn: "CMS-ROW", npi: nil, facility_name: nil,
+        effective_date: Date.new(2025, 1, 1), end_date: nil,
+        source_release: "release_a"
+      } ]
+    )
+    ccns = Corvid::CahFacility.pluck(:ccn).sort
+    assert_equal [ "CMS-ROW", "MANUAL-OVERRIDE" ], ccns,
+                 "manual rows tagged with a different source_release survive the snapshot wipe"
+  end
+
   test "replace_by_identifier_conflict is a no-op when rows is empty" do
     Corvid::CahFacility.create!(
       ccn: "451301", effective_date: Date.new(2025, 1, 1),

@@ -15,7 +15,7 @@ namespace :cms do
       deduped = Corvid::CmsFacilityListParser.dedup_last_wins(rows)
 
       Corvid::CmsFacilityListParser.replace_by_identifier_conflict(
-        model_class: Corvid::AscFacility, rows: deduped
+        model_class: Corvid::AscFacility, rows: deduped, source_release: label
       )
 
       puts "Imported #{deduped.size} ASC facilities (label=#{label})"
