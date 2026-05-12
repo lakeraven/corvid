@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_05_10_000001) do
+ActiveRecord::Schema[8.1].define(version: 2026_05_12_000001) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
@@ -67,6 +67,19 @@ ActiveRecord::Schema[8.1].define(version: 2026_05_10_000001) do
     t.check_constraint "direction::text = ANY (ARRAY['inbound'::character varying, 'outbound'::character varying]::text[])", name: "corvid_billing_tx_direction_check"
     t.check_constraint "status::text = ANY (ARRAY['pending'::character varying, 'completed'::character varying, 'failed'::character varying]::text[])", name: "corvid_billing_tx_status_check"
     t.check_constraint "transaction_type::text = ANY (ARRAY['eligibility'::character varying, 'claim'::character varying, 'claim_status'::character varying, 'remittance'::character varying, 'payment'::character varying]::text[])", name: "corvid_billing_tx_type_check"
+  end
+
+  create_table "corvid_cah_facilities", force: :cascade do |t|
+    t.string "ccn", null: false
+    t.datetime "created_at", null: false
+    t.date "effective_date", null: false
+    t.date "end_date"
+    t.string "facility_name"
+    t.string "npi"
+    t.string "source_release"
+    t.datetime "updated_at", null: false
+    t.index ["ccn", "effective_date"], name: "idx_corvid_cah_ccn_effective", unique: true
+    t.index ["npi"], name: "index_corvid_cah_facilities_on_npi"
   end
 
   create_table "corvid_care_team_members", force: :cascade do |t|

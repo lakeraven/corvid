@@ -107,16 +107,42 @@ module Corvid
         return unmapped_procedure(obligation, facility) unless proc_info
         return unmapped_facility(obligation, proc_info) unless facility
 
-        if proc_info.drg
+        result = if proc_info.drg
           analyze_inpatient(obligation, proc_info, facility)
         elsif proc_info.apc
           analyze_outpatient(obligation, proc_info, facility)
         else
           analyze_professional(obligation, proc_info, facility)
         end
+
+        apply_cah_adjustment(result)
       end
 
       private
+
+      # Critical Access Hospitals are paid by Medicare at 101% of reasonable
+      # cost. Apply the same 1.01× ceiling at the analyzer boundary when the
+      # obligation's vendor is on the CAH registry and the CAH designation
+      # was in effect on the service date. The underlying rate row's
+      # release_label is preserved so audit-packet provenance is unchanged.
+      # Called from analyze_obligation so both the batch path
+      # (PrcOverpaymentAnalyzer.analyze) and the per-row importer path
+      # (PrcImporter.reanalyze → analyze_obligation) get the adjustment.
+      def apply_cah_adjustment(result)
+        return result if result.medicare_equivalent.nil?
+        return result unless Corvid::CahFacility.applies?(
+          vendor_id: result.vendor_id, on: result.service_date
+        )
+
+        adjusted = (BigDecimal(result.medicare_equivalent.to_s) * BigDecimal("1.01")).round(2).to_f
+        paid = result.paid_amount.to_f
+        result.medicare_equivalent = adjusted
+        result.overpayment = [ paid - adjusted, 0 ].max.round(2)
+        existing = result.notes.to_s
+        suffix = " [CAH 1.01× multiplier applied]"
+        result.notes = existing.empty? ? suffix.strip : "#{existing}#{suffix}"
+        result
+      end
 
       def analyze_professional(obligation, proc_info, facility)
         entry = professional_entry(proc_info.hcpcs, facility.locality, obligation.service_date)

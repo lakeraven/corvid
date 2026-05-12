@@ -294,6 +294,35 @@ class Corvid::PrcImporterTest < ActiveSupport::TestCase
     end
   end
 
+  # -- CAH adjustment on the importer path -----------------------------------
+  # PrcImporter.reanalyze goes through PrcOverpaymentAnalyzer.analyze_obligation
+  # (single-obligation API), not .analyze(report). The CAH adjustment must
+  # apply at that boundary so persisted analyses match what the batch path
+  # would produce.
+
+  test "reanalyze persists CAH-adjusted medicare_equivalent" do
+    with_tenant(TENANT) do
+      Corvid::CahFacility.create!(
+        ccn: "VEND00211",
+        facility_name: "Test CAH",
+        effective_date: Date.new(2009, 1, 1)
+      )
+      Corvid::PrcImporter.import(SAMPLE, source_file: "cah.prc")
+      seed_pfs_for_office_visit
+      Corvid::PrcImporter.reanalyze(tenant: TENANT)
+
+      # OBL-2009-000124 has vendor_id VEND00211 (matches the CAH ccn).
+      analysis = Corvid::PrcObligation.find_by(obligation_id: "OBL-2009-000124").latest_analysis
+      base = Corvid::FeeScheduleEntry.rate_for(
+        cpt_code: "99213", locality: "02", date: Date.new(2009, 5, 10)
+      ).medicare_rate.to_f
+      assert_in_delta (base * 1.01).round(2), analysis.medicare_equivalent.to_f, 0.01,
+                      "persisted analysis must carry the CAH 1.01× multiplier; " \
+                      "otherwise batch and importer paths report different overpayment"
+      assert_match(/CAH/i, analysis.notes)
+    end
+  end
+
   # -- Tenant scoping --------------------------------------------------------
 
   test "obligations are tenant-scoped" do
