@@ -15,8 +15,9 @@ module Corvid
   class CahFacility < ::ActiveRecord::Base
     self.table_name = "corvid_cah_facilities"
 
-    validates :ccn, presence: true, uniqueness: true
+    validates :ccn, presence: true
     validates :effective_date, presence: true
+    validates :ccn, uniqueness: { scope: :effective_date }
 
     # Returns true iff a CAH row matches the given vendor identifier
     # (ccn or npi) and is in effect on the service date.
