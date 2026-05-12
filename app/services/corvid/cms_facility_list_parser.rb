@@ -3,21 +3,25 @@
 require "csv"
 
 module Corvid
-  # Parses a canonical CSV of CMS Critical Access Hospital records into
-  # row hashes ready for upsert into corvid_cah_facilities. Expected
-  # columns (header required): ccn, facility_name, effective_date,
-  # npi (optional), end_date (optional). Comment lines starting with
-  # "#" are skipped so the canonical file can carry a release_label
-  # marker on its first line. Headers are case-insensitive and a UTF-8
-  # BOM at the start of the file is stripped (common from spreadsheets).
+  # Parses a canonical CSV of CMS facility records (CAH, ASC, etc.)
+  # into row hashes ready for upsert. Expected columns (header
+  # required): effective_date plus at least one of {ccn, npi}.
+  # Optional: facility_name, end_date. Comment lines starting with "#"
+  # are skipped so the canonical file can carry a release_label marker
+  # on its first line. Headers are case-insensitive and a UTF-8 BOM at
+  # the start of the file is stripped (common from spreadsheets).
   #
   # Returns `{ rows: [...], rejects: [{row_number:, reason:, raw:}] }`.
-  # Per-row validation drops (not raises) on blank ccn or missing/
-  # malformed effective_date — consistent with PrcImporter's permissive-
-  # but-report pattern. `row_number` references the original file's
-  # line number, including any skipped comment lines, so ops can locate
-  # the offending row directly in the source.
-  module CmsCahListParser
+  # Per-row validation drops (not raises) on missing both identifiers
+  # or on a missing/malformed effective_date — consistent with
+  # PrcImporter's permissive-but-report pattern. `row_number` references
+  # the original file's line number, including any skipped comment
+  # lines, so ops can locate the offending row directly in the source.
+  #
+  # Used by cms:cah:import (CahFacility) and cms:asc:import_facilities
+  # (AscFacility); the parser is target-table-agnostic — each rake
+  # task picks where the rows go.
+  module CmsFacilityListParser
     # Only effective_date is structurally required at the column level —
     # a CMS feed may be CCN-keyed, NPI-keyed, or both. Per-row validation
     # below rejects rows where neither identifier is present.
@@ -48,7 +52,7 @@ module Corvid
       )
 
       missing = REQUIRED_COLUMNS - table.headers
-      raise ArgumentError, "CAH CSV missing required columns: #{missing.join(', ')}" if missing.any?
+      raise ArgumentError, "facility CSV missing required columns: #{missing.join(', ')}" if missing.any?
 
       rows = []
       rejects = []
@@ -86,6 +90,51 @@ module Corvid
       end
 
       { rows: rows, rejects: rejects }
+    end
+
+    # Canonical-snapshot upsert. Each import is treated as the complete
+    # truth for its source_release, so:
+    #
+    #   1. All prior rows tagged with the incoming source_release are
+    #      wiped — a facility absent from the new snapshot must not
+    #      remain in the registry.
+    #   2. Rows in OTHER releases that conflict on (ccn, effective_date)
+    #      or (npi, effective_date) are deleted so the partial unique
+    #      indexes don't crash on insert and the latest publication is
+    #      canonical.
+    #   3. The new rows are bulk-inserted.
+    #
+    # source_release is the provenance label for the import; manual
+    # rows tagged with a different source_release survive unless they
+    # conflict with an incoming identifier/date tuple.
+    #
+    # An empty `rows` is a no-op even when source_release is given —
+    # an accidentally-empty file should not silently wipe history.
+    def self.replace_by_identifier_conflict(model_class:, rows:, source_release: nil)
+      return if rows.empty?
+      now = Time.current
+      ActiveRecord::Base.transaction do
+        model_class.where(source_release: source_release).delete_all if source_release
+
+        rows.each do |r|
+          conds = []
+          vals = []
+          if r[:ccn]
+            conds << "(ccn = ? AND effective_date = ?)"
+            vals << r[:ccn] << r[:effective_date]
+          end
+          if r[:npi]
+            conds << "(npi = ? AND effective_date = ?)"
+            vals << r[:npi] << r[:effective_date]
+          end
+          next if conds.empty?
+          model_class.where(conds.join(" OR "), *vals).delete_all
+        end
+
+        model_class.insert_all(
+          rows.map { |r| r.merge(created_at: now, updated_at: now) }
+        )
+      end
     end
 
     # Dedup parsed rows last-wins, respecting both unique-index
