@@ -170,6 +170,78 @@ class Corvid::CmsFacilityListParserTest < ActiveSupport::TestCase
     assert_equal 2, out.size, "different effective_dates are distinct historical periods"
   end
 
+  # -- replace_by_identifier_conflict: cross-release upsert ------------------
+
+  test "replace_by_identifier_conflict overrides an existing row at the same (ccn, effective_date)" do
+    Corvid::CahFacility.create!(
+      ccn: "451301", facility_name: "Old name",
+      effective_date: Date.new(2025, 1, 1),
+      source_release: "release_a"
+    )
+    Corvid::CmsFacilityListParser.replace_by_identifier_conflict(
+      model_class: Corvid::CahFacility,
+      rows: [ {
+        ccn: "451301", npi: nil, facility_name: "New name",
+        effective_date: Date.new(2025, 1, 1), end_date: nil,
+        source_release: "release_b"
+      } ]
+    )
+    assert_equal 1, Corvid::CahFacility.where(ccn: "451301").count
+    row = Corvid::CahFacility.find_by(ccn: "451301")
+    assert_equal "New name", row.facility_name
+    assert_equal "release_b", row.source_release,
+                 "later import is canonical; source_release is provenance, not a partition key"
+  end
+
+  test "replace_by_identifier_conflict overrides on the NPI dimension even when CCN differs" do
+    Corvid::CahFacility.create!(
+      ccn: "451301", npi: "1234567890",
+      effective_date: Date.new(2025, 1, 1),
+      source_release: "release_a"
+    )
+    Corvid::CmsFacilityListParser.replace_by_identifier_conflict(
+      model_class: Corvid::CahFacility,
+      rows: [ {
+        ccn: "451302", npi: "1234567890",
+        facility_name: "Corrected CCN",
+        effective_date: Date.new(2025, 1, 1), end_date: nil,
+        source_release: "release_b"
+      } ]
+    )
+    assert_equal 1, Corvid::CahFacility.count,
+                 "same NPI/date with corrected CCN replaces the prior row"
+    assert_equal "451302", Corvid::CahFacility.first.ccn
+  end
+
+  test "replace_by_identifier_conflict leaves non-conflicting rows alone" do
+    Corvid::CahFacility.create!(
+      ccn: "OTHER", effective_date: Date.new(2025, 1, 1),
+      source_release: "release_a"
+    )
+    Corvid::CmsFacilityListParser.replace_by_identifier_conflict(
+      model_class: Corvid::CahFacility,
+      rows: [ {
+        ccn: "451301", npi: nil, facility_name: nil,
+        effective_date: Date.new(2025, 1, 1), end_date: nil,
+        source_release: "release_b"
+      } ]
+    )
+    assert_equal 2, Corvid::CahFacility.count,
+                 "different identifiers at the same date coexist; only conflicts are replaced"
+  end
+
+  test "replace_by_identifier_conflict is a no-op when rows is empty" do
+    Corvid::CahFacility.create!(
+      ccn: "451301", effective_date: Date.new(2025, 1, 1),
+      source_release: "release_a"
+    )
+    Corvid::CmsFacilityListParser.replace_by_identifier_conflict(
+      model_class: Corvid::CahFacility, rows: []
+    )
+    assert_equal 1, Corvid::CahFacility.count,
+                 "empty import must not wipe existing data"
+  end
+
   test "malformed end_date does not reject the row (end_date is optional)" do
     csv = <<~CSV
       ccn,effective_date,end_date

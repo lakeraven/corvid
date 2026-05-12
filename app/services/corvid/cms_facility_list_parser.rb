@@ -52,7 +52,7 @@ module Corvid
       )
 
       missing = REQUIRED_COLUMNS - table.headers
-      raise ArgumentError, "CAH CSV missing required columns: #{missing.join(', ')}" if missing.any?
+      raise ArgumentError, "facility CSV missing required columns: #{missing.join(', ')}" if missing.any?
 
       rows = []
       rejects = []
@@ -90,6 +90,40 @@ module Corvid
       end
 
       { rows: rows, rejects: rejects }
+    end
+
+    # Replace-by-identifier-conflict: for each incoming row, delete any
+    # existing row in `model_class` that conflicts on (ccn, effective_date)
+    # or (npi, effective_date), then bulk-insert the new rows. Source
+    # release is provenance metadata, not a row-grouping key — there is
+    # one truth per (identifier, effective_date), and the latest import
+    # is canonical.
+    #
+    # Replaces an earlier "delete by source_release then insert" pattern
+    # that collided with the partial unique indexes when a new release
+    # republished an existing (identifier, effective_date) tuple.
+    def self.replace_by_identifier_conflict(model_class:, rows:)
+      return if rows.empty?
+      now = Time.current
+      ActiveRecord::Base.transaction do
+        rows.each do |r|
+          conds = []
+          vals = []
+          if r[:ccn]
+            conds << "(ccn = ? AND effective_date = ?)"
+            vals << r[:ccn] << r[:effective_date]
+          end
+          if r[:npi]
+            conds << "(npi = ? AND effective_date = ?)"
+            vals << r[:npi] << r[:effective_date]
+          end
+          next if conds.empty?
+          model_class.where(conds.join(" OR "), *vals).delete_all
+        end
+        model_class.insert_all(
+          rows.map { |r| r.merge(created_at: now, updated_at: now) }
+        )
+      end
     end
 
     # Dedup parsed rows last-wins, respecting both unique-index
