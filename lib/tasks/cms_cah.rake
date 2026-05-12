@@ -2,6 +2,14 @@
 
 namespace :cms do
   namespace :cah do
+    desc "Wipe all CAH rows tagged with a given source_release: rake cms:cah:clear[release_label]"
+    task :clear, [ :label ] => :environment do |_t, args|
+      abort "Usage: rake cms:cah:clear[release_label]" unless args[:label]
+      count = Corvid::CahFacility.where(source_release: args[:label]).count
+      Corvid::CahFacility.where(source_release: args[:label]).delete_all
+      puts "Cleared #{count} CAH facilities for label=#{args[:label]}"
+    end
+
     desc "Import CMS Critical Access Hospital list: rake cms:cah:import[/path/to/cah.csv,release_label]"
     task :import, [ :path, :label ] => :environment do |_t, args|
       abort "Usage: rake cms:cah:import[/path/to/cah.csv,release_label]" unless args[:path]

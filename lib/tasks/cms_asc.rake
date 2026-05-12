@@ -2,6 +2,14 @@
 
 namespace :cms do
   namespace :asc do
+    desc "Wipe all ASC rows tagged with a given source_release: rake cms:asc:clear_facilities[release_label]"
+    task :clear_facilities, [ :label ] => :environment do |_t, args|
+      abort "Usage: rake cms:asc:clear_facilities[release_label]" unless args[:label]
+      count = Corvid::AscFacility.where(source_release: args[:label]).count
+      Corvid::AscFacility.where(source_release: args[:label]).delete_all
+      puts "Cleared #{count} ASC facilities for label=#{args[:label]}"
+    end
+
     desc "Import CMS Ambulatory Surgical Center registry: rake cms:asc:import_facilities[/path/to/asc.csv,release_label]"
     task :import_facilities, [ :path, :label ] => :environment do |_t, args|
       abort "Usage: rake cms:asc:import_facilities[/path/to/asc.csv,release_label]" unless args[:path]

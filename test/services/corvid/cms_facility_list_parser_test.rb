@@ -280,6 +280,51 @@ class Corvid::CmsFacilityListParserTest < ActiveSupport::TestCase
                  "manual rows tagged with a different source_release survive the snapshot wipe"
   end
 
+  # ASC parity: same path, different target table. Pin the high-value
+  # behaviors against AscFacility so a future schema/callback divergence
+  # between the two registries can't regress one path silently.
+
+  test "replace_by_identifier_conflict works against AscFacility (parity check)" do
+    Corvid::AscFacility.create!(
+      ccn: "ASC-1", facility_name: "Old",
+      effective_date: Date.new(2025, 1, 1),
+      source_release: "release_a"
+    )
+    Corvid::CmsFacilityListParser.replace_by_identifier_conflict(
+      model_class: Corvid::AscFacility,
+      source_release: "release_b",
+      rows: [ {
+        ccn: "ASC-1", npi: nil, facility_name: "New",
+        effective_date: Date.new(2025, 1, 1), end_date: nil,
+        source_release: "release_b"
+      } ]
+    )
+    row = Corvid::AscFacility.find_by(ccn: "ASC-1")
+    assert_equal "New", row.facility_name
+    assert_equal "release_b", row.source_release
+  end
+
+  test "snapshot-wipe semantics apply on AscFacility too (parity check)" do
+    Corvid::AscFacility.create!(
+      ccn: "ASC-IN-NEW", effective_date: Date.new(2025, 1, 1),
+      source_release: "release_a"
+    )
+    Corvid::AscFacility.create!(
+      ccn: "ASC-GONE", effective_date: Date.new(2025, 1, 1),
+      source_release: "release_a"
+    )
+    Corvid::CmsFacilityListParser.replace_by_identifier_conflict(
+      model_class: Corvid::AscFacility,
+      source_release: "release_a",
+      rows: [ {
+        ccn: "ASC-IN-NEW", npi: nil, facility_name: nil,
+        effective_date: Date.new(2025, 1, 1), end_date: nil,
+        source_release: "release_a"
+      } ]
+    )
+    assert_equal [ "ASC-IN-NEW" ], Corvid::AscFacility.pluck(:ccn)
+  end
+
   test "replace_by_identifier_conflict is a no-op when rows is empty" do
     Corvid::CahFacility.create!(
       ccn: "451301", effective_date: Date.new(2025, 1, 1),
