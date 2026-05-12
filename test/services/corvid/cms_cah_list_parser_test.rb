@@ -37,17 +37,41 @@ class Corvid::CmsCahListParserTest < ActiveSupport::TestCase
 
   test "raises ArgumentError when required columns are missing" do
     csv = <<~CSV
-      facility_name,effective_date
-      Test CAH,2015-01-01
+      ccn,facility_name
+      451301,Test CAH
     CSV
     assert_raises(ArgumentError) do
       Corvid::CmsCahListParser.parse(csv, release_label: "x")
     end
   end
 
+  test "accepts NPI-only rows (no ccn column needed)" do
+    csv = <<~CSV
+      npi,effective_date,facility_name
+      1234567890,2015-01-01,NPI-Keyed CAH
+    CSV
+    result = Corvid::CmsCahListParser.parse(csv, release_label: "x")
+    assert_equal 1, result[:rows].size
+    assert_nil result[:rows][0][:ccn]
+    assert_equal "1234567890", result[:rows][0][:npi]
+    assert_empty result[:rejects]
+  end
+
+  test "rows missing both ccn and npi are rejected with a clear reason" do
+    csv = <<~CSV
+      ccn,npi,effective_date
+      ,,2015-01-01
+      451301,,2015-01-02
+    CSV
+    result = Corvid::CmsCahListParser.parse(csv, release_label: "x")
+    assert_equal 1, result[:rows].size
+    assert_equal 1, result[:rejects].size
+    assert_match(/at least one of ccn or npi/, result[:rejects][0][:reason])
+  end
+
   # -- Per-row rejects (permissive-but-report, matches PrcImporter pattern) --
 
-  test "rows with blank or whitespace ccn are rejected" do
+  test "rows with blank/whitespace identifiers AND no npi are rejected" do
     csv = <<~CSV
       ccn,effective_date
       ,2015-01-01
@@ -58,7 +82,7 @@ class Corvid::CmsCahListParserTest < ActiveSupport::TestCase
     assert_equal 1, result[:rows].size
     assert_equal "451301", result[:rows][0][:ccn]
     assert_equal 2, result[:rejects].size
-    assert(result[:rejects].all? { |r| r[:reason].include?("blank ccn") })
+    assert(result[:rejects].all? { |r| r[:reason].include?("at least one of ccn or npi") })
     assert_equal [ 2, 3 ], result[:rejects].map { |r| r[:row_number] }
   end
 
@@ -112,6 +136,38 @@ class Corvid::CmsCahListParserTest < ActiveSupport::TestCase
     assert_equal 2, result[:rejects].size
     assert(result[:rejects].all? { |r| r[:reason].include?("effective_date") },
            "reject reason names the offending field for ops triage")
+  end
+
+  # -- dedup_last_wins: both unique-index dimensions ------------------------
+
+  test "dedup_last_wins collapses (ccn, effective_date) duplicates last-wins" do
+    rows = [
+      { ccn: "451301", npi: nil, effective_date: Date.new(2025, 1, 1), facility_name: "Older" },
+      { ccn: "451301", npi: nil, effective_date: Date.new(2025, 1, 1), facility_name: "Newer" }
+    ]
+    out = Corvid::CmsCahListParser.dedup_last_wins(rows)
+    assert_equal 1, out.size
+    assert_equal "Newer", out[0][:facility_name]
+  end
+
+  test "dedup_last_wins drops a prior row that conflicts on (npi, effective_date) even with different ccn" do
+    rows = [
+      { ccn: "451301", npi: "1234567890", effective_date: Date.new(2025, 1, 1), facility_name: "First" },
+      { ccn: "451302", npi: "1234567890", effective_date: Date.new(2025, 1, 1), facility_name: "Second" }
+    ]
+    out = Corvid::CmsCahListParser.dedup_last_wins(rows)
+    assert_equal 1, out.size, "shared NPI/date forces last-wins despite different CCNs; " \
+                              "would otherwise crash the (npi, effective_date) partial unique index"
+    assert_equal "Second", out[0][:facility_name]
+  end
+
+  test "dedup_last_wins keeps independent identifiers in different effective_dates" do
+    rows = [
+      { ccn: "451301", npi: nil, effective_date: Date.new(2015, 1, 1) },
+      { ccn: "451301", npi: nil, effective_date: Date.new(2020, 1, 1) }
+    ]
+    out = Corvid::CmsCahListParser.dedup_last_wins(rows)
+    assert_equal 2, out.size, "different effective_dates are distinct historical periods"
   end
 
   test "malformed end_date does not reject the row (end_date is optional)" do

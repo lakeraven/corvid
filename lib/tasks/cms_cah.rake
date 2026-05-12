@@ -14,11 +14,10 @@ namespace :cms do
       rows = result[:rows]
       rejects = result[:rejects]
 
-      # Dedup within the file by (ccn, effective_date), last-wins
-      # (consistent with PrcImporter's within-file dedup convention).
-      # Without this, repeated (ccn, effective_date) pairs would
-      # violate idx_corvid_cah_ccn_effective on insert.
-      deduped = rows.group_by { |r| [ r[:ccn], r[:effective_date] ] }.map { |_, g| g.last }
+      # Within-file last-wins dedup that respects both partial unique
+      # indexes — same NPI/date with different CCNs would otherwise
+      # survive and crash insert_all.
+      deduped = Corvid::CmsCahListParser.dedup_last_wins(rows)
 
       # Safety: a file where every parsed row got rejected (and the
       # current label has existing rows) would otherwise silently wipe
