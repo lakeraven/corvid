@@ -10,14 +10,14 @@ namespace :cms do
       label = args[:label] || "manual"
       force = args[:force].to_s == "true"
 
-      result = Corvid::CmsCahListParser.parse(File.read(args[:path]), release_label: label)
+      result = Corvid::CmsFacilityListParser.parse(File.read(args[:path]), release_label: label)
       rows = result[:rows]
       rejects = result[:rejects]
 
       # Within-file last-wins dedup that respects both partial unique
       # indexes — same NPI/date with different CCNs would otherwise
       # survive and crash insert_all.
-      deduped = Corvid::CmsCahListParser.dedup_last_wins(rows)
+      deduped = Corvid::CmsFacilityListParser.dedup_last_wins(rows)
 
       # Safety: a file where every parsed row got rejected (and the
       # current label has existing rows) would otherwise silently wipe

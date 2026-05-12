@@ -2,14 +2,14 @@
 
 require "test_helper"
 
-class Corvid::CmsCahListParserTest < ActiveSupport::TestCase
+class Corvid::CmsFacilityListParserTest < ActiveSupport::TestCase
   test "parses required columns into row hashes" do
     csv = <<~CSV
       ccn,npi,facility_name,effective_date,end_date
       451301,1234567890,Test Critical Access Hospital,2015-01-01,
       451302,,Another CAH,2020-06-15,2023-12-31
     CSV
-    result = Corvid::CmsCahListParser.parse(csv, release_label: "cms_cah_2025q4")
+    result = Corvid::CmsFacilityListParser.parse(csv, release_label: "cms_cah_2025q4")
 
     assert_equal 2, result[:rows].size
     assert_empty result[:rejects]
@@ -30,7 +30,7 @@ class Corvid::CmsCahListParserTest < ActiveSupport::TestCase
       ccn,effective_date
       451301,2015-01-01
     CSV
-    result = Corvid::CmsCahListParser.parse(csv, release_label: "cms_cah_2025q4")
+    result = Corvid::CmsFacilityListParser.parse(csv, release_label: "cms_cah_2025q4")
     assert_equal 1, result[:rows].size
     assert_equal "451301", result[:rows][0][:ccn]
   end
@@ -41,7 +41,7 @@ class Corvid::CmsCahListParserTest < ActiveSupport::TestCase
       451301,Test CAH
     CSV
     assert_raises(ArgumentError) do
-      Corvid::CmsCahListParser.parse(csv, release_label: "x")
+      Corvid::CmsFacilityListParser.parse(csv, release_label: "x")
     end
   end
 
@@ -50,7 +50,7 @@ class Corvid::CmsCahListParserTest < ActiveSupport::TestCase
       npi,effective_date,facility_name
       1234567890,2015-01-01,NPI-Keyed CAH
     CSV
-    result = Corvid::CmsCahListParser.parse(csv, release_label: "x")
+    result = Corvid::CmsFacilityListParser.parse(csv, release_label: "x")
     assert_equal 1, result[:rows].size
     assert_nil result[:rows][0][:ccn]
     assert_equal "1234567890", result[:rows][0][:npi]
@@ -63,7 +63,7 @@ class Corvid::CmsCahListParserTest < ActiveSupport::TestCase
       ,,2015-01-01
       451301,,2015-01-02
     CSV
-    result = Corvid::CmsCahListParser.parse(csv, release_label: "x")
+    result = Corvid::CmsFacilityListParser.parse(csv, release_label: "x")
     assert_equal 1, result[:rows].size
     assert_equal 1, result[:rejects].size
     assert_match(/at least one of ccn or npi/, result[:rejects][0][:reason])
@@ -78,7 +78,7 @@ class Corvid::CmsCahListParserTest < ActiveSupport::TestCase
       \t  ,2015-01-02
       451301,2015-01-03
     CSV
-    result = Corvid::CmsCahListParser.parse(csv, release_label: "x")
+    result = Corvid::CmsFacilityListParser.parse(csv, release_label: "x")
     assert_equal 1, result[:rows].size
     assert_equal "451301", result[:rows][0][:ccn]
     assert_equal 2, result[:rejects].size
@@ -96,7 +96,7 @@ class Corvid::CmsCahListParserTest < ActiveSupport::TestCase
       # a comment between data rows is also possible
       ,2015-03-01
     CSV
-    result = Corvid::CmsCahListParser.parse(csv, release_label: "x")
+    result = Corvid::CmsFacilityListParser.parse(csv, release_label: "x")
     assert_equal 1, result[:rows].size
     assert_equal [ 5, 7 ], result[:rejects].map { |r| r[:row_number] },
                  "row_numbers must reference original source lines so an ops " \
@@ -107,7 +107,7 @@ class Corvid::CmsCahListParserTest < ActiveSupport::TestCase
 
   test "header parsing tolerates UTF-8 BOM at the start of the file" do
     csv = "﻿ccn,effective_date\n451301,2015-01-01\n"
-    result = Corvid::CmsCahListParser.parse(csv, release_label: "x")
+    result = Corvid::CmsFacilityListParser.parse(csv, release_label: "x")
     assert_equal 1, result[:rows].size
     assert_equal "451301", result[:rows][0][:ccn]
   end
@@ -117,7 +117,7 @@ class Corvid::CmsCahListParserTest < ActiveSupport::TestCase
       CCN,Effective_Date,Facility_Name
       451301,2015-01-01,Test CAH
     CSV
-    result = Corvid::CmsCahListParser.parse(csv, release_label: "x")
+    result = Corvid::CmsFacilityListParser.parse(csv, release_label: "x")
     assert_equal 1, result[:rows].size
     assert_equal "451301", result[:rows][0][:ccn]
     assert_equal "Test CAH", result[:rows][0][:facility_name]
@@ -130,7 +130,7 @@ class Corvid::CmsCahListParserTest < ActiveSupport::TestCase
       451302,,2024-01-01
       451303,2015-01-01,
     CSV
-    result = Corvid::CmsCahListParser.parse(csv, release_label: "x")
+    result = Corvid::CmsFacilityListParser.parse(csv, release_label: "x")
     assert_equal 1, result[:rows].size
     assert_equal "451303", result[:rows][0][:ccn]
     assert_equal 2, result[:rejects].size
@@ -145,7 +145,7 @@ class Corvid::CmsCahListParserTest < ActiveSupport::TestCase
       { ccn: "451301", npi: nil, effective_date: Date.new(2025, 1, 1), facility_name: "Older" },
       { ccn: "451301", npi: nil, effective_date: Date.new(2025, 1, 1), facility_name: "Newer" }
     ]
-    out = Corvid::CmsCahListParser.dedup_last_wins(rows)
+    out = Corvid::CmsFacilityListParser.dedup_last_wins(rows)
     assert_equal 1, out.size
     assert_equal "Newer", out[0][:facility_name]
   end
@@ -155,7 +155,7 @@ class Corvid::CmsCahListParserTest < ActiveSupport::TestCase
       { ccn: "451301", npi: "1234567890", effective_date: Date.new(2025, 1, 1), facility_name: "First" },
       { ccn: "451302", npi: "1234567890", effective_date: Date.new(2025, 1, 1), facility_name: "Second" }
     ]
-    out = Corvid::CmsCahListParser.dedup_last_wins(rows)
+    out = Corvid::CmsFacilityListParser.dedup_last_wins(rows)
     assert_equal 1, out.size, "shared NPI/date forces last-wins despite different CCNs; " \
                               "would otherwise crash the (npi, effective_date) partial unique index"
     assert_equal "Second", out[0][:facility_name]
@@ -166,7 +166,7 @@ class Corvid::CmsCahListParserTest < ActiveSupport::TestCase
       { ccn: "451301", npi: nil, effective_date: Date.new(2015, 1, 1) },
       { ccn: "451301", npi: nil, effective_date: Date.new(2020, 1, 1) }
     ]
-    out = Corvid::CmsCahListParser.dedup_last_wins(rows)
+    out = Corvid::CmsFacilityListParser.dedup_last_wins(rows)
     assert_equal 2, out.size, "different effective_dates are distinct historical periods"
   end
 
@@ -175,7 +175,7 @@ class Corvid::CmsCahListParserTest < ActiveSupport::TestCase
       ccn,effective_date,end_date
       451301,2015-01-01,BADDATE
     CSV
-    result = Corvid::CmsCahListParser.parse(csv, release_label: "x")
+    result = Corvid::CmsFacilityListParser.parse(csv, release_label: "x")
     assert_equal 1, result[:rows].size
     assert_nil result[:rows][0][:end_date],
                "optional fields silently degrade to nil; required fields trigger a reject"

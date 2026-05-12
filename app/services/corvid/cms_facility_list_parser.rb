@@ -3,21 +3,25 @@
 require "csv"
 
 module Corvid
-  # Parses a canonical CSV of CMS Critical Access Hospital records into
-  # row hashes ready for upsert into corvid_cah_facilities. Expected
-  # columns (header required): ccn, facility_name, effective_date,
-  # npi (optional), end_date (optional). Comment lines starting with
-  # "#" are skipped so the canonical file can carry a release_label
-  # marker on its first line. Headers are case-insensitive and a UTF-8
-  # BOM at the start of the file is stripped (common from spreadsheets).
+  # Parses a canonical CSV of CMS facility records (CAH, ASC, etc.)
+  # into row hashes ready for upsert. Expected columns (header
+  # required): effective_date plus at least one of {ccn, npi}.
+  # Optional: facility_name, end_date. Comment lines starting with "#"
+  # are skipped so the canonical file can carry a release_label marker
+  # on its first line. Headers are case-insensitive and a UTF-8 BOM at
+  # the start of the file is stripped (common from spreadsheets).
   #
   # Returns `{ rows: [...], rejects: [{row_number:, reason:, raw:}] }`.
-  # Per-row validation drops (not raises) on blank ccn or missing/
-  # malformed effective_date — consistent with PrcImporter's permissive-
-  # but-report pattern. `row_number` references the original file's
-  # line number, including any skipped comment lines, so ops can locate
-  # the offending row directly in the source.
-  module CmsCahListParser
+  # Per-row validation drops (not raises) on missing both identifiers
+  # or on a missing/malformed effective_date — consistent with
+  # PrcImporter's permissive-but-report pattern. `row_number` references
+  # the original file's line number, including any skipped comment
+  # lines, so ops can locate the offending row directly in the source.
+  #
+  # Used by cms:cah:import (CahFacility) and cms:asc:import_facilities
+  # (AscFacility); the parser is target-table-agnostic — each rake
+  # task picks where the rows go.
+  module CmsFacilityListParser
     # Only effective_date is structurally required at the column level —
     # a CMS feed may be CCN-keyed, NPI-keyed, or both. Per-row validation
     # below rejects rows where neither identifier is present.
