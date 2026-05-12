@@ -2,12 +2,14 @@
 
 namespace :cms do
   namespace :cah do
-    desc "Import CMS Critical Access Hospital list from a canonical CSV: rake cms:cah:import[/path/to/cah.csv,release_label]"
-    task :import, [ :path, :label ] => :environment do |_t, args|
-      abort "Usage: rake cms:cah:import[/path/to/cah.csv,release_label]" unless args[:path]
+    desc "Import CMS Critical Access Hospital list: rake cms:cah:import[/path/to/cah.csv,release_label,force]"
+    task :import, [ :path, :label, :force ] => :environment do |_t, args|
+      abort "Usage: rake cms:cah:import[/path/to/cah.csv,release_label,force]" unless args[:path]
       abort "File not found: #{args[:path]}" unless File.exist?(args[:path])
 
       label = args[:label] || "manual"
+      force = args[:force].to_s == "true"
+
       result = Corvid::CmsCahListParser.parse(File.read(args[:path]), release_label: label)
       rows = result[:rows]
       rejects = result[:rejects]
@@ -17,6 +19,19 @@ namespace :cms do
       # Without this, repeated (ccn, effective_date) pairs would
       # violate idx_corvid_cah_ccn_effective on insert.
       deduped = rows.group_by { |r| [ r[:ccn], r[:effective_date] ] }.map { |_, g| g.last }
+
+      # Safety: a file where every parsed row got rejected (and the
+      # current label has existing rows) would otherwise silently wipe
+      # the prior good data. Require force=true to confirm.
+      if deduped.empty? && rejects.any?
+        existing = Corvid::CahFacility.where(source_release: label).count
+        if existing.positive? && !force
+          puts "ABORT: no valid rows parsed (#{rejects.size} rejected) but #{existing} row(s) exist for label=#{label}."
+          puts "       Fix the file, or pass force=true as the third arg to wipe the release intentionally."
+          rejects.each { |r| puts "       row #{r[:row_number]}: #{r[:reason]}" }
+          exit 1
+        end
+      end
 
       now = Time.current
       ActiveRecord::Base.transaction do

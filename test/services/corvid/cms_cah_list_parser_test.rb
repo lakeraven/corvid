@@ -62,6 +62,43 @@ class Corvid::CmsCahListParserTest < ActiveSupport::TestCase
     assert_equal [ 2, 3 ], result[:rejects].map { |r| r[:row_number] }
   end
 
+  test "row_number tracks original file line, accounting for comment lines" do
+    csv = <<~CSV
+      # release_label: cms_cah_2025q4
+      # second comment
+      ccn,effective_date
+      451301,2015-01-01
+      ,2015-02-01
+      # a comment between data rows is also possible
+      ,2015-03-01
+    CSV
+    result = Corvid::CmsCahListParser.parse(csv, release_label: "x")
+    assert_equal 1, result[:rows].size
+    assert_equal [ 5, 7 ], result[:rejects].map { |r| r[:row_number] },
+                 "row_numbers must reference original source lines so an ops " \
+                 "engineer can locate the offending row directly in the file"
+  end
+
+  # -- Header normalization (BOM + casing) ------------------------------------
+
+  test "header parsing tolerates UTF-8 BOM at the start of the file" do
+    csv = "﻿ccn,effective_date\n451301,2015-01-01\n"
+    result = Corvid::CmsCahListParser.parse(csv, release_label: "x")
+    assert_equal 1, result[:rows].size
+    assert_equal "451301", result[:rows][0][:ccn]
+  end
+
+  test "header matching is case-insensitive" do
+    csv = <<~CSV
+      CCN,Effective_Date,Facility_Name
+      451301,2015-01-01,Test CAH
+    CSV
+    result = Corvid::CmsCahListParser.parse(csv, release_label: "x")
+    assert_equal 1, result[:rows].size
+    assert_equal "451301", result[:rows][0][:ccn]
+    assert_equal "Test CAH", result[:rows][0][:facility_name]
+  end
+
   test "rows with missing or malformed effective_date are rejected, not silently nilled" do
     csv = <<~CSV
       ccn,effective_date,end_date
