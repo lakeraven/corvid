@@ -36,10 +36,11 @@ class CreateCorvidAscTables < ActiveRecord::Migration[8.1]
     # Vendor registry — when an obligation's vendor_id (CCN or NPI)
     # matches an active row on the service date, the analyzer routes
     # the outpatient claim through AscRateProvider instead of OPPS.
-    # Mirrors corvid_cah_facilities: composite unique on (ccn,
-    # effective_date) so historical periods coexist for one facility.
+    # Either ccn or npi must be present (model-level validation);
+    # NPI-only rows are legitimate match targets. Partial unique
+    # indexes enforce no-overlap on each identifier independently.
     create_table :corvid_asc_facilities do |t|
-      t.string :ccn, null: false
+      t.string :ccn
       t.string :npi
       t.string :facility_name
       t.date :effective_date, null: false
@@ -48,7 +49,10 @@ class CreateCorvidAscTables < ActiveRecord::Migration[8.1]
       t.timestamps
     end
     add_index :corvid_asc_facilities, [ :ccn, :effective_date ], unique: true,
+              where: "ccn IS NOT NULL",
               name: "idx_corvid_asc_ccn_effective"
-    add_index :corvid_asc_facilities, :npi
+    add_index :corvid_asc_facilities, [ :npi, :effective_date ], unique: true,
+              where: "npi IS NOT NULL",
+              name: "idx_corvid_asc_npi_effective"
   end
 end

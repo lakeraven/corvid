@@ -18,7 +18,10 @@ module Corvid
   # line number, including any skipped comment lines, so ops can locate
   # the offending row directly in the source.
   module CmsCahListParser
-    REQUIRED_COLUMNS = %w[ccn effective_date].freeze
+    # Only effective_date is structurally required at the column level —
+    # a CMS feed may be CCN-keyed, NPI-keyed, or both. Per-row validation
+    # below rejects rows where neither identifier is present.
+    REQUIRED_COLUMNS = %w[effective_date].freeze
     BOM = "﻿"
 
     def self.parse(csv_text, release_label:)
@@ -51,11 +54,16 @@ module Corvid
       rejects = []
       table.each_with_index do |row, idx|
         row_number = data_line_numbers[idx]
-        ccn = row["ccn"]&.strip
+        ccn = row["ccn"]&.strip.presence
+        npi = row["npi"]&.strip.presence
         effective_date = parse_date(row["effective_date"])
 
-        if ccn.nil? || ccn.empty?
-          rejects << { row_number: row_number, reason: "blank ccn", raw: row.to_h }
+        if ccn.nil? && npi.nil?
+          rejects << {
+            row_number: row_number,
+            reason: "row must have at least one of ccn or npi",
+            raw: row.to_h
+          }
           next
         end
         if effective_date.nil?
@@ -69,7 +77,7 @@ module Corvid
 
         rows << {
           ccn: ccn,
-          npi: row["npi"]&.strip.presence,
+          npi: npi,
           facility_name: row["facility_name"]&.strip.presence,
           effective_date: effective_date,
           end_date: parse_date(row["end_date"]),

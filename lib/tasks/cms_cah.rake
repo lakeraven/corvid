@@ -14,11 +14,15 @@ namespace :cms do
       rows = result[:rows]
       rejects = result[:rejects]
 
-      # Dedup within the file by (ccn, effective_date), last-wins
-      # (consistent with PrcImporter's within-file dedup convention).
-      # Without this, repeated (ccn, effective_date) pairs would
-      # violate idx_corvid_cah_ccn_effective on insert.
-      deduped = rows.group_by { |r| [ r[:ccn], r[:effective_date] ] }.map { |_, g| g.last }
+      # Dedup within the file, last-wins (consistent with PrcImporter's
+      # within-file dedup convention). CCN-keyed rows dedup by
+      # (ccn, effective_date); NPI-only rows dedup by (npi, effective_date).
+      # Splitting prevents the ccn-IS-NULL bucket from collapsing every
+      # NPI-only row into one group.
+      ccn_keyed, npi_only = rows.partition { |r| r[:ccn] }
+      deduped_ccn = ccn_keyed.group_by { |r| [ r[:ccn], r[:effective_date] ] }.map { |_, g| g.last }
+      deduped_npi = npi_only.group_by { |r| [ r[:npi], r[:effective_date] ] }.map { |_, g| g.last }
+      deduped = deduped_ccn + deduped_npi
 
       # Safety: a file where every parsed row got rejected (and the
       # current label has existing rows) would otherwise silently wipe
