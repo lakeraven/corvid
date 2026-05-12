@@ -227,6 +227,95 @@ class Corvid::PrcOverpaymentAnalyzerTest < ActiveSupport::TestCase
                "inventing a label that an auditor could chase"
   end
 
+  # -- ASC routing (#278) ----------------------------------------------------
+  # When the obligation's vendor is on the corvid_asc_facilities registry
+  # for the service date, outpatient claims route to AscRateProvider
+  # (ASC-specific APC weights + conversion factor) instead of OPPS.
+  # Same APC code, different table, typically lower MLR.
+
+  test "outpatient claim at an ASC vendor uses ASC rates, not OPPS" do
+    Corvid::PrcProcedureDictionary.register(
+      "OUTPATIENT_TEST", hcpcs: "12345", apc: "5071",
+      description: "Test outpatient procedure"
+    )
+    # ASC-specific weight + CF; deliberately different from OPPS values
+    # used in other outpatient tests so we can see the routing took.
+    Corvid::AscApcWeight.create!(
+      calendar_year: 2009, apc_code: "5071",
+      relative_weight: 20.0, release_label: "cms_asc_2009"
+    )
+    Corvid::AscConversionFactor.create!(
+      calendar_year: 2009, locality: "NATIONAL",
+      conversion_factor: 42.0, wage_index: 1.0, release_label: "cms_asc_2009"
+    )
+    Corvid::AscFacility.create!(
+      ccn: "ASC-VENDOR-1", effective_date: Date.new(2009, 1, 1)
+    )
+
+    summary = analyze_single_obligation(
+      procedure: "OUTPATIENT_TEST", paid: 1_000, vendor_id: "ASC-VENDOR-1"
+    )
+    result = summary.results.first
+    assert_equal :asc, result.payment_system
+    # 20.0 × 42.0 × 1.0 = 840.00
+    assert_in_delta 840.00, result.medicare_equivalent.to_f, 0.01
+    assert_equal :real, result.rate_source
+    assert_equal "cms_asc_2009", result.rate_source_release
+    assert_match(/Ambulatory surgical center/i, result.notes)
+  end
+
+  test "outpatient claim at a non-ASC vendor still uses OPPS" do
+    Corvid::PrcProcedureDictionary.register(
+      "OUTPATIENT_TEST", hcpcs: "12345", apc: "5071",
+      description: "Test outpatient procedure"
+    )
+    Corvid::OppsApcWeight.create!(
+      calendar_year: 2009, apc_code: "5071", relative_weight: 25.4378,
+      release_label: "cms_opps_2009"
+    )
+    Corvid::OppsConversionFactor.create!(
+      calendar_year: 2009, locality: "NATIONAL",
+      conversion_factor: 70.0, wage_index: 1.0, release_label: "cms_opps_2009"
+    )
+    # ASC registry has a different CCN — current vendor not in it.
+    Corvid::AscFacility.create!(
+      ccn: "ASC-VENDOR-1", effective_date: Date.new(2009, 1, 1)
+    )
+
+    summary = analyze_single_obligation(
+      procedure: "OUTPATIENT_TEST", paid: 5_000, vendor_id: "REGULAR-HOSPITAL"
+    )
+    result = summary.results.first
+    assert_equal :opps, result.payment_system, "non-ASC vendor stays on OPPS"
+  end
+
+  test "ASC vendor without matching ASC weight falls through to OPPS, not stub" do
+    Corvid::PrcProcedureDictionary.register(
+      "OUTPATIENT_TEST", hcpcs: "12345", apc: "5071",
+      description: "Test outpatient procedure"
+    )
+    Corvid::AscFacility.create!(
+      ccn: "ASC-VENDOR-1", effective_date: Date.new(2009, 1, 1)
+    )
+    # No AscApcWeight for this APC/year.
+    Corvid::OppsApcWeight.create!(
+      calendar_year: 2009, apc_code: "5071", relative_weight: 25.4378,
+      release_label: "cms_opps_2009"
+    )
+    Corvid::OppsConversionFactor.create!(
+      calendar_year: 2009, locality: "NATIONAL",
+      conversion_factor: 70.0, wage_index: 1.0, release_label: "cms_opps_2009"
+    )
+
+    summary = analyze_single_obligation(
+      procedure: "OUTPATIENT_TEST", paid: 5_000, vendor_id: "ASC-VENDOR-1"
+    )
+    result = summary.results.first
+    assert_equal :opps, result.payment_system,
+                 "ASC-routed but no ASC data: conservative fall-through to OPPS, " \
+                 "not straight to the stub provider"
+  end
+
   # -- CAH 1.01× multiplier --------------------------------------------------
   # Critical Access Hospitals are paid by Medicare at 101% of reasonable
   # cost. For PRC MLR purposes the equivalent ceiling is 101% of the

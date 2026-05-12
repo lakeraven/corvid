@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_05_12_000001) do
+ActiveRecord::Schema[8.1].define(version: 2026_05_13_000001) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
@@ -49,6 +49,40 @@ ActiveRecord::Schema[8.1].define(version: 2026_05_12_000001) do
     t.check_constraint "api_name::text = ANY (ARRAY['pas'::character varying, 'patient_access'::character varying, 'provider_access'::character varying, 'payer_to_payer'::character varying]::text[])", name: "corvid_api_call_logs_api_name_check"
   end
 
+  create_table "corvid_asc_apc_weights", force: :cascade do |t|
+    t.string "apc_code", null: false
+    t.integer "calendar_year", null: false
+    t.datetime "created_at", null: false
+    t.decimal "relative_weight", precision: 8, scale: 4, null: false
+    t.string "release_label"
+    t.datetime "updated_at", null: false
+    t.index ["calendar_year", "apc_code"], name: "idx_corvid_asc_apc_weights_cy_apc", unique: true
+  end
+
+  create_table "corvid_asc_conversion_factors", force: :cascade do |t|
+    t.integer "calendar_year", null: false
+    t.decimal "conversion_factor", precision: 12, scale: 4, null: false
+    t.datetime "created_at", null: false
+    t.string "locality", null: false
+    t.string "release_label"
+    t.datetime "updated_at", null: false
+    t.decimal "wage_index", precision: 8, scale: 4, default: "1.0", null: false
+    t.index ["calendar_year", "locality"], name: "idx_corvid_asc_conversion_factors_cy_locality", unique: true
+  end
+
+  create_table "corvid_asc_facilities", force: :cascade do |t|
+    t.string "ccn"
+    t.datetime "created_at", null: false
+    t.date "effective_date", null: false
+    t.date "end_date"
+    t.string "facility_name"
+    t.string "npi"
+    t.string "source_release"
+    t.datetime "updated_at", null: false
+    t.index ["ccn", "effective_date"], name: "idx_corvid_asc_ccn_effective", unique: true, where: "(ccn IS NOT NULL)"
+    t.index ["npi", "effective_date"], name: "idx_corvid_asc_npi_effective", unique: true, where: "(npi IS NOT NULL)"
+  end
+
   create_table "corvid_billing_transactions", force: :cascade do |t|
     t.datetime "created_at", null: false
     t.string "direction", default: "outbound", null: false
@@ -70,7 +104,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_05_12_000001) do
   end
 
   create_table "corvid_cah_facilities", force: :cascade do |t|
-    t.string "ccn", null: false
+    t.string "ccn"
     t.datetime "created_at", null: false
     t.date "effective_date", null: false
     t.date "end_date"
@@ -78,8 +112,8 @@ ActiveRecord::Schema[8.1].define(version: 2026_05_12_000001) do
     t.string "npi"
     t.string "source_release"
     t.datetime "updated_at", null: false
-    t.index ["ccn", "effective_date"], name: "idx_corvid_cah_ccn_effective", unique: true
-    t.index ["npi"], name: "index_corvid_cah_facilities_on_npi"
+    t.index ["ccn", "effective_date"], name: "idx_corvid_cah_ccn_effective", unique: true, where: "(ccn IS NOT NULL)"
+    t.index ["npi", "effective_date"], name: "idx_corvid_cah_npi_effective", unique: true, where: "(npi IS NOT NULL)"
   end
 
   create_table "corvid_care_team_members", force: :cascade do |t|

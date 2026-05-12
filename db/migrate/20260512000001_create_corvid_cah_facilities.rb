@@ -6,7 +6,10 @@
 class CreateCorvidCahFacilities < ActiveRecord::Migration[8.0]
   def change
     create_table :corvid_cah_facilities do |t|
-      t.string :ccn, null: false
+      # Either ccn or npi must be present (model-level validation);
+      # CMS feeds can be CCN-keyed, NPI-keyed, or both. A row with
+      # only NPI is a legitimate match target for vendor_id lookup.
+      t.string :ccn
       t.string :npi
       t.string :facility_name
       t.date :effective_date, null: false
@@ -15,11 +18,17 @@ class CreateCorvidCahFacilities < ActiveRecord::Migration[8.0]
       t.timestamps
     end
 
-    # Composite unique so multiple historical periods can coexist for
-    # the same CCN (a facility loses then regains CAH status, or the
-    # CMS list re-publishes with a corrected effective_date).
+    # Partial unique on (ccn, effective_date) — only enforced when
+    # ccn is present, so NPI-only rows aren't blocked. Symmetric
+    # partial unique on (npi, effective_date) prevents overlapping
+    # NPI-keyed rows from coexisting. Together they cover the
+    # "historical periods coexist for the same identifier" intent
+    # without forcing both identifiers to be supplied.
     add_index :corvid_cah_facilities, [ :ccn, :effective_date ], unique: true,
+              where: "ccn IS NOT NULL",
               name: "idx_corvid_cah_ccn_effective"
-    add_index :corvid_cah_facilities, :npi
+    add_index :corvid_cah_facilities, [ :npi, :effective_date ], unique: true,
+              where: "npi IS NOT NULL",
+              name: "idx_corvid_cah_npi_effective"
   end
 end

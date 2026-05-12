@@ -243,6 +243,42 @@ module Corvid
         # OPPS lookup (#277): real CMS data first; fall back to in-code
         # stub provider when no row is loaded. Mirrors the IPPS analyze_
         # inpatient pattern — release_label drives confidence label.
+        #
+        # ASC routing (#278): when the obligation's vendor is in the
+        # corvid_asc_facilities registry on the service date, route to
+        # AscRateProvider instead. Same APC code, ASC-specific weight +
+        # conversion factor → typically lower MLR than OPPS. If the ASC
+        # lookup misses (e.g., procedure isn't ASC-covered in our
+        # loaded data), fall through to the OPPS path as a conservative
+        # default rather than dropping straight to the stub provider.
+        is_asc = Corvid::AscFacility.applies?(
+          vendor_id: obligation.vendor_id, on: obligation.service_date
+        )
+        asc_lookup = is_asc ? Corvid::AscRateProvider.lookup_for(
+          apc_code: proc_info.apc,
+          locality: facility.locality,
+          date: obligation.service_date
+        ) : nil
+
+        if asc_lookup
+          stub_derived = asc_lookup.release_label.to_s.start_with?("stub")
+          return Result.new(
+            base_fields(obligation, proc_info, facility).merge(
+              medicare_equivalent: asc_lookup.rate,
+              overpayment: [ obligation.paid_amount.to_f - asc_lookup.rate, 0 ].max.round(2),
+              payment_system: :asc,
+              rate_source: stub_derived ? :stub : :real,
+              recovery_confidence: stub_derived ? :stub_estimate : :clear,
+              rate_source_release: asc_lookup.release_label,
+              notes: stub_derived ?
+                "Ambulatory surgical center (APC #{proc_info.apc}). Priced via " \
+                "stub-derived ASC canonical CSV (release=#{asc_lookup.release_label})." :
+                "Ambulatory surgical center (APC #{proc_info.apc}). " \
+                "Priced via real CMS ASC Final Rule (release=#{asc_lookup.release_label})."
+            )
+          )
+        end
+
         lookup = Corvid::OppsRateProvider.lookup_for(
           apc_code: proc_info.apc,
           locality: facility.locality,
