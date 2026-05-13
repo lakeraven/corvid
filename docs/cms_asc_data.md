@@ -52,7 +52,9 @@ ccn,npi,facility_name,effective_date,end_date
 04C0001111,,ADVANCED INTERVENTIONAL PAIN - TEXARKANA ASC,2022-10-28,
 ```
 
-- `npi` is blank (POS doesn't carry NPI; NPPES cross-walk = separate step)
+- `npi` is blank (POS doesn't carry NPI; resolved at lookup time via
+  the NPI ↔ CCN crosswalk — see
+  [cms_npi_crosswalk_data.md](cms_npi_crosswalk_data.md))
 - `effective_date` ← `orgnl_prtcptn_dt`
 - `end_date` blank for active, ISO date for terminated
 
