@@ -11,23 +11,17 @@ namespace :cms do
 
       year = args[:year].to_i
       label = args[:label] || "manual"
-      text = File.read(args[:path]).lines.reject { |l| l.lstrip.start_with?("#") }.join
+      rows = Corvid::CmsAscParser.parse_conversion_factors(
+        File.read(args[:path]), calendar_year: year, release_label: label
+      )
       now = Time.current
       ActiveRecord::Base.transaction do
         Corvid::AscConversionFactor.where(calendar_year: year).delete_all
-        rows = CSV.parse(text, headers: true).map do |row|
-          {
-            calendar_year: year,
-            locality: row["locality"].to_s.strip,
-            conversion_factor: row["conversion_factor"].to_f,
-            wage_index: row["wage_index"].to_f,
-            release_label: label,
-            created_at: now, updated_at: now
-          }
-        end
-        Corvid::AscConversionFactor.insert_all(rows) if rows.any?
+        Corvid::AscConversionFactor.insert_all(
+          rows.map { |r| r.merge(created_at: now, updated_at: now) }
+        ) if rows.any?
       end
-      puts "Imported ASC conversion factors for CY #{year} (label=#{label}, replaced full year snapshot)"
+      puts "Imported #{rows.size} ASC conversion factors for CY #{year} (label=#{label}, replaced full year snapshot)"
     end
 
     desc "Normalize a CMS ASC Addendum AA CSV into the canonical hcpcs_weights CSV: rake cms:asc:normalize_addendum_aa[year,input,output,release_label]"
@@ -49,25 +43,19 @@ namespace :cms do
 
       year = args[:year].to_i
       label = args[:label] || "manual"
-      text = File.read(args[:path]).lines.reject { |l| l.lstrip.start_with?("#") }.join
+      rows = Corvid::CmsAscParser.parse_hcpcs_rates(
+        File.read(args[:path]), calendar_year: year, release_label: label
+      )
       now = Time.current
       ActiveRecord::Base.transaction do
         Corvid::AscHcpcsRate.where(calendar_year: year).delete_all
-        CSV.parse(text, headers: true).each_slice(500) do |batch|
-          rows = batch.map do |row|
-            {
-              calendar_year: year,
-              hcpcs_code: row["hcpcs_code"].to_s.strip,
-              payment_indicator: row["payment_indicator"]&.strip.presence,
-              payment_weight: row["payment_weight"].to_f,
-              release_label: label,
-              created_at: now, updated_at: now
-            }
-          end
-          Corvid::AscHcpcsRate.insert_all(rows) if rows.any?
+        rows.each_slice(500) do |batch|
+          Corvid::AscHcpcsRate.insert_all(
+            batch.map { |r| r.merge(created_at: now, updated_at: now) }
+          )
         end
       end
-      puts "Imported ASC HCPCS rates for CY #{year} (label=#{label}, replaced full year snapshot)"
+      puts "Imported #{rows.size} ASC HCPCS rates for CY #{year} (label=#{label}, replaced full year snapshot)"
     end
 
     desc "Wipe all ASC rows tagged with a given source_release: rake cms:asc:clear_facilities[release_label]"
