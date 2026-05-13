@@ -94,12 +94,16 @@ module Corvid
     end
 
     def self.column_indexes(header_row)
-      normalized = header_row.map { |h| h.to_s.strip.downcase }
+      # Collapse internal whitespace too — quarterly variants sometimes
+      # ship `" Relative  Weight "` (double inner space) which would
+      # otherwise miss the `"Relative Weight"` lookup.
+      normalized = header_row.map { |h| h.to_s.strip.downcase.gsub(/\s+/, " ") }
       required = {
         apc: APC_HEADER, si: SI_HEADER, weight: WEIGHT_HEADER
       }
       required.transform_values do |label|
-        idx = normalized.index(label.downcase)
+        target = label.downcase.gsub(/\s+/, " ")
+        idx = normalized.index(target)
         raise MalformedFileError,
               "Addendum A header missing required column #{label.inspect}; " \
               "got: #{header_row.inspect}" if idx.nil?

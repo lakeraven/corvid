@@ -109,6 +109,24 @@ class Corvid::CmsOppsAddendumANormalizerTest < ActiveSupport::TestCase
     reordered&.unlink
   end
 
+  test "header with extra internal whitespace still resolves (CY 2024 quirk)" do
+    # CY 2024 quarterly Web Addendum A ships "Relative Weight" with a
+    # double internal space and trailing/leading padding. Header match
+    # must collapse whitespace runs, not just strip outer space.
+    quirky = Tempfile.new([ "quirky", ".csv" ])
+    quirky.write(<<~CSV)
+      ,Addendum A,,,,,,,,
+      APC ,Group Title,SI, Relative  Weight , Payment Rate
+      5071,Level 1 Excision,J1,25.4378,$2324
+    CSV
+    quirky.close
+    rows = Corvid::CmsOppsAddendumANormalizer.normalize(quirky.path)
+    assert_equal 1, rows.size
+    assert_in_delta 25.4378, rows[0][:relative_weight], 0.0001
+  ensure
+    quirky&.unlink
+  end
+
   test "header missing a required column raises with the offending name" do
     missing_col = Tempfile.new([ "miss", ".csv" ])
     missing_col.write(<<~CSV)
