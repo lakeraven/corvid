@@ -24,11 +24,15 @@ module Corvid
     validates :npi, uniqueness: { scope: :effective_date }, allow_nil: true
 
     # Returns true iff a CAH row matches the given vendor identifier
-    # (ccn or npi) and is in effect on the service date.
+    # (ccn or npi) and is in effect on the service date. When the vendor
+    # is keyed by NPI but CMS only lists the facility by CCN, the
+    # NPI↔CCN crosswalk resolves the NPI to its CCN(s) in effect on the
+    # service date.
     def self.applies?(vendor_id:, on:)
       return false if vendor_id.blank? || on.nil?
 
-      where("ccn = :v OR npi = :v", v: vendor_id)
+      candidates = [ vendor_id ] + NpiCcnCrosswalk.ccns_for(npi: vendor_id, on: on)
+      where("ccn IN (:v) OR npi IN (:v)", v: candidates)
         .where("effective_date <= ?", on)
         .where("end_date IS NULL OR end_date >= ?", on)
         .exists?

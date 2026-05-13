@@ -64,4 +64,34 @@ class Corvid::CahFacilityTest < ActiveSupport::TestCase
     assert Corvid::CahFacility.applies?(vendor_id: "451301", on: Date.new(2022, 6, 1)),
            "within second historical period"
   end
+
+  test "applies? resolves an NPI vendor_id through the NPI↔CCN crosswalk to a CCN-keyed CAH row" do
+    # CMS POS feed gives us the CAH row keyed by CCN only; the tribal
+    # PRC export gives us vendor_id as the facility's NPI. Without the
+    # crosswalk, applies? would miss this match and the 1.01× CAH
+    # multiplier would never fire.
+    Corvid::CahFacility.create!(
+      ccn: "451301", effective_date: Date.new(2015, 1, 1)
+    )
+    Corvid::NpiCcnCrosswalk.create!(
+      npi: "1234567890", ccn: "451301",
+      effective_date: Date.new(2015, 1, 1)
+    )
+
+    assert Corvid::CahFacility.applies?(vendor_id: "1234567890", on: Date.new(2024, 6, 1)),
+           "NPI vendor_id must match the CCN-keyed CAH row via crosswalk"
+  end
+
+  test "applies? does not match when crosswalk row is outside the service date window" do
+    Corvid::CahFacility.create!(
+      ccn: "451301", effective_date: Date.new(2015, 1, 1)
+    )
+    Corvid::NpiCcnCrosswalk.create!(
+      npi: "1234567890", ccn: "451301",
+      effective_date: Date.new(2015, 1, 1), end_date: Date.new(2019, 12, 31)
+    )
+
+    refute Corvid::CahFacility.applies?(vendor_id: "1234567890", on: Date.new(2024, 6, 1)),
+           "NPI billed under a different CCN by 2024, must not match expired crosswalk"
+  end
 end
