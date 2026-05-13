@@ -58,6 +58,46 @@ class Corvid::CmsPosAscNormalizerTest < ActiveSupport::TestCase
     assert_empty parsed[:rejects]
   end
 
+  test "BOM-prefixed header parses correctly (rows aren't silently dropped)" do
+    # If header validation strips BOM but row parsing reads fresh,
+    # row["prvdr_num"] returns nil for every row and the output is
+    # empty while appearing "successful." Guard against that.
+    bom = Tempfile.new([ "bom", ".csv" ])
+    bom.binmode
+    bom.write("\xEF\xBB\xBF".b)
+    bom.write(<<~CSV)
+      prvdr_num,fac_name,prvdr_sbtyp_id,prvdr_type_id,orgnl_prtcptn_dt,trmntn_exprtn_dt
+      17C0001897,Founders Surgery Center LLC,Not Applicable,11,2018-04-12,Not Available
+    CSV
+    bom.close
+    result = Corvid::CmsPosAscNormalizer.normalize(bom.path)
+    assert_equal 1, result[:rows].size,
+                 "BOM-prefixed header must still produce a row; silent drop is the failure mode"
+    assert_equal "17C0001897", result[:rows][0][:ccn]
+    assert_empty result[:rejects]
+  ensure
+    bom&.unlink
+  end
+
+  test "ASC with missing or malformed orgnl_prtcptn_dt is rejected with row context" do
+    bad = Tempfile.new([ "bad", ".csv" ])
+    bad.write(<<~CSV)
+      prvdr_num,fac_name,prvdr_sbtyp_id,prvdr_type_id,orgnl_prtcptn_dt,trmntn_exprtn_dt
+      99C0099999,Missing Effective Date,Not Applicable,11,,Not Available
+      99C0099998,Malformed Effective Date,Not Applicable,11,BADDATE,Not Available
+      99C0099997,Active Good Row,Not Applicable,11,2018-01-01,Not Available
+    CSV
+    bad.close
+    result = Corvid::CmsPosAscNormalizer.normalize(bad.path)
+    assert_equal [ "99C0099997" ], result[:rows].map { |r| r[:ccn] },
+                 "only the row with a parseable effective_date survives"
+    assert_equal 2, result[:rejects].size
+    assert(result[:rejects].all? { |r| r[:reason].include?("orgnl_prtcptn_dt") },
+           "reject reason names the offending field for ops triage")
+  ensure
+    bad&.unlink
+  end
+
   test "missing required column raises MalformedFileError" do
     bad = Tempfile.new([ "bad", ".csv" ])
     bad.write("foo,bar\n1,2\n")
