@@ -100,16 +100,9 @@ effective.
 Recommended cadence: refresh annually unless tribal customers report
 vendor mismatches.
 
-## NPI cross-walk (future)
+## NPI cross-walk
 
-POS file doesn't carry NPI. If PRC obligations arrive keyed by NPI
-rather than CCN, `CahFacility.applies?` won't match. Two paths:
-
-1. **Cross-walk via NPPES** — the National Plan and Provider
-   Enumeration System has a public CSV mapping NPI ↔ CCN. Adds a
-   second normalization step.
-2. **Customer-side conversion** — tribal IT translates NPI to CCN
-   before importing PRC obligations.
-
-For Yakama/Skokomish-shape customers we'll know which keying is in
-use after the first PRC export goes through the analyzer.
+POS file doesn't carry NPI. When PRC obligations arrive keyed by NPI,
+`CahFacility.applies?` resolves the NPI to its CCN(s) on the service
+date via `corvid_npi_ccn_crosswalks`. Source data and refresh recipe:
+see [cms_npi_crosswalk_data.md](cms_npi_crosswalk_data.md).
