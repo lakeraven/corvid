@@ -246,16 +246,17 @@ module Corvid
         #
         # ASC routing (#278): when the obligation's vendor is in the
         # corvid_asc_facilities registry on the service date, route to
-        # AscRateProvider instead. Same APC code, ASC-specific weight +
-        # conversion factor → typically lower MLR than OPPS. If the ASC
-        # lookup misses (e.g., procedure isn't ASC-covered in our
-        # loaded data), fall through to the OPPS path as a conservative
-        # default rather than dropping straight to the stub provider.
+        # AscRateProvider. ASC publishes rates per HCPCS (not per APC),
+        # so we pass proc_info.hcpcs — different lookup key than OPPS.
+        # If the ASC lookup misses (procedure isn't ASC-covered, or
+        # our Addendum AA data isn't loaded for that year), fall
+        # through to the OPPS path as a conservative default rather
+        # than dropping straight to the stub provider.
         is_asc = Corvid::AscFacility.applies?(
           vendor_id: obligation.vendor_id, on: obligation.service_date
         )
         asc_lookup = is_asc ? Corvid::AscRateProvider.lookup_for(
-          apc_code: proc_info.apc,
+          hcpcs_code: proc_info.hcpcs,
           locality: facility.locality,
           date: obligation.service_date
         ) : nil
@@ -271,9 +272,9 @@ module Corvid
               recovery_confidence: stub_derived ? :stub_estimate : :clear,
               rate_source_release: asc_lookup.release_label,
               notes: stub_derived ?
-                "Ambulatory surgical center (APC #{proc_info.apc}). Priced via " \
+                "Ambulatory surgical center (HCPCS #{proc_info.hcpcs}). Priced via " \
                 "stub-derived ASC canonical CSV (release=#{asc_lookup.release_label})." :
-                "Ambulatory surgical center (APC #{proc_info.apc}). " \
+                "Ambulatory surgical center (HCPCS #{proc_info.hcpcs}). " \
                 "Priced via real CMS ASC Final Rule (release=#{asc_lookup.release_label})."
             )
           )

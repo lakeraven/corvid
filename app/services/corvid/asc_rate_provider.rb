@@ -1,14 +1,15 @@
 # frozen_string_literal: true
 
 module Corvid
-  # Real ASC APC rate provider (#278). Same shape as OppsRateProvider:
+  # Real ASC payment rate provider (#278). CMS publishes ASC payment
+  # data per HCPCS (Addendum AA), not per APC — different structure
+  # from OPPS. The formula matches OPPS in shape:
   #
-  #   medicare_equivalent = apc_relative_weight × conversion_factor × wage_index
+  #   medicare_equivalent = payment_weight × ASC_conversion_factor × wage_index
   #
-  # Different tables: corvid_asc_apc_weights and corvid_asc_conversion_
-  # factors carry ASC-specific values (CMS Addendum AA + ASC CF). For
-  # an APC that's both OPPS-paid and ASC-paid, the ASC rate is usually
-  # lower than OPPS (lower CF, sometimes lower weight).
+  # but the lookup is keyed by HCPCS. For an HCPCS that's both
+  # OPPS-paid and ASC-paid, ASC typically yields a lower rate
+  # (smaller CF, sometimes smaller weight).
   #
   # Calendar-year boundaries (Jan 1), matching OPPS.
   module AscRateProvider
@@ -17,27 +18,27 @@ module Corvid
     Lookup = Struct.new(:rate, :release_label, keyword_init: true)
 
     class << self
-      def rate_for(apc_code:, locality: nil, date: nil)
-        result = lookup_for(apc_code: apc_code, locality: locality, date: date)
+      def rate_for(hcpcs_code:, locality: nil, date: nil)
+        result = lookup_for(hcpcs_code: hcpcs_code, locality: locality, date: date)
         result&.rate
       end
 
-      def lookup_for(apc_code:, locality: nil, date: nil)
-        return nil if apc_code.nil? || date.nil?
+      def lookup_for(hcpcs_code:, locality: nil, date: nil)
+        return nil if hcpcs_code.nil? || date.nil?
 
         normalized_locality = locality.to_s.strip.empty? ? AscConversionFactor::NATIONAL_LOCALITY : locality
 
         cy = calendar_year(date)
-        weight_row = AscApcWeight.find_by(apc_code: apc_code.to_s, calendar_year: cy)
-        return nil unless weight_row
+        rate_row = AscHcpcsRate.find_by(hcpcs_code: hcpcs_code.to_s, calendar_year: cy)
+        return nil unless rate_row
 
         cf_row = AscConversionFactor.lookup(calendar_year: cy, locality: normalized_locality)
         return nil unless cf_row
 
-        rate = (weight_row.relative_weight * cf_row.conversion_factor * cf_row.wage_index).round(2)
-        label = [ weight_row.release_label, cf_row.release_label ]
+        rate = (rate_row.payment_weight * cf_row.conversion_factor * cf_row.wage_index).round(2)
+        label = [ rate_row.release_label, cf_row.release_label ]
                   .compact.find { |l| l.to_s.start_with?("stub") } ||
-                weight_row.release_label || cf_row.release_label
+                rate_row.release_label || cf_row.release_label
         Lookup.new(rate: rate, release_label: label)
       end
 

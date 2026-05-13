@@ -1,7 +1,75 @@
 # frozen_string_literal: true
 
+require "csv"
+
 namespace :cms do
   namespace :asc do
+    desc "Import ASC conversion factors from a canonical CSV: rake cms:asc:import_conversion_factors[year,/path/to/asc_cf.csv,release_label]"
+    task :import_conversion_factors, [ :year, :path, :label ] => :environment do |_t, args|
+      abort "Usage: rake cms:asc:import_conversion_factors[year,/path/to/asc_cf.csv,release_label]" unless args[:year] && args[:path]
+      abort "File not found: #{args[:path]}" unless File.exist?(args[:path])
+
+      year = args[:year].to_i
+      label = args[:label] || "manual"
+      text = File.read(args[:path]).lines.reject { |l| l.lstrip.start_with?("#") }.join
+      now = Time.current
+      ActiveRecord::Base.transaction do
+        Corvid::AscConversionFactor.where(calendar_year: year).delete_all
+        rows = CSV.parse(text, headers: true).map do |row|
+          {
+            calendar_year: year,
+            locality: row["locality"].to_s.strip,
+            conversion_factor: row["conversion_factor"].to_f,
+            wage_index: row["wage_index"].to_f,
+            release_label: label,
+            created_at: now, updated_at: now
+          }
+        end
+        Corvid::AscConversionFactor.insert_all(rows) if rows.any?
+      end
+      puts "Imported ASC conversion factors for CY #{year} (label=#{label}, replaced full year snapshot)"
+    end
+
+    desc "Normalize a CMS ASC Addendum AA CSV into the canonical hcpcs_weights CSV: rake cms:asc:normalize_addendum_aa[year,input,output,release_label]"
+    task :normalize_addendum_aa, [ :year, :input, :output, :label ] => :environment do |_t, args|
+      abort "Usage: rake cms:asc:normalize_addendum_aa[year,input.csv,output.csv,release_label]" unless args[:year] && args[:input] && args[:output]
+      abort "Input not found: #{args[:input]}" unless File.exist?(args[:input])
+
+      label = args[:label] || "cms_asc_cy#{args[:year]}_final_rule"
+      rows = Corvid::CmsAscAddendumAaNormalizer.normalize(args[:input])
+      csv = Corvid::CmsAscAddendumAaNormalizer.render(rows, release_label: label)
+      File.write(args[:output], csv)
+      puts "Wrote #{rows.size} ASC HCPCS rates to #{args[:output]} (label=#{label})"
+    end
+
+    desc "Import ASC HCPCS rates from a canonical CSV: rake cms:asc:import_hcpcs_rates[year,/path/to/asc_hcpcs.csv,release_label]"
+    task :import_hcpcs_rates, [ :year, :path, :label ] => :environment do |_t, args|
+      abort "Usage: rake cms:asc:import_hcpcs_rates[year,/path/to/asc_hcpcs.csv,release_label]" unless args[:year] && args[:path]
+      abort "File not found: #{args[:path]}" unless File.exist?(args[:path])
+
+      year = args[:year].to_i
+      label = args[:label] || "manual"
+      text = File.read(args[:path]).lines.reject { |l| l.lstrip.start_with?("#") }.join
+      now = Time.current
+      ActiveRecord::Base.transaction do
+        Corvid::AscHcpcsRate.where(calendar_year: year).delete_all
+        CSV.parse(text, headers: true).each_slice(500) do |batch|
+          rows = batch.map do |row|
+            {
+              calendar_year: year,
+              hcpcs_code: row["hcpcs_code"].to_s.strip,
+              payment_indicator: row["payment_indicator"]&.strip.presence,
+              payment_weight: row["payment_weight"].to_f,
+              release_label: label,
+              created_at: now, updated_at: now
+            }
+          end
+          Corvid::AscHcpcsRate.insert_all(rows) if rows.any?
+        end
+      end
+      puts "Imported ASC HCPCS rates for CY #{year} (label=#{label}, replaced full year snapshot)"
+    end
+
     desc "Wipe all ASC rows tagged with a given source_release: rake cms:asc:clear_facilities[release_label]"
     task :clear_facilities, [ :label ] => :environment do |_t, args|
       abort "Usage: rake cms:asc:clear_facilities[release_label]" unless args[:label]

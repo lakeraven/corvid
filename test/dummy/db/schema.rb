@@ -49,16 +49,6 @@ ActiveRecord::Schema[8.1].define(version: 2026_05_13_000001) do
     t.check_constraint "api_name::text = ANY (ARRAY['pas'::character varying, 'patient_access'::character varying, 'provider_access'::character varying, 'payer_to_payer'::character varying]::text[])", name: "corvid_api_call_logs_api_name_check"
   end
 
-  create_table "corvid_asc_apc_weights", force: :cascade do |t|
-    t.string "apc_code", null: false
-    t.integer "calendar_year", null: false
-    t.datetime "created_at", null: false
-    t.decimal "relative_weight", precision: 8, scale: 4, null: false
-    t.string "release_label"
-    t.datetime "updated_at", null: false
-    t.index ["calendar_year", "apc_code"], name: "idx_corvid_asc_apc_weights_cy_apc", unique: true
-  end
-
   create_table "corvid_asc_conversion_factors", force: :cascade do |t|
     t.integer "calendar_year", null: false
     t.decimal "conversion_factor", precision: 12, scale: 4, null: false
@@ -81,6 +71,17 @@ ActiveRecord::Schema[8.1].define(version: 2026_05_13_000001) do
     t.datetime "updated_at", null: false
     t.index ["ccn", "effective_date"], name: "idx_corvid_asc_ccn_effective", unique: true, where: "(ccn IS NOT NULL)"
     t.index ["npi", "effective_date"], name: "idx_corvid_asc_npi_effective", unique: true, where: "(npi IS NOT NULL)"
+  end
+
+  create_table "corvid_asc_hcpcs_rates", force: :cascade do |t|
+    t.integer "calendar_year", null: false
+    t.datetime "created_at", null: false
+    t.string "hcpcs_code", null: false
+    t.string "payment_indicator"
+    t.decimal "payment_weight", precision: 10, scale: 4, null: false
+    t.string "release_label"
+    t.datetime "updated_at", null: false
+    t.index ["calendar_year", "hcpcs_code"], name: "idx_corvid_asc_hcpcs_rates_cy_hcpcs", unique: true
   end
 
   create_table "corvid_billing_transactions", force: :cascade do |t|

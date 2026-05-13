@@ -1,24 +1,26 @@
 # frozen_string_literal: true
 
 # CMS Ambulatory Surgical Center (ASC) payment tables. ASC payment
-# parallels OPPS structurally — APC weight × conversion factor × wage
-# index — but uses ASC-specific weights (CMS Addendum AA differs from
-# OPPS Addendum B for some APCs) and an ASC conversion factor that
-# runs roughly 60% of the OPPS CF. The analyzer routes outpatient
-# obligations to ASC when the vendor is in corvid_asc_facilities.
+# uses HCPCS-keyed weights (CMS Addendum AA) × ASC conversion factor
+# × wage index. The ASC CF runs roughly 60% of OPPS CF; for an HCPCS
+# that's both OPPS-paid and ASC-paid, the ASC rate is typically lower.
+#
+# Note: ASC publishes per HCPCS, NOT per APC — different structure
+# from OPPS. Our analyzer passes proc_info.hcpcs to AscRateProvider.
 class CreateCorvidAscTables < ActiveRecord::Migration[8.1]
   def change
-    create_table :corvid_asc_apc_weights do |t|
+    create_table :corvid_asc_hcpcs_rates do |t|
       t.integer :calendar_year, null: false
-      t.string :apc_code, null: false
-      t.decimal :relative_weight, precision: 8, scale: 4, null: false
+      t.string :hcpcs_code, null: false
+      t.string :payment_indicator
+      t.decimal :payment_weight, precision: 10, scale: 4, null: false
       t.string :release_label
       t.timestamps
     end
-    add_index :corvid_asc_apc_weights,
-              [ :calendar_year, :apc_code ],
+    add_index :corvid_asc_hcpcs_rates,
+              [ :calendar_year, :hcpcs_code ],
               unique: true,
-              name: "idx_corvid_asc_apc_weights_cy_apc"
+              name: "idx_corvid_asc_hcpcs_rates_cy_hcpcs"
 
     create_table :corvid_asc_conversion_factors do |t|
       t.integer :calendar_year, null: false
