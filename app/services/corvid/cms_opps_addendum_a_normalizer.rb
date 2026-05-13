@@ -60,6 +60,11 @@ module Corvid
         weight_raw = row[cols[:weight]]&.strip
         next if apc.nil? || apc.empty?
         next if weight_raw.nil? || weight_raw.empty?
+        # CMS uses "." as a "not applicable" sentinel for rows that don't
+        # carry a national relative weight (contractor-priced, etc.).
+        # Distinct from corrupted numeric input like "12O.34" — sentinel
+        # rows skip cleanly; corruption still raises.
+        next if weight_raw == "."
         next unless WEIGHTED_STATUS_INDICATORS.include?(si)
 
         weight = parse_weight(weight_raw, apc: apc, line: line_number)
@@ -94,12 +99,16 @@ module Corvid
     end
 
     def self.column_indexes(header_row)
-      normalized = header_row.map { |h| h.to_s.strip.downcase }
+      # Collapse internal whitespace too — quarterly variants sometimes
+      # ship `" Relative  Weight "` (double inner space) which would
+      # otherwise miss the `"Relative Weight"` lookup.
+      normalized = header_row.map { |h| h.to_s.strip.downcase.gsub(/\s+/, " ") }
       required = {
         apc: APC_HEADER, si: SI_HEADER, weight: WEIGHT_HEADER
       }
       required.transform_values do |label|
-        idx = normalized.index(label.downcase)
+        target = label.downcase.gsub(/\s+/, " ")
+        idx = normalized.index(target)
         raise MalformedFileError,
               "Addendum A header missing required column #{label.inspect}; " \
               "got: #{header_row.inspect}" if idx.nil?
