@@ -240,9 +240,10 @@ class Corvid::PrcOverpaymentAnalyzerTest < ActiveSupport::TestCase
     )
     # ASC-specific weight + CF; deliberately different from OPPS values
     # used in other outpatient tests so we can see the routing took.
-    Corvid::AscApcWeight.create!(
-      calendar_year: 2009, apc_code: "5071",
-      relative_weight: 20.0, release_label: "cms_asc_2009"
+    Corvid::AscHcpcsRate.create!(
+      calendar_year: 2009, hcpcs_code: "12345",
+      payment_indicator: "G2",
+      payment_weight: 20.0, release_label: "cms_asc_2009"
     )
     Corvid::AscConversionFactor.create!(
       calendar_year: 2009, locality: "NATIONAL",
@@ -297,7 +298,7 @@ class Corvid::PrcOverpaymentAnalyzerTest < ActiveSupport::TestCase
     Corvid::AscFacility.create!(
       ccn: "ASC-VENDOR-1", effective_date: Date.new(2009, 1, 1)
     )
-    # No AscApcWeight for this APC/year.
+    # No AscHcpcsRate for this HCPCS/year.
     Corvid::OppsApcWeight.create!(
       calendar_year: 2009, apc_code: "5071", relative_weight: 25.4378,
       release_label: "cms_opps_2009"

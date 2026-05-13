@@ -1,0 +1,9 @@
+"Addendum AA -- ASC Covered Surgical Procedures for CY 2026",,,,,,
+"AMA copyright notice",,,,,,
+,,,,,,
+HCPCS Code,,Short Descriptor,Subject to Multiple Procedure Discounting,January 2026 Payment Indicator,January 2026 Payment Weight,January 2026 Payment Rate
+0095T,,Rmvl artific disc addl crvcl,N,N1,,
+0101T,,Esw muscskel sys nos,Y,R2,2.4065,$135.54
+0102T,,Esw phy anes lat hmrl epcndl,Y,G2,29.2047,"$1,644.87"
+0200T,,Perq sacral augmt unilat inj,Y,J8,83.7955,"$4,719.53"
+9999X,,Sentinel No Payment,N,D5,.,$0.00
