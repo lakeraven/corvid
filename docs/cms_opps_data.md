@@ -159,11 +159,11 @@ By dollar volume in tribal PRC obligations:
 
 ## Coverage status
 
-| CY | Status | release_label | CF |
-| --- | --- | --- | ---: |
-| 2026 | **Real CMS data** | `cms_opps_cy2026_final_rule` | $91.4150 |
-| 2025 | Stub fallback | — | $89.1690 (known) |
-| 2024 | Stub fallback | — | $87.3820 (known) |
+| CY | Status | release_label | CF | APCs |
+| --- | --- | --- | ---: | ---: |
+| 2026 | **Real CMS data** | `cms_opps_cy2026_final_rule` | $91.4150 | 250 |
+| 2025 | **Real CMS data** | `cms_opps_cy2025_final_rule` | $89.1690 | 258 |
+| 2024 | Stub fallback | — | $87.3820 (known) | — |
 | 2023 | Stub fallback | — | TBD |
 | 2022 | Stub fallback | — | TBD |
 | 2021 | Stub fallback | — | TBD |
