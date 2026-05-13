@@ -81,4 +81,72 @@ class CmsNppesRakeTest < ActiveSupport::TestCase
       Rake::Task["cms:nppes:import_crosswalk"].invoke("/no/such/file.csv", "label")
     end
   end
+
+  test "import_crosswalk rejects malformed date strings rather than silently coercing to nil" do
+    # A bad date string ActiveRecord can't parse would coerce to nil
+    # and create a row with unbounded effective_date / end_date — a
+    # silently-active crosswalk mapping. We reject the row instead.
+    path = File.join(@tmpdir, "bad_dates.csv")
+    File.write(path, <<~CSV)
+      npi,ccn,effective_date,end_date
+      1234567890,451301,not-a-date,
+      9876543210,451999,2020-01-01,definitely/not/a/date
+      5555555555,452000,2015-01-01,
+    CSV
+
+    Rake::Task["cms:nppes:import_crosswalk"].invoke(path, "nppes_bad")
+
+    rows = Corvid::NpiCcnCrosswalk.where(source_release: "nppes_bad")
+    assert_equal 1, rows.count, "only the well-formed row should be inserted"
+    assert_equal "5555555555", rows.first.npi
+  end
+
+  test "import_crosswalk preserves blank effective_date / end_date as nil" do
+    # NPPES rows may legitimately omit a date — that's a permissive
+    # bound, not a malformed value, and must be distinguished from
+    # garbage input.
+    path = File.join(@tmpdir, "blank_dates.csv")
+    File.write(path, <<~CSV)
+      npi,ccn,effective_date,end_date
+      1234567890,451301,,
+    CSV
+
+    Rake::Task["cms:nppes:import_crosswalk"].invoke(path, "nppes_blank")
+
+    row = Corvid::NpiCcnCrosswalk.find_by!(npi: "1234567890")
+    assert_nil row.effective_date
+    assert_nil row.end_date
+  end
+
+  test "import_crosswalk aborts on a file with missing required headers without wiping the prior snapshot" do
+    seed = File.join(@tmpdir, "seed.csv")
+    File.write(seed, "npi,ccn,effective_date,end_date\n1234567890,451301,2015-01-01,\n")
+    Rake::Task["cms:nppes:import_crosswalk"].invoke(seed, "nppes_keep")
+    Rake::Task["cms:nppes:import_crosswalk"].reenable
+
+    bad = File.join(@tmpdir, "bad_headers.csv")
+    File.write(bad, "provider,facility\n1234567890,451301\n")
+    assert_raises(SystemExit) do
+      Rake::Task["cms:nppes:import_crosswalk"].invoke(bad, "nppes_keep")
+    end
+
+    assert_equal 1, Corvid::NpiCcnCrosswalk.where(source_release: "nppes_keep").count,
+                 "prior snapshot must survive a header-validation abort"
+  end
+
+  test "import_crosswalk aborts on a file that parses to zero usable rows without wiping the prior snapshot" do
+    seed = File.join(@tmpdir, "seed.csv")
+    File.write(seed, "npi,ccn,effective_date,end_date\n1234567890,451301,2015-01-01,\n")
+    Rake::Task["cms:nppes:import_crosswalk"].invoke(seed, "nppes_keep2")
+    Rake::Task["cms:nppes:import_crosswalk"].reenable
+
+    empty = File.join(@tmpdir, "empty_body.csv")
+    File.write(empty, "npi,ccn,effective_date,end_date\n,,,\n")
+    assert_raises(SystemExit) do
+      Rake::Task["cms:nppes:import_crosswalk"].invoke(empty, "nppes_keep2")
+    end
+
+    assert_equal 1, Corvid::NpiCcnCrosswalk.where(source_release: "nppes_keep2").count,
+                 "empty-body file must not silently wipe the prior snapshot"
+  end
 end
