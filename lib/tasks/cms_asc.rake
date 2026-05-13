@@ -58,6 +58,25 @@ namespace :cms do
       puts "Imported #{rows.size} ASC HCPCS rates for CY #{year} (label=#{label}, replaced full year snapshot)"
     end
 
+    desc "Normalize a CMS iQIES POS file into the canonical ASC CSV: rake cms:asc:normalize_pos[input.csv,output.csv,release_label]"
+    task :normalize_pos, [ :input, :output, :label ] => :environment do |_t, args|
+      abort "Usage: rake cms:asc:normalize_pos[input.csv,output.csv,release_label]" unless args[:input] && args[:output]
+      abort "Input not found: #{args[:input]}" unless File.exist?(args[:input])
+
+      label = args[:label] || "cms_iqies_manual"
+      result = Corvid::CmsPosAscNormalizer.normalize(args[:input])
+      rows = result[:rows]
+      rejects = result[:rejects]
+      csv = Corvid::CmsPosAscNormalizer.render(rows, release_label: label)
+      File.write(args[:output], csv)
+      active = rows.count { |r| r[:end_date].nil? }
+      puts "Wrote #{rows.size} ASCs (#{active} active, #{rows.size - active} terminated) to #{args[:output]} (label=#{label})"
+      if rejects.any?
+        puts "  skipped #{rejects.size} ASC row(s):"
+        rejects.each { |r| puts "    ccn=#{r[:ccn]}: #{r[:reason]}" }
+      end
+    end
+
     desc "Wipe all ASC rows tagged with a given source_release: rake cms:asc:clear_facilities[release_label]"
     task :clear_facilities, [ :label ] => :environment do |_t, args|
       abort "Usage: rake cms:asc:clear_facilities[release_label]" unless args[:label]
