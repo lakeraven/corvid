@@ -60,6 +60,11 @@ module Corvid
         weight_raw = row[cols[:weight]]&.strip
         next if apc.nil? || apc.empty?
         next if weight_raw.nil? || weight_raw.empty?
+        # CMS uses "." as a "not applicable" sentinel for rows that don't
+        # carry a national relative weight (contractor-priced, etc.).
+        # Distinct from corrupted numeric input like "12O.34" — sentinel
+        # rows skip cleanly; corruption still raises.
+        next if weight_raw == "."
         next unless WEIGHTED_STATUS_INDICATORS.include?(si)
 
         weight = parse_weight(weight_raw, apc: apc, line: line_number)

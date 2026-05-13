@@ -159,27 +159,38 @@ By dollar volume in tribal PRC obligations:
 
 ## Coverage status
 
+**All 20 calendar years (CY 2007–CY 2026) on real CMS Final Rule data.**
+
 | CY | Status | release_label | CF | APCs |
 | --- | --- | --- | ---: | ---: |
-| 2026 | **Real CMS data** | `cms_opps_cy2026_final_rule` | $91.4150 | 250 |
-| 2025 | **Real CMS data** | `cms_opps_cy2025_final_rule` | $89.1690 | 258 |
-| 2024 | **Real CMS data** | `cms_opps_cy2024_final_rule` | $87.3820 | 257 |
-| 2023 | Stub fallback | — | TBD |
-| 2022 | Stub fallback | — | TBD |
-| 2021 | Stub fallback | — | TBD |
-| 2020 | Stub fallback | — | TBD |
-| 2019 | Stub fallback | — | TBD |
-| 2018 | Stub fallback | — | TBD |
-| 2017 | Stub fallback | — | TBD |
-| 2016 | Stub fallback | — | TBD |
-| 2015 | Stub fallback | — | TBD |
-| 2014 | Stub fallback | — | TBD |
-| 2013 | Stub fallback | — | TBD |
-| 2012 | Stub fallback | — | TBD |
-| 2011 | Stub fallback | — | TBD |
-| 2010 | Stub fallback | — | TBD |
-| 2009 | Stub fallback | — | TBD |
-| 2008 | Stub fallback | — | TBD |
+| 2026 | Real CMS data | `cms_opps_cy2026_final_rule` | $91.4150 | 250 |
+| 2025 | Real CMS data | `cms_opps_cy2025_final_rule` | $89.1690 | 258 |
+| 2024 | Real CMS data | `cms_opps_cy2024_final_rule` | $87.3820 | 257 |
+| 2023 | Real CMS data | `cms_opps_cy2023_final_rule` | $85.5850 | 258 |
+| 2022 | Real CMS data | `cms_opps_cy2022_final_rule` | $84.1770 | 248 |
+| 2021 | Real CMS data | `cms_opps_cy2021_final_rule` | $82.7970 | 228 |
+| 2020 | Real CMS data | `cms_opps_cy2020_final_rule` | $80.7930 | 241 |
+| 2019 | Real CMS data | `cms_opps_cy2019_final_rule` | $79.4900 | 224 |
+| 2018 | Real CMS data | `cms_opps_cy2018_final_rule` | $78.6360 | 225 |
+| 2017 | Real CMS data | `cms_opps_cy2017_final_rule` | $75.0010 | 225 |
+| 2016 | Real CMS data | `cms_opps_cy2016_final_rule` | $74.9090 | 250 |
+| 2015 | Real CMS data | `cms_opps_cy2015_final_rule` | $74.1440 | 358 |
+| 2014 | Real CMS data | `cms_opps_cy2014_final_rule` | $72.6720 | 381 |
+| 2013 | Real CMS data | `cms_opps_cy2013_final_rule` | $71.3130 | 387 |
+| 2012 | Real CMS data | `cms_opps_cy2012_final_rule` | $70.0160 | 385 |
+| 2011 | Real CMS data | `cms_opps_cy2011_final_rule` | $68.8760 | 384 |
+| 2010 | Real CMS data | `cms_opps_cy2010_final_rule` | $67.4060 | 381 |
+| 2009 | Real CMS data | `cms_opps_cy2009_final_rule` | $66.0590 | 365 |
+| 2008 | Real CMS data | `cms_opps_cy2008_final_rule` | $63.6940 | 330 |
+| 2007 | Real CMS data | `cms_opps_cy2007_final_rule` | $61.4680 | 368 |
+
+Notes on CFs:
+- All CFs are the full-update / OQR-compliant figure published in each year's Final Rule preamble.
+- CY 2010 had a mid-year change ($67.406 first half, $67.241 second half — payment-update legislation). Stored value is the first-half figure as the canonical annual snapshot; mid-year handling is a future enhancement.
+- 340B-recouped CF variant is not stored; covered by deferred adjudication-adjustments issue #321.
+
+Notes on APC counts:
+- Pre-CY 2016 (~330–387 weighted APCs) vs CY 2016+ (~225–258): CMS consolidated APCs in 2016 (the comprehensive-APC restructuring), dropping ~150 codes from the weighted list. Lower count is expected.
 
 ## Phase 2: per-CBSA wage index
 

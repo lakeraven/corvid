@@ -109,6 +109,26 @@ class Corvid::CmsOppsAddendumANormalizerTest < ActiveSupport::TestCase
     reordered&.unlink
   end
 
+  test "weight sentinel \".\" (CMS not-applicable) skips row, doesn't raise" do
+    # CMS published older years (CY 2009 in particular) with "." in the
+    # Relative Weight column for contractor-priced or otherwise-
+    # non-applicable rows. Treat as skip, not malformed.
+    sentinel = Tempfile.new([ "sent", ".csv" ])
+    sentinel.write(<<~CSV)
+      ,Addendum A,,,,,,,,
+      APC,Group Title,SI,Relative Weight,Payment Rate
+      5071,Level 1,J1,25.4378,$2324
+      5072,Non-applicable,J1,.,$.
+      5073,Level 2,J1,50.0,$4500
+    CSV
+    sentinel.close
+    rows = Corvid::CmsOppsAddendumANormalizer.normalize(sentinel.path)
+    assert_equal 2, rows.size, "sentinel '.' row dropped; only weighted rows kept"
+    assert_equal [ "5071", "5073" ], rows.map { |r| r[:apc_code] }
+  ensure
+    sentinel&.unlink
+  end
+
   test "header with extra internal whitespace still resolves (CY 2024 quirk)" do
     # CY 2024 quarterly Web Addendum A ships "Relative Weight" with a
     # double internal space and trailing/leading padding. Header match
