@@ -17,14 +17,14 @@ Companion to `docs/release_readiness.md` (#355). That doc covers the broader scr
 | Limited per-Payment-Indicator (PI) logic in ASC pricing | 🟡 | ASC currently prices by `payment_weight × CF × wage_index` regardless of PI (G2 vs P2 vs R2 etc.). Sufficient for screening; full per-PI behavior tracked in #321. |
 | Manual ops runbook steps for CMS data refresh | 🟡 | `docs/cms_*_data.md` lists the operator commands per data family. Acceptable while deterministic and documented. |
 | NATIONAL-only wage index for OPPS + ASC | 🟡 | Per-CBSA wage tracked in #351. Typical rural-tribal impact <5%. |
-| `force=true` / `--admin` rake-task escape hatches | 🟡 | Useful pre-prod; ops procedure should restrict their use in prod. |
+| Admin-merge via `gh pr merge --admin` while branch protection requires up-to-date branch | 🟡 | Current cadence: rebase + admin-merge per pre-prod stance. Before cutover, switch to plain `gh pr merge` and remove the `--admin` privilege from the workflow. |
 
 ## Must fix before first production deployment
 
 | Item | Status | Evidence / Issue |
 |---|---|---|
-| Strict numeric parsing on every ingest path (no silent `to_f` → 0.0) | ✅ | OPPS via `CmsOppsParser` (#310); IPPS via `CmsIppsParser` (#276); ASC via `CmsAscParser` (#347 in flight); facility lists via `CmsFacilityListParser` (#345). All raise `MalformedFileError` with row context on garbage. |
-| Fail-fast import behavior on malformed/blank required values | ✅ | Same parsers raise rather than silently persisting 0.0 rows. CAH/ASC facility parser uses `{rows:, rejects:}` shape with per-row rejection reasons. |
+| Strict numeric parsing on every rate-data ingest path (no silent `to_f` → 0.0) | ✅ | Rate parsers raise `MalformedFileError` with row context on garbage: OPPS via `CmsOppsParser` (#310), IPPS via `CmsIppsParser` (#276), ASC via `CmsAscParser` (#347). |
+| Facility-list ingest surfaces bad rows instead of silently dropping them | ✅ | `CmsFacilityListParser` + `CmsPosCahNormalizer` + `CmsPosAscNormalizer` use a `{rows:, rejects: [{ccn:, reason:}]}` shape — bad rows go to `rejects` with row context, good rows survive. Per-row reject (skip + report), not raise. Documented in `docs/cms_cah_data.md` and `docs/cms_asc_data.md`. |
 | Per-payment-system parser unit tests pin failure modes | 🟡 | OPPS + ASC parsers covered (`cms_opps_parser_test.rb`, `cms_asc_parser_test.rb`). Add rake-task-level integration tests that load real-shape CSVs with deliberately-malformed numeric values and assert non-zero exit. |
 | Frozen migration history before cutover | 🟡 | Pre-prod policy is edit-in-place; **at the prod-cutover gate, freeze the migration set as-is and require forward migrations from then on.** Tag the commit at cutover as `prod-cutover-v1`. |
 | Operational guardrails on rake imports | 🟡 | Today rake tasks `puts` row counts + reject reasons. Add: expected-count assertions per snapshot label (e.g., "CY 2026 OPPS APC weights should be 245–260 rows; alert on deviation"), and non-zero reject counts should fail (not just log). |
