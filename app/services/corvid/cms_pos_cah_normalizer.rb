@@ -15,7 +15,14 @@ module Corvid
   #
   # Date fields in POS are YYYYMMDD strings; we convert to YYYY-MM-DD.
   # Active CAHs (PGM_TRMNTN_CD = '00') leave end_date blank.
-  # Terminated CAHs use TRMNTN_EXPRTN_DT.
+  # Terminated CAHs use TRMNTN_EXPRTN_DT — required when terminated;
+  # a terminated row with a missing or malformed termination date is
+  # rejected (NOT emitted with end_date: nil) because downstream
+  # CahFacility#applies? treats nil end_date as open-ended, which
+  # would silently grant the 1.01× multiplier to terminated facilities.
+  #
+  # Returns `{ rows: [...], rejects: [{ccn:, reason:}] }` — consistent
+  # with CmsFacilityListParser's permissive-but-report pattern.
   module CmsPosCahNormalizer
     HOSPITAL_CATEGORY = "01"
     CAH_SUBTYPE = "11"
@@ -27,19 +34,15 @@ module Corvid
       ORGNL_PRTCPTN_DT PGM_TRMNTN_CD TRMNTN_EXPRTN_DT
     ].freeze
 
+    BOM = "\xEF\xBB\xBF".b
+
     class MalformedFileError < StandardError; end
 
     def self.normalize(pos_csv_path)
-      File.open(pos_csv_path, "r") do |f|
-        header = f.readline.chomp.split(",")
-        missing = REQUIRED_COLUMNS - header
-        if missing.any?
-          raise MalformedFileError,
-                "POS CSV missing required columns: #{missing.join(', ')}"
-        end
-      end
+      validate_header!(pos_csv_path)
 
       rows = []
+      rejects = []
       CSV.foreach(pos_csv_path, headers: true) do |row|
         next unless row["PRVDR_CTGRY_CD"] == HOSPITAL_CATEGORY
         next unless row["PRVDR_CTGRY_SBTYP_CD"] == CAH_SUBTYPE
@@ -55,7 +58,21 @@ module Corvid
         next if effective.nil?
 
         terminated = row["PGM_TRMNTN_CD"] != ACTIVE_TERMINATION_CODE
-        end_date = terminated ? parse_yyyymmdd(row["TRMNTN_EXPRTN_DT"]) : nil
+        if terminated
+          end_date = parse_yyyymmdd(row["TRMNTN_EXPRTN_DT"])
+          if end_date.nil?
+            rejects << {
+              ccn: ccn,
+              reason: "terminated CAH (PGM_TRMNTN_CD=#{row['PGM_TRMNTN_CD'].inspect}) " \
+                      "with missing or malformed TRMNTN_EXPRTN_DT " \
+                      "(#{row['TRMNTN_EXPRTN_DT'].inspect}); skipping to avoid " \
+                      "matching forever as 'active' downstream"
+            }
+            next
+          end
+        else
+          end_date = nil
+        end
 
         rows << {
           ccn: ccn,
@@ -65,7 +82,7 @@ module Corvid
           end_date: end_date
         }
       end
-      rows
+      { rows: rows, rejects: rejects }
     end
 
     # Render canonical CAH list CSV in the shape CmsFacilityListParser
@@ -85,6 +102,21 @@ module Corvid
         end
       end
       "# release_label: #{release_label}\n" + body
+    end
+
+    # Validate headers using CSV.parse_line so BOM + quoted-header
+    # edge cases are handled the same way the row loop does.
+    def self.validate_header!(pos_csv_path)
+      first_line = File.open(pos_csv_path, "rb") { |f| f.readline }
+      first_line = first_line.b
+      first_line = first_line.sub(/\A#{BOM}/, "").force_encoding("UTF-8")
+      headers = CSV.parse_line(first_line) || []
+      missing = REQUIRED_COLUMNS - headers
+      return if missing.empty?
+
+      raise MalformedFileError,
+            "POS CSV missing required columns: #{missing.join(', ')}; " \
+            "got: #{headers.inspect}"
     end
 
     def self.parse_yyyymmdd(value)
