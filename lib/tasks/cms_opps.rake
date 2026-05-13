@@ -74,7 +74,7 @@ namespace :cms do
         Corvid::OppsConversionFactor.insert_all(cf_rows.map { |r| r.merge(created_at: Time.current, updated_at: Time.current) }) if cf_rows.any?
       end
 
-      puts "Fetched CY #{year} from cms-fee-schedules-v1: #{apc_rows.size} APC weights, #{cf_rows.size} conversion factors (label=#{label})"
+      puts "Fetched CY #{year} from cms-fee-schedules-v1: #{apc_rows.size} APC weights (label=#{apc_label}), #{cf_rows.size} conversion factors (label=#{cf_label})"
     end
 
     def strip_comments(csv_text)
