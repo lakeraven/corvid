@@ -227,7 +227,7 @@ module Corvid
 
       # Look up the Medicare professional-component rate for a CPT code,
       # locality, and service date directly via FeeScheduleEntry. Bypasses
-      # RepricingService's ZIP-to-locality step because the PRC dictionary
+      # a ZIP-to-locality step because the PRC dictionary
       # already gives us the locality.
       def professional_entry(cpt_code, locality, service_date)
         return nil if cpt_code.nil? || locality.nil? || service_date.nil?

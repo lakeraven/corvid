@@ -76,6 +76,21 @@ class CmsNppesRakeTest < ActiveSupport::TestCase
     assert_equal 1, Corvid::NpiCcnCrosswalk.where(source_release: "nppes_2026_q1").count
   end
 
+  test "import_crosswalk allows the same mapping to appear in separate release-label snapshots" do
+    first = File.join(@tmpdir, "first.csv")
+    File.write(first, "npi,ccn,effective_date,end_date\n1234567890,451301,2015-01-01,\n")
+    Rake::Task["cms:nppes:import_crosswalk"].invoke(first, "nppes_2025_q4")
+    Rake::Task["cms:nppes:import_crosswalk"].reenable
+
+    second = File.join(@tmpdir, "second.csv")
+    File.write(second, "npi,ccn,effective_date,end_date\n1234567890,451301,2015-01-01,\n")
+    Rake::Task["cms:nppes:import_crosswalk"].invoke(second, "nppes_2026_q1")
+
+    assert_equal 1, Corvid::NpiCcnCrosswalk.where(source_release: "nppes_2025_q4").count
+    assert_equal 1, Corvid::NpiCcnCrosswalk.where(source_release: "nppes_2026_q1").count
+    assert_equal 2, Corvid::NpiCcnCrosswalk.where(npi: "1234567890", ccn: "451301").count
+  end
+
   test "import_crosswalk aborts when given a missing file" do
     assert_raises(SystemExit) do
       Rake::Task["cms:nppes:import_crosswalk"].invoke("/no/such/file.csv", "label")
