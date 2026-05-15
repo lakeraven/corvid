@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_05_14_000001) do
+ActiveRecord::Schema[8.1].define(version: 2026_05_14_000002) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
@@ -373,7 +373,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_05_14_000001) do
     t.string "source_release"
     t.datetime "updated_at", null: false
     t.index ["ccn"], name: "index_corvid_npi_ccn_crosswalks_on_ccn"
-    t.index ["npi", "ccn", "effective_date"], name: "idx_corvid_npi_ccn_crosswalks_unique", unique: true
+    t.index ["source_release", "npi", "ccn", "effective_date"], name: "idx_corvid_npi_ccn_crosswalks_unique", unique: true
     t.index ["npi"], name: "index_corvid_npi_ccn_crosswalks_on_npi"
   end
 

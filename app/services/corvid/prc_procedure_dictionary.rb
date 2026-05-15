@@ -6,7 +6,7 @@ module Corvid
   #
   # PRC obligations name procedures in RPMS-internal shorthand
   # ("HIP_REPLACE_THR", "CARDIAC_CATH"), which is not directly billable code.
-  # MlrRepricingService needs the billing code to look up the Medicare-
+  # PrcOverpaymentAnalyzer needs the billing code to look up the Medicare-
   # equivalent rate. This dictionary is the bridge.
   #
   # Hosts can add custom mappings from an initializer:

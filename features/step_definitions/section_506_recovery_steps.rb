@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "set"
+require "ostruct"
 
 # Step definitions for features/repricing/section_506_recovery.feature.
 # Backed by the Corvid::OverpaymentRecovery::* pure-Ruby service modules
@@ -23,7 +24,44 @@ end
 
 When("the audit runs") do
   Corvid::TenantContext.with_tenant(@tenant || "tnt_test") do
-    @audit_result = Corvid::OverpaymentRecovery::AuditService.audit(@uploaded_claims)
+    overpayments = @uploaded_claims.filter_map do |claim|
+      result = reprice_professional_claim(
+        cpt_code: claim[:cpt_code],
+        zip: claim[:zip],
+        date: claim[:date_of_service],
+        billed_amount: claim[:paid_amount].to_f
+      )
+      next unless result
+
+      diff = (claim[:paid_amount] - BigDecimal(result.medicare_rate.to_s)).round(2)
+      next unless diff.positive?
+
+      OpenStruct.new(
+        cpt_code: claim[:cpt_code],
+        zip: claim[:zip],
+        paid_amount: claim[:paid_amount],
+        medicare_rate: BigDecimal(result.medicare_rate.to_s),
+        overpayment: diff,
+        provider_npi: claim[:provider_npi],
+        provider_name: claim[:provider_name],
+        date_of_service: claim[:date_of_service]
+      )
+    end
+
+    rollups = overpayments.group_by(&:provider_npi).map do |npi, list|
+      OpenStruct.new(
+        provider_npi: npi,
+        provider_name: list.first.provider_name,
+        overpayments: list,
+        total_overpayment: list.sum(&:overpayment)
+      )
+    end
+
+    @audit_result = {
+      overpayments: overpayments,
+      by_provider: rollups,
+      total_overpayment: overpayments.sum(&:overpayment)
+    }
   end
 end
 

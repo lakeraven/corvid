@@ -431,6 +431,48 @@ class Corvid::PrcImporterTest < ActiveSupport::TestCase
     end
   end
 
+  test "reanalyze persists real OPPS path fields on the analysis row" do
+    with_tenant(TENANT) do
+      Corvid::PrcProcedureDictionary.register(
+        "OUTPATIENT_SCOPE",
+        hcpcs: "45380",
+        apc: "5071",
+        description: "Hospital outpatient colonoscopy"
+      )
+      outpatient = <<~PRC
+        H^PRC_EXPORT^SEA^20260601^1
+        O^OBL-OPPS-REAL^DFN000456^VEND-HOSP^OUTPATIENT_SCOPE^20260615^A^5000.00^3000.00^2000.00^0.00^2026
+        P^OBL-OPPS-REAL^PMT-OPPS-REAL^20260630^CHK-OPPS^3000.00^SEA_HOSPITAL
+        T^1^1^1^3000.00^0.00
+      PRC
+      Corvid::PrcImporter.import(outpatient, source_file: "opps_real.prc")
+      Corvid::OppsApcWeight.create!(
+        calendar_year: 2026,
+        apc_code: "5071",
+        relative_weight: 25.4378,
+        release_label: "cms_opps_cy2026_final_rule"
+      )
+      Corvid::OppsConversionFactor.create!(
+        calendar_year: 2026,
+        locality: "NATIONAL",
+        conversion_factor: 89.169,
+        wage_index: 1.0,
+        release_label: "cms_opps_cy2026_final_rule"
+      )
+
+      Corvid::PrcImporter.reanalyze(tenant: TENANT)
+
+      analysis = Corvid::PrcObligation.find_by(obligation_id: "OBL-OPPS-REAL").latest_analysis
+      assert_equal "opps", analysis.payment_system
+      assert_equal "real", analysis.rate_source
+      assert_equal "clear", analysis.recovery_confidence
+      assert_equal "cms_opps_cy2026_final_rule", analysis.rate_source_release
+      assert_in_delta 2_268.26, analysis.medicare_equivalent.to_f, 0.01
+    ensure
+      Corvid::PrcProcedureDictionary.reset!
+    end
+  end
+
   private
 
   # Capture Rails.logger.warn output for the duration of the block.
