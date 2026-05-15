@@ -36,6 +36,7 @@ When("I batch reprice:") do |table|
     reprice_professional_claim(
       cpt_code: claim[:cpt_code].to_s,
       zip: claim[:zip].to_s,
+      date: claim[:date_of_service] || claim[:date],
       billed_amount: claim[:billed_amount]&.to_f
     )
   end
@@ -47,6 +48,7 @@ When("I audit these claims:") do |table|
     reprice_professional_claim(
       cpt_code: claim[:cpt_code].to_s,
       zip: claim[:zip].to_s,
+      date: claim[:date_of_service] || claim[:date],
       billed_amount: claim[:billed_amount]&.to_f
     )
   end
@@ -102,10 +104,12 @@ RepricingStepResult = Struct.new(
   keyword_init: true
 )
 
-def reprice_professional_claim(cpt_code:, zip:, date: Date.current, billed_amount: nil)
+def reprice_professional_claim(cpt_code:, zip:, date: nil, billed_amount: nil)
   locality = Corvid::LocalityLookup.for_zip(zip)
   return nil unless locality
 
+  date = Date.parse(date.to_s) if date.is_a?(String) && !date.empty?
+  date = Date.current if date.nil? || date == ""
   entry = Corvid::FeeScheduleEntry.rate_for(cpt_code: cpt_code, locality: locality, date: date)
   return nil unless entry
 

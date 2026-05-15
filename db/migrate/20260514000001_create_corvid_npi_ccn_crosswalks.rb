@@ -22,11 +22,10 @@ class CreateCorvidNpiCcnCrosswalks < ActiveRecord::Migration[8.1]
     end
 
     # Composite unique on (source_release, npi, ccn, effective_date) lets
-    # multiple NPPES snapshots coexist while keeping each snapshot clean.
-    # Within a snapshot, the same
-    # NPI map to multiple CCNs over time (organizational restructure,
-    # ownership change) and lets the same (npi, ccn) tuple have
-    # multiple historical periods.
+    # multiple NPPES snapshots coexist while keeping each snapshot internally
+    # consistent. Within a single snapshot, the same NPI can still map to
+    # multiple CCNs over time (organizational restructure, ownership change)
+    # and the same (npi, ccn) tuple can have multiple historical periods.
     add_index :corvid_npi_ccn_crosswalks, [ :source_release, :npi, :ccn, :effective_date ],
               unique: true, name: "idx_corvid_npi_ccn_crosswalks_unique"
 
