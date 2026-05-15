@@ -23,21 +23,42 @@ Given("ZIP {string} maps to locality {string}") do |zip, locality|
 end
 
 When("I reprice CPT {string} in ZIP {string}") do |cpt, zip|
-  @result = Corvid::RepricingService.reprice(cpt_code: cpt, zip: zip)
+  @result = reprice_professional_claim(cpt_code: cpt, zip: zip)
 end
 
 When("I reprice CPT {string} in ZIP {string} with billed amount {float}") do |cpt, zip, amount|
-  @result = Corvid::RepricingService.reprice(cpt_code: cpt, zip: zip, billed_amount: amount)
+  @result = reprice_professional_claim(cpt_code: cpt, zip: zip, billed_amount: amount)
 end
 
 When("I batch reprice:") do |table|
   claims = table.hashes.map { |row| row.transform_keys(&:to_sym) }
-  @batch_results = Corvid::RepricingService.reprice_batch(claims)
+  @batch_results = claims.filter_map do |claim|
+    reprice_professional_claim(
+      cpt_code: claim[:cpt_code].to_s,
+      zip: claim[:zip].to_s,
+      date: claim[:date_of_service] || claim[:date],
+      billed_amount: claim[:billed_amount]&.to_f
+    )
+  end
 end
 
 When("I audit these claims:") do |table|
   claims = table.hashes.map { |row| row.transform_keys(&:to_sym) }
-  @audit = Corvid::RepricingService.audit(claims)
+  results = claims.filter_map do |claim|
+    reprice_professional_claim(
+      cpt_code: claim[:cpt_code].to_s,
+      zip: claim[:zip].to_s,
+      date: claim[:date_of_service] || claim[:date],
+      billed_amount: claim[:billed_amount]&.to_f
+    )
+  end
+  total_billed = results.sum { |r| r.billed_amount || 0 }
+  total_overpayment = results.sum { |r| r.savings || 0 }
+  @audit = {
+    claims_analyzed: results.length,
+    total_overpayment: total_overpayment.round(2),
+    total_billed: total_billed.round(2)
+  }
 end
 
 Then("the Medicare rate should be calculated") do
@@ -75,4 +96,31 @@ end
 
 Then("the audit should report {int} claims analyzed") do |count|
   assert_equal count, @audit[:claims_analyzed]
+end
+
+RepricingStepResult = Struct.new(
+  :cpt_code, :medicare_rate, :locality, :effective_date,
+  :billed_amount, :savings,
+  keyword_init: true
+)
+
+def reprice_professional_claim(cpt_code:, zip:, date: nil, billed_amount: nil)
+  locality = Corvid::LocalityLookup.for_zip(zip)
+  return nil unless locality
+
+  date = Date.parse(date.to_s) if date.is_a?(String) && !date.empty?
+  date = Date.current if date.nil? || date == ""
+  entry = Corvid::FeeScheduleEntry.rate_for(cpt_code: cpt_code, locality: locality, date: date)
+  return nil unless entry
+
+  rate = BigDecimal(entry.medicare_rate.to_s).round(2)
+  billed = billed_amount.nil? ? nil : BigDecimal(billed_amount.to_s)
+  RepricingStepResult.new(
+    cpt_code: cpt_code,
+    medicare_rate: rate,
+    locality: locality,
+    effective_date: entry.effective_date,
+    billed_amount: billed,
+    savings: billed ? [ (billed - rate).round(2), BigDecimal("0") ].max : nil
+  )
 end

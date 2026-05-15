@@ -39,7 +39,7 @@ These aren't bugs — they're choices that need to land before production behavi
 
 | Question | Default | Decision needed |
 |---|---|---|
-| When a vendor's NPI doesn't match any CCN in the registry, do we attempt NPPES crosswalk on the fly, or require pre-import? | Pre-import (operator pre-maps NPI→CCN) | Requires NPI crosswalk infrastructure (#353) |
+| When a vendor's NPI doesn't match any CCN in the registry, do we attempt NPPES crosswalk on the fly, or require pre-import? | Pre-import (`corvid_npi_ccn_crosswalks`) | Infrastructure exists; production runbook still needs the NPPES refresh cadence and source-file ownership decision. |
 | 340B-recouped CF variant — apply to specific vendors or ignore? | Ignore (use full-update CF) | Tracked under #321 adjudication adjustments |
 | FY 2007 IPPS — block claims with that service date, fall back to stub, or hand-load via Federal Register? | Currently falls back to stub | #322 |
 | ASC PI-specific pricing (office-based at PFS, device-intensive offsets) | Currently flat weight × CF | #321 |

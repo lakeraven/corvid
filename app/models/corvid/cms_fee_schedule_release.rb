@@ -2,7 +2,7 @@
 
 module Corvid
   # Provenance metadata for a single CMS fee schedule year ingestion.
-  # Lets RepricingService and audit consumers answer "where did this rate
+  # Lets PrcOverpaymentAnalyzer and audit consumers answer "where did this rate
   # come from?" without re-reading source files. One row per ingested year.
   class CmsFeeScheduleRelease < ::ActiveRecord::Base
     self.table_name = "corvid_cms_fee_schedule_releases"

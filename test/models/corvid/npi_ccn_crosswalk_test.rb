@@ -63,4 +63,24 @@ class Corvid::NpiCcnCrosswalkTest < ActiveSupport::TestCase
     ccns = Corvid::NpiCcnCrosswalk.ccns_for(npi: "1234567890", on: Date.new(2024, 6, 1))
     assert_equal [ "451301" ], ccns
   end
+
+  test "ccns_for returns only the latest source_release when multiple snapshots are loaded" do
+    # Older NPPES snapshot mapped this NPI to one CCN…
+    Corvid::NpiCcnCrosswalk.create!(
+      npi: "1234567890", ccn: "111111",
+      effective_date: Date.new(2020, 1, 1),
+      source_release: "nppes_2025_q4"
+    )
+    # …a refreshed snapshot replaces it with a different CCN.
+    Corvid::NpiCcnCrosswalk.create!(
+      npi: "1234567890", ccn: "222222",
+      effective_date: Date.new(2020, 1, 1),
+      source_release: "nppes_2026_q1"
+    )
+
+    ccns = Corvid::NpiCcnCrosswalk.ccns_for(npi: "1234567890", on: Date.new(2024, 6, 1))
+
+    assert_equal [ "222222" ], ccns,
+                 "later snapshot is authoritative; stale row from older snapshot must not route claims"
+  end
 end

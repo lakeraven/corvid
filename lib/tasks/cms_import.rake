@@ -48,7 +48,7 @@ namespace :cms do
 
     # Record provenance: which CMS source files produced this year's data,
     # the SHA256 of the combined source bytes, and which parser version
-    # ingested it. Lets RepricingService and audit consumers answer
+    # ingested it. Lets PrcOverpaymentAnalyzer and audit consumers answer
     # "where did this rate come from?" without re-reading source files.
     source_checksum = File.open(rvu_file) do |rvu_io|
       rvu_digest = Corvid::CmsSnapshot.checksum_io(rvu_io)

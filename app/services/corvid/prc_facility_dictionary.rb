@@ -2,7 +2,7 @@
 
 module Corvid
   # Maps RPMS PRC facility codes (e.g., "SEA") to ZIP and Medicare locality
-  # so MlrRepricingService can apply the correct GPCI/wage-index adjustments.
+  # so PrcOverpaymentAnalyzer can apply the correct GPCI/wage-index adjustments.
   #
   # Hosts can register custom mappings from an initializer to cover their
   # local PRC facility codes.

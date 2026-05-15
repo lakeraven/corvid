@@ -122,7 +122,7 @@ The `phi_sanitizer` hook defaults to fail-safe redact-all. Forgetting to configu
 
 ## CMS fee schedule data
 
-Corvid ships with a derived snapshot of the Medicare Physician Fee Schedule (RVUs, GPCIs, conversion factors) so that `RepricingService` can compute Medicare-equivalent rates without reading raw CMS files at runtime.
+Corvid ships with a derived snapshot of the Medicare Physician Fee Schedule (RVUs, GPCIs, conversion factors) so that `PrcOverpaymentAnalyzer` can compute professional-service Medicare-equivalent rates without reading raw CMS files at runtime.
 
 **Default path — load the bundled snapshot:**
 
