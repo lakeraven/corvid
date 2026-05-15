@@ -18,14 +18,21 @@ module Corvid
 
     # Returns the distinct CCNs an NPI was billing under on the given
     # service date. Empty if the NPI has no crosswalk row in effect.
+    #
+    # When multiple labeled NPPES snapshots coexist, the latest snapshot
+    # is authoritative — a refreshed snapshot may correct or remove a
+    # mapping present in an older one, and stale rows must not route
+    # claims. Rows with nil source_release (manual or pre-snapshot
+    # loads) are treated as their own release.
     def self.ccns_for(npi:, on:)
       return [] if npi.blank? || on.nil?
 
-      where(npi: npi)
+      scope = where(npi: npi)
         .where("effective_date IS NULL OR effective_date <= ?", on)
         .where("end_date IS NULL OR end_date >= ?", on)
-        .distinct
-        .pluck(:ccn)
+
+      latest = scope.maximum(:source_release)
+      scope.where(source_release: latest).distinct.pluck(:ccn)
     end
   end
 end
