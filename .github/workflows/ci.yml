@@ -6,6 +6,10 @@ on:
   pull_request:
     branches: [main]
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -35,10 +39,19 @@ jobs:
           ruby-version: "4.0.2"
           bundler-cache: true
 
+      - name: Cache dummy app gems
+        uses: actions/cache@v4
+        with:
+          path: test/dummy/vendor/bundle
+          key: dummy-gems-${{ runner.os }}-ruby-4.0.2-${{ hashFiles('test/dummy/Gemfile.lock') }}
+          restore-keys: |
+            dummy-gems-${{ runner.os }}-ruby-4.0.2-
+
       - name: Install dummy app dependencies
         run: |
           cd test/dummy
-          bundle install
+          bundle config set --local path 'vendor/bundle'
+          bundle install --jobs 4
 
       - name: Create and migrate test database
         run: |
