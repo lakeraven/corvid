@@ -86,6 +86,24 @@ class Corvid::AscRateProviderTest < ActiveSupport::TestCase
     assert_in_delta 1_800.0, jan_1,  0.01, "Jan 1, 2027 should price against CY 2027 rows"
   end
 
+  test "rate_for keeps Sep 30 and Oct 1 in the same calendar year (not fiscal)" do
+    sep_30 = Corvid::AscRateProvider.rate_for(
+      hcpcs_code: "0102T",
+      locality: "NATIONAL",
+      date: Date.new(2026, 9, 30)
+    )
+    oct_1 = Corvid::AscRateProvider.rate_for(
+      hcpcs_code: "0102T",
+      locality: "NATIONAL",
+      date: Date.new(2026, 10, 1)
+    )
+
+    refute_nil sep_30
+    refute_nil oct_1
+    assert_in_delta sep_30, oct_1, 0.001,
+                    "Sep 30 and Oct 1 in same CY should hit identical CY 2026 rows"
+  end
+
   test "rate_for falls back to NATIONAL locality when locality-specific row is missing" do
     rate = Corvid::AscRateProvider.rate_for(
       hcpcs_code: "0102T",
