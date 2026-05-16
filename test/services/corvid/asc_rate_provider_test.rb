@@ -86,6 +86,49 @@ class Corvid::AscRateProviderTest < ActiveSupport::TestCase
     assert_in_delta 1_800.0, jan_1,  0.01, "Jan 1, 2027 should price against CY 2027 rows"
   end
 
+  test "rate_for switches Jan 1 boundary with mixed locality availability using locality-or-NATIONAL fallback" do
+    Corvid::AscHcpcsRate.unscoped.delete_all
+    Corvid::AscConversionFactor.unscoped.delete_all
+
+    Corvid::AscHcpcsRate.create!(
+      calendar_year: 2026, hcpcs_code: "0102T", payment_weight: 20.0
+    )
+    Corvid::AscHcpcsRate.create!(
+      calendar_year: 2027, hcpcs_code: "0102T", payment_weight: 30.0
+    )
+
+    # CY 2026 has both NATIONAL and locality-specific rows
+    Corvid::AscConversionFactor.create!(
+      calendar_year: 2026, locality: "NATIONAL",
+      conversion_factor: 50.0, wage_index: 1.0
+    )
+    Corvid::AscConversionFactor.create!(
+      calendar_year: 2026, locality: "01",
+      conversion_factor: 50.0, wage_index: 1.085
+    )
+
+    # CY 2027 has NATIONAL only (no locality "01" row)
+    Corvid::AscConversionFactor.create!(
+      calendar_year: 2027, locality: "NATIONAL",
+      conversion_factor: 60.0, wage_index: 1.0
+    )
+
+    dec_31_locality_01 = Corvid::AscRateProvider.rate_for(
+      hcpcs_code: "0102T", locality: "01", date: Date.new(2026, 12, 31)
+    )
+    jan_1_locality_01 = Corvid::AscRateProvider.rate_for(
+      hcpcs_code: "0102T", locality: "01", date: Date.new(2027, 1, 1)
+    )
+
+    # 2026-12-31 uses CY 2026 locality-specific row: 20.0 × 50.0 × 1.085 = 1085.00
+    assert_in_delta 1_085.0, dec_31_locality_01, 0.01
+    # 2027-01-01 falls back to CY 2027 NATIONAL: 30.0 × 60.0 × 1.0 = 1800.00
+    assert_in_delta 1_800.0, jan_1_locality_01, 0.01
+
+    refute_in_delta dec_31_locality_01, jan_1_locality_01, 0.01,
+                    "Crossing Jan 1 should switch to CY 2027 NATIONAL fallback when locality row is missing"
+  end
+
   test "rate_for returns nil on Jan 1 when next calendar year rows are missing" do
     Corvid::AscHcpcsRate.unscoped.delete_all
     Corvid::AscConversionFactor.unscoped.delete_all
