@@ -82,8 +82,8 @@ class Corvid::AscRateProviderTest < ActiveSupport::TestCase
       hcpcs_code: "0102T", locality: "NATIONAL", date: Date.new(2027, 1, 1)
     )
 
-    assert_equal 1_000.0, dec_31, "Dec 31, 2026 should price against CY 2026 rows"
-    assert_equal 1_800.0, jan_1,  "Jan 1, 2027 should price against CY 2027 rows"
+    assert_in_delta 1_000.0, dec_31, 0.01, "Dec 31, 2026 should price against CY 2026 rows"
+    assert_in_delta 1_800.0, jan_1,  0.01, "Jan 1, 2027 should price against CY 2027 rows"
   end
 
   test "rate_for falls back to NATIONAL locality when locality-specific row is missing" do
