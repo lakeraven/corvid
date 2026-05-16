@@ -46,13 +46,44 @@ class Corvid::AscRateProviderTest < ActiveSupport::TestCase
     assert_in_delta 1_784.68, rate, 0.01
   end
 
-  test "rate_for uses calendar-year boundaries" do
+  test "rate_for uses CALENDAR year — Jan 1 boundary, not Oct 1" do
+    # A November 2026 service date stays in CY 2026 (vs IPPS which
+    # would convert to FY 2027 for the same date).
     rate = Corvid::AscRateProvider.rate_for(
       hcpcs_code: "0102T",
       locality: "NATIONAL",
       date: Date.new(2026, 11, 15)
     )
     refute_nil rate
+  end
+
+  test "rate_for switches rate rows at the Jan 1 boundary across calendar years" do
+    Corvid::AscHcpcsRate.unscoped.delete_all
+    Corvid::AscConversionFactor.unscoped.delete_all
+    Corvid::AscHcpcsRate.create!(
+      calendar_year: 2026, hcpcs_code: "0102T", payment_weight: 20.0
+    )
+    Corvid::AscHcpcsRate.create!(
+      calendar_year: 2027, hcpcs_code: "0102T", payment_weight: 30.0
+    )
+    Corvid::AscConversionFactor.create!(
+      calendar_year: 2026, locality: "NATIONAL",
+      conversion_factor: 50.0, wage_index: 1.0
+    )
+    Corvid::AscConversionFactor.create!(
+      calendar_year: 2027, locality: "NATIONAL",
+      conversion_factor: 60.0, wage_index: 1.0
+    )
+
+    dec_31 = Corvid::AscRateProvider.rate_for(
+      hcpcs_code: "0102T", locality: "NATIONAL", date: Date.new(2026, 12, 31)
+    )
+    jan_1 = Corvid::AscRateProvider.rate_for(
+      hcpcs_code: "0102T", locality: "NATIONAL", date: Date.new(2027, 1, 1)
+    )
+
+    assert_equal 1_000.0, dec_31, "Dec 31, 2026 should price against CY 2026 rows"
+    assert_equal 1_800.0, jan_1,  "Jan 1, 2027 should price against CY 2027 rows"
   end
 
   test "rate_for falls back to NATIONAL locality when locality-specific row is missing" do
