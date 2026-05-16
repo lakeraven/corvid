@@ -235,7 +235,14 @@ module Corvid
       # ----------------------------------------------------------------------
 
       def verify_tribal_enrollment(_patient_identifier)
-        { enrolled: false, membership_number: nil, tribe_name: nil, verified_at: Time.current }
+        {
+          enrolled: false,
+          membership_number: nil,
+          tribe_name: nil,
+          tribe_code: nil,
+          confidence: :unavailable,
+          verified_at: Time.current
+        }
       end
 
       def verify_identity_documents(_patient_identifier)

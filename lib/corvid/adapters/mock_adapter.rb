@@ -308,14 +308,25 @@ module Corvid
 
       def verify_tribal_enrollment(patient_identifier)
         enrollment = @enrollments[patient_identifier.to_s]
-        return { enrolled: false, membership_number: nil, tribe_name: nil, verified_at: Time.current } unless enrollment
+        unless enrollment
+          return {
+            enrolled: false,
+            membership_number: nil,
+            tribe_name: nil,
+            tribe_code: nil,
+            confidence: :verified,
+            verified_at: Time.current
+          }
+        end
 
         {
           enrolled: enrollment[:enrolled],
           membership_number: enrollment[:membership_number],
           tribe_name: enrollment[:tribe_name],
+          tribe_code: enrollment[:tribe_code],
           blood_quantum: enrollment[:blood_quantum],
           member_status: enrollment[:member_status],
+          confidence: enrollment.fetch(:confidence, :verified),
           verified_at: Time.current
         }
       end
