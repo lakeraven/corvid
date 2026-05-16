@@ -19,6 +19,7 @@ Rake::TestTask.new(:test_models) do |t|
   t.test_files = FileList[
     "test/models/**/*_test.rb",
     "test/services/**/*_test.rb",
+    "test/controllers/**/*_test.rb",
     "test/rulesets/**/*_test.rb",
     "test/lib/tasks/**/*_test.rb"
   ]
