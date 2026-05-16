@@ -5,8 +5,8 @@ require_relative "lib/corvid/version"
 Gem::Specification.new do |spec|
   spec.name        = "corvid"
   spec.version     = Corvid::VERSION
-  spec.authors     = ["Lakeraven"]
-  spec.email       = ["eng@lakeraven.com"]
+  spec.authors     = [ "Lakeraven" ]
+  spec.email       = [ "eng@lakeraven.com" ]
   spec.homepage    = "https://github.com/lakeraven/corvid"
   spec.summary     = "Case management engine for healthcare, social services, and benefit programs"
   spec.description = "EHR-agnostic Rails engine for managing service authorization workflows, " \

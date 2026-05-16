@@ -23,7 +23,7 @@ class Corvid::CaseDashboardServiceTest < ActiveSupport::TestCase
       Corvid::Case.create!(patient_identifier: "pt_1", care_team: team, facility_identifier: "fac_test")
       Corvid::Case.create!(patient_identifier: "pt_2", care_team: team, facility_identifier: "fac_test", status: :closed)
 
-      result = Corvid::CaseDashboardService.metrics(care_team_ids: [team.id], provider_identifier: provider)
+      result = Corvid::CaseDashboardService.metrics(care_team_ids: [ team.id ], provider_identifier: provider)
       assert_equal 1, result[:active_cases_count]
     end
   end
@@ -37,7 +37,7 @@ class Corvid::CaseDashboardServiceTest < ActiveSupport::TestCase
       Corvid::Task.create!(taskable: kase, assignee_identifier: provider, description: "IP task", status: :in_progress)
       Corvid::Task.create!(taskable: kase, assignee_identifier: provider, description: "Done task", status: :completed)
 
-      result = Corvid::CaseDashboardService.metrics(care_team_ids: [team.id], provider_identifier: provider)
+      result = Corvid::CaseDashboardService.metrics(care_team_ids: [ team.id ], provider_identifier: provider)
 
       assert result.key?(:task_counts)
       assert_equal 1, result[:task_counts][:pending]
@@ -55,7 +55,7 @@ class Corvid::CaseDashboardServiceTest < ActiveSupport::TestCase
       Corvid::Task.create!(taskable: kase, assignee_identifier: provider, description: "In progress", status: :in_progress)
       Corvid::Task.create!(taskable: kase, assignee_identifier: provider, description: "Done", status: :completed)
 
-      result = Corvid::CaseDashboardService.metrics(care_team_ids: [team.id], provider_identifier: provider)
+      result = Corvid::CaseDashboardService.metrics(care_team_ids: [ team.id ], provider_identifier: provider)
       assert_equal 2, result[:my_incomplete_tasks_count]
     end
   end
@@ -71,7 +71,7 @@ class Corvid::CaseDashboardServiceTest < ActiveSupport::TestCase
         ref.save!(validate: false)
       end
 
-      result = Corvid::CaseDashboardService.metrics(care_team_ids: [team.id], provider_identifier: provider)
+      result = Corvid::CaseDashboardService.metrics(care_team_ids: [ team.id ], provider_identifier: provider)
 
       assert result.key?(:referral_pipeline)
       assert_equal 1, result[:referral_pipeline]["draft"]
@@ -83,7 +83,7 @@ class Corvid::CaseDashboardServiceTest < ActiveSupport::TestCase
   test "metrics includes generated_at timestamp" do
     with_tenant(TENANT) do
       team, provider = setup_team_and_provider
-      result = Corvid::CaseDashboardService.metrics(care_team_ids: [team.id], provider_identifier: provider)
+      result = Corvid::CaseDashboardService.metrics(care_team_ids: [ team.id ], provider_identifier: provider)
 
       assert result.key?(:generated_at)
       assert_kind_of Time, result[:generated_at]
@@ -95,7 +95,7 @@ class Corvid::CaseDashboardServiceTest < ActiveSupport::TestCase
       team, provider = setup_team_and_provider
       Corvid::Case.create!(patient_identifier: "pt_age", care_team: team, facility_identifier: "fac_test")
 
-      result = Corvid::CaseDashboardService.metrics(care_team_ids: [team.id], provider_identifier: provider)
+      result = Corvid::CaseDashboardService.metrics(care_team_ids: [ team.id ], provider_identifier: provider)
 
       assert result.key?(:avg_case_age_days)
       assert result[:avg_case_age_days] >= 0
@@ -110,7 +110,7 @@ class Corvid::CaseDashboardServiceTest < ActiveSupport::TestCase
       Corvid::Case.create!(patient_identifier: "pt_ro", care_team: team, facility_identifier: "fac_test")
 
       count_before = { cases: Corvid::Case.count, tasks: Corvid::Task.count }
-      Corvid::CaseDashboardService.metrics(care_team_ids: [team.id], provider_identifier: provider)
+      Corvid::CaseDashboardService.metrics(care_team_ids: [ team.id ], provider_identifier: provider)
 
       assert_equal count_before[:cases], Corvid::Case.count
       assert_equal count_before[:tasks], Corvid::Task.count
@@ -122,7 +122,7 @@ class Corvid::CaseDashboardServiceTest < ActiveSupport::TestCase
   test "metrics handles empty care team" do
     with_tenant(TENANT) do
       team = Corvid::CareTeam.create!(name: "Empty Team", facility_identifier: "fac_test")
-      result = Corvid::CaseDashboardService.metrics(care_team_ids: [team.id], provider_identifier: "pr_999")
+      result = Corvid::CaseDashboardService.metrics(care_team_ids: [ team.id ], provider_identifier: "pr_999")
 
       assert_equal 0, result[:active_cases_count]
       assert_equal 0, result[:my_incomplete_tasks_count]
@@ -140,7 +140,7 @@ class Corvid::CaseDashboardServiceTest < ActiveSupport::TestCase
       other_case = Corvid::Case.create!(patient_identifier: "pt_other", care_team: other_team, facility_identifier: "fac_test")
       Corvid::Task.create!(taskable: other_case, assignee_identifier: provider, description: "Unrelated task", status: :pending)
 
-      result = Corvid::CaseDashboardService.metrics(care_team_ids: [team.id], provider_identifier: provider)
+      result = Corvid::CaseDashboardService.metrics(care_team_ids: [ team.id ], provider_identifier: provider)
       assert_equal 2, result[:my_incomplete_tasks_count]
     end
   end
@@ -151,6 +151,6 @@ class Corvid::CaseDashboardServiceTest < ActiveSupport::TestCase
     provider = "pr_dash_101"
     team = Corvid::CareTeam.create!(name: "Test Team", facility_identifier: "fac_test")
     Corvid::CareTeamMember.create!(care_team: team, practitioner_identifier: provider, role: "provider")
-    [team, provider]
+    [ team, provider ]
   end
 end

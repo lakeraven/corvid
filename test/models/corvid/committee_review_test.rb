@@ -175,7 +175,7 @@ class Corvid::CommitteeReviewTest < ActiveSupport::TestCase
       r3 = create_review(committee_date: 2.days.ago)
 
       ordered = Corvid::CommitteeReview.chronological.to_a
-      assert_equal [r1, r3, r2], ordered
+      assert_equal [ r1, r3, r2 ], ordered
     end
   end
 

@@ -20,7 +20,7 @@ class CreateCorvidRepricingTables < ActiveRecord::Migration[8.0]
       t.timestamps
     end
 
-    add_index :corvid_fee_schedule_entries, [:cpt_code, :locality, :effective_date],
+    add_index :corvid_fee_schedule_entries, [ :cpt_code, :locality, :effective_date ],
       unique: true, name: "idx_corvid_fee_schedule_unique"
     add_index :corvid_fee_schedule_entries, :cpt_code
     add_index :corvid_fee_schedule_entries, :effective_date

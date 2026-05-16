@@ -27,7 +27,7 @@ Given("there are paid claim submissions from multiple providers") do
 end
 
 Given("there are paid claim submissions across multiple quarters") do
-  [0, 3, 6, 9].each_with_index do |month_offset, i|
+  [ 0, 3, 6, 9 ].each_with_index do |month_offset, i|
     Corvid::ClaimSubmission.create!(
       tenant_identifier: @tenant, facility_identifier: @facility,
       patient_identifier: "pt_art6_q#{i}",
@@ -588,7 +588,7 @@ Given("a remittance exists with ID {string}") do |id|
     payer_name: "Test Payer",
     payment_date: Date.current,
     total_paid: 250.00,
-    line_items: [{ claim_identifier: "CLM_X", paid_amount: 250.00 }]
+    line_items: [ { claim_identifier: "CLM_X", paid_amount: 250.00 } ]
   })
   @remittance_identifier = id
 end
@@ -628,7 +628,7 @@ Given("a remittance includes payment for {string}") do |claim_id|
     payer_name: "Test Payer",
     payment_date: Date.current,
     total_paid: 150.00,
-    line_items: [{ claim_identifier: claim_id, paid_amount: 150.00 }]
+    line_items: [ { claim_identifier: claim_id, paid_amount: 150.00 } ]
   })
 end
 
@@ -638,7 +638,7 @@ Given("a remittance includes payment for {string} with amount {string}") do |cla
     payer_name: "Test Payer",
     payment_date: Date.current,
     total_paid: amount.gsub("$", "").to_f,
-    line_items: [{ claim_identifier: claim_id, paid_amount: amount.gsub("$", "").to_f }]
+    line_items: [ { claim_identifier: claim_id, paid_amount: amount.gsub("$", "").to_f } ]
   })
 end
 

@@ -45,7 +45,7 @@ module Corvid
       end
 
       event :mark_failed do
-        transitions from: [:pending, :processing], to: :failed
+        transitions from: [ :pending, :processing ], to: :failed
       end
 
       event :mark_refunded do

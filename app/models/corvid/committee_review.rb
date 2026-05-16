@@ -83,7 +83,7 @@ module Corvid
     end
 
     def summary
-      parts = ["Committee Review — #{committee_date}"]
+      parts = [ "Committee Review — #{committee_date}" ]
       parts << "Decision: #{decision_summary}"
       parts << "Attendees: #{attendees_count}" if attendees_count > 0
       parts << "Documents: #{documents_reviewed_count}" if documents_reviewed_count > 0

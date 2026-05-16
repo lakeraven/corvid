@@ -33,7 +33,7 @@ module Corvid
       @adapter.stub_responses["/api/v1/people/1"] = {
         "member_status" => "enrolled",
         "membership_number" => "YN-12345",
-        "enrolled_tribe" => {"name" => "Test Tribe"},
+        "enrolled_tribe" => { "name" => "Test Tribe" },
         "born_on" => "1980-05-15"
       }
 
@@ -78,7 +78,7 @@ module Corvid
     test "verify_tribal_enrollment includes member_status" do
       @adapter.stub_responses["/api/v1/people/1"] = {
         "member_status" => "enrolled",
-        "enrolled_tribe" => {"name" => "Test Tribe"}
+        "enrolled_tribe" => { "name" => "Test Tribe" }
       }
 
       result = @adapter.verify_tribal_enrollment("1")
@@ -131,7 +131,7 @@ module Corvid
     test "verify_residency detects on-reservation address" do
       @adapter.stub_responses["/api/v1/people/1"] = {
         "addresses" => [
-          {"on_reservation" => true, "city" => "Toppenish", "service_area" => "Yakama Reservation"}
+          { "on_reservation" => true, "city" => "Toppenish", "service_area" => "Yakama Reservation" }
         ]
       }
 
@@ -145,7 +145,7 @@ module Corvid
     test "verify_residency returns false when off-reservation" do
       @adapter.stub_responses["/api/v1/people/1"] = {
         "addresses" => [
-          {"on_reservation" => false, "city" => "Seattle"}
+          { "on_reservation" => false, "city" => "Seattle" }
         ]
       }
 
@@ -201,7 +201,7 @@ module Corvid
       call_count = 0
       @adapter.define_singleton_method(:get) do |path, _params = {}|
         call_count += 1
-        {"member_status" => "enrolled", "enrolled_tribe" => {"name" => "T"}, "ssn_present" => true, "born_on" => "1980-01-01", "addresses" => []}
+        { "member_status" => "enrolled", "enrolled_tribe" => { "name" => "T" }, "ssn_present" => true, "born_on" => "1980-01-01", "addresses" => [] }
       end
 
       @adapter.verify_tribal_enrollment("1")
