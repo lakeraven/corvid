@@ -46,6 +46,45 @@ class Corvid::AscRateProviderTest < ActiveSupport::TestCase
     assert_in_delta 1_784.68, rate, 0.01
   end
 
+  test "rate_for applies CBSA-coded locality and falls back to NATIONAL for unknown CBSA" do
+    # The locality column is a free-form string, so 5-digit CMS CBSA codes
+    # work the same as 2-digit PFS locality codes. Preparatory coverage for
+    # per-CBSA wage-index loading (#351).
+    Corvid::AscHcpcsRate.unscoped.delete_all
+    Corvid::AscConversionFactor.unscoped.delete_all
+    Corvid::AscHcpcsRate.create!(
+      calendar_year: 2026,
+      hcpcs_code: "0102T",
+      payment_indicator: "G2",
+      payment_weight: 29.2047
+    )
+    Corvid::AscConversionFactor.create!(
+      calendar_year: 2026,
+      locality: "NATIONAL",
+      conversion_factor: 56.322,
+      wage_index: 1.0
+    )
+    # CBSA 10180 = Abilene, TX (real CMS Core-Based Statistical Area)
+    Corvid::AscConversionFactor.create!(
+      calendar_year: 2026,
+      locality: "10180",
+      conversion_factor: 56.322,
+      wage_index: 0.92
+    )
+
+    cbsa_rate = Corvid::AscRateProvider.rate_for(
+      hcpcs_code: "0102T", locality: "10180", date: Date.new(2026, 6, 15)
+    )
+    unknown_cbsa_rate = Corvid::AscRateProvider.rate_for(
+      hcpcs_code: "0102T", locality: "99999", date: Date.new(2026, 6, 15)
+    )
+
+    # 29.2047 × 56.322 × 0.92 = 1513.28
+    assert_in_delta 1_513.28, cbsa_rate, 0.01
+    # Unknown CBSA falls back to NATIONAL: 29.2047 × 56.322 × 1.0 = 1644.87
+    assert_in_delta 1_644.87, unknown_cbsa_rate, 0.01
+  end
+
   test "rate_for uses CALENDAR year — Jan 1 boundary, not Oct 1" do
     # A November 2026 service date stays in CY 2026 (vs IPPS which
     # would convert to FY 2027 for the same date).
