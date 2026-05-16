@@ -119,7 +119,7 @@ class Corvid::DeterminationTest < ActiveSupport::TestCase
       d3 = Corvid::Determination.create!(determinable: referral, decision_method: "automated", outcome: "approved", created_at: Time.current)
 
       ordered = Corvid::Determination.chronological
-      assert_equal [d1, d2, d3], ordered.to_a
+      assert_equal [ d1, d2, d3 ], ordered.to_a
     end
   end
 

@@ -78,7 +78,7 @@ module Corvid
         within_window = days_since <= 3
         needs_retro = !within_window
 
-        messages = ["72-hour notification window"]
+        messages = [ "72-hour notification window" ]
         messages << "retroactive authorization required" if needs_retro
 
         AuthorizationResult.new(

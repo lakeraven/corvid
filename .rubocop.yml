@@ -1,0 +1,14 @@
+inherit_gem:
+  rubocop-rails-omakase: rubocop.yml
+
+Style/Documentation:
+  Enabled: false
+
+Metrics/MethodLength:
+  Max: 15
+
+Metrics/AbcSize:
+  Max: 30
+
+Metrics/CyclomaticComplexity:
+  Max: 15

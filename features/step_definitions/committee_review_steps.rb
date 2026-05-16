@@ -94,7 +94,7 @@ When("I add {int} conditions to the committee review") do |count|
 end
 
 Given("committee reviews scheduled for tomorrow and next week and next month") do
-  [1.day.from_now, 5.days.from_now, 35.days.from_now].each_with_index do |date, i|
+  [ 1.day.from_now, 5.days.from_now, 35.days.from_now ].each_with_index do |date, i|
     Corvid::CommitteeReview.create!(
       prc_referral: @referral,
       committee_date: date.to_date,

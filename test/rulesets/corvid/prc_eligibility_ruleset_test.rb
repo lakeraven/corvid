@@ -67,8 +67,8 @@ class Corvid::PrcEligibilityRulesetTest < ActiveSupport::TestCase
   # === CLINICAL JUSTIFICATION ===
 
   test "has_clinical_justification passes with clinical keywords" do
-    ["chest pain", "cardiac evaluation", "surgery consultation", "fracture treatment",
-     "severe headache", "chronic condition", "failed treatment"].each do |reason|
+    [ "chest pain", "cardiac evaluation", "surgery consultation", "fracture treatment",
+     "severe headache", "chronic condition", "failed treatment" ].each do |reason|
       engine = Corvid::RulesEngine.new(Corvid::PrcEligibilityRuleset.new)
       engine.set_facts(reason_for_referral: reason)
       assert engine.evaluate(:has_clinical_justification).value, "Expected '#{reason}' to pass"

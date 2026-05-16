@@ -102,7 +102,7 @@ class Corvid::ProgramRegistryTest < Minitest::Test
     Corvid::ProgramRegistry.register(
       "frozen_test",
       display_name: "Frozen Test",
-      milestones: [{ key: "x", description: "x", days_after_anchor: 0, required: true }]
+      milestones: [ { key: "x", description: "x", days_after_anchor: 0, required: true } ]
     )
     entry = Corvid::ProgramRegistry.find("frozen_test")
     assert entry.milestones.frozen?, "expected milestones array to be frozen"
@@ -143,7 +143,7 @@ class Corvid::ProgramRegistryTest < Minitest::Test
     Corvid::ProgramRegistry.register(
       "default_required",
       display_name: "Default Required",
-      milestones: [{ key: "x", description: "x", days_after_anchor: 0 }]
+      milestones: [ { key: "x", description: "x", days_after_anchor: 0 } ]
     )
     assert_equal false, Corvid::ProgramRegistry.find("default_required").milestones.first[:required]
   end
@@ -153,7 +153,7 @@ class Corvid::ProgramRegistryTest < Minitest::Test
       Corvid::ProgramRegistry.register(
         "missing_key",
         display_name: "Missing Key",
-        milestones: [{ description: "no key", days_after_anchor: 0 }]
+        milestones: [ { description: "no key", days_after_anchor: 0 } ]
       )
     end
   end
@@ -163,7 +163,7 @@ class Corvid::ProgramRegistryTest < Minitest::Test
       Corvid::ProgramRegistry.register(
         "missing_desc",
         display_name: "Missing Desc",
-        milestones: [{ key: "x", days_after_anchor: 0 }]
+        milestones: [ { key: "x", days_after_anchor: 0 } ]
       )
     end
   end
@@ -173,7 +173,7 @@ class Corvid::ProgramRegistryTest < Minitest::Test
       Corvid::ProgramRegistry.register(
         "missing_days",
         display_name: "Missing Days",
-        milestones: [{ key: "x", description: "x" }]
+        milestones: [ { key: "x", description: "x" } ]
       )
     end
   end
@@ -183,7 +183,7 @@ class Corvid::ProgramRegistryTest < Minitest::Test
       Corvid::ProgramRegistry.register(
         "bad_days",
         display_name: "Bad Days",
-        milestones: [{ key: "x", description: "x", days_after_anchor: "soon" }]
+        milestones: [ { key: "x", description: "x", days_after_anchor: "soon" } ]
       )
     end
   end
@@ -193,7 +193,7 @@ class Corvid::ProgramRegistryTest < Minitest::Test
       Corvid::ProgramRegistry.register(
         "bad_required",
         display_name: "Bad Required",
-        milestones: [{ key: "x", description: "x", days_after_anchor: 0, required: "true" }]
+        milestones: [ { key: "x", description: "x", days_after_anchor: 0, required: "true" } ]
       )
     end
   end
@@ -203,7 +203,7 @@ class Corvid::ProgramRegistryTest < Minitest::Test
       Corvid::ProgramRegistry.register(
         "bad_shape",
         display_name: "Bad Shape",
-        milestones: ["not a hash"]
+        milestones: [ "not a hash" ]
       )
     end
   end
@@ -212,7 +212,7 @@ class Corvid::ProgramRegistryTest < Minitest::Test
     Corvid::ProgramRegistry.register(
       "frozen_hashes",
       display_name: "Frozen Hashes",
-      milestones: [{ key: "x", description: "x", days_after_anchor: 0, required: true }]
+      milestones: [ { key: "x", description: "x", days_after_anchor: 0, required: true } ]
     )
     milestone = Corvid::ProgramRegistry.find("frozen_hashes").milestones.first
     assert milestone.frozen?, "expected milestone hash to be frozen"

@@ -218,7 +218,7 @@ class Corvid::CmsFeeScheduleParserTest < ActiveSupport::TestCase
     with_tempfile(csv) do |path|
       yielded = []
       Corvid::CmsFeeScheduleParser.parse_rvus(path) do |cpt, work, pe, mp|
-        yielded << [cpt, work, pe, mp]
+        yielded << [ cpt, work, pe, mp ]
       end
 
       assert_equal 1, yielded.size, "expected only 99213 (A0021 has zero work + pe)"
@@ -230,7 +230,7 @@ class Corvid::CmsFeeScheduleParserTest < ActiveSupport::TestCase
   private
 
   def with_tempfile(content)
-    f = Tempfile.new(["cms_test", ".csv"])
+    f = Tempfile.new([ "cms_test", ".csv" ])
     f.write(content)
     f.close
     yield f.path

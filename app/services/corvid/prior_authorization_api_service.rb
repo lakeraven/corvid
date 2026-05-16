@@ -112,8 +112,8 @@ module Corvid
           resourceType: "ClaimResponse",
           id: referral.referral_identifier,
           status: "active",
-          type: { coding: [{ system: "http://terminology.hl7.org/CodeSystem/claim-type",
-                             code: "professional" }] },
+          type: { coding: [ { system: "http://terminology.hl7.org/CodeSystem/claim-type",
+                             code: "professional" } ] },
           use: "preauthorization",
           patient: { reference: "Patient/#{referral.case.patient_identifier}" },
           created: referral.created_at.iso8601,
@@ -269,7 +269,7 @@ module Corvid
       end
 
       def additional_info_for(referral)
-        ["Additional clinical documentation requested"]
+        [ "Additional clinical documentation requested" ]
       end
     end
   end

@@ -8,7 +8,7 @@ module Corvid
     validates :cpt_code, presence: true
     validates :locality, presence: true
     validates :effective_date, presence: true
-    validates :cpt_code, uniqueness: {scope: [:locality, :effective_date]}
+    validates :cpt_code, uniqueness: { scope: [ :locality, :effective_date ] }
 
     scope :current, -> { where(effective_date: ..Date.current).order(effective_date: :desc) }
     scope :for_code, ->(code) { where(cpt_code: code) }

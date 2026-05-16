@@ -341,10 +341,10 @@ module Corvid
       def execute_http(method, url, body = nil)
         uri = URI.parse(url)
         request = case method
-                  when :get  then Net::HTTP::Get.new(uri)
-                  when :post then Net::HTTP::Post.new(uri).tap { |r| r.body = body }
-                  when :put  then Net::HTTP::Put.new(uri).tap { |r| r.body = body }
-                  end
+        when :get  then Net::HTTP::Get.new(uri)
+        when :post then Net::HTTP::Post.new(uri).tap { |r| r.body = body }
+        when :put  then Net::HTTP::Put.new(uri).tap { |r| r.body = body }
+        end
         @default_headers.each { |k, v| request[k] = v }
         request["Authorization"] = "Bearer #{@bearer_token}" if @bearer_token
 
