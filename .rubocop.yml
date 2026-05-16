@@ -1,6 +1,11 @@
 inherit_gem:
   rubocop-rails-omakase: rubocop.yml
 
+AllCops:
+  Exclude:
+    # Rails-generated; regenerated on every migration without Omakase spacing
+    - "**/db/schema.rb"
+
 Style/Documentation:
   Enabled: false
 
