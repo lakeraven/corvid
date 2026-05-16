@@ -121,6 +121,35 @@ class Corvid::Adapters::MockAdapterTest < Minitest::Test
     assert_nil @adapter.find_patient("pt_001")
   end
 
+  # -- verify_tribal_enrollment contract: tribe_code + confidence ------------
+
+  def test_verify_tribal_enrollment_returns_tribe_code_when_added_via_add_enrollment
+    @adapter.add_enrollment("pt_e1", enrolled: true, tribe_name: "Demo Tribe", tribe_code: "DEMO", member_status: "enrolled")
+    result = @adapter.verify_tribal_enrollment("pt_e1")
+    assert_equal "DEMO", result[:tribe_code]
+    assert_equal "Demo Tribe", result[:tribe_name]
+    assert result[:enrolled]
+  end
+
+  def test_verify_tribal_enrollment_defaults_confidence_to_verified
+    @adapter.add_enrollment("pt_e2", enrolled: true, tribe_name: "T", tribe_code: "T")
+    result = @adapter.verify_tribal_enrollment("pt_e2")
+    assert_equal :verified, result[:confidence]
+  end
+
+  def test_verify_tribal_enrollment_propagates_explicit_confidence_stale
+    @adapter.add_enrollment("pt_e3", enrolled: true, tribe_name: "T", tribe_code: "T", confidence: :stale)
+    result = @adapter.verify_tribal_enrollment("pt_e3")
+    assert_equal :stale, result[:confidence]
+  end
+
+  def test_verify_tribal_enrollment_unknown_patient_returns_not_enrolled_with_verified_confidence
+    result = @adapter.verify_tribal_enrollment("pt_unknown")
+    refute result[:enrolled]
+    assert_nil result[:tribe_code]
+    assert_equal :verified, result[:confidence]
+  end
+
   # -- ADR 0003: MockAdapter is not a security boundary ----------------------
 
   def test_mock_adapter_documents_it_is_not_a_security_boundary
