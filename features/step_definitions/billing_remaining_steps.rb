@@ -29,7 +29,7 @@ Given("no claim exists with Stedi ID {string}") do |stedi_id|
   Corvid.adapter.add_remittance("REM_ORPHAN_#{stedi_id}", {
     remittance_identifier: "REM_ORPHAN_#{stedi_id}",
     payer_name: "Test Payer", payment_date: Date.current, total_paid: 100.00,
-    line_items: [{ claim_identifier: stedi_id, paid_amount: 100.00 }]
+    line_items: [ { claim_identifier: stedi_id, paid_amount: 100.00 } ]
   })
 end
 
@@ -180,8 +180,8 @@ Given("a remittance includes denial for {string} with reason {string}") do |clai
   Corvid.adapter.add_remittance("REM_DENY_SPEC_#{claim_id}", {
     remittance_identifier: "REM_DENY_SPEC_#{claim_id}", payer_name: "Test Payer",
     payment_date: Date.current, total_paid: 0,
-    line_items: [{ claim_identifier: claim_id, paid_amount: 0,
-                   status: "denied", denial_reason: reason }]
+    line_items: [ { claim_identifier: claim_id, paid_amount: 0,
+                   status: "denied", denial_reason: reason } ]
   })
 end
 
@@ -200,18 +200,18 @@ Given("a remittance includes payment for {string}:") do |claim_id, table|
   # Parse adjustment like "CO-45:$100.00"
   adjustment_amount = adjustment_raw.split(":").last.to_s.gsub("$", "").to_f
   # Adjustment codes
-  codes = [adjustment_raw.split(":").first, denial_raw.split(":").first].compact.reject(&:empty?)
+  codes = [ adjustment_raw.split(":").first, denial_raw.split(":").first ].compact.reject(&:empty?)
 
   Corvid.adapter.add_remittance("REM_ADJ_SPEC_#{claim_id}", {
     remittance_identifier: "REM_ADJ_SPEC_#{claim_id}", payer_name: "Test Payer",
     payment_date: Date.current,
     total_paid: paid_amount,
-    line_items: [{
+    line_items: [ {
       claim_identifier: claim_id,
       paid_amount: paid_amount,
       adjustment_amount: adjustment_amount,
       adjustment_codes: codes
-    }]
+    } ]
   })
 end
 

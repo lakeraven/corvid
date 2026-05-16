@@ -83,7 +83,7 @@ module Corvid
           report.each do |key, value|
             next if value.is_a?(Hash) || value.is_a?(Array)
 
-            csv << [key.to_s.titleize, value]
+            csv << [ key.to_s.titleize, value ]
           end
         end
       end

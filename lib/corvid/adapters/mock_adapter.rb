@@ -375,7 +375,7 @@ module Corvid
       end
 
       def search_payers(query)
-        [{ payer_identifier: "MOCK_PAYER", name: "Mock Payer matching '#{query}'" }]
+        [ { payer_identifier: "MOCK_PAYER", name: "Mock Payer matching '#{query}'" } ]
       end
 
       def process_payment(amount_cents:, patient_identifier:, description:)

@@ -299,7 +299,7 @@ module Corvid
 
       { success: true, message: message, referral: @prc_referral }
     rescue => e
-      { success: false, errors: [Corvid.sanitize_phi(e.message)] }
+      { success: false, errors: [ Corvid.sanitize_phi(e.message) ] }
     end
 
     # ----------------------------------------------------------------

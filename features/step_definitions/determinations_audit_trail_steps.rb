@@ -30,7 +30,7 @@ Given("the case has {int} determinations") do |count|
 end
 
 When("the system performs an automated eligibility check") do
-  @eligibility_result = { eligible: true, reasons: ["Valid enrollment", "In service area"] }
+  @eligibility_result = { eligible: true, reasons: [ "Valid enrollment", "In service area" ] }
 end
 
 When("the patient is found eligible") do
@@ -59,7 +59,7 @@ When("staff denies eligibility with reason {string}") do |reason|
     outcome: "denied",
     decision_method: "staff_review",
     determined_by_identifier: "pr_staff_001",
-    reasons: [reason]
+    reasons: [ reason ]
   )
 end
 
@@ -67,7 +67,7 @@ When("the referral is deferred pending Medicare enrollment") do
   @referral.record_determination!(
     outcome: "deferred",
     decision_method: "automated",
-    reasons: ["Medicare enrollment required"]
+    reasons: [ "Medicare enrollment required" ]
   )
 end
 

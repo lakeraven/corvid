@@ -20,8 +20,8 @@ class CreateCorvidBillingTables < ActiveRecord::Migration[8.1]
       t.string :error_message
       t.timestamps
     end
-    add_index :corvid_billing_transactions, [:tenant_identifier, :transaction_type]
-    add_index :corvid_billing_transactions, [:tenant_identifier, :reference_identifier]
+    add_index :corvid_billing_transactions, [ :tenant_identifier, :transaction_type ]
+    add_index :corvid_billing_transactions, [ :tenant_identifier, :reference_identifier ]
     add_check_constraint :corvid_billing_transactions,
       "transaction_type IN (#{TRANSACTION_TYPES.map { |s| "'#{s}'" }.join(',')})",
       name: "corvid_billing_tx_type_check"
@@ -57,8 +57,8 @@ class CreateCorvidBillingTables < ActiveRecord::Migration[8.1]
       t.string :provider_type
       t.timestamps
     end
-    add_index :corvid_claim_submissions, [:tenant_identifier, :status]
-    add_index :corvid_claim_submissions, [:tenant_identifier, :patient_identifier]
+    add_index :corvid_claim_submissions, [ :tenant_identifier, :status ]
+    add_index :corvid_claim_submissions, [ :tenant_identifier, :patient_identifier ]
     add_index :corvid_claim_submissions, :claim_identifier, unique: true
     add_check_constraint :corvid_claim_submissions,
       "status IN (#{CLAIM_STATUSES.map { |s| "'#{s}'" }.join(',')})",
@@ -76,8 +76,8 @@ class CreateCorvidBillingTables < ActiveRecord::Migration[8.1]
       t.string :claim_submission_identifier
       t.timestamps
     end
-    add_index :corvid_payments, [:tenant_identifier, :status]
-    add_index :corvid_payments, [:tenant_identifier, :patient_identifier]
+    add_index :corvid_payments, [ :tenant_identifier, :status ]
+    add_index :corvid_payments, [ :tenant_identifier, :patient_identifier ]
     add_index :corvid_payments, :payment_identifier, unique: true
     add_check_constraint :corvid_payments,
       "status IN (#{PAYMENT_STATUSES.map { |s| "'#{s}'" }.join(',')})",

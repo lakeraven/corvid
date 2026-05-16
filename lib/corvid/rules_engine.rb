@@ -38,7 +38,7 @@ module Corvid
       end
 
       def all_facts
-        result = [self]
+        result = [ self ]
         reasons.each { |reason| result.concat(reason.all_facts) }
         result
       end

@@ -28,7 +28,7 @@ module Corvid
 
     CLINICAL_KEYWORDS = %w[chest pain cardiac surgery fracture injury urgent severe chronic failed treatment].freeze
 
-    VALID_COVERAGE_TYPES = ["IHS", "Medicare/IHS", "Private Insurance/IHS", "Medicaid/IHS"].freeze
+    VALID_COVERAGE_TYPES = [ "IHS", "Medicare/IHS", "Private Insurance/IHS", "Medicaid/IHS" ].freeze
 
     # Top-level eligibility: all checks must pass
     def is_eligible(is_tribally_enrolled, meets_residency, has_clinical_necessity, has_payor_coordination)

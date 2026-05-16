@@ -46,7 +46,7 @@ class CreateCorvidEligibilityChecklists < ActiveRecord::Migration[8.1]
     end
 
     add_index :corvid_eligibility_checklists,
-              [:tenant_identifier, :facility_identifier],
+              [ :tenant_identifier, :facility_identifier ],
               name: "idx_corvid_elig_checklists_tenant_facility"
     add_index :corvid_eligibility_checklists,
               :prc_referral_id,

@@ -29,7 +29,7 @@ module Corvid
       management_approved
     ].freeze
 
-    NON_APPROVAL_ITEMS = (ITEMS - [:management_approved]).freeze
+    NON_APPROVAL_ITEMS = (ITEMS - [ :management_approved ]).freeze
 
     # Item metadata: boolean field -> timestamp field, source/by field
     ITEM_FIELDS = {

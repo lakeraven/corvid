@@ -70,10 +70,10 @@ module Corvid
         id: id&.to_s,
         status: status,
         name: name,
-        managingOrganization: facility_identifier.present? ? [{ reference: "Organization/#{facility_identifier}" }] : nil,
+        managingOrganization: facility_identifier.present? ? [ { reference: "Organization/#{facility_identifier}" } ] : nil,
         participant: care_team_members.active.map do |m|
           {
-            role: [{ text: m.role }],
+            role: [ { text: m.role } ],
             member: { reference: "Practitioner/#{m.practitioner_identifier}" }
           }
         end

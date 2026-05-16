@@ -122,11 +122,11 @@ end
 
 When("Stedi reports the claim status changed to {string}") do |new_status|
   mapped = case new_status.downcase
-           when "accepted" then "accepted"
-           when "rejected" then "rejected"
-           when "paid" then "paid"
-           else new_status.downcase
-           end
+  when "accepted" then "accepted"
+  when "rejected" then "rejected"
+  when "paid" then "paid"
+  else new_status.downcase
+  end
   Corvid.adapter.add_claim(@claim_submission.claim_identifier, { status: mapped })
   @claim_submission.check_status!
 end

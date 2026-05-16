@@ -98,7 +98,7 @@ class Corvid::FeeScheduleTest < ActiveSupport::TestCase
       create_schedule(name: "General", program: "general")
 
       results = Corvid::FeeSchedule.for_program("immunization")
-      assert_equal [immun], results.to_a
+      assert_equal [ immun ], results.to_a
     end
   end
 

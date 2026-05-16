@@ -80,7 +80,7 @@ end
 
 When("I view the case management dashboard") do
   @dashboard_metrics = Corvid::CaseDashboardService.metrics(
-    care_team_ids: [@care_team.id],
+    care_team_ids: [ @care_team.id ],
     provider_identifier: @provider_identifier
   )
 end
@@ -92,7 +92,7 @@ end
 
 When("the CaseDashboardService computes metrics") do
   @dashboard_metrics = Corvid::CaseDashboardService.metrics(
-    care_team_ids: [@care_team.id],
+    care_team_ids: [ @care_team.id ],
     provider_identifier: @provider_identifier
   )
 end
@@ -132,7 +132,7 @@ Then("the service should be read-only with no side effects") do
   # Dashboard metrics is a pure read — no records created/updated
   count_before = Corvid::Case.count
   Corvid::CaseDashboardService.metrics(
-    care_team_ids: [@care_team.id],
+    care_team_ids: [ @care_team.id ],
     provider_identifier: @provider_identifier
   )
   assert_equal count_before, Corvid::Case.count
