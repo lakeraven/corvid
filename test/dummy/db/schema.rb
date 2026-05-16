@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_05_14_000002) do
+ActiveRecord::Schema[8.1].define(version: 2026_05_16_000001) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
@@ -373,8 +373,8 @@ ActiveRecord::Schema[8.1].define(version: 2026_05_14_000002) do
     t.string "source_release"
     t.datetime "updated_at", null: false
     t.index ["ccn"], name: "index_corvid_npi_ccn_crosswalks_on_ccn"
-    t.index ["source_release", "npi", "ccn", "effective_date"], name: "idx_corvid_npi_ccn_crosswalks_unique", unique: true
     t.index ["npi"], name: "index_corvid_npi_ccn_crosswalks_on_npi"
+    t.index ["source_release", "npi", "ccn", "effective_date"], name: "idx_corvid_npi_ccn_crosswalks_unique", unique: true
   end
 
   create_table "corvid_opps_apc_weights", force: :cascade do |t|
@@ -415,6 +415,25 @@ ActiveRecord::Schema[8.1].define(version: 2026_05_14_000002) do
     t.index ["tenant_identifier", "patient_identifier"], name: "idx_on_tenant_identifier_patient_identifier_238e33c764"
     t.index ["tenant_identifier", "status"], name: "index_corvid_payments_on_tenant_identifier_and_status"
     t.check_constraint "status::text = ANY (ARRAY['pending'::character varying::text, 'processing'::character varying::text, 'succeeded'::character varying::text, 'failed'::character varying::text, 'refunded'::character varying::text])", name: "corvid_payments_status_check"
+  end
+
+  create_table "corvid_prc_eligibility_decisions", force: :cascade do |t|
+    t.date "as_of_date", null: false
+    t.datetime "created_at", null: false
+    t.datetime "decided_at", null: false
+    t.string "decided_by_identifier"
+    t.boolean "eligible", null: false
+    t.string "facility_identifier", null: false
+    t.string "person_identifier", null: false
+    t.string "provider_confidence"
+    t.string "provider_source"
+    t.jsonb "reason_codes", default: [], null: false
+    t.string "tenant_identifier", null: false
+    t.datetime "updated_at", null: false
+    t.string "verification_snapshot_hash"
+    t.index ["tenant_identifier", "decided_at"], name: "idx_corvid_prc_eligibility_decisions_tenant_decided_at"
+    t.index ["tenant_identifier", "facility_identifier", "decided_at"], name: "idx_corvid_prc_elig_decisions_tenant_facility_decided"
+    t.index ["tenant_identifier", "person_identifier", "decided_at"], name: "idx_corvid_prc_elig_decisions_tenant_person_decided"
   end
 
   create_table "corvid_prc_obligations", force: :cascade do |t|
