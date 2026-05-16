@@ -86,6 +86,28 @@ class Corvid::AscRateProviderTest < ActiveSupport::TestCase
     assert_in_delta 1_800.0, jan_1,  0.01, "Jan 1, 2027 should price against CY 2027 rows"
   end
 
+  test "rate_for returns nil on Jan 1 when next calendar year rows are missing" do
+    Corvid::AscHcpcsRate.unscoped.delete_all
+    Corvid::AscConversionFactor.unscoped.delete_all
+    Corvid::AscHcpcsRate.create!(
+      calendar_year: 2026, hcpcs_code: "0102T", payment_weight: 20.0
+    )
+    Corvid::AscConversionFactor.create!(
+      calendar_year: 2026, locality: "NATIONAL",
+      conversion_factor: 50.0, wage_index: 1.0
+    )
+
+    dec_31 = Corvid::AscRateProvider.rate_for(
+      hcpcs_code: "0102T", locality: "NATIONAL", date: Date.new(2026, 12, 31)
+    )
+    jan_1 = Corvid::AscRateProvider.rate_for(
+      hcpcs_code: "0102T", locality: "NATIONAL", date: Date.new(2027, 1, 1)
+    )
+
+    assert_in_delta 1_000.0, dec_31, 0.01, "Dec 31, 2026 should price against CY 2026 rows"
+    assert_nil jan_1, "Jan 1, 2027 should return nil when CY 2027 ASC rows are missing"
+  end
+
   test "rate_for keeps Sep 30 and Oct 1 in the same calendar year (not fiscal)" do
     sep_30 = Corvid::AscRateProvider.rate_for(
       hcpcs_code: "0102T",
