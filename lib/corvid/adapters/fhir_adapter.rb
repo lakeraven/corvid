@@ -51,13 +51,26 @@ module Corvid
         "charity_care"      => "CHAR"
       }.freeze
 
-      def initialize(base_url:, bearer_token: nil, headers: {})
+      DEFAULT_OPEN_TIMEOUT = 10
+      DEFAULT_READ_TIMEOUT = 30
+
+      def initialize(base_url:, bearer_token: nil, headers: {},
+                     open_timeout: DEFAULT_OPEN_TIMEOUT,
+                     read_timeout: DEFAULT_READ_TIMEOUT,
+                     proxy_uri: nil,
+                     ca_file: nil,
+                     ca_path: nil)
         @base_url = base_url.chomp("/")
         @bearer_token = bearer_token
         @default_headers = {
           "Accept" => "application/fhir+json",
           "Content-Type" => "application/fhir+json"
         }.merge(headers)
+        @open_timeout = open_timeout
+        @read_timeout = read_timeout
+        @proxy_uri = proxy_uri && URI.parse(proxy_uri)
+        @ca_file = ca_file
+        @ca_path = ca_path
       end
 
       # ----------------------------------------------------------------------
@@ -355,11 +368,26 @@ module Corvid
         @default_headers.each { |k, v| request[k] = v }
         request["Authorization"] = "Bearer #{@bearer_token}" if @bearer_token
 
-        http = Net::HTTP.new(uri.host, uri.port)
+        build_http(uri).request(request)
+      end
+
+      # Construct a Net::HTTP instance configured per the constructor's
+      # network keywords. Factored out so on-premises deploys (custom
+      # timeouts, outbound proxy, private CA bundle) can be unit-tested
+      # without making real HTTP calls.
+      def build_http(uri)
+        klass = if @proxy_uri
+          Net::HTTP::Proxy(@proxy_uri.host, @proxy_uri.port, @proxy_uri.user, @proxy_uri.password)
+        else
+          Net::HTTP
+        end
+        http = klass.new(uri.host, uri.port)
         http.use_ssl = uri.scheme == "https"
-        http.open_timeout = 10
-        http.read_timeout = 30
-        http.request(request)
+        http.open_timeout = @open_timeout
+        http.read_timeout = @read_timeout
+        http.ca_file = @ca_file if @ca_file
+        http.ca_path = @ca_path if @ca_path
+        http
       end
 
       # FHIR helpers --------------------------------------------------------
