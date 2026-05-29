@@ -74,6 +74,32 @@ class Corvid::Adapters::FhirAdapterNetworkTest < Minitest::Test
     assert_equal "proxypass", http.proxy_pass
   end
 
+  def test_proxy_uri_without_explicit_port_uses_uri_default
+    adapter = Corvid::Adapters::FhirAdapter.new(
+      base_url: BASE,
+      proxy_uri: "http://proxy.example.com"
+    )
+    http = adapter.send(:build_http, TARGET)
+
+    assert http.proxy?
+    assert_equal "proxy.example.com", http.proxy_address
+    # URI.parse("http://proxy.example.com").port => 80
+    assert_equal 80, http.proxy_port
+  end
+
+  def test_https_proxy_uri_is_rejected_loudly
+    # Net::HTTP::Proxy does not perform TLS to the proxy itself; an
+    # https:// proxy_uri would silently be treated as HTTP-on-443 and
+    # fail against a real TLS-wrapped HTTPS proxy. Reject up front.
+    err = assert_raises(ArgumentError) do
+      Corvid::Adapters::FhirAdapter.new(
+        base_url: BASE,
+        proxy_uri: "https://proxy.example.com:3128"
+      )
+    end
+    assert_match(/proxy_uri.*http:/i, err.message)
+  end
+
   # --- private CA bundle ------------------------------------------------------
 
   def test_ca_file_keyword_pins_a_private_ca_bundle

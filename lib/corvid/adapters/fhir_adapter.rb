@@ -68,10 +68,29 @@ module Corvid
         }.merge(headers)
         @open_timeout = open_timeout
         @read_timeout = read_timeout
-        @proxy_uri = proxy_uri && URI.parse(proxy_uri)
+        @proxy_uri = build_proxy_uri(proxy_uri)
         @ca_file = ca_file
         @ca_path = ca_path
       end
+
+      def build_proxy_uri(raw)
+        return nil if raw.nil?
+
+        uri = URI.parse(raw)
+        # Net::HTTP::Proxy does not perform TLS to the proxy itself; an
+        # "https://" proxy URI would silently be treated as HTTP-on-443
+        # and fail against a real TLS-wrapped HTTPS proxy. Reject loudly
+        # so the operator can re-route through stunnel or similar.
+        unless uri.scheme == "http"
+          raise ArgumentError,
+                "FhirAdapter proxy_uri must use the http:// scheme " \
+                "(got #{uri.scheme.inspect}). HTTPS proxies are not " \
+                "supported by Net::HTTP::Proxy; tunnel through stunnel " \
+                "or an outbound HTTP CONNECT proxy instead."
+        end
+        uri
+      end
+      private :build_proxy_uri
 
       # ----------------------------------------------------------------------
       # Patient
