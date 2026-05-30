@@ -133,4 +133,18 @@ class Corvid::ChsTrdNormalizerTest < ActiveSupport::TestCase
     assert_equal "ACME REGIONAL", row[:vendor_name]
     assert_equal "99213", row[:procedure_code]
   end
+
+  test "strips UTF-8 BOM from string input" do
+    csv = "\xEF\xBB\xBF" + CANONICAL_CSV
+    result = Corvid::ChsTrdNormalizer.normalize(csv)
+    assert_equal 2, result[:rows].size
+    assert_empty result[:rejects]
+  end
+
+  test "strips UTF-8 BOM from binary-mode IO input" do
+    io = StringIO.new(("\xEF\xBB\xBF" + CANONICAL_CSV).b)
+    result = Corvid::ChsTrdNormalizer.normalize(io)
+    assert_equal 2, result[:rows].size
+    assert_empty result[:rejects]
+  end
 end

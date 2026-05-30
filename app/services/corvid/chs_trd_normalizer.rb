@@ -46,11 +46,13 @@ module Corvid
 
     REQUIRED_STRING_FIELDS = %w[document_number vendor_name procedure_code].freeze
 
-    BOM = "\xEF\xBB\xBF"
+    BOM = "\xEF\xBB\xBF".b
 
     def self.normalize(csv_string_or_io)
-      text = csv_string_or_io.respond_to?(:read) ? csv_string_or_io.read : csv_string_or_io.to_s
-      text = text.sub(/\A#{BOM}/, "")
+      raw = csv_string_or_io.respond_to?(:read) ? csv_string_or_io.read : csv_string_or_io.to_s
+      raw = raw.b
+      raw = raw[BOM.bytesize..] if raw.start_with?(BOM)
+      text = raw.force_encoding("UTF-8")
 
       table = CSV.parse(text, headers: true)
       headers = (table.headers || []).map { |h| h.to_s.strip }
