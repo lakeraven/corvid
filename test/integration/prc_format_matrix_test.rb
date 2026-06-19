@@ -9,10 +9,10 @@ require "test_helper"
 # parser/importer contract documented in FORMAT_MATRIX.md so future changes
 # cannot silently break compatibility.
 class Corvid::PrcFormatMatrixTest < ActiveSupport::TestCase
-  FIXTURES_DIR = Rails.root.join("../fixtures/overpayment_recovery/formats")
+  FIXTURES_DIR = File.expand_path("../fixtures/overpayment_recovery/formats", __dir__)
 
   def fixture(name)
-    FIXTURES_DIR.join(name).read
+    File.read(File.join(FIXTURES_DIR, name))
   end
 
   def with_matrix_tenant(name)
