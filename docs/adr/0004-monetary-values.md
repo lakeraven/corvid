@@ -41,7 +41,7 @@ Constraints:
    - **Database wire format.** Integer subunit-cents + currency ISO are canonical storage; `Money` reconstructs from the pair on read.
    - **JSON / CSV / FHIR output.** Serializers convert to fixed-point string ("42000.00") for the value plus a separate `currency` field, never `BigDecimal#to_s`, never raw subunit-cents (a consumer who sees `42000` for a JOD field would mis-render it as 42 dinars instead of 42).
    - **RPMS RPC adapter.** RPMS does not know about `Money`; the adapter receives/emits decimals at the wire and converts at the edge.
-   - **External APIs (Availity, claim files, FHIR).** Same — convert at the boundary, document the format used.
+   - **External APIs (clearinghouse, claim files, FHIR).** Same — convert at the boundary, document the format used.
 
 8. **Migration strategy: staged across PRs, not a single mega-PR.** Each PR follows the same recipe:
    - Add `*_cents` integer columns and `currency_iso` alongside existing decimals.
