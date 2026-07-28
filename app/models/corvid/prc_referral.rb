@@ -336,7 +336,11 @@ module Corvid
 
       chs_status = CHS_STATUS_MAP[status] || CHS_STATUS_DEFAULT
       Corvid.adapter.update_referral(referral_identifier, chs_approval_status: chs_status)
-    rescue => e
+    rescue NotImplementedError, StandardError => e
+      # NotImplementedError descends from ScriptError, not StandardError, so a
+      # bare `rescue` misses it. Adapters that legitimately don't own referrals
+      # (e.g. tribal-enrollment backends) raise NotImplementedError from
+      # update_referral; the AASM transition must remain best-effort across them.
       Rails.logger.warn("PrcReferral: Failed to sync status to EHR: #{Corvid.sanitize_phi(e.message)}")
       false
     end
