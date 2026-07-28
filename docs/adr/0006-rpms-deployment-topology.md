@@ -59,6 +59,15 @@ Out of scope: implementation of any mode. This is a decision artifact; implement
 
 7. **Connector binary placement: outside public corvid.** The connector's design doc and binary live in the private integrations repo, consistent with the standing rule that vendor adapters and deployment-specific components live in private repos (`lib/corvid/adapters/base.rb`). Public corvid contains only the connector-shaped adapter (`RpmsConnectorAdapter`) speaking the envelope protocol.
 
+## Open dependency (premise to validate)
+
+The **topology decision (Decision 1) is independent of this** — it rests on the customer-side firewall-authority reality, not on data content. But two of the data-sovereignty framings above are **contingent on how PRC data actually exists in legacy RPMS, which is not yet characterized**:
+
+- Decision 5's "keep the RPC-level trail customer-side *because* it is PHI-bearing," and
+- the Consequences claim that Mode 3 keeps PHI-bearing RPC payload logs off SaaS.
+
+PRC referrals at the RPMS boundary almost certainly carry PHI (patient identity linked to requested service, diagnosis, provider, cost), but the *degree* — and how much raw PHI crosses the connector before corvid's tokenization (ADR 0003) — is unquantified. If PRC data turns out lighter on PHI than assumed, these claims weaken (keeping it customer-side remains defensible, just less load-bearing). **Characterizing PRC data's PHI content in legacy RPMS is tracked separately and refines the emphasis of Decisions 5 and the sovereignty consequences — it does not change Decision 1.**
+
 ## Consequences
 
 ### Positive
