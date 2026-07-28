@@ -1,7 +1,7 @@
 # ADR 0006: RPMS deployment topology — customer-side connector as north star
 
-**Status:** Proposed
-**Date:** 2026-07-10
+**Status:** Accepted
+**Date:** 2026-07-10 (accepted 2026-07-28)
 
 ## Context
 
