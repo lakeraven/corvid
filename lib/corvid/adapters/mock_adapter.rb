@@ -355,6 +355,25 @@ module Corvid
         }
       end
 
+      def verify_ai_an_status(patient_identifier)
+        status = @ai_an_statuses[patient_identifier.to_s]
+        # No record is a verified negative (not AI/AN), NOT an unavailable
+        # source. Tests set confidence: :unavailable explicitly to exercise
+        # the fail-closed path.
+        unless status
+          return { ai_an: false, ihs_beneficiary: false, basis: nil,
+                   confidence: :verified, verified_at: Time.current }
+        end
+
+        {
+          ai_an: status.fetch(:ai_an, false),
+          ihs_beneficiary: status.fetch(:ihs_beneficiary, false),
+          basis: status[:basis],
+          confidence: status.fetch(:confidence, :verified),
+          verified_at: Time.current
+        }
+      end
+
       # ----------------------------------------------------------------------
       # Billing / EDI
       # ----------------------------------------------------------------------
@@ -433,6 +452,10 @@ module Corvid
         @residencies[patient_identifier.to_s] = attrs
       end
 
+      def add_ai_an_status(patient_identifier, attrs)
+        @ai_an_statuses[patient_identifier.to_s] = attrs
+      end
+
       def add_claim(reference, attrs)
         @claims[reference] = attrs
       end
@@ -458,6 +481,7 @@ module Corvid
         @text_store = {}
         @enrollments = {}
         @residencies = {}
+        @ai_an_statuses = {}
         @coverages = {}
         @claims = {}
         @remittances = {}

@@ -214,6 +214,26 @@ module Corvid
         raise NotImplementedError, "#{self.class}#verify_residency not implemented"
       end
 
+      # Verify AI/AN / IHS-beneficiary status for the HR-1 Medicaid exemption
+      # (work requirements + 6-month redeterminations). This is BROADER than
+      # verify_tribal_enrollment: the HR-1 exemption explicitly includes Urban
+      # Indians and IHS beneficiaries who need not be enrolled in a facility's
+      # contracted tribe. The authoritative source is baseroll's IAL2/AAL2
+      # verification (see baseroll issue "expose enrollment verification
+      # endpoints" and its AI/AN-status extension).
+      #
+      # Returns { ai_an: bool, ihs_beneficiary: bool, basis: str|nil,
+      #           confidence: :verified|:stale|:unavailable,
+      #           verified_at: datetime }
+      #
+      # `confidence: :unavailable` means the source could not be reached —
+      # callers MUST fail closed (do not assert an exemption on unavailable).
+      # There is no self-report fallback: an adapter that cannot verify must
+      # raise here rather than fabricate a positive.
+      def verify_ai_an_status(patient_identifier)
+        raise NotImplementedError, "#{self.class}#verify_ai_an_status not implemented"
+      end
+
       # ----------------------------------------------------------------------
       # Billing / EDI (clearinghouse adapter contract)
       # ----------------------------------------------------------------------

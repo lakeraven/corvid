@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_05_16_000001) do
+ActiveRecord::Schema[8.1].define(version: 2026_08_09_000002) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
@@ -308,6 +308,23 @@ ActiveRecord::Schema[8.1].define(version: 2026_05_16_000001) do
     t.index ["tenant_identifier", "facility_identifier"], name: "idx_corvid_elig_checklists_tenant_facility"
   end
 
+  create_table "corvid_exemption_events", force: :cascade do |t|
+    t.datetime "created_at", null: false
+    t.string "event_type", null: false
+    t.string "exemption_type"
+    t.bigint "medicaid_exemption_id"
+    t.string "notes_token"
+    t.date "occurred_on", null: false
+    t.string "person_identifier", null: false
+    t.string "recorded_by_identifier"
+    t.string "tenant_identifier", null: false
+    t.datetime "updated_at", null: false
+    t.index ["medicaid_exemption_id"], name: "index_corvid_exemption_events_on_medicaid_exemption_id"
+    t.index ["tenant_identifier", "event_type"], name: "idx_corvid_exemption_events_tenant_type"
+    t.index ["tenant_identifier", "person_identifier", "occurred_on"], name: "idx_corvid_exemption_events_tenant_person_occurred"
+    t.check_constraint "event_type::text = ANY (ARRAY['asserted'::character varying, 'coverage_retained'::character varying, 'erroneously_disenrolled'::character varying, 'appeal_filed'::character varying, 'coverage_reinstated'::character varying, 'revoked'::character varying, 'expired'::character varying]::text[])", name: "corvid_exemption_events_type_check"
+  end
+
   create_table "corvid_fee_schedule_entries", force: :cascade do |t|
     t.decimal "conversion_factor", precision: 8, scale: 4
     t.string "cpt_code", null: false
@@ -362,6 +379,30 @@ ActiveRecord::Schema[8.1].define(version: 2026_05_16_000001) do
     t.datetime "updated_at", null: false
     t.decimal "wage_index", precision: 8, scale: 4, default: "1.0", null: false
     t.index ["fiscal_year", "locality"], name: "idx_corvid_ipps_hospital_rates_fy_locality", unique: true
+  end
+
+  create_table "corvid_medicaid_exemptions", force: :cascade do |t|
+    t.date "as_of_date"
+    t.string "asserted_by_identifier"
+    t.string "basis"
+    t.datetime "created_at", null: false
+    t.date "effective_date"
+    t.string "exemption_type", null: false
+    t.datetime "expires_at"
+    t.string "facility_identifier"
+    t.string "person_identifier", null: false
+    t.string "status", default: "asserted", null: false
+    t.string "tenant_identifier", null: false
+    t.datetime "updated_at", null: false
+    t.string "verification_confidence"
+    t.string "verification_snapshot_hash"
+    t.string "verification_source"
+    t.datetime "verified_at"
+    t.index ["tenant_identifier", "person_identifier", "exemption_type"], name: "idx_corvid_medicaid_exemptions_active_unique", unique: true, where: "((status)::text = 'asserted'::text)"
+    t.index ["tenant_identifier", "person_identifier"], name: "idx_corvid_medicaid_exemptions_tenant_person"
+    t.index ["tenant_identifier", "status", "exemption_type"], name: "idx_corvid_medicaid_exemptions_tenant_status_type"
+    t.check_constraint "exemption_type::text = ANY (ARRAY['work_requirement'::character varying, 'six_month_redetermination'::character varying]::text[])", name: "corvid_medicaid_exemptions_type_check"
+    t.check_constraint "status::text = ANY (ARRAY['asserted'::character varying, 'expired'::character varying, 'revoked'::character varying]::text[])", name: "corvid_medicaid_exemptions_status_check"
   end
 
   create_table "corvid_npi_ccn_crosswalks", force: :cascade do |t|
@@ -573,6 +614,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_05_16_000001) do
   add_foreign_key "corvid_cases", "corvid_care_teams", column: "care_team_id"
   add_foreign_key "corvid_committee_reviews", "corvid_prc_referrals", column: "prc_referral_id"
   add_foreign_key "corvid_eligibility_checklists", "corvid_prc_referrals", column: "prc_referral_id"
+  add_foreign_key "corvid_exemption_events", "corvid_medicaid_exemptions", column: "medicaid_exemption_id"
   add_foreign_key "corvid_prc_overpayment_analyses", "corvid_prc_obligations", column: "prc_obligation_id"
   add_foreign_key "corvid_prc_payments", "corvid_prc_obligations", column: "prc_obligation_id"
   add_foreign_key "corvid_prc_referrals", "corvid_cases", column: "case_id"
