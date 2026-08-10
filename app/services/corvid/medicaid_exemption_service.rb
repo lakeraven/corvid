@@ -86,25 +86,24 @@ module Corvid
 
         ActiveRecord::Base.transaction do
           types.each do |type|
-            exemption = MedicaidExemption.status_asserted.find_or_initialize_by(
+            exemption = upsert_asserted_exemption!(
               tenant_identifier: tenant_identifier,
               person_identifier: person_identifier,
-              exemption_type: type
+              exemption_type: type,
+              attributes: {
+                facility_identifier: facility_identifier,
+                status: "asserted",
+                basis: basis,
+                as_of_date: as_of_date,
+                effective_date: effective_date,
+                expires_at: expires_at,
+                verified_at: status[:verified_at] || Time.current,
+                verification_source: provider_source,
+                verification_confidence: status[:confidence]&.to_s,
+                verification_snapshot_hash: snapshot_hash,
+                asserted_by_identifier: asserted_by_identifier
+              }
             )
-            exemption.assign_attributes(
-              facility_identifier: facility_identifier,
-              status: "asserted",
-              basis: basis,
-              as_of_date: as_of_date,
-              effective_date: effective_date,
-              expires_at: expires_at,
-              verified_at: status[:verified_at] || Time.current,
-              verification_source: provider_source,
-              verification_confidence: status[:confidence]&.to_s,
-              verification_snapshot_hash: snapshot_hash,
-              asserted_by_identifier: asserted_by_identifier
-            )
-            exemption.save!
             exemption_ids << exemption.id
 
             ExemptionEvent.create!(
@@ -164,6 +163,36 @@ module Corvid
       end
 
       private
+
+      # Concurrency-safe upsert of the single asserted exemption for
+      # (tenant, person, type). Two concurrent asserts can both miss the
+      # find_or_initialize_by and then collide on the partial unique index,
+      # raising ActiveRecord::RecordNotUnique. Treat that as a benign
+      # duplicate: adopt the row the winner committed and refresh it with this
+      # run's verified provenance, rather than 500 on the race.
+      #
+      # The insert runs in a savepoint (requires_new) so a unique violation
+      # rolls back only that statement — the surrounding assert transaction
+      # (which also writes the :asserted event) stays usable. Fail-closed is
+      # preserved: nothing here fabricates a positive; it only reconciles two
+      # equally-verified asserts of the same status.
+      def upsert_asserted_exemption!(tenant_identifier:, person_identifier:, exemption_type:, attributes:)
+        key = {
+          tenant_identifier: tenant_identifier,
+          person_identifier: person_identifier,
+          exemption_type: exemption_type
+        }
+
+        exemption = MedicaidExemption.status_asserted.find_or_initialize_by(key)
+        exemption.assign_attributes(attributes)
+
+        ActiveRecord::Base.transaction(requires_new: true) { exemption.save! }
+        exemption
+      rescue ActiveRecord::RecordNotUnique
+        existing = MedicaidExemption.status_asserted.find_by!(key)
+        existing.update!(attributes)
+        existing
+      end
 
       # Hash the STABLE verified status bound to this person and tenant, so the
       # snapshot is unique per subject (not a byte-identical projection shared

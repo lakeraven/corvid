@@ -116,6 +116,37 @@ class Corvid::MedicaidExemptionServiceTest < ActiveSupport::TestCase
     assert_equal 0, Corvid::ExemptionEvent.for_person("pt_prod").count
   end
 
+  # -- Concurrency: unique-index race is a benign duplicate ------------------
+
+  test "assert treats a concurrent unique-violation as a benign duplicate" do
+    @adapter.add_ai_an_status("pt_race", ai_an: true, ihs_beneficiary: true,
+                              basis: "ai_an_ihs_beneficiary", confidence: :verified)
+
+    # The row a concurrent assert already committed for the same subject/type;
+    # our insert will lose the race against the partial unique index.
+    winner = Corvid::MedicaidExemption.create!(
+      tenant_identifier: TENANT, person_identifier: "pt_race",
+      exemption_type: "work_requirement", status: "asserted",
+      basis: "ai_an_ihs_beneficiary", as_of_date: Date.current,
+      effective_date: Date.current, verified_at: Time.current,
+      verification_source: "Corvid::Adapters::MockAdapter",
+      verification_confidence: "verified"
+    )
+
+    result = with_first_save_raising(ActiveRecord::RecordNotUnique) do
+      Corvid::MedicaidExemptionService.assert(
+        person_identifier: "pt_race", exemption_types: [ "work_requirement" ]
+      )
+    end
+
+    assert result.asserted?
+    assert_equal :asserted, result.reason
+    assert_equal [ winner.id ], result.exemption_ids
+    # Recovered to the winning row — exactly one exemption, one asserted event.
+    assert_equal 1, Corvid::MedicaidExemption.for_person("pt_race").count
+    assert_equal 1, Corvid::ExemptionEvent.for_person("pt_race").of_type("asserted").count
+  end
+
   # -- Empty exemption list is not a success ---------------------------------
 
   test "assert with an empty exemption_types list is rejected, not a false success" do
@@ -174,5 +205,26 @@ class Corvid::MedicaidExemptionServiceTest < ActiveSupport::TestCase
     assert event.persisted?
     assert event.event_erroneously_disenrolled?
     assert_equal "work_requirement", event.exemption_type
+  end
+
+  private
+
+  # Make MedicaidExemption#save! raise the given error exactly once (the
+  # unique-index race), then fall through to the real save! — so the rescue
+  # path's update! still persists. Restored afterward.
+  def with_first_save_raising(error_class)
+    klass = Corvid::MedicaidExemption
+    original = klass.instance_method(:save!)
+    fired = false
+    klass.send(:define_method, :save!) do |*args, **kwargs|
+      unless fired
+        fired = true
+        raise error_class, "duplicate key value violates unique constraint"
+      end
+      original.bind(self).call(*args, **kwargs)
+    end
+    yield
+  ensure
+    klass.send(:define_method, :save!, original)
   end
 end
