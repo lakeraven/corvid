@@ -27,12 +27,13 @@ module Corvid
 
     # Allow-list of confidence levels a verified response may carry to assert
     # an exemption. Per the adapter contract (Adapters::Base#verify_ai_an_status)
-    # these are the levels where the source actually returned data — :verified
-    # is canonical, :stale is data flagged out-of-date. Everything else
-    # (:unavailable, nil, or any unknown/malformed value) is untrustworthy and
-    # asserts nothing. Mirrors how TribalEligibilityService treats :stale as
-    # usable-with-provenance rather than dropping a real legal protection.
-    ACCEPTED_CONFIDENCE = %i[verified stale].freeze
+    # :verified is the only level where the source returned current,
+    # trustworthy data. :stale is data flagged out-of-date and is NOT accepted:
+    # asserting a Medicaid work-requirement exemption off stale AI/AN
+    # verification could carry a member on a protection the source no longer
+    # stands behind. Everything else (:stale, :unavailable, nil, or any
+    # unknown/malformed value) is untrustworthy and asserts nothing.
+    ACCEPTED_CONFIDENCE = %i[verified].freeze
 
     AssertionResult = Struct.new(
       :asserted,

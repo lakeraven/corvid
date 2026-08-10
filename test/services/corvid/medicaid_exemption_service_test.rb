@@ -141,7 +141,7 @@ class Corvid::MedicaidExemptionServiceTest < ActiveSupport::TestCase
     assert_equal 0, Corvid::ExemptionEvent.for_person("pt_nov").count
   end
 
-  test "asserts from a stale-but-verified response (allow-list boundary)" do
+  test "does not assert from a stale response (allow-list boundary)" do
     use_canned_adapter(ai_an: true, basis: "ai_an_ihs_beneficiary",
                        confidence: :stale, verified_at: Time.current)
 
@@ -149,11 +149,10 @@ class Corvid::MedicaidExemptionServiceTest < ActiveSupport::TestCase
       person_identifier: "pt_stale", exemption_types: [ "work_requirement" ]
     )
 
-    assert result.asserted?
-    assert_equal :asserted, result.reason
-    exemption = Corvid::MedicaidExemption.for_person("pt_stale").active.first
-    assert_equal "stale", exemption.verification_confidence
-    refute_nil exemption.verified_at
+    refute result.asserted?
+    assert_equal :verification_unavailable, result.reason
+    assert_equal 0, Corvid::MedicaidExemption.for_person("pt_stale").count
+    assert_equal 0, Corvid::ExemptionEvent.for_person("pt_stale").count
   end
 
   # -- Deterministic snapshot hash -------------------------------------------
