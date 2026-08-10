@@ -23,6 +23,8 @@ def clean_corvid_tables!
   Corvid::EligibilityChecklist.unscoped.delete_all
   Corvid::Determination.unscoped.delete_all
   Corvid::PrcEligibilityDecision.unscoped.delete_all
+  Corvid::ExemptionEvent.unscoped.delete_all
+  Corvid::MedicaidExemption.unscoped.delete_all
   Corvid::AlternateResourceCheck.unscoped.delete_all
   Corvid::CommitteeReview.unscoped.delete_all
   Corvid::PrcOverpaymentAnalysis.unscoped.delete_all
