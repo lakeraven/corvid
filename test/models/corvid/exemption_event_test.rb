@@ -55,6 +55,39 @@ class Corvid::ExemptionEventTest < ActiveSupport::TestCase
     )
   end
 
+  test "rejects an event linked to an exemption from another tenant" do
+    foreign = nil
+    with_tenant("tnt_other_evt") { foreign = create_exemption }
+
+    with_tenant(TENANT) do
+      event = Corvid::ExemptionEvent.new(
+        person_identifier: "pt_evt",
+        medicaid_exemption: foreign,
+        event_type: "coverage_retained",
+        occurred_on: Date.current
+      )
+      refute event.valid?
+      assert event.errors[:medicaid_exemption].any?
+      assert_raises(ActiveRecord::RecordInvalid) { event.save! }
+    end
+  end
+
+  test "rejects an event linked to an exemption for a different person" do
+    with_tenant(TENANT) do
+      exemption = create_exemption # person_identifier: "pt_evt"
+
+      event = Corvid::ExemptionEvent.new(
+        person_identifier: "pt_other",
+        medicaid_exemption: exemption,
+        event_type: "coverage_retained",
+        occurred_on: Date.current
+      )
+      refute event.valid?
+      assert event.errors[:medicaid_exemption].any?
+      assert_raises(ActiveRecord::RecordInvalid) { event.save! }
+    end
+  end
+
   test "nullifying dependent leaves person-level events on exemption destroy" do
     with_tenant(TENANT) do
       exemption = create_exemption

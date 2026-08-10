@@ -7,6 +7,20 @@ require "test_helper"
 class Corvid::MedicaidExemptionServiceTest < ActiveSupport::TestCase
   TENANT = "tnt_svc_test"
 
+  # Stub adapter that returns a fixed verify_ai_an_status payload verbatim, to
+  # exercise untrusted/malformed responses the MockAdapter can't emit (it always
+  # stamps verified_at and a real confidence). Named (not anonymous) so
+  # adapter.class.name yields a real verification_source.
+  class CannedAiAnAdapter
+    def initialize(payload)
+      @payload = payload
+    end
+
+    def verify_ai_an_status(_person_identifier)
+      @payload
+    end
+  end
+
   setup do
     Corvid::TenantContext.current_tenant_identifier = TENANT
     @adapter = Corvid.adapter
@@ -87,6 +101,59 @@ class Corvid::MedicaidExemptionServiceTest < ActiveSupport::TestCase
     result = Corvid::MedicaidExemptionService.assert(person_identifier: "pt_unknown")
     refute result.asserted?
     assert_equal :not_ai_an, result.reason
+  end
+
+  # -- Fail-closed: untrusted / malformed verification response --------------
+  # (ALLOW-LIST) assert only from an accepted confidence + genuine verified_at.
+  # The MockAdapter always stamps verified_at and a real confidence, so these
+  # use a stub adapter that emits the raw payload.
+
+  test "does not assert when confidence is nil" do
+    use_canned_adapter(ai_an: true, ihs_beneficiary: true, confidence: nil, verified_at: Time.current)
+
+    result = Corvid::MedicaidExemptionService.assert(person_identifier: "pt_nilc")
+
+    refute result.asserted?
+    assert_equal :verification_unavailable, result.reason
+    assert_equal 0, Corvid::MedicaidExemption.for_person("pt_nilc").count
+    assert_equal 0, Corvid::ExemptionEvent.for_person("pt_nilc").count
+  end
+
+  test "does not assert on an unknown confidence level" do
+    use_canned_adapter(ai_an: true, ihs_beneficiary: true, confidence: :probably, verified_at: Time.current)
+
+    result = Corvid::MedicaidExemptionService.assert(person_identifier: "pt_unk")
+
+    refute result.asserted?
+    assert_equal :verification_unavailable, result.reason
+    assert_equal 0, Corvid::MedicaidExemption.for_person("pt_unk").count
+    assert_equal 0, Corvid::ExemptionEvent.for_person("pt_unk").count
+  end
+
+  test "does not assert when verified_at is missing" do
+    use_canned_adapter(ai_an: true, ihs_beneficiary: true, confidence: :verified, verified_at: nil)
+
+    result = Corvid::MedicaidExemptionService.assert(person_identifier: "pt_nov")
+
+    refute result.asserted?
+    assert_equal :verification_unavailable, result.reason
+    assert_equal 0, Corvid::MedicaidExemption.for_person("pt_nov").count
+    assert_equal 0, Corvid::ExemptionEvent.for_person("pt_nov").count
+  end
+
+  test "asserts from a stale-but-verified response (allow-list boundary)" do
+    use_canned_adapter(ai_an: true, basis: "ai_an_ihs_beneficiary",
+                       confidence: :stale, verified_at: Time.current)
+
+    result = Corvid::MedicaidExemptionService.assert(
+      person_identifier: "pt_stale", exemption_types: [ "work_requirement" ]
+    )
+
+    assert result.asserted?
+    assert_equal :asserted, result.reason
+    exemption = Corvid::MedicaidExemption.for_person("pt_stale").active.first
+    assert_equal "stale", exemption.verification_confidence
+    refute_nil exemption.verified_at
   end
 
   # -- Deterministic snapshot hash -------------------------------------------
@@ -208,6 +275,10 @@ class Corvid::MedicaidExemptionServiceTest < ActiveSupport::TestCase
   end
 
   private
+
+  def use_canned_adapter(payload)
+    Corvid.configure { |c| c.adapter = CannedAiAnAdapter.new(payload) }
+  end
 
   # Make MedicaidExemption#save! raise the given error exactly once (the
   # unique-index race), then fall through to the real save! — so the rescue

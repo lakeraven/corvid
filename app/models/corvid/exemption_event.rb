@@ -38,8 +38,28 @@ module Corvid
     validates :event_type, presence: true
     validates :occurred_on, presence: true
 
+    # Model-level isolation: a linked exemption MUST belong to the same tenant
+    # AND the same person as the event. Without this, a direct create! (not just
+    # the service) could link an event to another tenant's/person's exemption,
+    # corrupting the audit trail. Enforced here so isolation holds at the model
+    # layer, not only in MedicaidExemptionService.
+    validate :linked_exemption_shares_tenant_and_person
+
     scope :for_person, ->(identifier) { where(person_identifier: identifier) }
     scope :of_type, ->(type) { where(event_type: type) }
     scope :chronological, -> { order(occurred_on: :asc, created_at: :asc) }
+
+    private
+
+    def linked_exemption_shares_tenant_and_person
+      return if medicaid_exemption.nil?
+
+      if medicaid_exemption.tenant_identifier != tenant_identifier
+        errors.add(:medicaid_exemption, "belongs to a different tenant")
+      end
+      if medicaid_exemption.person_identifier != person_identifier
+        errors.add(:medicaid_exemption, "belongs to a different person")
+      end
+    end
   end
 end

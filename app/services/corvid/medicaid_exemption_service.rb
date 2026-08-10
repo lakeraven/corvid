@@ -25,6 +25,15 @@ module Corvid
   module MedicaidExemptionService
     DEFAULT_BASIS = "ai_an_ihs_beneficiary"
 
+    # Allow-list of confidence levels a verified response may carry to assert
+    # an exemption. Per the adapter contract (Adapters::Base#verify_ai_an_status)
+    # these are the levels where the source actually returned data — :verified
+    # is canonical, :stale is data flagged out-of-date. Everything else
+    # (:unavailable, nil, or any unknown/malformed value) is untrustworthy and
+    # asserts nothing. Mirrors how TribalEligibilityService treats :stale as
+    # usable-with-provenance rather than dropping a real legal protection.
+    ACCEPTED_CONFIDENCE = %i[verified stale].freeze
+
     AssertionResult = Struct.new(
       :asserted,
       :reason,
@@ -62,12 +71,19 @@ module Corvid
         end
 
         status = Corvid.adapter.verify_ai_an_status(person_identifier)
+        confidence = status.is_a?(Hash) ? status[:confidence] : nil
 
-        if status[:confidence] == :unavailable
+        # Verified-only, fail-closed (ALLOW-LIST): assert only from a response
+        # whose confidence is an explicitly-accepted level AND that carries a
+        # genuine verification timestamp. A nil/unknown confidence, a missing
+        # verified_at, or any otherwise-malformed/unavailable response is
+        # untrustworthy — treat it as unavailable and assert nothing. There is
+        # no fabricated positive and no defaulted verified_at.
+        unless verified_response?(status)
           return AssertionResult.new(
             asserted: false, reason: :verification_unavailable, exemption_ids: [],
             provider_source: provider_source_for(Corvid.adapter),
-            provider_confidence: status[:confidence].to_s
+            provider_confidence: confidence&.to_s
           )
         end
 
@@ -97,7 +113,7 @@ module Corvid
                 as_of_date: as_of_date,
                 effective_date: effective_date,
                 expires_at: expires_at,
-                verified_at: status[:verified_at] || Time.current,
+                verified_at: status[:verified_at],
                 verification_source: provider_source,
                 verification_confidence: status[:confidence]&.to_s,
                 verification_snapshot_hash: snapshot_hash,
@@ -163,6 +179,16 @@ module Corvid
       end
 
       private
+
+      # A trustworthy verified response: a Hash whose confidence is on the
+      # accepted allow-list (never nil/unknown/unavailable) AND that carries a
+      # genuine verification timestamp. Anything else is treated as unavailable
+      # so assert fails closed and never fabricates a positive.
+      def verified_response?(status)
+        status.is_a?(Hash) &&
+          ACCEPTED_CONFIDENCE.include?(status[:confidence]) &&
+          status[:verified_at].present?
+      end
 
       # Concurrency-safe upsert of the single asserted exemption for
       # (tenant, person, type). Two concurrent asserts can both miss the
