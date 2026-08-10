@@ -103,7 +103,61 @@ class Corvid::MedicaidExemptionServiceTest < ActiveSupport::TestCase
     assert_equal first, second
   end
 
+  # -- Honest seam: production adapter fails closed ---------------------------
+
+  test "assert propagates NotImplementedError from a production adapter and asserts nothing" do
+    Corvid.configure { |c| c.adapter = Corvid::Adapters::Base.new }
+
+    assert_raises(NotImplementedError) do
+      Corvid::MedicaidExemptionService.assert(person_identifier: "pt_prod")
+    end
+
+    assert_equal 0, Corvid::MedicaidExemption.for_person("pt_prod").count
+    assert_equal 0, Corvid::ExemptionEvent.for_person("pt_prod").count
+  end
+
+  # -- Empty exemption list is not a success ---------------------------------
+
+  test "assert with an empty exemption_types list is rejected, not a false success" do
+    @adapter.add_ai_an_status("pt_e", ai_an: true, confidence: :verified)
+
+    result = Corvid::MedicaidExemptionService.assert(person_identifier: "pt_e", exemption_types: [])
+
+    refute result.asserted?
+    assert_equal :no_exemption_types, result.reason
+    assert_empty result.exemption_ids
+    assert_equal 0, Corvid::MedicaidExemption.for_person("pt_e").count
+  end
+
   # -- Outcome events --------------------------------------------------------
+
+  test "record_outcome rejects an exemption from another tenant" do
+    other = nil
+    with_tenant("tnt_other") do
+      @adapter.add_ai_an_status("pt_x", ai_an: true, confidence: :verified)
+      Corvid::MedicaidExemptionService.assert(person_identifier: "pt_x", exemption_types: [ "work_requirement" ])
+      other = Corvid::MedicaidExemption.for_person("pt_x").active.first
+    end
+
+    assert_raises(ArgumentError) do
+      Corvid::MedicaidExemptionService.record_outcome(
+        person_identifier: "pt_x", event_type: "coverage_retained", exemption: other
+      )
+    end
+    assert_equal 0, Corvid::ExemptionEvent.for_person("pt_x").where(tenant_identifier: TENANT).count
+  end
+
+  test "record_outcome rejects an exemption belonging to a different person" do
+    @adapter.add_ai_an_status("pt_a", ai_an: true, confidence: :verified)
+    Corvid::MedicaidExemptionService.assert(person_identifier: "pt_a", exemption_types: [ "work_requirement" ])
+    exemption_a = Corvid::MedicaidExemption.for_person("pt_a").active.first
+
+    assert_raises(ArgumentError) do
+      Corvid::MedicaidExemptionService.record_outcome(
+        person_identifier: "pt_b", event_type: "coverage_retained", exemption: exemption_a
+      )
+    end
+  end
 
   test "record_outcome writes a life-outcome event" do
     @adapter.add_ai_an_status("pt_o", ai_an: true, confidence: :verified)

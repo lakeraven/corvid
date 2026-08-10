@@ -66,7 +66,7 @@ module Corvid
       def resolve_exemptions(exemption, person_identifier, tenant_identifier, as_of)
         list =
           if exemption
-            Array(exemption)
+            validate_subject_isolation!(Array(exemption), tenant_identifier)
           elsif person_identifier
             MedicaidExemption
               .where(tenant_identifier: tenant_identifier)
@@ -78,6 +78,24 @@ module Corvid
           end
 
         list.select { |e| e.in_effect?(as_of: as_of) }
+      end
+
+      # Isolation: every supplied record must belong to the given tenant, and
+      # all must share a single person_identifier. Otherwise an attestation
+      # labeled for one tenant/person could carry another's exemption.
+      def validate_subject_isolation!(records, tenant_identifier)
+        records.each do |record|
+          if record.tenant_identifier != tenant_identifier
+            raise ArgumentError, "exemption belongs to a different tenant"
+          end
+        end
+
+        people = records.map(&:person_identifier).uniq
+        if people.size > 1
+          raise ArgumentError, "exemptions span more than one person"
+        end
+
+        records
       end
     end
   end

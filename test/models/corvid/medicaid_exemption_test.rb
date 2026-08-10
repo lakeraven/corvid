@@ -97,6 +97,19 @@ class Corvid::MedicaidExemptionTest < ActiveSupport::TestCase
     end
   end
 
+  test "in_effect? is false before the effective_date" do
+    with_tenant(TENANT) do
+      refute build_exemption(effective_date: 1.day.from_now.to_date).in_effect?
+    end
+  end
+
+  test "in_effect? is true on/after the effective_date" do
+    with_tenant(TENANT) do
+      assert build_exemption(effective_date: Date.current).in_effect?
+      assert build_exemption(effective_date: 1.day.ago.to_date).in_effect?
+    end
+  end
+
   # -- Tenant isolation ------------------------------------------------------
 
   test "exemptions are scoped to current tenant" do

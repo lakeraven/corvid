@@ -41,4 +41,41 @@ class Corvid::ExemptionAttestationServiceTest < ActiveSupport::TestCase
       Corvid::ExemptionAttestationService.generate(person_identifier: "pt_none")
     end
   end
+
+  test "a future-effective exemption is not surfaced in an attestation" do
+    Corvid::MedicaidExemptionService.assert(
+      person_identifier: "pt_att", exemption_types: [ "work_requirement" ],
+      effective_date: 1.day.from_now.to_date
+    )
+
+    assert_raises(ArgumentError) do
+      Corvid::ExemptionAttestationService.generate(person_identifier: "pt_att")
+    end
+  end
+
+  test "rejects an exemption record from another tenant" do
+    other = nil
+    with_tenant("tnt_other_att") do
+      @adapter.add_ai_an_status("pt_o", ai_an: true, confidence: :verified)
+      Corvid::MedicaidExemptionService.assert(person_identifier: "pt_o", exemption_types: [ "work_requirement" ])
+      other = Corvid::MedicaidExemption.for_person("pt_o").active.first
+    end
+
+    assert_raises(ArgumentError) do
+      Corvid::ExemptionAttestationService.generate(exemption: other)
+    end
+  end
+
+  test "rejects an array of exemptions spanning more than one person" do
+    Corvid::MedicaidExemptionService.assert(person_identifier: "pt_att", exemption_types: [ "work_requirement" ])
+    a = Corvid::MedicaidExemption.for_person("pt_att").active.first
+
+    @adapter.add_ai_an_status("pt_att2", ai_an: true, confidence: :verified)
+    Corvid::MedicaidExemptionService.assert(person_identifier: "pt_att2", exemption_types: [ "work_requirement" ])
+    b = Corvid::MedicaidExemption.for_person("pt_att2").active.first
+
+    assert_raises(ArgumentError) do
+      Corvid::ExemptionAttestationService.generate(exemption: [ a, b ])
+    end
+  end
 end

@@ -94,6 +94,13 @@ class Corvid::Adapters::BaseTest < Minitest::Test
     assert_raises(NotImplementedError) { @adapter.verify_eligibility("pt_test", "medicaid") }
   end
 
+  # The honest production seam: a production adapter that does not implement
+  # AI/AN verification MUST raise here rather than fabricate a positive. This
+  # test pins that Base carries no defaulted implementation.
+  def test_verify_ai_an_status_raises_not_implemented
+    assert_raises(NotImplementedError) { @adapter.verify_ai_an_status("pt_test") }
+  end
+
   # -- Optional clinical reads default to empty arrays -----------------------
 
   def test_get_conditions_defaults_to_empty

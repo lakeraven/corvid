@@ -57,9 +57,13 @@ module Corvid
     scope :of_type, ->(type) { where(exemption_type: type) }
     scope :active, -> { status_asserted }
 
-    # True when the exemption is asserted and not past its expiry.
+    # True when the exemption is asserted, already effective, and not past its
+    # expiry. A future effective_date means the exemption has not begun, so it
+    # is NOT in effect (and must not surface in attestations or worklists).
     def in_effect?(as_of: Time.current)
-      status_asserted? && (expires_at.nil? || expires_at > as_of)
+      status_asserted? &&
+        (effective_date.nil? || effective_date <= as_of.to_date) &&
+        (expires_at.nil? || expires_at > as_of)
     end
   end
 end

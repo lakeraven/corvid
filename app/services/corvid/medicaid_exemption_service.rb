@@ -54,6 +54,13 @@ module Corvid
         tenant_identifier ||= Corvid::TenantContext.current_tenant_identifier
         effective_date ||= as_of_date
 
+        types = Array(exemption_types).map(&:to_s).uniq
+        if types.empty?
+          return AssertionResult.new(
+            asserted: false, reason: :no_exemption_types, exemption_ids: []
+          )
+        end
+
         status = Corvid.adapter.verify_ai_an_status(person_identifier)
 
         if status[:confidence] == :unavailable
@@ -72,13 +79,13 @@ module Corvid
           )
         end
 
-        snapshot_hash = snapshot_hash_for(status)
+        snapshot_hash = snapshot_hash_for(status, person_identifier, tenant_identifier)
         provider_source = provider_source_for(Corvid.adapter)
         basis = status[:basis] || DEFAULT_BASIS
         exemption_ids = []
 
         ActiveRecord::Base.transaction do
-          Array(exemption_types).map(&:to_s).uniq.each do |type|
+          types.each do |type|
             exemption = MedicaidExemption.status_asserted.find_or_initialize_by(
               tenant_identifier: tenant_identifier,
               person_identifier: person_identifier,
@@ -132,6 +139,18 @@ module Corvid
                          tenant_identifier: nil)
         tenant_identifier ||= Corvid::TenantContext.current_tenant_identifier
 
+        # Isolation: a supplied exemption must belong to the same tenant AND
+        # the same person the event is being recorded for. Otherwise the event
+        # would link one person's/tenant's exemption into another's audit trail.
+        if exemption
+          if exemption.tenant_identifier != tenant_identifier
+            raise ArgumentError, "exemption belongs to a different tenant"
+          end
+          if exemption.person_identifier != person_identifier
+            raise ArgumentError, "exemption belongs to a different person"
+          end
+        end
+
         ExemptionEvent.create!(
           tenant_identifier: tenant_identifier,
           person_identifier: person_identifier,
@@ -146,16 +165,18 @@ module Corvid
 
       private
 
-      # Hash the STABLE verified status (excludes verified_at) so an identical
-      # verified status produces an identical hash — auditors can confirm a
-      # re-verify used the same upstream data.
-      def snapshot_hash_for(status)
+      # Hash the STABLE verified status bound to this person and tenant, so the
+      # snapshot is unique per subject (not a byte-identical projection shared
+      # across everyone with the same flags) and carries the FULL verified
+      # payload minus the volatile verified_at. Auditors can confirm a re-verify
+      # used the same upstream data for the same person. Mirrors
+      # TribalEligibilityService#decide, which hashes the full payloads.
+      def snapshot_hash_for(status, person_identifier, tenant_identifier)
         Digest::SHA256.hexdigest(
           JSON.generate(
-            ai_an: status[:ai_an],
-            ihs_beneficiary: status[:ihs_beneficiary],
-            basis: status[:basis],
-            confidence: status[:confidence]
+            tenant_identifier: tenant_identifier,
+            person_identifier: person_identifier,
+            status: status.except(:verified_at)
           )
         )
       end

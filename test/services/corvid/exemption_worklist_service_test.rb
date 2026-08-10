@@ -53,6 +53,20 @@ class Corvid::ExemptionWorklistServiceTest < ActiveSupport::TestCase
     assert_empty entries
   end
 
+  test "ignores exemptions not yet effective" do
+    @adapter.add_ai_an_status("pt_f", ai_an: true, confidence: :verified)
+    Corvid::MedicaidExemptionService.assert(
+      person_identifier: "pt_f", exemption_types: [ "work_requirement" ],
+      effective_date: 1.day.from_now.to_date
+    )
+
+    entries = Corvid::ExemptionWorklistService.at_risk([
+      { person_identifier: "pt_f", requirement_type: "work_requirement" }
+    ])
+
+    assert_empty entries
+  end
+
   test "accepts signal objects, not just hashes" do
     assert_exemption("pt_d", "six_month_redetermination")
     signal = Struct.new(:person_identifier, :requirement_type, keyword_init: true)
