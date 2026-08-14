@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_05_16_000001) do
+ActiveRecord::Schema[8.1].define(version: 2026_08_14_000001) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
@@ -554,6 +554,22 @@ ActiveRecord::Schema[8.1].define(version: 2026_05_16_000001) do
     t.index ["tenant_identifier", "status"], name: "index_corvid_tasks_on_tenant_identifier_and_status"
     t.check_constraint "priority::text = ANY (ARRAY['routine'::character varying::text, 'urgent'::character varying::text, 'asap'::character varying::text, 'stat'::character varying::text])", name: "corvid_tasks_priority_check"
     t.check_constraint "status::text = ANY (ARRAY['pending'::character varying::text, 'in_progress'::character varying::text, 'completed'::character varying::text, 'cancelled'::character varying::text, 'on_hold'::character varying::text])", name: "corvid_tasks_status_check"
+  end
+
+  create_table "corvid_tenant_connection_configs", force: :cascade do |t|
+    t.boolean "active", default: true, null: false
+    t.string "adapter_type", null: false
+    t.jsonb "config", default: {}, null: false
+    t.string "connector_id"
+    t.datetime "created_at", null: false
+    t.string "endpoint"
+    t.string "facility_identifier"
+    t.string "secret_ref"
+    t.string "tenant_identifier", null: false
+    t.datetime "updated_at", null: false
+    t.index ["tenant_identifier", "facility_identifier"], name: "idx_corvid_tcc_tenant_facility_unique", unique: true, where: "(facility_identifier IS NOT NULL)"
+    t.index ["tenant_identifier"], name: "idx_corvid_tcc_tenant_default_unique", unique: true, where: "(facility_identifier IS NULL)"
+    t.check_constraint "adapter_type::text = ANY (ARRAY['rpms_direct'::character varying, 'rpms_connector'::character varying, 'fhir'::character varying, 'mock'::character varying]::text[])", name: "corvid_tenant_connection_configs_adapter_type_check"
   end
 
   create_table "corvid_zip_localities", force: :cascade do |t|
