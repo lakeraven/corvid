@@ -74,7 +74,7 @@ crosses a model callback boundary is not safe.
 
 ### Positive
 
-- Per-tenant adapter routing becomes possible — a service instance carries its own adapter, so a job processing a Swedish tenant's records can use a SEK-aware adapter while a job processing a Yakama tenant's records uses RPMS.
+- Per-tenant adapter routing becomes possible — a service instance carries its own adapter, so a job processing a Swedish tenant's records can use a SEK-aware adapter while a job processing a tribal tenant's records uses RPMS.
 - Tests inject adapters per-instance; no more `Corvid.configure { |c| c.adapter = ... }` mutation pattern.
 - Adapter contract tests (#233) become straightforward: instantiate the service with each adapter implementation, run the same scenario, assert parity.
 - Migration to per-instance state is forward-compatible with the cross-product event bus (#261) and the future model decoupling (#264).

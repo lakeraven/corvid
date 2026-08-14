@@ -1,15 +1,16 @@
 # Corvid
 
-Open-source case management Rails engine for healthcare, social services, and benefit programs.
+Open-source Rails engine for the coordination, adjudication, and billing layer that sits **between an EHR and its payers** — the connective tissue for programs that manage and pay for care delivered *outside* the clinic.
 
-Corvid manages service authorization workflows, referral tracking, eligibility verification, and budget obligations. It works with any FHIR R4 server via pluggable adapters and stores **no PHI at rest** — all clinical and identifying data lives in the host's vault, accessed through the adapter interface.
+Corvid runs service authorization and referral workflows, eligibility and payer-of-last-resort verification, budget obligations, and **Medicare-Like-Rates repricing** of purchased/referred-care claims. It's **EHR-agnostic** (any FHIR R4 server via pluggable adapters) and **chart-free** — it stores **no PHI at rest**; all clinical and identifying data lives in the host's vault, resolved through the adapter interface.
 
 ## Use cases
 
-- **PRC/CHS** — IHS Contract Health Services referral authorization
-- **State Medicaid** — prior authorization and care coordination (e.g. Washington State with 200+ tribes)
+- **PRC/CHS** — IHS/tribal Purchased/Referred Care referral authorization **and Medicare-Like-Rates repricing** of outside claims
+- **State Medicaid** — prior authorization and care coordination across many tribes/facilities
+- **Cross-org coordination** — a de facto HIE control plane that lets programs share the right data without warehousing each other's records
 - **City homelessness** — housing placement and service delivery
-- **Foster care** — case management across counties (e.g. iFoster: California, Nevada, Kentucky)
+- **Foster care** — case management across counties and states
 
 ## Status
 
@@ -97,13 +98,13 @@ Corvid supports a two-level tenancy hierarchy:
 - **Tenant** (required, hard isolation boundary) — typically maps to one EHR instance
 - **Facility** (optional, soft classification) — typically maps to one EHR division
 
-Examples:
+Examples (illustrative):
 
 | Tenant | Facilities |
 |---|---|
-| Yakama Nation | White Swan Clinic, Behavioral Health, PCH |
-| iFoster | California, Nevada, Kentucky |
-| State of Washington | 200+ tribes (each a facility) |
+| A tribal health program | Main clinic, Behavioral Health, PCH |
+| A multi-state nonprofit | State A, State B, State C |
+| A state Medicaid program | Many tribes/clinics (each a facility) |
 
 Cross-facility data sharing within a tenant is supported. Cross-tenant queries are not.
 

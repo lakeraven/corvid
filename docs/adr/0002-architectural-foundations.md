@@ -29,10 +29,10 @@ Tenant (required, hard isolation boundary)
 
 | Deployment | Tenant | Facility |
 |---|---|---|
-| Yakama Nation | Yakama Nation (1 IRIS instance) | White Swan, Behavioral Health, PCH (IRIS Divisions) |
-| iFoster | iFoster | California, Nevada, Kentucky |
-| Washington State | State of WA | 200+ tribes, each a Division |
-| Santa Fe PRC | Santa Fe | Single facility (optional column) |
+| A tribal nation | The nation (1 EHR instance) | Main clinic, Behavioral Health, PCH (EHR Divisions) |
+| A multi-state nonprofit | The nonprofit | State A, State B, State C |
+| A state Medicaid program | The state | Many tribes, each a Division |
+| A single-facility program | The program | Single facility (optional column) |
 
 **Schema:**
 - Every Case-domain table has `tenant_identifier` (string, NOT NULL) and `facility_identifier` (string, nullable)
