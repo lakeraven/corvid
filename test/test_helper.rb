@@ -34,6 +34,7 @@ def clean_corvid_tables!
   Corvid::Case.unscoped.delete_all
   Corvid::CareTeamMember.unscoped.delete_all
   Corvid::CareTeam.unscoped.delete_all
+  Corvid::TenantConnectionConfig.unscoped.delete_all
 end
 
 # Reset state between tests
@@ -43,10 +44,14 @@ module ActiveSupport
       Corvid::TenantContext.reset!
       Corvid.configure { |c| c.adapter = Corvid::Adapters::MockAdapter.new }
       clean_corvid_tables!
+      Corvid::AdapterRouter.invalidate_all!
+      Corvid::AdapterFactory.reset!
     end
 
     teardown do
       Corvid::TenantContext.reset!
+      Corvid::AdapterRouter.invalidate_all!
+      Corvid::AdapterFactory.reset!
     end
 
     private
