@@ -1,0 +1,19 @@
+CBSAGEO	"# of
+provs in
+CBSAGEO"	"CBSAGEO unadjusted
+wages"	"CBSAGEO
+hours"	"CBSAGEO
+unadjusted
+AHW"	"CBSAGEO
+unadjusted
+wage
+index"	"CBSAGEO occmix
+wages"	"CBSAGEO
+occmix
+AHW"	"CBSAGEO
+occmix
+wage
+index"
+01	33	$529,929,773.81	14,368,122	$36.88	0.6367	$531,307,998.81	$36.98	0.6391
+13740	2	$488,367,804.90	9,396,037	$51.98	0.8974	$487,208,780.98	$51.85	0.8961
+31084	72	$17,420,182,496.00	236,850,684	$73.55	1.2699	$17,078,626,674.00	$72.11	1.2463
