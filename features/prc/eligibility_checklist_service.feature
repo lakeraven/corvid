@@ -4,7 +4,7 @@ Feature: Eligibility checklist auto-population from enrollment adapter
   So that 3 of 7 items are filled automatically and staff only complete the rest
 
   Background:
-    Given a tenant "tnt_example" with facility "fac_example"
+    Given a tenant "tnt_brokenrock" with facility "fac_main_clinic"
     And a patient "pt_001" with a PRC case
     And a PRC referral "rf_001" for that case
     And the adapter has enrollment data for patient "pt_001":
@@ -69,8 +69,8 @@ Feature: Eligibility checklist auto-population from enrollment adapter
 
   Scenario: Best case — all data present, 3 of 7 auto-verified
     Given the adapter has enrollment data for patient "pt_bestcase":
-      | enrolled | membership_number | tribe_name    | on_reservation | address                      | ssn_last4 | dob        |
-      | true     | EX-54321          | Example Tribe | true           | 511 Elm St, Example City, WA | 9876      | 1980-05-15 |
+      | enrolled | membership_number | tribe_name  | on_reservation | address                          | ssn_last4 | dob        |
+      | true     | BR-54321          | Broken Rock | true           | 511 Elm St, Broken Rock City, WA | 9876      | 1980-05-15 |
     And a patient "pt_bestcase" with a PRC case
     And a PRC referral "rf_bestcase" for that case
     When the referral transitions through submit and begin_eligibility_review
@@ -85,8 +85,8 @@ Feature: Eligibility checklist auto-population from enrollment adapter
 
   Scenario: Minimum data — enrolled with DOB only, no SSN, off-reservation
     Given the adapter has enrollment data for patient "pt_mindata":
-      | enrolled | membership_number | tribe_name    | on_reservation | address | ssn_last4 | dob        |
-      | true     | EX-99999          | Example Tribe | false          |         |           | 1992-11-03 |
+      | enrolled | membership_number | tribe_name  | on_reservation | address | ssn_last4 | dob        |
+      | true     | BR-99999          | Broken Rock | false          |         |           | 1992-11-03 |
     And a patient "pt_mindata" with a PRC case
     And a PRC referral "rf_mindata" for that case
     When the referral transitions through submit and begin_eligibility_review
@@ -97,8 +97,8 @@ Feature: Eligibility checklist auto-population from enrollment adapter
 
   Scenario: Insurance auto-verified when coverage exists
     Given the adapter has enrollment data for patient "pt_insured":
-      | enrolled | membership_number | tribe_name    | on_reservation | address                       | ssn_last4 | dob        |
-      | true     | EX-77777          | Example Tribe | true           | 200 Main St, Example City, WA | 5678      | 1988-02-14 |
+      | enrolled | membership_number | tribe_name  | on_reservation | address                           | ssn_last4 | dob        |
+      | true     | BR-77777          | Broken Rock | true           | 200 Main St, Broken Rock City, WA | 5678      | 1988-02-14 |
     And the adapter has coverage data for patient "pt_insured":
       | payer_name | plan_name  | coverage_type |
       | Medicare   | Medicare A | medicare      |
@@ -113,8 +113,8 @@ Feature: Eligibility checklist auto-population from enrollment adapter
 
   Scenario: Insurance not verified when no coverage on file
     Given the adapter has enrollment data for patient "pt_uninsured":
-      | enrolled | membership_number | tribe_name    | on_reservation | address                      | ssn_last4 | dob        |
-      | true     | EX-88888          | Example Tribe | true           | 300 Elm St, Example City, WA | 9012      | 1970-09-30 |
+      | enrolled | membership_number | tribe_name  | on_reservation | address                          | ssn_last4 | dob        |
+      | true     | BR-88888          | Broken Rock | true           | 300 Elm St, Broken Rock City, WA | 9012      | 1970-09-30 |
     And a patient "pt_uninsured" with a PRC case
     And a PRC referral "rf_uninsured" for that case
     When the referral transitions through submit and begin_eligibility_review
@@ -123,8 +123,8 @@ Feature: Eligibility checklist auto-population from enrollment adapter
 
   Scenario: Staff triggers payer eligibility check when no coverage on file
     Given the adapter has enrollment data for patient "pt_nocov":
-      | enrolled | membership_number | tribe_name    | on_reservation | address                      | ssn_last4 | dob        |
-      | true     | EX-55555          | Example Tribe | true           | 400 Oak St, Example City, WA | 3456      | 1965-04-10 |
+      | enrolled | membership_number | tribe_name  | on_reservation | address                          | ssn_last4 | dob        |
+      | true     | BR-55555          | Broken Rock | true           | 400 Oak St, Broken Rock City, WA | 3456      | 1965-04-10 |
     And a patient "pt_nocov" with a PRC case
     And a PRC referral "rf_nocov" for that case
     And the referral transitions through submit and begin_eligibility_review
@@ -135,8 +135,8 @@ Feature: Eligibility checklist auto-population from enrollment adapter
 
   Scenario: Staff payer eligibility check finds no coverage
     Given the adapter has enrollment data for patient "pt_nocov2":
-      | enrolled | membership_number | tribe_name    | on_reservation | address                       | ssn_last4 | dob        |
-      | true     | EX-66666          | Example Tribe | true           | 500 Pine St, Example City, WA | 7890      | 1982-12-01 |
+      | enrolled | membership_number | tribe_name  | on_reservation | address                           | ssn_last4 | dob        |
+      | true     | BR-66666          | Broken Rock | true           | 500 Pine St, Broken Rock City, WA | 7890      | 1982-12-01 |
     And a patient "pt_nocov2" with a PRC case
     And a PRC referral "rf_nocov2" for that case
     And the referral transitions through submit and begin_eligibility_review
@@ -145,8 +145,8 @@ Feature: Eligibility checklist auto-population from enrollment adapter
 
   Scenario: Best case full workflow — enrollment through authorization
     Given the adapter has enrollment data for patient "pt_fullflow":
-      | enrolled | membership_number | tribe_name    | on_reservation | address                         | ssn_last4 | dob        |
-      | true     | EX-11111          | Example Tribe | true           | 100 Treaty Rd, Example City, WA | 1234      | 1975-08-20 |
+      | enrolled | membership_number | tribe_name  | on_reservation | address                             | ssn_last4 | dob        |
+      | true     | BR-11111          | Broken Rock | true           | 100 Treaty Rd, Broken Rock City, WA | 1234      | 1975-08-20 |
     And the adapter has coverage data for patient "pt_fullflow":
       | payer_name | plan_name  | coverage_type |
       | Medicare   | Medicare A | medicare      |

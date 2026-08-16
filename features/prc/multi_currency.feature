@@ -11,36 +11,36 @@ Feature: PRC obligations across international currencies
   # - Cross-currency arithmetic raises by default, forcing reports to
   #   handle multi-currency explicitly.
 
-  Scenario: Example Tribe PRC obligation stores in USD cents
-    Given a tenant "tnt_example" denominated in "USD"
+  Scenario: Broken Rock PRC obligation stores in USD cents
+    Given a tenant "tnt_brokenrock" denominated in "USD"
     When I record a PRC obligation billed at 65000.00
     Then the obligation's billed_amount_cents is 6500000
     And the obligation's currency_iso is "USD"
     And reading the obligation back yields Money of 65000 USD
 
-  Scenario: Inera Sweden tenant stores in SEK öre
-    Given a tenant "tnt_inera" denominated in "SEK"
+  Scenario: Sweden tenant stores in SEK öre
+    Given a tenant "tnt_nordic" denominated in "SEK"
     When I record a PRC obligation billed at 1200.00
     Then the obligation's billed_amount_cents is 120000
     And the obligation's currency_iso is "SEK"
     And reading the obligation back yields Money of 1200 SEK
 
-  Scenario: Jordan Hakeem tenant stores in JOD fils — 1000 per dinar, not 100
-    Given a tenant "tnt_hakeem" denominated in "JOD"
+  Scenario: Jordan tenant stores in JOD fils — 1000 per dinar, not 100
+    Given a tenant "tnt_example" denominated in "JOD"
     When I record a PRC obligation billed at 142.00
     Then the obligation's billed_amount_cents is 142000
     And the obligation's currency_iso is "JOD"
     And reading the obligation back yields Money of 142 JOD
 
-  Scenario: FNDHO Ontario tenant stores in CAD cents
-    Given a tenant "tnt_fndho" denominated in "CAD"
+  Scenario: Ontario tenant stores in CAD cents
+    Given a tenant "tnt_example2" denominated in "CAD"
     When I record a PRC obligation billed at 350.50
     Then the obligation's billed_amount_cents is 35050
     And the obligation's currency_iso is "CAD"
     And reading the obligation back yields Money of 350.50 CAD
 
   Scenario: Cross-currency arithmetic raises rather than silently summing
-    Given a tenant "tnt_example" denominated in "USD"
-    And a tenant "tnt_hakeem" denominated in "JOD"
+    Given a tenant "tnt_brokenrock" denominated in "USD"
+    And a tenant "tnt_example" denominated in "JOD"
     When I try to add the USD obligation and the JOD obligation
     Then the engine raises a cross-currency error

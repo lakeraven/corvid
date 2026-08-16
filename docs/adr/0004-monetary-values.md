@@ -13,7 +13,7 @@ A shared, type-aware representation of money would replace those per-service hel
 
 Constraints:
 
-- Tenants today are US-domestic (IHS / PRC, USD-denominated), but the international roadmap (Inera Sweden in SEK, Jordan Hakeem in JOD, Nordic EHDS-adjacent partners in EUR) is concrete enough that a USD-only design would create debt within the year. Multi-currency from day one is cheaper than retrofitting later.
+- Tenants today are US-domestic (IHS / PRC, USD-denominated), but the international roadmap (Sweden in SEK, Jordan in JOD, Nordic EHDS-adjacent partners in EUR) is concrete enough that a USD-only design would create debt within the year. Multi-currency from day one is cheaper than retrofitting later.
 - A single corvid tenant operates in a single currency. PRC obligations and Swedish primary-care invoices do not appear together in one report or one transaction. Cross-currency arithmetic should fail loudly, not silently.
 - Subunit assumptions vary: USD has 100 cents, JOD has 1000 fils, JPY has 0 subunits. Hardcoding "100" anywhere is wrong.
 - Existing schema is `decimal(12, 2)`. Migrating to integer subunits is a backfill, not a data-loss event, but it touches every monetized column.
@@ -35,7 +35,7 @@ Constraints:
 
 5. **money-rails wiring:** `monetize :amount_cents, as: :amount, with_model_currency: :currency_iso`. The gem reads each row's currency directly, so cross-row arithmetic on mixed currencies raises (`Money::Bank::UnknownRate` / `Money::IncompatibleCurrencyError`). That's a feature: it forces reports to handle multi-currency explicitly rather than silently summing apples + oranges.
 
-6. **No FX. Reports group by currency.** A multi-tenant or multi-currency report displays per-currency totals (one section per ISO code), never an auto-converted "grand total." If FX is ever needed (rarely — IHS/PRC is USD, Inera is SEK, Hakeem is JOD; they don't mix on one report), it's an explicit operation against a stored FX-rate table with timestamp and source — that's a future ADR, not this one.
+6. **No FX. Reports group by currency.** A multi-tenant or multi-currency report displays per-currency totals (one section per ISO code), never an auto-converted "grand total." If FX is ever needed (rarely — IHS/PRC is USD, Sweden is SEK, Jordan is JOD; they don't mix on one report), it's an explicit operation against a stored FX-rate table with timestamp and source — that's a future ADR, not this one.
 
 7. **Trust-boundary rules.** Money objects flow freely inside services, decorators, and view-side helpers. They do **not** cross these boundaries:
    - **Database wire format.** Integer subunit-cents + currency ISO are canonical storage; `Money` reconstructs from the pair on read.
@@ -73,7 +73,7 @@ Constraints:
 
 ### Alternatives considered
 
-- **USD-only, defer multi-currency to a future ADR.** Cheap today, but the international roadmap is concrete enough (Inera Sweden, Jordan Hakeem, Nordic EHDS) that retrofitting per-row currency across already-shipped tables would cost more than designing for it now.
+- **USD-only, defer multi-currency to a future ADR.** Cheap today, but the international roadmap is concrete enough (Sweden, Jordan, Nordic EHDS) that retrofitting per-row currency across already-shipped tables would cost more than designing for it now.
 - **Tenant-default-only, no per-row column.** Simplest, but historical records would shift currency if a tenant ever reconfigures. Rare in healthcare, but a hard immutability story is cheap to keep and expensive to add later.
 - **Decimal storage with `monetize :amount_decimal, as: :amount`.** Less invasive migration, but it's `money-rails`' secondary path and gives up the integer-subunit arithmetic guarantees that are the main reason to adopt the gem.
 - **Hand-rolled `Corvid::Money` value object.** Lighter dependency story, but reinvents a battle-tested ISO 4217 currency table, subunit handling, formatting, and rounding policy. Maintenance cost beats the savings.

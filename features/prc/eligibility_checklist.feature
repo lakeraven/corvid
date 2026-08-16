@@ -4,7 +4,7 @@ Feature: PRC eligibility documentation checklist
   So that audit findings for missing documentation are eliminated
 
   Background:
-    Given a tenant "tnt_example" with facility "fac_example"
+    Given a tenant "tnt_brokenrock" with facility "fac_main_clinic"
     And a patient "pt_001" with a PRC case
     And a PRC referral "rf_001" for that case
 
