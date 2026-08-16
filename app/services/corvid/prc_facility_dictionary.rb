@@ -14,7 +14,7 @@ module Corvid
       { code: "SEA", name: "Seattle service area", city: "Seattle", state: "WA", zip: "98101", locality: "02" },
       # CMS locality 99 = Washington (rest of state).
       { code: "YAK", name: "Yakima service area", city: "Yakima",  state: "WA", zip: "98901", locality: "99" },
-      { code: "SPK", name: "Spokane service area", city: "Spokane", state: "WA", zip: "99201", locality: "99" }
+      { code: "OTH", name: "Other WA service area", city: "Other WA", state: "WA", zip: "99201", locality: "99" }
     ].freeze
 
     class << self

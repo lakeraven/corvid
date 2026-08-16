@@ -10,10 +10,10 @@ require "test_helper"
 # - Cross-currency arithmetic raises Money::Bank::UnknownRate / IncompatibleCurrencyError.
 # - Reads return Money objects; the gem looks up subunit_to_unit from the ISO code.
 class Corvid::PrcMoneyTest < ActiveSupport::TestCase
-  TENANT_US     = "tnt_yakama"
-  TENANT_SE     = "tnt_inera"
-  TENANT_JO     = "tnt_hakeem"
-  TENANT_CA     = "tnt_fndho"
+  TENANT_US     = "tnt_brokenrock"
+  TENANT_SE     = "tnt_nordic"
+  TENANT_JO     = "tnt_example"
+  TENANT_CA     = "tnt_example2"
 
   # -- Storage roundtrip across four currencies -------------------------------
 

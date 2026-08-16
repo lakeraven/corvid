@@ -7,7 +7,7 @@
 
 Today every service in corvid reaches for `Corvid.adapter` directly — a global accessor backed by `Corvid.configuration.adapter`. That global made sense when the engine was single-tenant and single-backend, but it has accumulated three concrete costs:
 
-1. **Per-tenant adapter routing is impossible.** A US tribal tenant on RPMS-via-rpc and a Swedish Inera tenant on a FHIR adapter cannot coexist in one process — there is one global adapter, and rebinding it during request handling is racy.
+1. **Per-tenant adapter routing is impossible.** A US tribal tenant on RPMS-via-rpc and a Swedish tenant on a FHIR adapter cannot coexist in one process — there is one global adapter, and rebinding it during request handling is racy.
 2. **Tests mutate global state.** Every test that needs a different adapter calls `Corvid.configure { |c| c.adapter = ... }`, which mutates the singleton for the duration of the test. Parallelizing the suite, or running adapter-contract tests against multiple backends, requires per-test isolation that the global precludes.
 3. **Adapter contract testing (#233) is awkward.** Asserting parity across mock / RPC / FHIR adapters wants instance-based DI: instantiate the service with each adapter in turn and run the same scenarios.
 
@@ -74,7 +74,7 @@ crosses a model callback boundary is not safe.
 
 ### Positive
 
-- Per-tenant adapter routing becomes possible — a service instance carries its own adapter, so a job processing a Swedish tenant's records can use a SEK-aware adapter while a job processing a Yakama tenant's records uses RPMS.
+- Per-tenant adapter routing becomes possible — a service instance carries its own adapter, so a job processing a Swedish tenant's records can use a SEK-aware adapter while a job processing a tribal tenant's records uses RPMS.
 - Tests inject adapters per-instance; no more `Corvid.configure { |c| c.adapter = ... }` mutation pattern.
 - Adapter contract tests (#233) become straightforward: instantiate the service with each adapter implementation, run the same scenario, assert parity.
 - Migration to per-instance state is forward-compatible with the cross-product event bus (#261) and the future model decoupling (#264).

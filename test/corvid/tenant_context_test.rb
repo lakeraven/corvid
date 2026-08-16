@@ -17,26 +17,26 @@ class Corvid::TenantContextTest < Minitest::Test
   end
 
   def test_current_tenant_identifier_can_be_set
-    Corvid::TenantContext.current_tenant_identifier = "tnt_yakama"
-    assert_equal "tnt_yakama", Corvid::TenantContext.current_tenant_identifier
+    Corvid::TenantContext.current_tenant_identifier = "tnt_brokenrock"
+    assert_equal "tnt_brokenrock", Corvid::TenantContext.current_tenant_identifier
   end
 
   def test_current_facility_identifier_can_be_set
-    Corvid::TenantContext.current_facility_identifier = "fac_white_swan"
-    assert_equal "fac_white_swan", Corvid::TenantContext.current_facility_identifier
+    Corvid::TenantContext.current_facility_identifier = "fac_main_clinic"
+    assert_equal "fac_main_clinic", Corvid::TenantContext.current_facility_identifier
   end
 
   def test_reset_clears_both_identifiers
-    Corvid::TenantContext.current_tenant_identifier = "tnt_yakama"
-    Corvid::TenantContext.current_facility_identifier = "fac_white_swan"
+    Corvid::TenantContext.current_tenant_identifier = "tnt_brokenrock"
+    Corvid::TenantContext.current_facility_identifier = "fac_main_clinic"
     Corvid::TenantContext.reset!
     assert_nil Corvid::TenantContext.current_tenant_identifier
     assert_nil Corvid::TenantContext.current_facility_identifier
   end
 
   def test_with_tenant_yields_with_context_set
-    Corvid::TenantContext.with_tenant("tnt_yakama") do
-      assert_equal "tnt_yakama", Corvid::TenantContext.current_tenant_identifier
+    Corvid::TenantContext.with_tenant("tnt_brokenrock") do
+      assert_equal "tnt_brokenrock", Corvid::TenantContext.current_tenant_identifier
     end
   end
 
@@ -57,8 +57,8 @@ class Corvid::TenantContextTest < Minitest::Test
   end
 
   def test_require_tenant_returns_current_when_set
-    Corvid::TenantContext.current_tenant_identifier = "tnt_yakama"
-    assert_equal "tnt_yakama", Corvid::TenantContext.require_tenant!
+    Corvid::TenantContext.current_tenant_identifier = "tnt_brokenrock"
+    assert_equal "tnt_brokenrock", Corvid::TenantContext.require_tenant!
   end
 
   def test_require_tenant_raises_when_unset

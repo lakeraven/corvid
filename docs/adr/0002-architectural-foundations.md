@@ -22,17 +22,17 @@ Tenant (required, hard isolation boundary)
 **Rules:**
 - Data CAN be shared across facilities **within a tenant** (reports, care coordination)
 - Data CANNOT cross tenant boundaries — this is a compliance boundary, not a permission check
-- One Tenant = one EHR instance (e.g. one IRIS instance per Tenant)
+- One Tenant = one EHR instance (e.g. one EHR instance per Tenant)
 - One Facility = one Division within that EHR instance
 
 **Real-world mapping:**
 
 | Deployment | Tenant | Facility |
 |---|---|---|
-| Yakama Nation | Yakama Nation (1 IRIS instance) | White Swan, Behavioral Health, PCH (IRIS Divisions) |
-| iFoster | iFoster | California, Nevada, Kentucky |
-| Washington State | State of WA | 200+ tribes, each a Division |
-| Santa Fe PRC | Santa Fe | Single facility (optional column) |
+| A tribal nation | The nation (1 EHR instance) | Main clinic, Behavioral Health, PCH (EHR Divisions) |
+| A multi-state nonprofit | The nonprofit | State A, State B, State C |
+| A state Medicaid program | The state | Many tribes, each a Division |
+| A single-facility program | The program | Single facility (optional column) |
 
 **Schema:**
 - Every Case-domain table has `tenant_identifier` (string, NOT NULL) and `facility_identifier` (string, nullable)
@@ -76,8 +76,8 @@ end
 
 **Why row-based, not Apartment gem:**
 - Engine compatibility (Apartment + Rails engines is fragile)
-- Scale: Washington State has 200+ facilities; per-schema migrations don't scale
-- IRIS already provides physical isolation at the EHR layer; corvid's job is logical isolation
+- Scale: a large state program can have 200+ facilities; per-schema migrations don't scale
+- The underlying EHR already provides physical isolation at its layer; corvid's job is logical isolation
 - Cross-facility reporting within a tenant is a single WHERE clause vs cross-schema join
 
 ### 2. Table prefix: `corvid_*`
@@ -193,7 +193,7 @@ Loads the engine and configuration. Hosts then call `Corvid.configure { |c| ... 
 
 ### Positive
 - Multi-tenant SaaS deployment is safe by default (raise on missing context)
-- Engine works with any IRIS/EHR layout that maps to Tenant > Facility
+- Engine works with any EHR layout that maps to Tenant > Facility
 - Schema isolation via prefix prevents host collisions
 - String enums and CHECK constraints make production debugging easier
 - Hooks decouple the engine from host-specific audit and PHI infrastructure
@@ -206,7 +206,7 @@ Loads the engine and configuration. Hosts then call `Corvid.configure { |c| ... 
 
 ### Alternatives considered
 
-- **Apartment gem (schema-per-tenant).** Rejected — engine compatibility issues, doesn't scale to 200+ tenants per WA State, doesn't solve facility-level filtering, IRIS already provides physical isolation.
+- **Apartment gem (schema-per-tenant).** Rejected — engine compatibility issues, doesn't scale to 200+ tenants per state program, doesn't solve facility-level filtering, the underlying EHR already provides physical isolation.
 - **Tenant-as-FK to a corvid_tenants table.** Rejected — Tenant is a host concept (Jumpstart Account, etc.), engine should not own it.
 - **Default `unscoped` for missing context.** Rejected — unsafe by default; PHI/compliance bug class we don't want to create.
 
