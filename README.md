@@ -83,6 +83,27 @@ Host App (e.g. lakeraven-ehr, corvid-saas)
       └── Corvid::Adapters::Clearinghouse, EHR, RPMS, etc.
 ```
 
+### What the engine owns vs. what the host application owns
+
+Corvid is deliberately split so the engine stays EHR-agnostic, reusable, and
+publishable, while identity, authorization, UI, and deployment live in the host
+(the private SaaS shell, e.g. `corvid-saas`, or `lakeraven-ehr`).
+
+| This engine (public gem) | Host application (private shell) |
+|---|---|
+| Domain models + state machines (`PrcReferral` AASM, `EligibilityChecklist`, `Determination`, obligations, payments) | Identity: users, accounts, authentication, sessions |
+| **Business invariants**: the approval gate, dual control (approver ≠ submitter), checklist completeness, eligibility rules, MLR/repricing, adjudication | **Authorization / roles**: *who* may submit, approve, etc. (e.g. Pundit policies over the host's roles) |
+| EHR-agnostic **adapter contract** (`Corvid::Adapters::Base`) | The **concrete** adapter/EHR wiring, endpoints, and secrets |
+| Opaque **identifiers** only — no `current_user`, no session, no UI | Maps the authenticated user/account → engine identifiers + tenant, and renders the UI |
+| Tenant scoping as a **data boundary** (`tenant_identifier`) | Supplies the tenant **value**; controllers, views, routing, billing |
+| PHI-minimized (tokens, not PHI text) | The PHI vault the adapter resolves against |
+
+**Rule of thumb:** the engine enforces *what must always be true* (invariants on
+identifiers); the host decides *who is allowed to act* and *how it looks*. For
+example, the PRC management-approval gate enforces dual control **in the engine**,
+but "only a PRC Director may approve" is **role-gated in the host** — the host
+passes an already-authorized identifier into the engine.
+
 ## Adapters
 
 | Adapter | Use case |
