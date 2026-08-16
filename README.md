@@ -80,7 +80,7 @@ Host App (e.g. lakeraven-ehr, corvid-saas)
   │   ├── Services: AuthorizationWizard, CommitteeReviewSyncService, etc.
   │   └── Adapters::Base contract → MockAdapter / FhirAdapter
   └── corvid-adapters (private, optional)
-      └── Corvid::Adapters::Clearinghouse, IRIS, RPMS, etc.
+      └── Corvid::Adapters::Clearinghouse, EHR, RPMS, etc.
 ```
 
 ## Adapters
