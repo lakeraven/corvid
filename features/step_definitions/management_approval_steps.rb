@@ -69,9 +69,30 @@ When("I request management approval") do
   @referral.request_management_approval! if @referral.may_request_management_approval?
 end
 
+Given("the referral was submitted by {string}") do |submitter_id|
+  @referral.update!(submitted_by_identifier: submitter_id)
+end
+
 When("manager {string} approves the referral") do |manager_id|
   @referral.pending_approval_by = manager_id
   @referral.approve_management!
+end
+
+When("manager {string} returns the referral with reason {string}") do |manager_id, reason|
+  @referral.rejecting_by = manager_id
+  @referral.rejection_reason = reason
+  @referral.reject_management!
+end
+
+When("the {string} eligibility item is withdrawn") do |item|
+  checklist_for(@referral).unverify_item!(item)
+  @referral.reload
+end
+
+Then("the eligibility checklist should not have management approval") do
+  @checklist = checklist_for(@referral)
+  @checklist.reload
+  refute @checklist.management_approved, "Expected management approval to be unset"
 end
 
 Then("the referral should be in {string} status") do |status|

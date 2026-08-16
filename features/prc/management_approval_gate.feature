@@ -40,3 +40,36 @@ Feature: PRC management approval gate
     And manager "pr_mgr_cookie" approves the referral
     Then the referral should be in "alternate_resource_review" status
     And the eligibility checklist should be complete
+
+  # --- #478 approval-gate controls ---
+
+  Scenario: A specialist cannot approve their own determination (dual control)
+    Given the referral was submitted by "spec_iselda"
+    And the referral is in "management_approval" status
+    And an eligibility checklist with all non-approval items complete
+    When manager "spec_iselda" approves the referral
+    Then the referral should remain in "management_approval" status
+    And the eligibility checklist should not have management approval
+
+  Scenario: A different approver satisfies dual control
+    Given the referral was submitted by "spec_iselda"
+    And the referral is in "management_approval" status
+    And an eligibility checklist with all non-approval items complete
+    When manager "pr_mgr_cookie" approves the referral
+    Then the referral should be in "alternate_resource_review" status
+    And the eligibility checklist should have management approval by "pr_mgr_cookie"
+
+  Scenario: Manager returns an incomplete determination for correction
+    Given the referral is in "management_approval" status
+    And an eligibility checklist with all non-approval items complete
+    When manager "pr_mgr_cookie" returns the referral with reason "residency proof illegible"
+    Then the referral should be in "eligibility_review" status
+    And the eligibility checklist should not have management approval
+
+  Scenario: Editing eligibility after approval invalidates the approval
+    Given the referral is in "management_approval" status
+    And an eligibility checklist with all non-approval items complete
+    And manager "pr_mgr_cookie" approves the referral
+    When the "residency_verified" eligibility item is withdrawn
+    Then the referral should be in "eligibility_review" status
+    And the eligibility checklist should not have management approval

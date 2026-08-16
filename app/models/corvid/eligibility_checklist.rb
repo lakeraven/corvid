@@ -71,7 +71,35 @@ module Corvid
       update!(attrs)
     end
 
+    # Clear an item's completion (and its metadata). Withdrawing a
+    # non-approval eligibility item after management approval invalidates
+    # that approval (approve-then-alter guard) via the parent referral.
+    def unverify_item!(item)
+      item = item.to_sym
+      fields = ITEM_FIELDS.fetch(item)
+
+      attrs = { item => false, fields[:at] => nil }
+      attrs[fields[:source]] = nil if fields.key?(:source)
+      attrs[fields[:by]] = nil if fields.key?(:by)
+      update!(attrs)
+
+      cascade_management_approval_invalidation!(item)
+    end
+
+    # Reset the management-approval marker without touching other items.
+    def clear_management_approval!
+      update!(management_approved: false, management_approved_at: nil, management_approved_by: nil)
+    end
+
     private
+
+    def cascade_management_approval_invalidation!(changed_item)
+      return unless NON_APPROVAL_ITEMS.include?(changed_item)
+      return unless management_approved?
+
+      clear_management_approval!
+      prc_referral&.reopen_for_eligibility_change!
+    end
 
     def validate_verify_item_metadata!(item, fields, source:, by:)
       if fields.key?(:source)
