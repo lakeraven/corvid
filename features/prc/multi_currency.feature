@@ -11,8 +11,8 @@ Feature: PRC obligations across international currencies
   # - Cross-currency arithmetic raises by default, forcing reports to
   #   handle multi-currency explicitly.
 
-  Scenario: Yakama Nation PRC obligation stores in USD cents
-    Given a tenant "tnt_yakama" denominated in "USD"
+  Scenario: Example Tribe PRC obligation stores in USD cents
+    Given a tenant "tnt_example" denominated in "USD"
     When I record a PRC obligation billed at 65000.00
     Then the obligation's billed_amount_cents is 6500000
     And the obligation's currency_iso is "USD"
@@ -40,7 +40,7 @@ Feature: PRC obligations across international currencies
     And reading the obligation back yields Money of 350.50 CAD
 
   Scenario: Cross-currency arithmetic raises rather than silently summing
-    Given a tenant "tnt_yakama" denominated in "USD"
+    Given a tenant "tnt_example" denominated in "USD"
     And a tenant "tnt_hakeem" denominated in "JOD"
     When I try to add the USD obligation and the JOD obligation
     Then the engine raises a cross-currency error

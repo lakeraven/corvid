@@ -4,7 +4,7 @@ Feature: PRC audit compliance report
   So that I can demonstrate to auditors that Finding #2023-005 is resolved
 
   Background:
-    Given a tenant "tnt_yakama" with facility "fac_toppenish"
+    Given a tenant "tnt_example" with facility "fac_example"
 
   Scenario: 100% compliance when all checklists are complete
     Given 10 PRC referrals with complete eligibility checklists

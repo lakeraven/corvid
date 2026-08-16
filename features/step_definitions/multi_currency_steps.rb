@@ -36,7 +36,7 @@ Then("reading the obligation back yields Money of {float} {word}") do |amount, i
 end
 
 When("I try to add the USD obligation and the JOD obligation") do
-  Corvid::TenantContext.with_tenant("tnt_yakama") do
+  Corvid::TenantContext.with_tenant("tnt_example") do
     @usd_ob = Corvid::PrcObligation.create!(
       facility_identifier: "SEA",
       obligation_id: "OBL-USD-#{SecureRandom.hex(4)}",

@@ -4,7 +4,7 @@ Feature: Enrollment verification via adapter
   So that eligibility documentation is auto-populated instead of manually collected
 
   Background:
-    Given a tenant "tnt_yakama" with facility "fac_toppenish"
+    Given a tenant "tnt_example" with facility "fac_example"
 
   Scenario: Verify tribal enrollment for an enrolled patient
     Given a patient "pt_enrolled_001" registered in the adapter as enrolled

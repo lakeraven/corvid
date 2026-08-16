@@ -4,7 +4,7 @@ Feature: Enrollment demo adapter for eligibility verification
   So that identity, enrollment, and residency documentation gaps are eliminated
 
   Background:
-    Given a tenant "tnt_yakama" with facility "fac_toppenish"
+    Given a tenant "tnt_example" with facility "fac_example"
     And the enrollment demo adapter is active
 
   Scenario: Enrolled member's enrollment is verified

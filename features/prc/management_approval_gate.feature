@@ -4,7 +4,7 @@ Feature: PRC management approval gate
   So that the 53/60 "no management approval" audit finding is eliminated
 
   Background:
-    Given a tenant "tnt_yakama" with facility "fac_toppenish"
+    Given a tenant "tnt_example" with facility "fac_example"
     And a patient "pt_001" with a PRC case
     And a PRC referral "rf_001" for that case
 

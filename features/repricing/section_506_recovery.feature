@@ -112,7 +112,7 @@ Feature: Section 506 overpayment recovery
     And the tone should be "request" not "demand"
 
   Scenario: Tribal demand is stronger than rural demand
-    Given a tribal customer "Yakama PRC" with Section 506 authority
+    Given a tribal customer "Example Tribe PRC" with Section 506 authority
     And a non-tribal customer "Rural CAH" without Section 506
     And both have the same overpayment of 142.30 to the same provider
     When I generate demand letters for both
