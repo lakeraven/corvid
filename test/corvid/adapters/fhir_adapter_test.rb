@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "minitest/autorun"
+require "active_support/all" # adapter uses AS ext (Time.current, String#last, present?); loaded by the host app in real use
 require "corvid/adapters/fhir_adapter"
 
 class Corvid::Adapters::FhirAdapterTest < Minitest::Test
@@ -115,6 +116,75 @@ class Corvid::Adapters::FhirAdapterTest < Minitest::Test
     # raises NotImplementedError until production wires a real text vault.
     assert_raises(NotImplementedError) do
       @adapter.store_text(case_token: "ct_x", kind: :note, text: "TEST")
+    end
+  end
+
+  # -- Tribal enrollment / identity / residency (read from Patient extensions) --
+
+  def test_verify_tribal_enrollment_reads_extension
+    resource = {
+      "id" => "pt_001",
+      "extension" => [ {
+        "url" => "https://lakeraven.com/fhir/StructureDefinition/tribal-enrollment",
+        "extension" => [
+          { "url" => "enrolled", "valueBoolean" => true },
+          { "url" => "membershipNumber", "valueString" => "TGN-100254" },
+          { "url" => "tribeName", "valueString" => "Tallgrass Nation" },
+          { "url" => "tribeCode", "valueString" => "TGN" },
+          { "url" => "confidence", "valueString" => "verified" }
+        ]
+      } ]
+    }
+    @adapter.stub(:fhir_read, resource) do
+      result = @adapter.verify_tribal_enrollment("pt_001")
+      assert_equal true, result[:enrolled]
+      assert_equal "TGN-100254", result[:membership_number]
+      assert_equal "TGN", result[:tribe_code]
+      assert_equal :verified, result[:confidence]
+    end
+  end
+
+  def test_verify_tribal_enrollment_falls_back_when_extension_absent
+    # Plain FHIR servers with no tribal-enrollment extension degrade to the
+    # same fail-closed "unavailable" shape as before this method read FHIR.
+    @adapter.stub(:fhir_read, { "id" => "pt_001" }) do
+      result = @adapter.verify_tribal_enrollment("pt_001")
+      assert_equal false, result[:enrolled]
+      assert_equal :unavailable, result[:confidence]
+    end
+  end
+
+  def test_verify_identity_documents_derives_from_patient_resource
+    resource = {
+      "id" => "pt_001",
+      "birthDate" => "1978-11-02",
+      "identifier" => [ { "system" => "http://hl7.org/fhir/sid/us-ssn", "value" => "555-01-0054" } ]
+    }
+    @adapter.stub(:fhir_read, resource) do
+      result = @adapter.verify_identity_documents("pt_001")
+      assert_equal true, result[:ssn_present]
+      assert_equal true, result[:dob_present]
+      assert_equal false, result[:birthplace_present]
+    end
+  end
+
+  def test_verify_residency_reads_extension_and_address
+    resource = {
+      "id" => "pt_001",
+      "address" => [ { "line" => [ "12 Agency Rd" ], "city" => "Pawhuska", "state" => "OK" } ],
+      "extension" => [ {
+        "url" => "https://lakeraven.com/fhir/StructureDefinition/residency",
+        "extension" => [
+          { "url" => "onReservation", "valueBoolean" => true },
+          { "url" => "serviceArea", "valueString" => "WahZhaZhe Health Center" }
+        ]
+      } ]
+    }
+    @adapter.stub(:fhir_read, resource) do
+      result = @adapter.verify_residency("pt_001")
+      assert_equal true, result[:on_reservation]
+      assert_equal "12 Agency Rd, Pawhuska, OK", result[:address]
+      assert_equal "WahZhaZhe Health Center", result[:service_area]
     end
   end
 end

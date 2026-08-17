@@ -261,28 +261,69 @@ module Corvid
       end
 
       # ----------------------------------------------------------------------
-      # Enrollment verification — FHIR has no native tribal enrollment
-      # concept. Defaults to "not available" so callers degrade gracefully
-      # instead of crashing. Vendor adapters override with real lookups.
+      # Enrollment verification — FHIR R4 / US Core have no native tribal
+      # enrollment concept, so this reads Lakeraven's tribal-enrollment
+      # extension on Patient (see TRIBAL_ENROLLMENT_EXTENSION_URL below).
+      # Servers that don't populate the extension fall back to
+      # "unavailable" (fail-closed) exactly as before — this is additive,
+      # not a behavior change for plain-vanilla FHIR servers.
       # ----------------------------------------------------------------------
 
-      def verify_tribal_enrollment(_patient_identifier)
+      TRIBAL_ENROLLMENT_EXTENSION_URL = "#{EXTENSION_BASE_URL}/tribal-enrollment"
+      RESIDENCY_EXTENSION_URL = "#{EXTENSION_BASE_URL}/residency"
+      US_CORE_BIRTHPLACE_URL = "http://hl7.org/fhir/us/core/StructureDefinition/us-core-birthplace"
+
+      def verify_tribal_enrollment(patient_identifier)
+        unavailable = {
+          enrolled: false, membership_number: nil, tribe_name: nil, tribe_code: nil,
+          confidence: :unavailable, verified_at: Time.current
+        }
+
+        patient = fhir_read("Patient", patient_identifier)
+        return unavailable unless patient
+
+        ext = find_extension(patient, TRIBAL_ENROLLMENT_EXTENSION_URL)
+        return unavailable unless ext
+
         {
-          enrolled: false,
-          membership_number: nil,
-          tribe_name: nil,
-          tribe_code: nil,
-          confidence: :unavailable,
+          enrolled: sub_extension_value(ext, "enrolled") == true,
+          membership_number: sub_extension_value(ext, "membershipNumber"),
+          tribe_name: sub_extension_value(ext, "tribeName"),
+          tribe_code: sub_extension_value(ext, "tribeCode"),
+          confidence: (sub_extension_value(ext, "confidence") || "verified").to_sym,
           verified_at: Time.current
         }
       end
 
-      def verify_identity_documents(_patient_identifier)
-        { ssn_present: false, dob_present: false, birthplace_present: false, verified_at: Time.current }
+      def verify_identity_documents(patient_identifier)
+        empty = { ssn_present: false, dob_present: false, birthplace_present: false, verified_at: Time.current }
+
+        patient = fhir_read("Patient", patient_identifier)
+        return empty unless patient
+
+        {
+          ssn_present: extract_ssn_last4(patient).present?,
+          dob_present: patient["birthDate"].present?,
+          birthplace_present: !!find_extension(patient, US_CORE_BIRTHPLACE_URL),
+          verified_at: Time.current
+        }
       end
 
-      def verify_residency(_patient_identifier)
-        { on_reservation: false, address: nil, service_area: nil, verified_at: Time.current }
+      def verify_residency(patient_identifier)
+        unavailable = { on_reservation: false, address: nil, service_area: nil, verified_at: Time.current }
+
+        patient = fhir_read("Patient", patient_identifier)
+        return unavailable unless patient
+
+        ext = find_extension(patient, RESIDENCY_EXTENSION_URL)
+        return unavailable unless ext
+
+        {
+          on_reservation: sub_extension_value(ext, "onReservation") == true,
+          address: format_address(patient.dig("address", 0)),
+          service_area: sub_extension_value(ext, "serviceArea"),
+          verified_at: Time.current
+        }
       end
 
       # ----------------------------------------------------------------------
@@ -487,6 +528,25 @@ module Corvid
       def extract_npi(resource)
         npi = Array(resource["identifier"]).find { |id| id["system"] == "http://hl7.org/fhir/sid/us-npi" }
         npi&.dig("value")
+      end
+
+      def find_extension(resource, url)
+        Array(resource["extension"]).find { |e| e["url"] == url }
+      end
+
+      def sub_extension_value(extension, sub_url)
+        sub = Array(extension["extension"]).find { |e| e["url"] == sub_url }
+        return nil unless sub
+        return sub["valueBoolean"] if sub.key?("valueBoolean")
+
+        sub["valueString"] || sub["valueDecimal"]
+      end
+
+      def format_address(address_hash)
+        return nil unless address_hash
+
+        line = Array(address_hash["line"]).join(" ")
+        [ line, address_hash["city"], address_hash["state"] ].reject { |s| s.nil? || s.empty? }.join(", ")
       end
 
       def parse_date(value)

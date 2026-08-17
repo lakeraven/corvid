@@ -60,7 +60,22 @@ module Corvid
 
       event :approve_management do
         transitions from: :management_approval, to: :alternate_resource_review,
+                    guard: :approver_distinct_from_submitter?,
                     after: :record_management_approval
+      end
+
+      # Manager returns an incomplete/incorrect determination for correction.
+      # Sends the referral back to eligibility_review; approval stays unset.
+      event :reject_management, after: :record_management_rejection do
+        transitions from: :management_approval, to: :eligibility_review
+      end
+
+      # An eligibility item edited after approval invalidates that approval —
+      # the referral drops back to eligibility_review and must be re-approved
+      # before it can advance toward authorization (approve-then-alter guard).
+      event :return_to_eligibility_review do
+        transitions from: [ :alternate_resource_review, :priority_assignment, :committee_review, :exception_review ],
+                    to: :eligibility_review
       end
 
       event :verify_alternate_resources do
@@ -124,6 +139,28 @@ module Corvid
 
     def checklist_items_except_approval_complete?
       eligibility_checklist&.items_except_approval_complete? || false
+    end
+
+    # Dual control: the approving manager must not be the person who
+    # submitted the referral. When no submitter was recorded (legacy /
+    # system-submitted referrals) the check is a no-op.
+    def approver_distinct_from_submitter?
+      return true if submitted_by_identifier.blank?
+
+      pending_approval_by.present? && pending_approval_by != submitted_by_identifier
+    end
+
+    def management_approved?
+      eligibility_checklist&.management_approved || false
+    end
+
+    # Transient attributes for a management rejection (return-for-correction).
+    attr_accessor :rejecting_by, :rejection_reason
+
+    # Called by the checklist when a non-approval eligibility item changes
+    # after approval — invalidates the approval by returning to review.
+    def reopen_for_eligibility_change!
+      return_to_eligibility_review! if may_return_to_eligibility_review?
     end
 
     # ----------------------------------------------------------------
@@ -325,6 +362,24 @@ module Corvid
         :management_approved,
         by: pending_approval_by!
       )
+    end
+
+    def record_management_rejection
+      attrs = {
+        management_rejected_at: Time.current,
+        management_rejected_by_identifier: rejecting_by
+      }
+      if rejection_reason.present?
+        attrs[:management_rejection_reason_token] = Corvid.adapter.store_text(
+          case_token: self.case&.id&.to_s || "unknown",
+          kind: :reason,
+          text: rejection_reason
+        )
+      end
+      update!(attrs)
+
+      # A returned referral is not approved — clear any approval marker.
+      eligibility_checklist&.clear_management_approval!
     end
 
     def record_deferred_determination

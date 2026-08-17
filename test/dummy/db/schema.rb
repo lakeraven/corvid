@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_05_16_000001) do
+ActiveRecord::Schema[8.1].define(version: 2026_05_17_000001) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
@@ -515,12 +515,16 @@ ActiveRecord::Schema[8.1].define(version: 2026_05_16_000001) do
     t.datetime "late_notification_documented_at"
     t.string "late_notification_documented_by_identifier"
     t.string "late_notification_reason_token"
+    t.datetime "management_rejected_at"
+    t.string "management_rejected_by_identifier"
+    t.string "management_rejection_reason_token"
     t.integer "medical_priority"
     t.datetime "medical_priority_cached_at"
     t.datetime "notification_date"
     t.string "priority_system"
     t.string "referral_identifier", null: false
     t.string "status", default: "draft", null: false
+    t.string "submitted_by_identifier"
     t.string "tenant_identifier", null: false
     t.datetime "updated_at", null: false
     t.index ["case_id"], name: "index_corvid_prc_referrals_on_case_id"
