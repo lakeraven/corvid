@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "minitest/autorun"
+require "active_support/all" # adapter uses AS ext (Time.current, String#last, present?); loaded by the host app in real use
 require "corvid/adapters/fhir_adapter"
 
 class Corvid::Adapters::FhirAdapterTest < Minitest::Test
