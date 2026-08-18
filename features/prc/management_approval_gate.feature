@@ -51,6 +51,12 @@ Feature: PRC management approval gate
     Then the referral should remain in "management_approval" status
     And the eligibility checklist should not have management approval
 
+  Scenario: Approve is offered as an available transition before the approver is known
+    Given the referral was submitted by "spec_iselda"
+    And the referral is in "management_approval" status
+    And an eligibility checklist with all non-approval items complete
+    Then "approve_management" should be an available transition
+
   Scenario: A different approver satisfies dual control
     Given the referral was submitted by "spec_iselda"
     And the referral is in "management_approval" status

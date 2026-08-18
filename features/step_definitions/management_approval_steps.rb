@@ -89,6 +89,13 @@ When("the {string} eligibility item is withdrawn") do |item|
   @referral.reload
 end
 
+Then("{string} should be an available transition") do |event_name|
+  @referral.reload
+  available = @referral.aasm.events(permitted: true).map { |e| e.name.to_s }
+  assert_includes available, event_name,
+    "Expected #{event_name} to be available; got #{available.inspect}"
+end
+
 Then("the eligibility checklist should not have management approval") do
   @checklist = checklist_for(@referral)
   @checklist.reload

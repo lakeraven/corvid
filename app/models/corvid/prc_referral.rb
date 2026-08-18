@@ -146,8 +146,14 @@ module Corvid
     # system-submitted referrals) the check is a no-op.
     def approver_distinct_from_submitter?
       return true if submitted_by_identifier.blank?
+      # During the permitted-events check (e.g. rendering available
+      # transitions) the approver isn't known yet — offer the transition and
+      # enforce dual control when it actually fires, once the caller has set
+      # pending_approval_by. Firing without it still raises via
+      # pending_approval_by! in record_management_approval.
+      return true if pending_approval_by.blank?
 
-      pending_approval_by.present? && pending_approval_by != submitted_by_identifier
+      pending_approval_by != submitted_by_identifier
     end
 
     def management_approved?
