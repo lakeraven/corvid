@@ -4,8 +4,7 @@ Feature: PRC referral workflow — staff view
   So that no referral is authorized without complete eligibility documentation and
   the PRC Director's approval, and every decision — approve, deny, defer — is deliberate.
 
-  # This is the workflow as staff experience it. It doubles as the state-machine
-  # spec: the ordered path, the rules that block skipping steps, committee
+  # This is the workflow as staff experience it. It is the ordered path, the rules that block skipping steps, committee
   # routing for high-cost/high-priority care, and the terminal decisions.
 
   Background:
@@ -82,3 +81,22 @@ Feature: PRC referral workflow — staff view
     Then the referral should be "denied"
     And the Referral Specialist cannot re-submit the referral
     And the PRC program cannot authorize the referral
+
+  # --- Returning a referral for correction, and cancelling ---
+
+  Scenario: The PRC Director returns a referral for correction
+    Given the referral has reached "awaiting management approval"
+    When the PRC Director "dir_cookie" returns the referral for correction
+    Then the referral should be "under eligibility review"
+    And the referral is not yet approved
+
+  Scenario: Changing the eligibility file after approval sends it back for re-approval
+    Given the referral has reached "in alternate-resource review"
+    When an eligibility item is withdrawn after approval
+    Then the referral should be "under eligibility review"
+    And the referral is not yet approved
+
+  Scenario: A referral can be cancelled while in progress
+    When the Referral Specialist submits the referral
+    And the Referral Specialist cancels the referral
+    Then the referral should be "cancelled"

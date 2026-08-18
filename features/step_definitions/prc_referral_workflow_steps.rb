@@ -125,11 +125,35 @@ Given("the referral has reached {string}") do |phrase|
   end
   @referral.reload
   @referral.request_management_approval!
-  @referral.pending_approval_by = "dir_cookie"
-  @referral.approve_management!
-  @referral.verify_alternate_resources!
+  unless target == "management_approval"
+    @referral.pending_approval_by = "dir_cookie"
+    @referral.approve_management!
+    @referral.verify_alternate_resources! unless target == "alternate_resource_review"
+  end
   @referral.reload
   assert_equal target, @referral.status, "expected to reach #{phrase}, got #{@referral.status}"
+end
+
+When("the PRC Director {string} returns the referral for correction") do |director|
+  @referral.rejecting_by = director
+  @referral.rejection_reason = "Documentation incomplete — please correct and resubmit"
+  @referral.reject_management!
+  @referral.reload
+end
+
+When("an eligibility item is withdrawn after approval") do
+  checklist_for(@referral).unverify_item!(:residency_verified)
+  @referral.reload
+end
+
+When("the Referral Specialist cancels the referral") do
+  @referral.cancel!
+  @referral.reload
+end
+
+Then("the referral is not yet approved") do
+  checklist = @referral.reload.eligibility_checklist
+  refute checklist&.management_approved, "expected the referral to NOT be approved, but it was"
 end
 
 Given("the referral requires committee review") do
