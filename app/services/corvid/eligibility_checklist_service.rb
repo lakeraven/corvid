@@ -66,9 +66,14 @@ module Corvid
 
       patient_id = referral.case.patient_identifier
       coverages = @adapter.get_coverages(patient_id)
-      return unless coverages.is_a?(Array) && coverages.any?
+      # A nil / non-array response means the adapter couldn't run the check —
+      # leave insurance for staff to attest. An empty array is a *completed*
+      # check confirming no alternate resource, so PRC is the payer of last
+      # resort (42 CFR 136.61) — a valid eligible outcome, not "unchecked".
+      return unless coverages.is_a?(Array)
 
-      checklist.verify_item!(:insurance_verified, source: "eligibility_check")
+      source = coverages.any? ? "eligibility_check" : "payer_of_last_resort"
+      checklist.verify_item!(:insurance_verified, source: source)
     end
 
     # Class-method shims for backward compatibility.
