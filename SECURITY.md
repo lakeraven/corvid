@@ -6,7 +6,7 @@ Lakeraven builds software used in healthcare settings. If you discover a
 security vulnerability, please report it privately — **do not open a public
 issue or pull request.**
 
-Email **security@lakeraven.com** with:
+Email **kimball.bighorse@lakeraven.com** with:
 
 - a description of the issue and its impact,
 - steps to reproduce (a proof-of-concept if available),
