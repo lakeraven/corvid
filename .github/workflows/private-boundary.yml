@@ -1,0 +1,45 @@
+name: private-boundary
+# Fails a PR if a private-boundary term (partner / tribe / vendor names, etc.)
+# appears in this public repo. The blocklist lives ONLY in the encrypted
+# `LAKERAVEN_BOUNDARY_BLOCKLIST` secret (newline-delimited, case-insensitive),
+# never in the repo, and matched terms are never echoed — only file:line — so
+# the blocklist cannot leak through public CI logs. Until the secret is set
+# the job passes with a notice.
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Scan for private-boundary terms
+        shell: bash
+        env:
+          BLOCKLIST: ${{ secrets.LAKERAVEN_BOUNDARY_BLOCKLIST }}
+        run: |
+          set -euo pipefail
+          if [ -z "${BLOCKLIST:-}" ]; then
+            echo "::notice::LAKERAVEN_BOUNDARY_BLOCKLIST not set; skipping boundary scan."
+            exit 0
+          fi
+          fail=0
+          while IFS= read -r term; do
+            term="${term%$'\r'}"
+            if [ -z "$term" ]; then continue; fi
+            matches="$(grep -RIn -i --exclude-dir=.git -e "$term" . | cut -d: -f1,2 || true)"
+            if [ -n "$matches" ]; then
+              while IFS= read -r loc; do
+                if [ -z "$loc" ]; then continue; fi
+                echo "::error::private-boundary term matched at ${loc}"
+                fail=1
+              done <<< "$matches"
+            fi
+          done <<< "${BLOCKLIST}"
+          if [ "$fail" -ne 0 ]; then
+            echo "A private-boundary term was found in this public repo. Remove it before merging."
+            exit 1
+          fi
+          echo "No private-boundary terms found."
