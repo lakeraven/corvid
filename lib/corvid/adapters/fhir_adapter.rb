@@ -4,6 +4,7 @@ require "net/http"
 require "json"
 require "uri"
 require "date"
+require "bigdecimal"
 require "corvid/adapters/base"
 require "corvid/value_objects"
 
@@ -180,6 +181,22 @@ module Corvid
       def list_referrals(patient_identifier)
         bundle = fhir_search("ServiceRequest", patient: patient_identifier)
         extract_entries(bundle).map { |r| build_referral_reference(r) }
+      end
+
+      # ----------------------------------------------------------------------
+      # Claims — purchased/referred-care billed line items
+      #
+      # Reads stock FHIR R4 `Claim` resources (`Claim?patient=<id>`) and
+      # flattens each `Claim.item` into a Corvid::ClaimLineReference. Uses
+      # only standard R4 elements — patient, provider, item.productOrService
+      # (CPT/HCPCS coding), item.servicedDate/servicedPeriod, item.net — so
+      # any conformant FHIR server (regardless of source EHR) maps the same
+      # way. No vendor-specific extensions.
+      # ----------------------------------------------------------------------
+
+      def list_claims(patient_identifier)
+        bundle = fhir_search("Claim", patient: patient_identifier)
+        extract_entries(bundle).flat_map { |claim| build_claim_line_references(claim) }
       end
 
       # ----------------------------------------------------------------------
@@ -469,6 +486,37 @@ module Corvid
           npi: extract_npi(resource),
           specialty: resource.dig("qualification", 0, "code", "coding", 0, "display")
         )
+      end
+
+      def build_claim_line_references(claim)
+        patient_id = claim.dig("patient", "reference")&.sub("Patient/", "")
+        provider_id = claim.dig("provider", "identifier", "value") ||
+                      claim.dig("provider", "reference")&.split("/")&.last ||
+                      claim.dig("provider", "display")
+        claim_id = claim["id"]
+
+        Array(claim["item"]).map do |item|
+          coding = item.dig("productOrService", "coding", 0) || {}
+          Corvid::ClaimLineReference.new(
+            claim_identifier: claim_id,
+            patient_identifier: patient_id,
+            provider_identifier: provider_id,
+            procedure_code: coding["code"],
+            procedure_display: coding["display"] || item.dig("productOrService", "text"),
+            serviced_date: parse_date(item["servicedDate"] || item.dig("servicedPeriod", "start")),
+            billed_amount: decimal_or_nil(item.dig("net", "value")),
+            currency: item.dig("net", "currency") || "USD",
+            sequence: item["sequence"]
+          )
+        end
+      end
+
+      def decimal_or_nil(value)
+        return nil if value.nil?
+
+        BigDecimal(value.to_s)
+      rescue ArgumentError
+        nil
       end
 
       def build_referral_reference(resource)
