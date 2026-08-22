@@ -1,19 +1,8 @@
-inherit_gem:
-  rubocop-rails-omakase: rubocop.yml
+# Omakase Ruby styling for Rails
+inherit_gem: { rubocop-rails-omakase: rubocop.yml }
 
 AllCops:
   Exclude:
-    # Rails-generated; regenerated on every migration without Omakase spacing
-    - "**/db/schema.rb"
-
-Style/Documentation:
-  Enabled: false
-
-Metrics/MethodLength:
-  Max: 15
-
-Metrics/AbcSize:
-  Max: 30
-
-Metrics/CyclomaticComplexity:
-  Max: 15
+    - 'features/**/*'
+    # Rails-generated; regenerated on every migration without Omakase spacing.
+    - '**/db/schema.rb'
