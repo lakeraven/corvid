@@ -234,6 +234,26 @@ module Corvid
       end
 
       # ----------------------------------------------------------------------
+      # Clinical reads (optional — Base defaults to [], which silently
+      # under-reports coverage for FHIR-backed tenants; override with a
+      # real Coverage search so callers like
+      # EligibilityChecklistService#populate_insurance! (checks
+      # `coverages.any?`) see real data instead of always-empty).
+      # ----------------------------------------------------------------------
+
+      def get_coverages(patient_identifier)
+        bundle = fhir_search("Coverage", beneficiary: "Patient/#{patient_identifier}")
+        extract_entries(bundle).map do |coverage|
+          {
+            payer_name: coverage.dig("payor", 0, "display"),
+            policy_id: coverage["subscriberId"],
+            status: coverage["status"],
+            type_code: coverage.dig("type", "coding", 0, "code")
+          }
+        end
+      end
+
+      # ----------------------------------------------------------------------
       # Eligibility
       # ----------------------------------------------------------------------
 
@@ -285,12 +305,17 @@ module Corvid
         ext = find_extension(patient, TRIBAL_ENROLLMENT_EXTENSION_URL)
         return unavailable unless ext
 
+        # Normalize + whitelist: an unstated or unrecognized confidence is
+        # unknown, so fail closed (:unavailable) rather than assuming :verified.
+        raw = sub_extension_value(ext, "confidence").to_s.strip.downcase
+        confidence = %w[verified stale unavailable].include?(raw) ? raw.to_sym : :unavailable
+
         {
           enrolled: sub_extension_value(ext, "enrolled") == true,
           membership_number: sub_extension_value(ext, "membershipNumber"),
           tribe_name: sub_extension_value(ext, "tribeName"),
           tribe_code: sub_extension_value(ext, "tribeCode"),
-          confidence: (sub_extension_value(ext, "confidence") || "verified").to_sym,
+          confidence: confidence,
           verified_at: Time.current
         }
       end

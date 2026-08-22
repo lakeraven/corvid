@@ -187,4 +187,93 @@ class Corvid::Adapters::FhirAdapterTest < Minitest::Test
       assert_equal "Broken Rock Health Center", result[:service_area]
     end
   end
+
+  # -- get_coverages (Base defaults to [] — FhirAdapter overrides with a real search) --
+
+  def test_get_coverages_maps_coverage_bundle
+    bundle = {
+      "resourceType" => "Bundle",
+      "entry" => [ {
+        "resource" => {
+          "resourceType" => "Coverage",
+          "status" => "active",
+          "payor" => [ { "display" => "Broken Rock / IHS — Payer of Last Resort" } ],
+          "subscriberId" => "TGN-100254",
+          "type" => { "coding" => [ { "code" => "TRIB" } ] }
+        }
+      } ]
+    }
+    @adapter.stub(:fhir_search, bundle) do
+      result = @adapter.get_coverages("pt_001")
+      assert_equal 1, result.size
+      assert_equal "Broken Rock / IHS — Payer of Last Resort", result.first[:payer_name]
+      assert_equal "TGN-100254", result.first[:policy_id]
+      assert_equal "TRIB", result.first[:type_code]
+    end
+  end
+
+  def test_get_coverages_returns_empty_array_when_no_coverage
+    @adapter.stub(:fhir_search, { "resourceType" => "Bundle", "entry" => [] }) do
+      assert_equal [], @adapter.get_coverages("pt_001")
+    end
+  end
+
+  # -- Fail-closed on unknown/absent enrollment confidence (HIGH finding) --
+
+  def test_verify_tribal_enrollment_confidence_defaults_unavailable_when_subfield_absent
+    # Extension present but with NO confidence sub-field must NOT be treated as
+    # ":verified" — an unstated confidence is unknown, so fail closed.
+    resource = {
+      "id" => "pt_001",
+      "extension" => [ {
+        "url" => "https://lakeraven.com/fhir/StructureDefinition/tribal-enrollment",
+        "extension" => [
+          { "url" => "enrolled", "valueBoolean" => true },
+          { "url" => "membershipNumber", "valueString" => "TGN-100254" }
+        ]
+      } ]
+    }
+    @adapter.stub(:fhir_read, resource) do
+      result = @adapter.verify_tribal_enrollment("pt_001")
+      assert_equal :unavailable, result[:confidence]
+    end
+  end
+
+  def test_verify_tribal_enrollment_confidence_normalizes_and_whitelists
+    # A recognized value in a different case normalizes; an unrecognized value
+    # (e.g. "provisional") is not on the whitelist and fails closed.
+    variants = { "UNAVAILABLE" => :unavailable, "provisional" => :unavailable, "  Stale  " => :stale }
+    variants.each do |raw, expected|
+      resource = {
+        "id" => "pt_001",
+        "extension" => [ {
+          "url" => "https://lakeraven.com/fhir/StructureDefinition/tribal-enrollment",
+          "extension" => [
+            { "url" => "enrolled", "valueBoolean" => true },
+            { "url" => "confidence", "valueString" => raw }
+          ]
+        } ]
+      }
+      @adapter.stub(:fhir_read, resource) do
+        result = @adapter.verify_tribal_enrollment("pt_001")
+        assert_equal expected, result[:confidence], "confidence #{raw.inspect} should normalize to #{expected.inspect}"
+      end
+    end
+  end
+
+  def test_verify_methods_fail_closed_when_fhir_read_returns_nil
+    # Server 404 / missing resource: fhir_read returns nil. All verify_* methods
+    # must fail closed with no crash.
+    @adapter.stub(:fhir_read, nil) do
+      enrollment = @adapter.verify_tribal_enrollment("pt_missing")
+      assert_equal false, enrollment[:enrolled]
+      assert_equal :unavailable, enrollment[:confidence]
+
+      identity = @adapter.verify_identity_documents("pt_missing")
+      assert_equal false, identity[:ssn_present]
+
+      residency = @adapter.verify_residency("pt_missing")
+      assert_equal false, residency[:on_reservation]
+    end
+  end
 end
