@@ -73,7 +73,7 @@ namespace :cms do
         Corvid::IppsHospitalRate.insert_all(hosp_rows.map { |r| r.merge(created_at: Time.current, updated_at: Time.current) }) if hosp_rows.any?
       end
 
-      puts "Fetched FY #{year} from cms-fee-schedules-v1: #{drg_rows.size} DRG weights, #{hosp_rows.size} hospital rates (label=#{label})"
+      puts "Fetched FY #{year} from cms-fee-schedules-v1: #{drg_rows.size} DRG weights (label=#{drg_label}), #{hosp_rows.size} hospital rates (label=#{hosp_label})"
     end
 
     def strip_comments(csv_text)
