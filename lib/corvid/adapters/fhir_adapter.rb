@@ -23,6 +23,18 @@ module Corvid
 
       EXTENSION_BASE_URL = "https://lakeraven.com/fhir/StructureDefinition"
 
+      # Canonical billing code systems. A Claim.item.productOrService may carry
+      # several codings (e.g. a SNOMED clinical concept alongside the billed
+      # CPT/HCPCS); pricing needs the CPT/HCPCS one, not whichever happens to be
+      # first. Both the FHIR-standard HCPCS OID and the CMS Blue Button HCPCS
+      # URL are recognized since servers vary.
+      CPT_SYSTEM = "http://www.ama-assn.org/go/cpt"
+      HCPCS_SYSTEMS = [
+        "urn:oid:2.16.840.1.113883.6.285",
+        "https://bluebutton.cms.gov/resources/codesystem/hcpcs"
+      ].freeze
+      BILLING_CODE_SYSTEMS = ([ CPT_SYSTEM ] + HCPCS_SYSTEMS).freeze
+
       # Standard FHIR ServiceRequest fields safe to update directly.
       UPDATABLE_SERVICE_REQUEST_FIELDS = %w[
         status priority reasonCode note category chs_approval_status
@@ -496,7 +508,8 @@ module Corvid
         claim_id = claim["id"]
 
         Array(claim["item"]).map do |item|
-          coding = item.dig("productOrService", "coding", 0) || {}
+          coding = select_billing_coding(item)
+          amount, amount_error = parse_billed_amount(item.dig("net", "value"))
           Corvid::ClaimLineReference.new(
             claim_identifier: claim_id,
             patient_identifier: patient_id,
@@ -504,19 +517,32 @@ module Corvid
             procedure_code: coding["code"],
             procedure_display: coding["display"] || item.dig("productOrService", "text"),
             serviced_date: parse_date(item["servicedDate"] || item.dig("servicedPeriod", "start")),
-            billed_amount: decimal_or_nil(item.dig("net", "value")),
+            billed_amount: amount,
+            amount_error: amount_error,
             currency: item.dig("net", "currency") || "USD",
             sequence: item["sequence"]
           )
         end
       end
 
-      def decimal_or_nil(value)
-        return nil if value.nil?
+      # Pick the CPT/HCPCS coding used for pricing, not index 0 — a line may
+      # list a clinical (SNOMED/LOINC) coding first. Falls back to the first
+      # coding when no recognized billing system is present.
+      def select_billing_coding(item)
+        codings = Array(item.dig("productOrService", "coding"))
+        codings.find { |c| BILLING_CODE_SYSTEMS.include?(c["system"]) } || codings.first || {}
+      end
 
-        BigDecimal(value.to_s)
+      # Returns [BigDecimal-or-nil, error-or-nil]. An ABSENT value is a legit
+      # nil with no error. A PRESENT-but-unparseable value yields nil plus a
+      # reason so callers surface the malformed line rather than silently
+      # swallowing it to nil.
+      def parse_billed_amount(value)
+        return [ nil, nil ] if value.nil?
+
+        [ BigDecimal(value.to_s), nil ]
       rescue ArgumentError
-        nil
+        [ nil, "unparseable billed amount #{value.inspect}" ]
       end
 
       def build_referral_reference(resource)

@@ -16,10 +16,14 @@ module Corvid
     module FhirOverlayIngest
       module_function
 
-      # Returns { cases_created:, obligations_created: }.
+      # Returns { cases_created:, obligations_created:, skipped:, skipped_reasons: }.
+      # skipped_reasons is an Array of { claim:, code:, reason: } for lines that
+      # could not be priced (missing code / missing or unparseable amount) —
+      # surfaced, not silently dropped.
       def ingest(facility:, patient_identifiers:, adapter: Corvid.adapter, imported_at: Time.current)
         cases = 0
         obligations = 0
+        skipped = []
 
         patient_identifiers.each do |patient_id|
           patient = adapter.find_patient(patient_id)
@@ -32,7 +36,10 @@ module Corvid
           cases += 1
 
           adapter.list_claims(patient_id).each do |line|
-            next if line.procedure_code.nil? || line.billed_amount.nil?
+            if (reason = skip_reason(line))
+              skipped << { claim: line.claim_identifier, code: line.procedure_code, reason: reason }
+              next
+            end
 
             billed_cents = (line.billed_amount * 100).to_i
             Corvid::PrcObligation.find_or_initialize_by(
@@ -63,7 +70,20 @@ module Corvid
           _ = kase
         end
 
-        { cases_created: cases, obligations_created: obligations }
+        { cases_created: cases, obligations_created: obligations,
+          skipped: skipped.size, skipped_reasons: skipped }
+      end
+
+      # Why a claim line can't be priced, or nil if it's fine. A present-but-
+      # unparseable amount (line.amount_error) is reported as its own reason
+      # rather than lumped in with an absent one.
+      def skip_reason(line)
+        reasons = []
+        reasons << "missing procedure code" if line.procedure_code.nil?
+        if line.billed_amount.nil?
+          reasons << (line.amount_error || "missing billed amount")
+        end
+        reasons.empty? ? nil : reasons.join("; ")
       end
 
       def obligation_id_for(line)

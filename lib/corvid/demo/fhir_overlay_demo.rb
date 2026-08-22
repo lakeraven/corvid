@@ -113,6 +113,7 @@ module Corvid
         line "Source EHR:  #{clinic.source_ehr_label}"
         line "Ingest:      stock FHIR R4 via Corvid::Adapters::FhirAdapter (generic, no vendor code)"
         line "Created:     #{counts[:cases_created]} Case(s), #{counts[:obligations_created]} PrcObligation(s)"
+        print_skipped(counts)
         if eligibility
           if eligibility[:error]
             line "PRC eligibility: (skipped: #{eligibility[:error]})"
@@ -121,12 +122,24 @@ module Corvid
           end
         end
         line ""
-        line "  Claims priced:  #{summary.obligations_analyzed}"
-        line "  Billed (=paid): $#{fmt(summary.total_paid)}"
+
+        # Headline dollars and the per-system breakdown BOTH derive from the
+        # clear-priced population, so they cannot disagree, and the % is
+        # clear-recovered over clear-paid (a single population), not clear
+        # dollars over the whole analyzed paid.
+        clear = summary.results.select { |r| r.recovery_confidence == :clear }
+        clear_paid = clear.sum { |r| r.paid_amount.to_f }
+        clear_recovered = clear.sum { |r| r.overpayment.to_f }
+
+        line "  Claims analyzed:       #{summary.obligations_analyzed}"
+        line "  Claims priced (clear): #{summary.by_confidence[:clear].to_i}"
+        print_unpriced(summary.by_confidence, summary.obligations_analyzed)
+        line "  Billed (=paid, clear): $#{fmt(clear_paid)}"
         line "  Medicare-Like Rate (MLR): $#{fmt(summary.total_medicare_equivalent)}"
-        line "  $ RECOVERED:    $#{fmt(summary.total_overpayment_known)}  (#{pct(summary)}%)"
+        line "  $ RECOVERED (clear):   $#{fmt(summary.total_overpayment_known)}" \
+             "  (#{clear_pct(clear_paid, clear_recovered)}% of $ priced clear)"
         line ""
-        summary.results.group_by(&:payment_system).each do |system, results|
+        clear.group_by(&:payment_system).each do |system, results|
           billed = results.sum { |r| r.billed_amount.to_f }
           mlr = results.sum { |r| r.medicare_equivalent.to_f }
           saved = results.sum { |r| r.overpayment.to_f }
@@ -137,21 +150,57 @@ module Corvid
       end
 
       def print_consortium(per_clinic)
-        billed = per_clinic.sum { |c| c[:summary].total_paid }
-        mlr = per_clinic.sum { |c| c[:summary].total_medicare_equivalent }
-        recovered = per_clinic.sum { |c| c[:summary].total_overpayment_known }
-        claims = per_clinic.sum { |c| c[:summary].obligations_analyzed }
+        summaries = per_clinic.map { |c| c[:summary] }
+        claims_analyzed = summaries.sum(&:obligations_analyzed)
+
+        # Aggregate confidence buckets across all clinics.
+        by_confidence = summaries.each_with_object(Hash.new(0)) do |s, acc|
+          s.by_confidence.each { |bucket, count| acc[bucket] += count }
+        end
+
+        # One clear-priced population drives the headline: clear paid, clear
+        # MLR, clear recovered, and the % = clear recovered / clear paid.
+        clear = summaries.flat_map(&:results).select { |r| r.recovery_confidence == :clear }
+        clear_paid = clear.sum { |r| r.paid_amount.to_f }
+        clear_mlr = clear.sum { |r| r.medicare_equivalent.to_f }
+        clear_recovered = clear.sum { |r| r.overpayment.to_f }
 
         banner("CONSORTIUM TOTAL (#{per_clinic.size} clinics)")
         per_clinic.each do |c|
           line "  #{c[:clinic].name.ljust(22)} recovered $#{fmt(c[:summary].total_overpayment_known)}"
         end
         line ""
-        line "  Claims priced:  #{claims}"
-        line "  Billed (=paid): $#{fmt(billed)}"
-        line "  Medicare-Like Rate (MLR): $#{fmt(mlr)}"
-        line "  TOTAL $ RECOVERED across the consortium: $#{fmt(recovered)}" \
-             "  (~#{billed.zero? ? 0 : (recovered / billed * 100).round(1)}%)"
+        line "  Claims analyzed:       #{claims_analyzed}"
+        line "  Claims priced (clear): #{by_confidence[:clear]}"
+        line "  confidence: #{by_confidence.sort_by { |bucket, _| bucket.to_s }.to_h}"
+        print_unpriced(by_confidence, claims_analyzed)
+        line ""
+        line "  Billed (=paid, clear): $#{fmt(clear_paid)}"
+        line "  Medicare-Like Rate (MLR, clear): $#{fmt(clear_mlr)}"
+        line "  TOTAL $ RECOVERED across the consortium: $#{fmt(clear_recovered)}" \
+             "  (#{clear_pct(clear_paid, clear_recovered)}% of $ priced clear)"
+      end
+
+      # Print the lines the analyzer could NOT price clear, per bucket, so a
+      # non-:clear obligation is never hidden behind an all-clear headline.
+      def print_unpriced(by_confidence, total)
+        unpriced = by_confidence.reject { |bucket, _| bucket == :clear }
+        return if unpriced.empty?
+
+        n = unpriced.values.sum
+        detail = unpriced.map { |reason, count| "#{count} #{reason}" }.join(", ")
+        line "  #{n} of #{total} lines unpriced: #{detail}"
+      end
+
+      # Print claim lines dropped during ingest (missing code / missing or
+      # unparseable amount) instead of letting them vanish silently.
+      def print_skipped(counts)
+        n = counts[:skipped].to_i
+        return if n.zero?
+
+        reasons = Array(counts[:skipped_reasons]).map { |s| s[:reason] }.tally
+                       .map { |reason, count| "#{count}× #{reason}" }.join(", ")
+        line "Skipped:     #{n} line(s): #{reasons}"
       end
 
       def print_cehrt_note
@@ -183,10 +232,13 @@ module Corvid
         (@io || $stdout).puts(str)
       end
 
-      def pct(summary)
-        return 0 if summary.total_paid.to_f.zero?
+      # Percent recovered within a SINGLE population: recovered / paid over the
+      # same (clear-priced) rows. Avoids dividing clear dollars by all-analyzed
+      # paid, which would understate the rate whenever any line is unpriced.
+      def clear_pct(paid, recovered)
+        return 0 if paid.to_f.zero?
 
-        (summary.total_overpayment_known / summary.total_paid * 100).round(1)
+        (recovered / paid * 100).round(1)
       end
 
       def fmt(n)

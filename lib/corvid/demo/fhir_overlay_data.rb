@@ -8,10 +8,11 @@ module Corvid
     #
     # Everything here is invented — synthetic clinic names, synthetic patient
     # names/ids, synthetic vendors, synthetic dollar amounts. No real
-    # clinic/consortium/place/person appears. The two clinics stand in for a
-    # consortium of purchased/referred-care programs running DIFFERENT source
-    # EHRs; the only "vendor" hint is a neutral source-EHR-type label carried
-    # in a comment (the FHIR itself is plain R4 — no vendor coupling).
+    # clinic/consortium/place/person/vendor appears. The two clinics stand in
+    # for a consortium of purchased/referred-care programs running DIFFERENT
+    # source EHRs. Ingest is stock FHIR R4 and EHR-agnostic: the source-EHR
+    # labels are deliberately generic ("Ambulatory EHR A/B") and no real EHR
+    # product is named — any conformant FHIR R4 EHR maps the same way.
     #
     # Resources emitted per clinic (all standard R4):
     #   Patient  — with a Lakeraven tribal-enrollment extension (FHIR/US Core
@@ -42,15 +43,15 @@ module Corvid
       end
 
       # --- Clinic A -------------------------------------------------------
-      # Source EHR type (neutral label, comment only): Greenway-style
-      # ambulatory EHR exporting stock FHIR R4. The ingest below touches no
-      # Greenway-specific field — it reads plain R4.
+      # Source EHR type: a generic ambulatory EHR exporting stock FHIR R4. No
+      # real EHR product is named; the ingest below touches no vendor-specific
+      # field — it reads plain R4.
       def broken_rock
         Clinic.new(
           tenant: "tnt_broken_rock", facility: "fac_broken_rock",
           name: "Broken Rock Clinic", city: "Cedar Bend", state: "MT",
           zip: "59000", locality: "01",
-          source_ehr_label: "Greenway-style ambulatory EHR (stock FHIR R4 export)",
+          source_ehr_label: "Ambulatory EHR A (stock FHIR R4 export)",
           resources: [
             patient("pt_br_001", "OVERLAY", "PATIENT A-ONE", "1972-04-11", "F", "BR-1001"),
             patient("pt_br_002", "OVERLAY", "PATIENT A-TWO", "1988-09-02", "M", "BR-1002"),
@@ -74,14 +75,14 @@ module Corvid
       end
 
       # --- Clinic B -------------------------------------------------------
-      # Source EHR type (neutral label, comment only): eClinicalWorks-style
-      # ambulatory EHR exporting stock FHIR R4. Same generic ingest path.
+      # Source EHR type: a DIFFERENT generic ambulatory EHR exporting stock
+      # FHIR R4. No real EHR product is named. Same generic ingest path.
       def tallgrass
         Clinic.new(
           tenant: "tnt_tallgrass", facility: "fac_tallgrass",
           name: "Tallgrass Clinic", city: "Willow Flats", state: "MT",
           zip: "59001", locality: "01",
-          source_ehr_label: "eClinicalWorks-style ambulatory EHR (stock FHIR R4 export)",
+          source_ehr_label: "Ambulatory EHR B (stock FHIR R4 export)",
           resources: [
             patient("pt_tg_001", "OVERLAY", "PATIENT B-ONE", "1979-07-19", "M", "TG-2001"),
             patient("pt_tg_002", "OVERLAY", "PATIENT B-TWO", "1991-11-30", "F", "TG-2002"),

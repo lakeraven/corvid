@@ -40,11 +40,11 @@ EHR. The clinics are invented; so are the patients, vendors, and dollar amounts.
 ## CEHRT-safe
 
 Corvid never becomes the system of record. It reads the certified EHR over stock
-FHIR and overlays PRC/MLR on top — read-only, no write-back. Because ingest is
-generic FHIR R4, the **same code path works for any FHIR R4 EHR** in a
-consortium, regardless of vendor. Vendor names appear in this demo only as a
-neutral *source-EHR-type label in a comment*; the ingest touches no
-vendor-specific field.
+FHIR and overlays PRC/MLR on top — read-only, no write-back. Ingest is **stock
+FHIR R4 and EHR-agnostic**: the demo names no real EHR product (the two clinics
+carry deliberately generic source-EHR labels, "Ambulatory EHR A/B"), and the
+ingest touches no vendor-specific field. The **same code path works for any
+conformant FHIR R4 EHR** in a consortium.
 
 ## What is real vs. synthetic (honesty)
 
