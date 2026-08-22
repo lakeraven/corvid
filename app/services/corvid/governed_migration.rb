@@ -16,31 +16,64 @@ module Corvid
       def halted? = !migrated
     end
 
+    class PatientMismatchError < StandardError; end
+
     def initialize(target:)
       @target = target
     end
 
     def run(case_record:, consent:, bundle:)
-      decision = Corvid::Migration::TribalConsentGate.new.evaluate(case_record: case_record, consent: consent)
+      ensure_patient_match!(case_record, bundle)
 
+      decision = Corvid::Migration::TribalConsentGate.new.evaluate(case_record: case_record, consent: consent)
       unless decision.granted?
-        determination = case_record.record_determination!(
-          outcome: "denied", decision_method: "staff_review",
-          reasons: [decision.reason], determined_by_identifier: consent&.actor_identifier
-        )
+        determination = record_audit(case_record, outcome: "denied", reason: decision.reason, actor: consent&.actor_identifier)
         return Result.new(migrated: false, determination: determination, reason: decision.reason)
       end
 
       filtered = Corvid::Migration::MinimumNecessary.filter(bundle, decision.consented_types)
+      if filtered.entries.empty?
+        return Result.new(migrated: false, reason: "Nothing to migrate: no source entries matched the consented types")
+      end
 
-      determination = case_record.record_determination!(
-        outcome: "approved", decision_method: "staff_review",
-        reasons: ["Migration authorized by Data Governance Board"],
-        determined_by_identifier: consent.actor_identifier
-      )
+      determination = record_audit(case_record, outcome: "approved",
+                                   reason: "Migration authorized by Data Governance Board",
+                                   actor: consent.actor_identifier)
 
       response = @target.reconcile!(patient_ref: case_record.patient_identifier, bundle: filtered)
-      Result.new(migrated: true, determination: determination, target_response: response, bundle: filtered)
+
+      if relay_succeeded?(response, filtered)
+        Result.new(migrated: true, determination: determination, target_response: response, bundle: filtered)
+      else
+        Result.new(migrated: false, determination: determination, target_response: response, bundle: filtered,
+                   reason: "Migration relay did not complete successfully")
+      end
+    end
+
+    private
+
+    # Cross-patient guard: the bundle's patient_ref must match the case's
+    # patient. Prevents consent for patient A from relaying patient B's data.
+    def ensure_patient_match!(case_record, bundle)
+      return if bundle.patient_ref.to_s == case_record.patient_identifier.to_s
+
+      raise PatientMismatchError, "bundle patient_ref does not match the case patient"
+    end
+
+    # staff_review requires determined_by_identifier; fall back to automated
+    # when no actor is present so a missing actor never crashes the audit.
+    def record_audit(case_record, outcome:, reason:, actor:)
+      method = actor.to_s.strip.empty? ? "automated" : "staff_review"
+      case_record.record_determination!(outcome: outcome, decision_method: method,
+                                        reasons: [reason], determined_by_identifier: actor.presence)
+    end
+
+    def relay_succeeded?(response, filtered)
+      return false unless response.is_a?(Hash)
+      return false unless response[:success] == true || response["success"] == true
+
+      posted = response[:posted] || response["posted"]
+      posted.nil? || posted.to_i == filtered.entries.size
     end
   end
 end

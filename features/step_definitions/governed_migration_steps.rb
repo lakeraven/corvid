@@ -43,12 +43,38 @@ Given("a source bundle with a {string}") do |t1|
   build_migration_bundle([t1])
 end
 
+Given("the target will fail") do
+  @target_fails = true
+end
+
+Given("there is no Board consent") do
+  @consent = nil
+end
+
+Given("a source bundle for a different patient") do
+  @bundle = Corvid::MigrationBundle.new(
+    patient_ref: "pt_other_999",
+    entries: [{ resource_type: "Condition", data: { "resourceType" => "Condition" } }]
+  )
+end
+
 When("the governed migration runs") do
-  @target = RecordingMigrationTarget.new
+  @target = RecordingMigrationTarget.new(succeed: !@target_fails)
   @result = Corvid.with_tenant(@tenant) do
     Corvid::GovernedMigration.new(target: @target).run(
       case_record: @case, consent: @consent, bundle: @bundle
     )
+  end
+end
+
+When("the governed migration is attempted") do
+  @target = RecordingMigrationTarget.new(succeed: !@target_fails)
+  Corvid.with_tenant(@tenant) do
+    @result = Corvid::GovernedMigration.new(target: @target).run(
+      case_record: @case, consent: @consent, bundle: @bundle
+    )
+  rescue Corvid::GovernedMigration::PatientMismatchError => e
+    @error = e
   end
 end
 
@@ -58,6 +84,10 @@ end
 
 Then("the migration halts") do
   assert @result.halted?, "Expected migration to have halted"
+end
+
+Then("the migration is refused for a patient mismatch") do
+  assert_instance_of Corvid::GovernedMigration::PatientMismatchError, @error
 end
 
 Then("an {string} determination is recorded on the case") do |outcome|
