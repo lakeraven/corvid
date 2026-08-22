@@ -92,6 +92,12 @@ When("staff runs a payer eligibility check for the referral and finds coverage")
   Corvid::EligibilityChecklistService.check_payer_eligibility!(@referral)
 end
 
+Given("the coverage adapter cannot perform the check") do
+  # Simulate an adapter that can't run the coverage check (network/backend
+  # miss): get_coverages returns nil rather than a (possibly empty) array.
+  Corvid.adapter.define_singleton_method(:get_coverages) { |_patient_id| nil }
+end
+
 When("staff runs a payer eligibility check for the referral and finds no coverage") do
   # No coverage added — check runs but finds nothing
   Corvid::EligibilityChecklistService.check_payer_eligibility!(@referral)
