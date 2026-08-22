@@ -15,6 +15,18 @@ module Corvid
   #
   # OPPS uses **calendar year** boundaries (Jan 1) — not federal fiscal
   # year. Different from IPPS.
+  #
+  # Wage index (#369): sourced from `Corvid::IppsHospitalRate` rather
+  # than `OppsConversionFactor#wage_index` — the wage-area (CBSA) wage
+  # index is a single CMS-published figure shared across IPPS/OPPS/ASC,
+  # and IPPS is already the table that loads it. Looked up by the
+  # service date's *federal fiscal year* (IPPS wage index turns over
+  # Oct 1, not Jan 1 like the OPPS APC/CF table), so a rate can
+  # combine a CY-keyed weight/CF row with an FY-keyed wage index row —
+  # intentional; matches how CMS itself reconciles wage data across
+  # the two payment systems. Falls back to the IPPS NATIONAL row when
+  # no CBSA-specific row is loaded, then to 1.0 when no IPPS wage data
+  # is loaded at all (today's default until #369's data backfill).
   module OppsRateProvider
     SOURCE = :opps_real
 
@@ -44,10 +56,13 @@ module Corvid
         cf_row = OppsConversionFactor.lookup(calendar_year: cy, locality: normalized_locality)
         return nil unless cf_row
 
-        rate = (weight_row.relative_weight * cf_row.conversion_factor * cf_row.wage_index).round(2)
-        # Take the more conservative label: if either row is stub-derived,
-        # the resulting rate is stub-derived.
-        label = [ weight_row.release_label, cf_row.release_label ]
+        wage_row = IppsHospitalRate.lookup(fiscal_year: federal_fiscal_year(date), locality: normalized_locality)
+        wage_index = wage_row&.wage_index || BigDecimal("1.0")
+
+        rate = (weight_row.relative_weight * cf_row.conversion_factor * wage_index).round(2)
+        # Take the more conservative label: if any of the three rows
+        # is stub-derived, the resulting rate is stub-derived.
+        label = [ weight_row.release_label, cf_row.release_label, wage_row&.release_label ]
                   .compact.find { |l| l.to_s.start_with?("stub") } ||
                 weight_row.release_label || cf_row.release_label
         Lookup.new(rate: rate, release_label: label)
@@ -61,6 +76,12 @@ module Corvid
 
       def calendar_year(date)
         date.respond_to?(:year) ? date.year : date.to_i
+      end
+
+      # IPPS wage index changes Oct 1, not Jan 1 — mirrors
+      # IppsRateProvider's private helper of the same name.
+      def federal_fiscal_year(date)
+        date.month >= 10 ? date.year + 1 : date.year
       end
     end
   end
