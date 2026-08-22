@@ -2,16 +2,16 @@
 
 module Corvid
   # Tracks the 7 PRC eligibility documentation categories required by
-  # 2 CFR § 200.303. Each item maps to a deficiency category from the
-  # FY23 audit finding (#2023-005):
+  # 2 CFR § 200.303. Each item maps to a common PRC documentation
+  # deficiency category flagged in program compliance audits:
   #
-  #   1. application_complete       (22/60 missing)
-  #   2. identity_verified          (40/60 missing)
-  #   3. insurance_verified         (5/60 missing)
-  #   4. residency_verified         (15/60 missing)
-  #   5. enrollment_verified        (5/60 missing)
-  #   6. clinical_necessity_documented (part of 41/60 catch-all)
-  #   7. management_approved        (53/60 missing)
+  #   1. application_complete
+  #   2. identity_verified
+  #   3. insurance_verified
+  #   4. residency_verified
+  #   5. enrollment_verified
+  #   6. clinical_necessity_documented
+  #   7. management_approved
   class EligibilityChecklist < ::ActiveRecord::Base
     self.table_name = "corvid_eligibility_checklists"
 

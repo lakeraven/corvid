@@ -1,7 +1,7 @@
 Feature: PRC audit compliance report
   As a tribal health officer
   I need an audit compliance report showing documentation completeness
-  So that I can demonstrate to auditors that Finding #2023-005 is resolved
+  So that I can demonstrate to auditors that documentation-completeness findings are resolved
 
   Background:
     Given a tenant "tnt_brokenrock" with facility "fac_main_clinic"

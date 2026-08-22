@@ -171,20 +171,20 @@ class Corvid::Adapters::FhirAdapterTest < Minitest::Test
   def test_verify_residency_reads_extension_and_address
     resource = {
       "id" => "pt_001",
-      "address" => [ { "line" => [ "12 Agency Rd" ], "city" => "Pawhuska", "state" => "OK" } ],
+      "address" => [ { "line" => [ "100 Main St" ], "city" => "Broken Rock", "state" => "WA" } ],
       "extension" => [ {
         "url" => "https://lakeraven.com/fhir/StructureDefinition/residency",
         "extension" => [
           { "url" => "onReservation", "valueBoolean" => true },
-          { "url" => "serviceArea", "valueString" => "WahZhaZhe Health Center" }
+          { "url" => "serviceArea", "valueString" => "Broken Rock Health Center" }
         ]
       } ]
     }
     @adapter.stub(:fhir_read, resource) do
       result = @adapter.verify_residency("pt_001")
       assert_equal true, result[:on_reservation]
-      assert_equal "12 Agency Rd, Pawhuska, OK", result[:address]
-      assert_equal "WahZhaZhe Health Center", result[:service_area]
+      assert_equal "100 Main St, Broken Rock, WA", result[:address]
+      assert_equal "Broken Rock Health Center", result[:service_area]
     end
   end
 end
