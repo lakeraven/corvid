@@ -36,11 +36,11 @@ def build_migration_bundle(resource_types)
 end
 
 Given("a source bundle with a {string}, a {string}, and an {string}") do |t1, t2, t3|
-  build_migration_bundle([t1, t2, t3])
+  build_migration_bundle([ t1, t2, t3 ])
 end
 
 Given("a source bundle with a {string}") do |t1|
-  build_migration_bundle([t1])
+  build_migration_bundle([ t1 ])
 end
 
 Given("the target will fail") do
@@ -54,7 +54,7 @@ end
 Given("a source bundle for a different patient") do
   @bundle = Corvid::MigrationBundle.new(
     patient_ref: "pt_other_999",
-    entries: [{ resource_type: "Condition", data: { "resourceType" => "Condition" } }]
+    entries: [ { resource_type: "Condition", data: { "resourceType" => "Condition" } } ]
   )
 end
 

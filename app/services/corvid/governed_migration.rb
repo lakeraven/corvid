@@ -65,7 +65,7 @@ module Corvid
     def record_audit(case_record, outcome:, reason:, actor:)
       method = actor.to_s.strip.empty? ? "automated" : "staff_review"
       case_record.record_determination!(outcome: outcome, decision_method: method,
-                                        reasons: [reason], determined_by_identifier: actor.presence)
+                                        reasons: [ reason ], determined_by_identifier: actor.presence)
     end
 
     def relay_succeeded?(response, filtered)
