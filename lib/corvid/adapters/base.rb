@@ -172,6 +172,14 @@ module Corvid
         []
       end
 
+      # Read purchased/referred-care billed line items for a patient from
+      # stock FHIR `Claim` (or `ExplanationOfBenefit`) resources. Returns an
+      # array of Corvid::ClaimLineReference. Adapters that can't surface
+      # claims return an empty array so callers degrade gracefully.
+      def list_claims(patient_identifier)
+        []
+      end
+
       # ----------------------------------------------------------------------
       # Eligibility
       # ----------------------------------------------------------------------

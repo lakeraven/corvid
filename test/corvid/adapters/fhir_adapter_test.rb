@@ -98,6 +98,115 @@ class Corvid::Adapters::FhirAdapterTest < Minitest::Test
     assert(extensions.any? { |e| e["url"]&.include?("approved-amount") })
   end
 
+  def test_list_claims_selects_cpt_coding_not_first_coding
+    # A claim line can carry multiple codings (e.g. a SNOMED clinical code
+    # first, then the billed CPT). The adapter must pick the CPT/HCPCS coding
+    # for the procedure_code, not blindly take index 0.
+    bundle = {
+      "resourceType" => "Bundle",
+      "entry" => [ { "resource" => {
+        "resourceType" => "Claim",
+        "id" => "clm_1",
+        "patient" => { "reference" => "Patient/pt_1" },
+        "item" => [ {
+          "sequence" => 1,
+          "productOrService" => { "coding" => [
+            { "system" => "http://snomed.info/sct", "code" => "271737000", "display" => "SNOMED thing" },
+            { "system" => "http://www.ama-assn.org/go/cpt", "code" => "99213", "display" => "Office visit" }
+          ] },
+          "net" => { "value" => 240.0, "currency" => "USD" }
+        } ]
+      } } ]
+    }
+    @adapter.stub(:fhir_search, bundle) do
+      lines = @adapter.list_claims("pt_1")
+      assert_equal 1, lines.size
+      assert_equal "99213", lines.first.procedure_code, "must select the CPT coding, not the SNOMED at index 0"
+    end
+  end
+
+  def test_list_claims_selects_hcpcs_coding_over_non_billing_first
+    bundle = {
+      "resourceType" => "Bundle",
+      "entry" => [ { "resource" => {
+        "resourceType" => "Claim",
+        "id" => "clm_2",
+        "patient" => { "reference" => "Patient/pt_2" },
+        "item" => [ {
+          "sequence" => 1,
+          "productOrService" => { "coding" => [
+            { "system" => "http://loinc.org", "code" => "1234-5" },
+            { "system" => "urn:oid:2.16.840.1.113883.6.285", "code" => "J1885" }
+          ] },
+          "net" => { "value" => 50.0, "currency" => "USD" }
+        } ]
+      } } ]
+    }
+    @adapter.stub(:fhir_search, bundle) do
+      assert_equal "J1885", @adapter.list_claims("pt_2").first.procedure_code
+    end
+  end
+
+  def test_list_claims_falls_back_to_first_coding_when_no_billing_system
+    bundle = {
+      "resourceType" => "Bundle",
+      "entry" => [ { "resource" => {
+        "resourceType" => "Claim",
+        "id" => "clm_3",
+        "patient" => { "reference" => "Patient/pt_3" },
+        "item" => [ {
+          "sequence" => 1,
+          "productOrService" => { "coding" => [ { "system" => "http://snomed.info/sct", "code" => "999" } ] },
+          "net" => { "value" => 10.0, "currency" => "USD" }
+        } ]
+      } } ]
+    }
+    @adapter.stub(:fhir_search, bundle) do
+      assert_equal "999", @adapter.list_claims("pt_3").first.procedure_code
+    end
+  end
+
+  def test_list_claims_flags_present_but_unparseable_amount
+    bundle = {
+      "resourceType" => "Bundle",
+      "entry" => [ { "resource" => {
+        "resourceType" => "Claim",
+        "id" => "clm_4",
+        "patient" => { "reference" => "Patient/pt_4" },
+        "item" => [ {
+          "sequence" => 1,
+          "productOrService" => { "coding" => [ { "system" => "http://www.ama-assn.org/go/cpt", "code" => "99213" } ] },
+          "net" => { "value" => "not-a-number", "currency" => "USD" }
+        } ]
+      } } ]
+    }
+    @adapter.stub(:fhir_search, bundle) do
+      line = @adapter.list_claims("pt_4").first
+      assert_nil line.billed_amount, "unparseable amount does not become a bogus number"
+      refute_nil line.amount_error, "present-but-unparseable amount is surfaced, not silently swallowed"
+    end
+  end
+
+  def test_list_claims_absent_amount_is_legit_nil_without_error
+    bundle = {
+      "resourceType" => "Bundle",
+      "entry" => [ { "resource" => {
+        "resourceType" => "Claim",
+        "id" => "clm_5",
+        "patient" => { "reference" => "Patient/pt_5" },
+        "item" => [ {
+          "sequence" => 1,
+          "productOrService" => { "coding" => [ { "system" => "http://www.ama-assn.org/go/cpt", "code" => "99213" } ] }
+        } ]
+      } } ]
+    }
+    @adapter.stub(:fhir_search, bundle) do
+      line = @adapter.list_claims("pt_5").first
+      assert_nil line.billed_amount
+      assert_nil line.amount_error, "absent amount is a legit nil, not an error"
+    end
+  end
+
   def test_coverage_type_map_covers_all_resource_types
     resource_types = %w[
       medicare_a medicare_b medicare_d medicaid va_benefits

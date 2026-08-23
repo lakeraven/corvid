@@ -4,6 +4,7 @@ require "net/http"
 require "json"
 require "uri"
 require "date"
+require "bigdecimal"
 require "corvid/adapters/base"
 require "corvid/value_objects"
 
@@ -21,6 +22,18 @@ module Corvid
       attr_reader :base_url
 
       EXTENSION_BASE_URL = "https://lakeraven.com/fhir/StructureDefinition"
+
+      # Canonical billing code systems. A Claim.item.productOrService may carry
+      # several codings (e.g. a SNOMED clinical concept alongside the billed
+      # CPT/HCPCS); pricing needs the CPT/HCPCS one, not whichever happens to be
+      # first. Both the FHIR-standard HCPCS OID and the CMS Blue Button HCPCS
+      # URL are recognized since servers vary.
+      CPT_SYSTEM = "http://www.ama-assn.org/go/cpt"
+      HCPCS_SYSTEMS = [
+        "urn:oid:2.16.840.1.113883.6.285",
+        "https://bluebutton.cms.gov/resources/codesystem/hcpcs"
+      ].freeze
+      BILLING_CODE_SYSTEMS = ([ CPT_SYSTEM ] + HCPCS_SYSTEMS).freeze
 
       # Standard FHIR ServiceRequest fields safe to update directly.
       UPDATABLE_SERVICE_REQUEST_FIELDS = %w[
@@ -180,6 +193,22 @@ module Corvid
       def list_referrals(patient_identifier)
         bundle = fhir_search("ServiceRequest", patient: patient_identifier)
         extract_entries(bundle).map { |r| build_referral_reference(r) }
+      end
+
+      # ----------------------------------------------------------------------
+      # Claims — purchased/referred-care billed line items
+      #
+      # Reads stock FHIR R4 `Claim` resources (`Claim?patient=<id>`) and
+      # flattens each `Claim.item` into a Corvid::ClaimLineReference. Uses
+      # only standard R4 elements — patient, provider, item.productOrService
+      # (CPT/HCPCS coding), item.servicedDate/servicedPeriod, item.net — so
+      # any conformant FHIR server (regardless of source EHR) maps the same
+      # way. No vendor-specific extensions.
+      # ----------------------------------------------------------------------
+
+      def list_claims(patient_identifier)
+        bundle = fhir_search("Claim", patient: patient_identifier)
+        extract_entries(bundle).flat_map { |claim| build_claim_line_references(claim) }
       end
 
       # ----------------------------------------------------------------------
@@ -469,6 +498,51 @@ module Corvid
           npi: extract_npi(resource),
           specialty: resource.dig("qualification", 0, "code", "coding", 0, "display")
         )
+      end
+
+      def build_claim_line_references(claim)
+        patient_id = claim.dig("patient", "reference")&.sub("Patient/", "")
+        provider_id = claim.dig("provider", "identifier", "value") ||
+                      claim.dig("provider", "reference")&.split("/")&.last ||
+                      claim.dig("provider", "display")
+        claim_id = claim["id"]
+
+        Array(claim["item"]).map do |item|
+          coding = select_billing_coding(item)
+          amount, amount_error = parse_billed_amount(item.dig("net", "value"))
+          Corvid::ClaimLineReference.new(
+            claim_identifier: claim_id,
+            patient_identifier: patient_id,
+            provider_identifier: provider_id,
+            procedure_code: coding["code"],
+            procedure_display: coding["display"] || item.dig("productOrService", "text"),
+            serviced_date: parse_date(item["servicedDate"] || item.dig("servicedPeriod", "start")),
+            billed_amount: amount,
+            amount_error: amount_error,
+            currency: item.dig("net", "currency") || "USD",
+            sequence: item["sequence"]
+          )
+        end
+      end
+
+      # Pick the CPT/HCPCS coding used for pricing, not index 0 — a line may
+      # list a clinical (SNOMED/LOINC) coding first. Falls back to the first
+      # coding when no recognized billing system is present.
+      def select_billing_coding(item)
+        codings = Array(item.dig("productOrService", "coding"))
+        codings.find { |c| BILLING_CODE_SYSTEMS.include?(c["system"]) } || codings.first || {}
+      end
+
+      # Returns [BigDecimal-or-nil, error-or-nil]. An ABSENT value is a legit
+      # nil with no error. A PRESENT-but-unparseable value yields nil plus a
+      # reason so callers surface the malformed line rather than silently
+      # swallowing it to nil.
+      def parse_billed_amount(value)
+        return [ nil, nil ] if value.nil?
+
+        [ BigDecimal(value.to_s), nil ]
+      rescue ArgumentError
+        [ nil, "unparseable billed amount #{value.inspect}" ]
       end
 
       def build_referral_reference(resource)
