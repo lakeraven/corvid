@@ -67,14 +67,25 @@ module Corvid
       DEFAULT_OPEN_TIMEOUT = 10
       DEFAULT_READ_TIMEOUT = 30
 
-      def initialize(base_url:, bearer_token: nil, headers: {},
+      def initialize(base_url:, bearer_token: nil, token_source: nil, headers: {},
                      open_timeout: DEFAULT_OPEN_TIMEOUT,
                      read_timeout: DEFAULT_READ_TIMEOUT,
                      proxy_uri: nil,
                      ca_file: nil,
                      ca_path: nil)
+        if token_source && !token_source.respond_to?(:call)
+          raise ArgumentError,
+                "token_source must be callable (respond to #call), " \
+                "got #{token_source.class}"
+        end
+
         @base_url = base_url.chomp("/")
         @bearer_token = bearer_token
+        # A callable resolved per request — e.g. a
+        # Corvid::Auth::BackendServicesClient — so each call carries a
+        # freshly-refreshed token. Takes precedence over the static
+        # bearer_token when both are given.
+        @token_source = token_source
         @default_headers = {
           "Accept" => "application/fhir+json",
           "Content-Type" => "application/fhir+json"
@@ -455,9 +466,19 @@ module Corvid
         when :put  then Net::HTTP::Put.new(uri).tap { |r| r.body = body }
         end
         @default_headers.each { |k, v| request[k] = v }
-        request["Authorization"] = "Bearer #{@bearer_token}" if @bearer_token
+        token = resolve_bearer_token
+        request["Authorization"] = "Bearer #{token}" if token
 
         build_http(uri).request(request)
+      end
+
+      # Resolve the bearer token for the current request. A token_source
+      # (callable) is consulted per request and wins over the static
+      # bearer_token; returns nil when neither is configured.
+      def resolve_bearer_token
+        return @token_source.call if @token_source
+
+        @bearer_token
       end
 
       # Construct a Net::HTTP instance configured per the constructor's
