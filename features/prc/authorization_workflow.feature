@@ -37,11 +37,11 @@ Feature: PRC Authorization Workflow (extended)
     When the referral is cancelled
     Then the referral status should be "cancelled"
 
-  Scenario: Authorized referral can be cancelled
+  Scenario: Authorized referral cannot be cancelled (terminal state)
     Given a referral in committee review state
     And the referral has been authorized
-    When the referral is cancelled
-    Then the referral status should be "cancelled"
+    Then the referral cannot be cancelled
+    And the referral status should be "authorized"
 
   # =============================================================================
   # AUTHORIZATION

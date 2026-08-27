@@ -99,8 +99,16 @@ module Corvid
         transitions from: [ :priority_assignment, :committee_review ], to: :deferred
       end
 
+      # Cancellation is only valid while the referral is still in flight. The
+      # four terminal states (authorized, denied, deferred, cancelled) are
+      # genuine end states, so cancel omits them from its `from:` list —
+      # otherwise a cancelled referral could be cancelled again (self-loop) and
+      # the terminals would not be true end states.
       event :cancel do
-        transitions to: :cancelled
+        transitions from: %i[draft submitted eligibility_review management_approval
+                             alternate_resource_review priority_assignment
+                             committee_review exception_review],
+                    to: :cancelled
       end
     end
 

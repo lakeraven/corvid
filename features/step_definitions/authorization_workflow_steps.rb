@@ -64,6 +64,12 @@ When("the referral is cancelled") do
   @referral.cancel!
 end
 
+Then("the referral cannot be cancelled") do
+  refute @referral.may_cancel?, "expected cancel to be disallowed from #{@referral.status}"
+  # whiny_transitions: false — firing is a no-op that leaves the state intact.
+  refute @referral.cancel!, "expected cancel! to no-op from terminal #{@referral.status}"
+end
+
 When("the referral is authorized") do
   @referral.authorize!
 end
