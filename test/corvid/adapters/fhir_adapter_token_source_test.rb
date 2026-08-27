@@ -41,6 +41,20 @@ class Corvid::Adapters::FhirAdapterTokenSourceTest < Minitest::Test
     end
   end
 
+  def test_token_source_returning_nil_hard_fails
+    adapter = Corvid::Adapters::FhirAdapter.new(base_url: BASE, token_source: -> { })
+    assert_raises(Corvid::Adapters::FhirAdapter::TokenSourceError) do
+      adapter.send(:resolve_bearer_token)
+    end
+  end
+
+  def test_token_source_returning_blank_string_hard_fails
+    adapter = Corvid::Adapters::FhirAdapter.new(base_url: BASE, token_source: -> { "" })
+    assert_raises(Corvid::Adapters::FhirAdapter::TokenSourceError) do
+      adapter.send(:resolve_bearer_token)
+    end
+  end
+
   def test_request_carries_resolved_token_as_bearer_header
     adapter = Corvid::Adapters::FhirAdapter.new(base_url: BASE, token_source: -> { "resolved-xyz" })
     captured = nil
