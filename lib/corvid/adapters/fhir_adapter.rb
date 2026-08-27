@@ -19,6 +19,9 @@ module Corvid
     # implementation. Vendor-specific adapters in corvid-adapters can
     # override store_text/fetch_text/dereference to use a real backend.
     class FhirAdapter < Base
+      # Raised when a configured token_source yields a blank/non-string token.
+      class TokenSourceError < StandardError; end
+
       attr_reader :base_url
 
       EXTENSION_BASE_URL = "https://lakeraven.com/fhir/StructureDefinition"
@@ -467,7 +470,7 @@ module Corvid
         end
         @default_headers.each { |k, v| request[k] = v }
         token = resolve_bearer_token
-        request["Authorization"] = "Bearer #{token}" if token
+        request["Authorization"] = "Bearer #{token}" unless token.nil? || token.empty?
 
         build_http(uri).request(request)
       end
@@ -475,8 +478,20 @@ module Corvid
       # Resolve the bearer token for the current request. A token_source
       # (callable) is consulted per request and wins over the static
       # bearer_token; returns nil when neither is configured.
+      #
+      # A configured token_source that yields a blank token is a hard error:
+      # falling through would send an unauthenticated (or malformed
+      # "Bearer ") request whose 401 looks like a credentials problem rather
+      # than the real cause — the source produced nothing.
       def resolve_bearer_token
-        return @token_source.call if @token_source
+        if @token_source
+          token = @token_source.call
+          unless token.is_a?(String) && !token.empty?
+            raise TokenSourceError,
+                  "token_source returned #{token.inspect}; expected a non-empty token string"
+          end
+          return token
+        end
 
         @bearer_token
       end

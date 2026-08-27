@@ -172,7 +172,137 @@ class Corvid::Auth::BackendServicesClientTest < Minitest::Test
     assert_equal "tok-abc", client.to_proc.call
   end
 
+  # --- signing_alg derivation + key/curve validation --------------------------
+
+  def test_signing_alg_defaults_to_rs384_for_rsa_key
+    client = stub_client(private_key: @rsa, alg: nil)
+    assert_equal "RS384", client.signing_alg
+    client.access_token
+    assert_equal "RS384", decode_jwt(client._captured[:form]["client_assertion"]).first["alg"]
+  end
+
+  def test_signing_alg_defaults_to_es384_for_ec_key
+    client = stub_client(private_key: @ec, alg: nil)
+    assert_equal "ES384", client.signing_alg
+  end
+
+  def test_rs384_with_ec_key_is_rejected
+    err = assert_raises(ArgumentError) do
+      new_client(private_key: @ec, signing_alg: "RS384")
+    end
+    assert_match(/RS384 requires an RSA/, err.message)
+  end
+
+  def test_es384_with_rsa_key_is_rejected
+    err = assert_raises(ArgumentError) do
+      new_client(private_key: @rsa, signing_alg: "ES384")
+    end
+    assert_match(/ES384 requires an EC/, err.message)
+  end
+
+  def test_es384_with_wrong_curve_is_rejected
+    p256 = OpenSSL::PKey::EC.generate("prime256v1")
+    err = assert_raises(ArgumentError) do
+      new_client(private_key: p256, signing_alg: "ES384")
+    end
+    assert_match(/secp384r1/, err.message)
+  end
+
+  # --- constructor guardrails -------------------------------------------------
+
+  def test_http_token_endpoint_is_rejected
+    err = assert_raises(ArgumentError) do
+      new_client(private_key: @rsa, token_endpoint: "http://fhir.example.com/oauth2/token")
+    end
+    assert_match(/https/, err.message)
+  end
+
+  def test_assertion_ttl_over_five_minutes_is_rejected
+    assert_raises(ArgumentError) { new_client(private_key: @rsa, assertion_ttl: 301) }
+  end
+
+  def test_non_positive_assertion_ttl_is_rejected
+    assert_raises(ArgumentError) { new_client(private_key: @rsa, assertion_ttl: 0) }
+  end
+
+  def test_negative_refresh_skew_is_rejected
+    assert_raises(ArgumentError) { new_client(private_key: @rsa, refresh_skew: -30) }
+  end
+
+  # --- expires_in robustness --------------------------------------------------
+
+  def test_absent_expires_in_caches_with_conservative_default
+    calls = 0
+    client = stub_client(private_key: @rsa,
+                         response: ->(_f) { calls += 1; { "access_token" => "t#{calls}" } })
+    client.access_token
+    client.access_token # within the 60s default, no skew crossing at fixed clock
+    assert_equal 1, calls, "absent expires_in should cache for the default TTL, not refetch"
+  end
+
+  def test_malformed_expires_in_raises
+    client = stub_client(private_key: @rsa,
+                         response: { "access_token" => "t", "expires_in" => "soon" })
+    assert_raises(Corvid::Auth::BackendServicesClient::TokenError) { client.access_token }
+  end
+
+  def test_boolean_expires_in_raises_without_corrupting_cache
+    client = stub_client(private_key: @rsa,
+                         response: { "access_token" => "t", "expires_in" => true })
+    assert_raises(Corvid::Auth::BackendServicesClient::TokenError) { client.access_token }
+  end
+
+  # --- response shape + token_type + redaction --------------------------------
+
+  def test_non_2xx_response_raises_token_error
+    resp = http_response(Net::HTTPForbidden, "403", '{"error":"invalid_scope"}')
+    client = stub_client(private_key: @rsa)
+    client.define_singleton_method(:post_token_request) { |_form| parse_token_response(resp) }
+    err = assert_raises(Corvid::Auth::BackendServicesClient::TokenError) { client.access_token }
+    assert_match(/403/, err.message)
+    assert_match(/invalid_scope/, err.message)
+  end
+
+  def test_2xx_non_json_body_raises_with_truncated_raw
+    resp = http_response(Net::HTTPOK, "200", "<html>login</html>")
+    client = stub_client(private_key: @rsa)
+    client.define_singleton_method(:post_token_request) { |_form| parse_token_response(resp) }
+    err = assert_raises(Corvid::Auth::BackendServicesClient::TokenError) { client.access_token }
+    assert_match(/unparseable/, err.message)
+    assert_match(/html/, err.message)
+  end
+
+  def test_non_bearer_token_type_is_rejected
+    client = stub_client(private_key: @rsa,
+                         response: { "access_token" => "t", "token_type" => "DPoP", "expires_in" => 300 })
+    err = assert_raises(Corvid::Auth::BackendServicesClient::TokenError) { client.access_token }
+    assert_match(/token_type/, err.message)
+  end
+
+  def test_error_message_does_not_leak_token_values
+    client = stub_client(private_key: @rsa,
+                         response: { "refresh_token" => "SUPER-SECRET", "error" => "invalid_client" })
+    err = assert_raises(Corvid::Auth::BackendServicesClient::TokenError) { client.access_token }
+    refute_match(/SUPER-SECRET/, err.message)
+  end
+
   # --- helpers ----------------------------------------------------------------
+
+  # Build a real client (no stubbed POST) for constructor-validation tests.
+  def new_client(private_key:, **overrides)
+    Corvid::Auth::BackendServicesClient.new(
+      **{ token_endpoint: TOKEN_URL, client_id: "c", private_key: private_key,
+          kid: "k", scopes: SCOPE }.merge(overrides)
+    )
+  end
+
+  # A real Net::HTTP response subclass (so is_a?(Net::HTTPSuccess) works)
+  # with a canned body, for exercising parse_token_response.
+  def http_response(klass, code, body)
+    klass.new("1.1", code, "").tap do |resp|
+      resp.define_singleton_method(:body) { body }
+    end
+  end
 
   def decode_jwt(jwt)
     h, p, _s = jwt.split(".")
