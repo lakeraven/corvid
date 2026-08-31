@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_05_17_000001) do
+ActiveRecord::Schema[8.1].define(version: 2026_08_31_000001) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
@@ -47,6 +47,20 @@ ActiveRecord::Schema[8.1].define(version: 2026_05_17_000001) do
     t.index ["tenant_identifier", "api_name", "called_at", "patient_identifier"], name: "idx_corvid_api_calls_tenant_api_time_patient"
     t.index ["tenant_identifier", "api_name", "endpoint", "called_at"], name: "idx_corvid_api_calls_tenant_api_endpoint_time"
     t.check_constraint "api_name::text = ANY (ARRAY['pas'::character varying::text, 'patient_access'::character varying::text, 'provider_access'::character varying::text, 'payer_to_payer'::character varying::text])", name: "corvid_api_call_logs_api_name_check"
+  end
+
+  create_table "corvid_approval_authorities", force: :cascade do |t|
+    t.datetime "created_at", null: false
+    t.string "facility_identifier"
+    t.datetime "granted_at", null: false
+    t.string "granted_by_identifier"
+    t.string "practitioner_identifier", null: false
+    t.datetime "revoked_at"
+    t.string "role", default: "prc_director", null: false
+    t.string "tenant_identifier", null: false
+    t.datetime "updated_at", null: false
+    t.index ["tenant_identifier", "practitioner_identifier"], name: "idx_corvid_approval_authorities_on_tenant_practitioner"
+    t.check_constraint "role::text = ANY (ARRAY['prc_director'::character varying::text, 'delegated_approver'::character varying::text])", name: "corvid_approval_authority_role_check"
   end
 
   create_table "corvid_asc_conversion_factors", force: :cascade do |t|
@@ -308,6 +322,20 @@ ActiveRecord::Schema[8.1].define(version: 2026_05_17_000001) do
     t.index ["tenant_identifier", "facility_identifier"], name: "idx_corvid_elig_checklists_tenant_facility"
   end
 
+  create_table "corvid_facility_authorities", force: :cascade do |t|
+    t.boolean "air_eligible", default: false, null: false
+    t.string "authority_type", null: false
+    t.datetime "created_at", null: false
+    t.date "effective_on"
+    t.date "expires_on"
+    t.string "facility_identifier", null: false
+    t.string "four_walls_exception_basis"
+    t.string "service_area"
+    t.string "tenant_identifier", null: false
+    t.datetime "updated_at", null: false
+    t.index ["tenant_identifier", "facility_identifier"], name: "idx_corvid_facility_authorities_tenant_facility"
+  end
+
   create_table "corvid_fee_schedule_entries", force: :cascade do |t|
     t.decimal "conversion_factor", precision: 8, scale: 4
     t.string "cpt_code", null: false
@@ -343,6 +371,54 @@ ActiveRecord::Schema[8.1].define(version: 2026_05_17_000001) do
     t.index ["tenant_identifier", "program"], name: "index_corvid_fee_schedules_on_tenant_identifier_and_program"
   end
 
+  create_table "corvid_fmap_determinations", force: :cascade do |t|
+    t.boolean "aian_verified", default: false, null: false
+    t.string "best_available_category"
+    t.string "best_available_rule_key"
+    t.string "category", null: false
+    t.string "claim_reference"
+    t.string "coverage_group"
+    t.datetime "created_at", null: false
+    t.date "date_of_service", null: false
+    t.datetime "determined_at", null: false
+    t.string "encounter_identifier", null: false
+    t.jsonb "evidence_refs", default: [], null: false
+    t.string "facility_identifier"
+    t.decimal "fmap_percent", precision: 5, scale: 2
+    t.string "jurisdiction", null: false
+    t.jsonb "missing_evidence", default: [], null: false
+    t.string "person_identifier"
+    t.string "received_through_basis"
+    t.jsonb "rule_citations", default: [], null: false
+    t.string "rule_key"
+    t.bigint "state_share_delta_cents"
+    t.bigint "superseded_by_id"
+    t.string "tenant_identifier", null: false
+    t.datetime "updated_at", null: false
+    t.index ["tenant_identifier", "date_of_service"], name: "idx_corvid_fmap_determinations_tenant_dos"
+    t.index ["tenant_identifier", "encounter_identifier"], name: "idx_corvid_fmap_determinations_tenant_encounter"
+  end
+
+  create_table "corvid_fmap_rules", force: :cascade do |t|
+    t.string "category", null: false
+    t.string "coverage_group"
+    t.datetime "created_at", null: false
+    t.date "effective_on"
+    t.date "expires_on"
+    t.jsonb "facility_authority_types", default: [], null: false
+    t.decimal "fmap_percent", precision: 5, scale: 2
+    t.string "jurisdiction", default: "US", null: false
+    t.text "notes"
+    t.jsonb "received_through_bases", default: [], null: false
+    t.boolean "requires_aian", default: false, null: false
+    t.boolean "requires_received_through", default: false, null: false
+    t.string "rule_key", null: false
+    t.string "statutory_citation", null: false
+    t.datetime "updated_at", null: false
+    t.index ["jurisdiction", "effective_on"], name: "index_corvid_fmap_rules_on_jurisdiction_and_effective_on"
+    t.index ["rule_key"], name: "index_corvid_fmap_rules_on_rule_key", unique: true
+  end
+
   create_table "corvid_ipps_drg_weights", force: :cascade do |t|
     t.datetime "created_at", null: false
     t.string "drg_code", null: false
@@ -362,6 +438,22 @@ ActiveRecord::Schema[8.1].define(version: 2026_05_17_000001) do
     t.datetime "updated_at", null: false
     t.decimal "wage_index", precision: 8, scale: 4, default: "1.0", null: false
     t.index ["fiscal_year", "locality"], name: "idx_corvid_ipps_hospital_rates_fy_locality", unique: true
+  end
+
+  create_table "corvid_management_approval_events", force: :cascade do |t|
+    t.string "action", null: false
+    t.string "actor_identifier"
+    t.string "checklist_version_hash", null: false
+    t.datetime "created_at", null: false
+    t.string "facility_identifier"
+    t.datetime "occurred_at", null: false
+    t.bigint "prc_referral_id", null: false
+    t.string "reason_token"
+    t.string "tenant_identifier", null: false
+    t.datetime "updated_at", null: false
+    t.index ["prc_referral_id"], name: "index_corvid_management_approval_events_on_prc_referral_id"
+    t.index ["tenant_identifier"], name: "index_corvid_management_approval_events_on_tenant_identifier"
+    t.check_constraint "action::text = ANY (ARRAY['approved'::character varying::text, 'rejected'::character varying::text, 'invalidated'::character varying::text])", name: "corvid_mgmt_approval_event_action_check"
   end
 
   create_table "corvid_npi_ccn_crosswalks", force: :cascade do |t|
@@ -577,6 +669,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_05_17_000001) do
   add_foreign_key "corvid_cases", "corvid_care_teams", column: "care_team_id"
   add_foreign_key "corvid_committee_reviews", "corvid_prc_referrals", column: "prc_referral_id"
   add_foreign_key "corvid_eligibility_checklists", "corvid_prc_referrals", column: "prc_referral_id"
+  add_foreign_key "corvid_management_approval_events", "corvid_prc_referrals", column: "prc_referral_id"
   add_foreign_key "corvid_prc_overpayment_analyses", "corvid_prc_obligations", column: "prc_obligation_id"
   add_foreign_key "corvid_prc_payments", "corvid_prc_obligations", column: "prc_obligation_id"
   add_foreign_key "corvid_prc_referrals", "corvid_cases", column: "case_id"
