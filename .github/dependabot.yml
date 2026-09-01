@@ -1,0 +1,29 @@
+# Canonical Dependabot config for Lakeraven Ruby/Rails repos.
+# Copy to `.github/dependabot.yml` in each repo.
+#
+# Keeps gem and GitHub Actions dependencies patched weekly. Minor/patch bumps
+# are grouped into a single PR to cut review noise; majors stay separate so
+# breaking changes get individual scrutiny.
+version: 2
+updates:
+  - package-ecosystem: bundler
+    directory: "/"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 10
+    groups:
+      minor-and-patch:
+        update-types:
+          - minor
+          - patch
+
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 10
+    groups:
+      minor-and-patch:
+        update-types:
+          - minor
+          - patch

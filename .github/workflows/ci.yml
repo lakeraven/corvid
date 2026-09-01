@@ -1,76 +1,10 @@
 name: CI
-
-on:
-  push:
-    branches: [main]
-  pull_request:
-    branches: [main]
-
-concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
-
+on: { pull_request: {}, push: { branches: [ main ] } }
 jobs:
-  lint:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Set up Ruby
-        uses: ruby/setup-ruby@v1
-        with:
-          ruby-version: "4.0.2"
-          bundler-cache: true
-      - run: bundle exec rubocop
-
-  test:
-    runs-on: ubuntu-latest
-    services:
-      postgres:
-        image: postgres:16
-        env:
-          POSTGRES_PASSWORD: postgres
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd pg_isready
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-
-    env:
-      RAILS_ENV: test
-      DATABASE_URL: postgres://postgres:postgres@localhost:5432/corvid_dummy_test
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Set up Ruby
-        uses: ruby/setup-ruby@v1
-        with:
-          ruby-version: "4.0.2"
-          bundler-cache: true
-
-      - name: Cache dummy app gems
-        uses: actions/cache@v4
-        with:
-          path: test/dummy/vendor/bundle
-          key: dummy-gems-${{ runner.os }}-ruby-4.0.2-${{ hashFiles('test/dummy/Gemfile.lock') }}
-          restore-keys: |
-            dummy-gems-${{ runner.os }}-ruby-4.0.2-
-
-      - name: Install dummy app dependencies
-        run: |
-          cd test/dummy
-          bundle config set --local path 'vendor/bundle'
-          bundle install --jobs 4
-
-      - name: Create and migrate test database
-        run: |
-          cd test/dummy
-          bundle exec rails db:create db:migrate
-
-      - name: Run tests
-        run: bundle exec rake test
-
-      - name: Run BDD features
-        run: bundle exec cucumber --tags "not @wip" --format progress
+  ci:
+    uses: lakeraven/.github/.github/workflows/rails-ci.yml@main
+    secrets: inherit
+    with:
+      ruby_version: "4.0.6"
+      test_cmd: "bundle exec rake test && bundle exec cucumber --tags \"not @wip\" --format progress"
+      run_brakeman: false
