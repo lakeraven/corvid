@@ -161,6 +161,12 @@ Each `cms:import` writes a `Corvid::CmsFeeScheduleRelease` record capturing the 
 | [0001](docs/adr/0001-id-vs-identifier-naming.md) | Reserve `id`/`*_id` for Rails keys; use `identifier`/`*_identifier` for external references |
 | [0002](docs/adr/0002-architectural-foundations.md) | Tenancy, table prefixes, string enums, hooks, namespacing |
 | [0003](docs/adr/0003-phi-tokenization.md) | PHI tokenization (Stripe-style for HIPAA) |
+| [0004](docs/adr/0004-monetary-values.md) | Monetary values (integer cents + per-row currency) |
+| [0005](docs/adr/0005-adapter-injection.md) | Adapter dependency injection in services |
+| [0006](docs/adr/0006-rpms-deployment-topology.md) | RPMS deployment topology |
+| [0007](docs/adr/0007-lifecycle-event-log.md) | Lifecycle event log (event-logged state machines) — proposed |
+
+Design docs: [Corvid as a workforce chassis](docs/workforce_domain_module.md) — fit assessment and module design for a second (non-health) domain.
 
 ## Development
 
