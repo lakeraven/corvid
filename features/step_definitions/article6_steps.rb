@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-# Article 6 reimbursement step definitions (ported from rpms_redux)
+# Article 6 reimbursement step definitions (ported from a prior implementation)
 
 Given("there are paid claim submissions in the system") do
   3.times do |i|

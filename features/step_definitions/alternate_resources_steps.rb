@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-# Alternate resource step definitions (ported from rpms_redux)
+# Alternate resource step definitions (ported from a prior implementation)
 
 When("I create an alternate resource check for {string}") do |resource_type|
   @check = Corvid::AlternateResourceCheck.create!(

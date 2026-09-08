@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-# Authorization wizard step definitions (ported from rpms_redux)
+# Authorization wizard step definitions (ported from a prior implementation)
 
 def ensure_wizard
   @wizard ||= Corvid::AuthorizationWizard.new(

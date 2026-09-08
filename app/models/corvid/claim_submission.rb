@@ -2,7 +2,7 @@
 
 module Corvid
   # Tracks 837P/I/D claims through lifecycle from draft to paid.
-  # Ported from rpms_redux. Uses adapter pattern for clearinghouse
+  # Ported from a prior implementation. Uses adapter pattern for clearinghouse
   # communication — Clearinghouse is one implementation (in lakeraven-private).
   class ClaimSubmission < ::ActiveRecord::Base
     self.table_name = "corvid_claim_submissions"

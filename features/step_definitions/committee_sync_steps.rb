@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-# Committee sync step definitions (ported from rpms_redux)
+# Committee sync step definitions (ported from a prior implementation)
 
 Given("the referral is in committee review state") do
   # Seed adapter with the referral so sync_status_to_ehr can update it
