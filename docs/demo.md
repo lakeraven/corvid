@@ -20,6 +20,14 @@ in-process.
 The demos use the **development** database. They never touch the test database
 and never rewrite `test/dummy/db/schema.rb`.
 
+`test/dummy/config/database.yml` names no user, so it connects as your OS user
+over the local socket. If your Postgres needs a role, host, or password, set
+`DATABASE_URL` and every entry point picks it up:
+
+```bash
+DATABASE_URL=postgres://user:pass@localhost:5432/corvid_dummy_development bin/demo-overlay
+```
+
 ## 1. Stock-FHIR overlay demo — multi-clinic PRC + MLR
 
 ```bash
