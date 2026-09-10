@@ -42,6 +42,20 @@ in a facility's contracted tribe, so it cannot reuse `verify_tribal_enrollment`
 `verify_ai_an_status` returns `{ ai_an, ihs_beneficiary, basis, confidence,
 verified_at }`.
 
+**The basis is evidenced, never defaulted.** `basis` is the subcategory the
+attestation sends to the state, so `assert` records what the source actually
+returned: a stated basis verbatim, otherwise `ai_an_ihs_beneficiary` only when
+the source evidences IHS-beneficiary status, otherwise `ai_an`. A missing basis
+is never filled in with the stronger claim.
+
+**A verified negative revokes; terminal outcomes move the status.** A verified
+"not AI/AN" is new information, not silence: it revokes any standing assertion
+for that person and writes a `revoked` event, so `in_effect?`, the worklist,
+and later attestations stop treating the member as exempt. An unavailable
+source revokes nothing (it says nothing). Likewise a `revoked` or `expired`
+outcome event transitions the exemption's status, so the derived status can
+never disagree with the event log.
+
 **Two exemption types, tracked separately.** `work_requirement` and
 `six_month_redetermination` both flow from the same verified status but are
 legally distinct; `assert` writes both by default. At most one *asserted*

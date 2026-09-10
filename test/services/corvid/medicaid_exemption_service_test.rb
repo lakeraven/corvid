@@ -273,6 +273,169 @@ class Corvid::MedicaidExemptionServiceTest < ActiveSupport::TestCase
     assert_equal "work_requirement", event.exemption_type
   end
 
+  # -- Basis is evidenced, never defaulted -----------------------------------
+
+  test "a source that evidences AI/AN only does not record the IHS-beneficiary basis" do
+    @adapter.add_ai_an_status("pt_basis", ai_an: true, ihs_beneficiary: false,
+                              basis: nil, confidence: :verified)
+
+    Corvid::MedicaidExemptionService.assert(
+      person_identifier: "pt_basis", exemption_types: [ "work_requirement" ]
+    )
+
+    exemption = Corvid::MedicaidExemption.for_person("pt_basis").active.first
+    assert_equal "ai_an", exemption.basis
+    refute_equal "ai_an_ihs_beneficiary", exemption.basis
+
+    # The attestation the state receives carries the evidenced subcategory.
+    attestation = Corvid::ExemptionAttestationService.generate(person_identifier: "pt_basis")
+    assert_equal "ai_an", attestation[:exemptions].first[:basis]
+  end
+
+  test "the IHS-beneficiary basis is recorded when the source evidences it" do
+    @adapter.add_ai_an_status("pt_ihs", ai_an: true, ihs_beneficiary: true,
+                              basis: nil, confidence: :verified)
+
+    Corvid::MedicaidExemptionService.assert(
+      person_identifier: "pt_ihs", exemption_types: [ "work_requirement" ]
+    )
+
+    assert_equal "ai_an_ihs_beneficiary",
+                 Corvid::MedicaidExemption.for_person("pt_ihs").active.first.basis
+  end
+
+  test "a basis the source states is carried through verbatim" do
+    @adapter.add_ai_an_status("pt_stated", ai_an: true, basis: "ai_an_urban_indian",
+                              confidence: :verified)
+
+    Corvid::MedicaidExemptionService.assert(
+      person_identifier: "pt_stated", exemption_types: [ "work_requirement" ]
+    )
+
+    assert_equal "ai_an_urban_indian",
+                 Corvid::MedicaidExemption.for_person("pt_stated").active.first.basis
+  end
+
+  # -- A verified negative revokes a standing assertion ----------------------
+
+  test "a verified not-AI/AN result revokes the standing assertion with an audit event" do
+    @adapter.add_ai_an_status("pt_rev", ai_an: true, ihs_beneficiary: true, confidence: :verified)
+    Corvid::MedicaidExemptionService.assert(person_identifier: "pt_rev")
+    assert_equal 2, Corvid::MedicaidExemption.for_person("pt_rev").active.count
+
+    # The source now verifies the person is NOT AI/AN.
+    @adapter.add_ai_an_status("pt_rev", ai_an: false, ihs_beneficiary: false, confidence: :verified)
+    result = Corvid::MedicaidExemptionService.assert(person_identifier: "pt_rev")
+
+    refute result.asserted?
+    assert_equal :not_ai_an, result.reason
+    assert_equal 2, result.revoked_exemption_ids.size
+
+    assert_equal 0, Corvid::MedicaidExemption.for_person("pt_rev").active.count
+    exemptions = Corvid::MedicaidExemption.for_person("pt_rev")
+    assert exemptions.all? { |e| e.status_revoked? }
+    refute exemptions.any? { |e| e.in_effect? }
+    assert_equal 2, Corvid::ExemptionEvent.for_person("pt_rev").of_type("revoked").count
+  end
+
+  test "a revoked exemption no longer attests or lands on the at-risk worklist" do
+    @adapter.add_ai_an_status("pt_rev2", ai_an: true, confidence: :verified)
+    Corvid::MedicaidExemptionService.assert(
+      person_identifier: "pt_rev2", exemption_types: [ "work_requirement" ]
+    )
+
+    @adapter.add_ai_an_status("pt_rev2", ai_an: false, ihs_beneficiary: false, confidence: :verified)
+    Corvid::MedicaidExemptionService.assert(
+      person_identifier: "pt_rev2", exemption_types: [ "work_requirement" ]
+    )
+
+    assert_raises(ArgumentError) do
+      Corvid::ExemptionAttestationService.generate(person_identifier: "pt_rev2")
+    end
+
+    at_risk = Corvid::ExemptionWorklistService.at_risk([
+      { person_identifier: "pt_rev2", requirement_type: "work_requirement", source: "state_271" }
+    ])
+    assert_empty at_risk
+  end
+
+  test "an unavailable source does not revoke a standing assertion" do
+    @adapter.add_ai_an_status("pt_keep", ai_an: true, confidence: :verified)
+    Corvid::MedicaidExemptionService.assert(
+      person_identifier: "pt_keep", exemption_types: [ "work_requirement" ]
+    )
+
+    @adapter.add_ai_an_status("pt_keep", ai_an: true, confidence: :unavailable)
+    result = Corvid::MedicaidExemptionService.assert(
+      person_identifier: "pt_keep", exemption_types: [ "work_requirement" ]
+    )
+
+    assert_equal :verification_unavailable, result.reason
+    assert_empty result.revoked_exemption_ids
+    assert_equal 1, Corvid::MedicaidExemption.for_person("pt_keep").active.count
+  end
+
+  # -- Terminal outcomes move the derived status -----------------------------
+
+  test "record_outcome :revoked transitions the exemption out of asserted" do
+    @adapter.add_ai_an_status("pt_out", ai_an: true, confidence: :verified)
+    Corvid::MedicaidExemptionService.assert(
+      person_identifier: "pt_out", exemption_types: [ "work_requirement" ]
+    )
+    exemption = Corvid::MedicaidExemption.for_person("pt_out").active.first
+
+    Corvid::MedicaidExemptionService.record_outcome(
+      person_identifier: "pt_out", event_type: "revoked", exemption: exemption
+    )
+
+    exemption.reload
+    assert exemption.status_revoked?
+    refute exemption.in_effect?
+    assert_raises(ArgumentError) do
+      Corvid::ExemptionAttestationService.generate(person_identifier: "pt_out")
+    end
+  end
+
+  test "record_outcome :expired transitions every standing assertion when no exemption is named" do
+    @adapter.add_ai_an_status("pt_exp", ai_an: true, confidence: :verified)
+    Corvid::MedicaidExemptionService.assert(person_identifier: "pt_exp")
+
+    Corvid::MedicaidExemptionService.record_outcome(
+      person_identifier: "pt_exp", event_type: "expired"
+    )
+
+    exemptions = Corvid::MedicaidExemption.for_person("pt_exp")
+    assert_equal 2, exemptions.count
+    assert exemptions.all? { |e| e.status_expired? }
+  end
+
+  test "record_outcome :expired scoped to one type leaves the other standing" do
+    @adapter.add_ai_an_status("pt_exp2", ai_an: true, confidence: :verified)
+    Corvid::MedicaidExemptionService.assert(person_identifier: "pt_exp2")
+
+    Corvid::MedicaidExemptionService.record_outcome(
+      person_identifier: "pt_exp2", event_type: "expired", exemption_type: "work_requirement"
+    )
+
+    statuses = Corvid::MedicaidExemption.for_person("pt_exp2").to_h { |e| [ e.exemption_type, e.status ] }
+    assert_equal "expired", statuses["work_requirement"]
+    assert_equal "asserted", statuses["six_month_redetermination"]
+  end
+
+  test "a non-terminal outcome leaves the exemption asserted" do
+    @adapter.add_ai_an_status("pt_ret", ai_an: true, confidence: :verified)
+    Corvid::MedicaidExemptionService.assert(
+      person_identifier: "pt_ret", exemption_types: [ "work_requirement" ]
+    )
+    exemption = Corvid::MedicaidExemption.for_person("pt_ret").active.first
+
+    Corvid::MedicaidExemptionService.record_outcome(
+      person_identifier: "pt_ret", event_type: "coverage_retained", exemption: exemption
+    )
+
+    assert exemption.reload.status_asserted?
+  end
+
   private
 
   def use_canned_adapter(payload)

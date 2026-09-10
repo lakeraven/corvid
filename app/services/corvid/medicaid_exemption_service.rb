@@ -21,9 +21,15 @@ module Corvid
   # Result reasons (stable enum strings):
   #   :asserted                 — exemption(s) written/refreshed
   #   :verification_unavailable — source unreachable; nothing asserted
-  #   :not_ai_an                — source says person is not AI/AN; nothing asserted
+  #   :not_ai_an                — source says person is not AI/AN; nothing
+  #                               asserted, and any standing assertion is revoked
   module MedicaidExemptionService
-    DEFAULT_BASIS = "ai_an_ihs_beneficiary"
+    # The bases assert may record. Never defaulted: the basis is the
+    # subcategory ExemptionAttestationService sends to the state, so it
+    # must name what the source actually evidenced. IHS-beneficiary is
+    # the stronger claim and is only recorded when the source says so.
+    BASIS_IHS_BENEFICIARY = "ai_an_ihs_beneficiary"
+    BASIS_AI_AN = "ai_an"
 
     # Allow-list of confidence levels a verified response may carry to assert
     # an exemption. Per the adapter contract (Adapters::Base#verify_ai_an_status)
@@ -35,15 +41,26 @@ module Corvid
     # unknown/malformed value) is untrustworthy and asserts nothing.
     ACCEPTED_CONFIDENCE = %i[verified].freeze
 
+    # Outcome events that end an exemption, and the status each one leaves
+    # the record in. Recording the event without moving the status would
+    # leave a revoked/expired exemption reading as `asserted` to
+    # in_effect?, the worklist, and every later attestation.
+    STATUS_BY_OUTCOME = { "revoked" => "revoked", "expired" => "expired" }.freeze
+
     AssertionResult = Struct.new(
       :asserted,
       :reason,
       :exemption_ids,
+      :revoked_exemption_ids,
       :provider_source,
       :provider_confidence,
       keyword_init: true
     ) do
       alias_method :asserted?, :asserted
+
+      def revoked_exemption_ids
+        self[:revoked_exemption_ids] || []
+      end
     end
 
     class << self
@@ -89,8 +106,22 @@ module Corvid
         end
 
         unless status[:ai_an] || status[:ihs_beneficiary]
+          # A VERIFIED negative is new information, not silence: any
+          # standing assertion for this person is now contradicted by the
+          # source and must stop reading as in effect. Revoke it (with an
+          # audit event) rather than leaving the worklist and later
+          # attestations documenting an exemption the source denies.
+          revoked_ids = revoke_standing_assertions!(
+            tenant_identifier: tenant_identifier,
+            person_identifier: person_identifier,
+            exemption_types: types,
+            occurred_on: as_of_date,
+            recorded_by_identifier: asserted_by_identifier
+          )
+
           return AssertionResult.new(
             asserted: false, reason: :not_ai_an, exemption_ids: [],
+            revoked_exemption_ids: revoked_ids,
             provider_source: provider_source_for(Corvid.adapter),
             provider_confidence: status[:confidence].to_s
           )
@@ -98,7 +129,7 @@ module Corvid
 
         snapshot_hash = snapshot_hash_for(status, person_identifier, tenant_identifier)
         provider_source = provider_source_for(Corvid.adapter)
-        basis = status[:basis] || DEFAULT_BASIS
+        basis = basis_for(status)
         exemption_ids = []
 
         ActiveRecord::Base.transaction do
@@ -145,6 +176,12 @@ module Corvid
       # Record a life-outcome event on a person's exemption (coverage
       # retained, erroneously disenrolled, appeal filed, etc.). Optionally
       # linked to a specific MedicaidExemption.
+      #
+      # A :revoked or :expired outcome also transitions the exemption it
+      # describes, so the derived status can never disagree with the
+      # event log: the scope is the supplied exemption, else the supplied
+      # exemption_type for that person, else every standing assertion the
+      # person holds.
       def record_outcome(person_identifier:,
                          event_type:,
                          occurred_on: Date.current,
@@ -167,19 +204,99 @@ module Corvid
           end
         end
 
-        ExemptionEvent.create!(
-          tenant_identifier: tenant_identifier,
-          person_identifier: person_identifier,
-          medicaid_exemption: exemption,
-          exemption_type: exemption_type || exemption&.exemption_type,
-          event_type: event_type.to_s,
-          occurred_on: occurred_on,
-          recorded_by_identifier: recorded_by_identifier,
-          notes_token: notes_token
-        )
+        event = nil
+        ActiveRecord::Base.transaction do
+          event = ExemptionEvent.create!(
+            tenant_identifier: tenant_identifier,
+            person_identifier: person_identifier,
+            medicaid_exemption: exemption,
+            exemption_type: exemption_type || exemption&.exemption_type,
+            event_type: event_type.to_s,
+            occurred_on: occurred_on,
+            recorded_by_identifier: recorded_by_identifier,
+            notes_token: notes_token
+          )
+
+          apply_outcome_status!(
+            event_type: event_type,
+            exemption: exemption,
+            exemption_type: exemption_type,
+            tenant_identifier: tenant_identifier,
+            person_identifier: person_identifier
+          )
+        end
+
+        event
       end
 
       private
+
+      # Assert only what the source evidenced. A response that carries no
+      # basis but does carry AI/AN status supports the AI/AN basis — not
+      # the narrower IHS-beneficiary claim the state would read as a
+      # stronger entitlement.
+      def basis_for(status)
+        return status[:basis].to_s if status[:basis].present?
+        return BASIS_IHS_BENEFICIARY if status[:ihs_beneficiary]
+        return BASIS_AI_AN if status[:ai_an]
+
+        nil
+      end
+
+      # Revoke every standing assertion for the subject and write the
+      # audit event that says why. Returns the ids revoked.
+      def revoke_standing_assertions!(tenant_identifier:, person_identifier:, exemption_types: nil,
+                                      occurred_on:, recorded_by_identifier: nil)
+        revoked_ids = []
+
+        ActiveRecord::Base.transaction do
+          standing_assertions(tenant_identifier, person_identifier, exemption_types).each do |exemption|
+            exemption.update!(status: "revoked")
+            revoked_ids << exemption.id
+
+            ExemptionEvent.create!(
+              tenant_identifier: tenant_identifier,
+              person_identifier: person_identifier,
+              medicaid_exemption: exemption,
+              exemption_type: exemption.exemption_type,
+              event_type: "revoked",
+              occurred_on: occurred_on,
+              recorded_by_identifier: recorded_by_identifier
+            )
+          end
+        end
+
+        revoked_ids
+      end
+
+      # Move the exemption(s) a terminal outcome event describes into the
+      # matching status. No-op for every other event type.
+      def apply_outcome_status!(event_type:, exemption:, exemption_type:,
+                                tenant_identifier:, person_identifier:)
+        to_status = STATUS_BY_OUTCOME[event_type.to_s]
+        return if to_status.nil?
+
+        targets =
+          if exemption
+            [ exemption ]
+          else
+            standing_assertions(tenant_identifier, person_identifier, exemption_type)
+          end
+
+        targets.each do |target|
+          next unless target.status_asserted?
+          target.update!(status: to_status)
+        end
+      end
+
+      def standing_assertions(tenant_identifier, person_identifier, exemption_types = nil)
+        scope = MedicaidExemption
+          .status_asserted
+          .where(tenant_identifier: tenant_identifier, person_identifier: person_identifier)
+        types = Array(exemption_types).map(&:to_s).reject(&:empty?)
+        scope = scope.where(exemption_type: types) if types.any?
+        scope.to_a
+      end
 
       # A trustworthy verified response: a Hash whose confidence is on the
       # accepted allow-list (never nil/unknown/unavailable) AND that carries a

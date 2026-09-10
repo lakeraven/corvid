@@ -52,7 +52,18 @@ module Corvid
     private
 
     def linked_exemption_shares_tenant_and_person
-      return if medicaid_exemption.nil?
+      return if medicaid_exemption_id.blank?
+
+      # Validate against the raw foreign key, not the association. The
+      # association is tenant-scoped (TenantScoped's default_scope), so a
+      # foreign-tenant id loads as nil — and an early return on nil would
+      # skip the very isolation check this validation exists for, letting
+      # the row save with a dangling cross-tenant link. An id that does
+      # not resolve inside this tenant is rejected outright.
+      if medicaid_exemption.nil?
+        errors.add(:medicaid_exemption, "does not exist in this tenant")
+        return
+      end
 
       if medicaid_exemption.tenant_identifier != tenant_identifier
         errors.add(:medicaid_exemption, "belongs to a different tenant")

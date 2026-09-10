@@ -88,6 +88,39 @@ class Corvid::ExemptionEventTest < ActiveSupport::TestCase
     end
   end
 
+  # The association is tenant-scoped, so a foreign-tenant id loads as nil.
+  # Validating the association alone would skip the isolation check and save
+  # the row with a dangling cross-tenant link.
+  test "rejects an event whose raw foreign key points outside the tenant" do
+    foreign = nil
+    with_tenant("tnt_other_evt") { foreign = create_exemption }
+
+    with_tenant(TENANT) do
+      event = Corvid::ExemptionEvent.new(
+        person_identifier: "pt_evt",
+        medicaid_exemption_id: foreign.id,
+        event_type: "coverage_retained",
+        occurred_on: Date.current
+      )
+      refute event.valid?
+      assert event.errors[:medicaid_exemption].any?
+      assert_raises(ActiveRecord::RecordInvalid) { event.save! }
+    end
+  end
+
+  test "rejects an event whose exemption id does not exist at all" do
+    with_tenant(TENANT) do
+      event = Corvid::ExemptionEvent.new(
+        person_identifier: "pt_evt",
+        medicaid_exemption_id: 987_654_321,
+        event_type: "coverage_retained",
+        occurred_on: Date.current
+      )
+      refute event.valid?
+      assert event.errors[:medicaid_exemption].any?
+    end
+  end
+
   test "nullifying dependent leaves person-level events on exemption destroy" do
     with_tenant(TENANT) do
       exemption = create_exemption
