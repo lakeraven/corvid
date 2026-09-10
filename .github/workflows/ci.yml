@@ -64,6 +64,13 @@ jobs:
           bundle config set --local path 'vendor/bundle'
           bundle install --jobs 4
 
+      # Fails fast with a readable message when schema.rb has lost a table.
+      # On a fresh database db:migrate loads schema.rb rather than replaying
+      # migrations, so a table missing here can only surface later as an
+      # unexplained PG::UndefinedTable at boot.
+      - name: Verify schema.rb integrity
+        run: bundle exec ruby test/corvid/schema_integrity_test.rb
+
       - name: Create and migrate test database
         run: |
           cd test/dummy
