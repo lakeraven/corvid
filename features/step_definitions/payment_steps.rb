@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-# Payment processing step definitions (ported from rpms_redux)
+# Payment processing step definitions (ported from a prior implementation)
 
 Given("a patient {string} has an outstanding balance of {string}") do |patient_id, amount|
   Corvid.adapter.add_patient(patient_id,

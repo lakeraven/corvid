@@ -1,7 +1,7 @@
 # frozen_string_literal: true
 
 module Corvid
-  # Multi-step PRC referral creation wizard (ported from rpms_redux).
+  # Multi-step PRC referral creation wizard (ported from a prior implementation).
   # Guides care coordinators through the complete PRC authorization process,
   # ensuring all required information per 42 CFR 136.61 is captured.
   #

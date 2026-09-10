@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-# Case management dashboard step definitions (ported from rpms_redux)
+# Case management dashboard step definitions (ported from a prior implementation)
 
 Given("I am a member of {string}") do |team_name|
   # Use find_by! so a missing team from background setup raises a clear

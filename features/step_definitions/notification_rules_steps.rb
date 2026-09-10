@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-# 72-hour notification rules step definitions (ported from rpms_redux)
+# 72-hour notification rules step definitions (ported from a prior implementation)
 
 Given("the referral is flagged as emergency") do
   @referral.update!(emergency_flag: true)
