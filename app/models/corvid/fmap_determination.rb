@@ -21,8 +21,14 @@ module Corvid
     validates :date_of_service, presence: true
     validates :jurisdiction, presence: true
     validates :determined_at, presence: true
-    validates :category, presence: true, inclusion: { in: FmapRule::CATEGORIES }
+    # "undetermined" is a determination outcome, not a statutory rule
+    # category: it records that no in-force rule applied, or that a 100
+    # percent tier was refused for want of evidence.
+    CATEGORIES = (FmapRule::CATEGORIES + [ FmapClassificationService::UNDETERMINED ]).freeze
+
+    validates :category, presence: true, inclusion: { in: CATEGORIES }
     validate :immutable_once_claimed
+    validate :evidence_backs_hundred_percent
 
     scope :current, -> { where(superseded_by_id: nil) }
     scope :misclassified, -> {
@@ -49,7 +55,7 @@ module Corvid
             :date_of_service, :jurisdiction, :category, :fmap_percent, :rule_key,
             :rule_citations, :evidence_refs, :aian_verified, :received_through_basis,
             :coverage_group, :best_available_category, :best_available_rule_key,
-            :missing_evidence, :state_share_delta_cents
+            :missing_evidence, :state_share_delta_cents, :determination_reason
           ).merge(attrs.stringify_keys).merge("determined_at" => Time.current)
         )
         update!(superseded_by_id: replacement.id)
@@ -58,6 +64,15 @@ module Corvid
     end
 
     private
+
+    # Backstop for the service rule: a persisted 100 percent
+    # determination always names the evidence it rests on, whether it
+    # was written by classification or by a hand-entered correction.
+    def evidence_backs_hundred_percent
+      return unless category.to_s.start_with?("fmap_100")
+      return if evidence_refs.present?
+      errors.add(:evidence_refs, "must name the evidence a 100 percent determination rests on")
+    end
 
     def immutable_once_claimed
       return unless persisted? && claim_reference_was.present?

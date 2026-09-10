@@ -49,20 +49,6 @@ ActiveRecord::Schema[8.1].define(version: 2026_08_31_000001) do
     t.check_constraint "api_name::text = ANY (ARRAY['pas'::character varying::text, 'patient_access'::character varying::text, 'provider_access'::character varying::text, 'payer_to_payer'::character varying::text])", name: "corvid_api_call_logs_api_name_check"
   end
 
-  create_table "corvid_approval_authorities", force: :cascade do |t|
-    t.datetime "created_at", null: false
-    t.string "facility_identifier"
-    t.datetime "granted_at", null: false
-    t.string "granted_by_identifier"
-    t.string "practitioner_identifier", null: false
-    t.datetime "revoked_at"
-    t.string "role", default: "prc_director", null: false
-    t.string "tenant_identifier", null: false
-    t.datetime "updated_at", null: false
-    t.index ["tenant_identifier", "practitioner_identifier"], name: "idx_corvid_approval_authorities_on_tenant_practitioner"
-    t.check_constraint "role::text = ANY (ARRAY['prc_director'::character varying::text, 'delegated_approver'::character varying::text])", name: "corvid_approval_authority_role_check"
-  end
-
   create_table "corvid_asc_conversion_factors", force: :cascade do |t|
     t.integer "calendar_year", null: false
     t.decimal "conversion_factor", precision: 12, scale: 4, null: false
@@ -326,7 +312,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_08_31_000001) do
     t.boolean "air_eligible", default: false, null: false
     t.string "authority_type", null: false
     t.datetime "created_at", null: false
-    t.date "effective_on"
+    t.date "effective_on", null: false
     t.date "expires_on"
     t.string "facility_identifier", null: false
     t.string "four_walls_exception_basis"
@@ -380,6 +366,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_08_31_000001) do
     t.string "coverage_group"
     t.datetime "created_at", null: false
     t.date "date_of_service", null: false
+    t.string "determination_reason"
     t.datetime "determined_at", null: false
     t.string "encounter_identifier", null: false
     t.jsonb "evidence_refs", default: [], null: false
@@ -438,22 +425,6 @@ ActiveRecord::Schema[8.1].define(version: 2026_08_31_000001) do
     t.datetime "updated_at", null: false
     t.decimal "wage_index", precision: 8, scale: 4, default: "1.0", null: false
     t.index ["fiscal_year", "locality"], name: "idx_corvid_ipps_hospital_rates_fy_locality", unique: true
-  end
-
-  create_table "corvid_management_approval_events", force: :cascade do |t|
-    t.string "action", null: false
-    t.string "actor_identifier"
-    t.string "checklist_version_hash", null: false
-    t.datetime "created_at", null: false
-    t.string "facility_identifier"
-    t.datetime "occurred_at", null: false
-    t.bigint "prc_referral_id", null: false
-    t.string "reason_token"
-    t.string "tenant_identifier", null: false
-    t.datetime "updated_at", null: false
-    t.index ["prc_referral_id"], name: "index_corvid_management_approval_events_on_prc_referral_id"
-    t.index ["tenant_identifier"], name: "index_corvid_management_approval_events_on_tenant_identifier"
-    t.check_constraint "action::text = ANY (ARRAY['approved'::character varying::text, 'rejected'::character varying::text, 'invalidated'::character varying::text])", name: "corvid_mgmt_approval_event_action_check"
   end
 
   create_table "corvid_npi_ccn_crosswalks", force: :cascade do |t|
@@ -669,7 +640,6 @@ ActiveRecord::Schema[8.1].define(version: 2026_08_31_000001) do
   add_foreign_key "corvid_cases", "corvid_care_teams", column: "care_team_id"
   add_foreign_key "corvid_committee_reviews", "corvid_prc_referrals", column: "prc_referral_id"
   add_foreign_key "corvid_eligibility_checklists", "corvid_prc_referrals", column: "prc_referral_id"
-  add_foreign_key "corvid_management_approval_events", "corvid_prc_referrals", column: "prc_referral_id"
   add_foreign_key "corvid_prc_overpayment_analyses", "corvid_prc_obligations", column: "prc_obligation_id"
   add_foreign_key "corvid_prc_payments", "corvid_prc_obligations", column: "prc_obligation_id"
   add_foreign_key "corvid_prc_referrals", "corvid_cases", column: "case_id"

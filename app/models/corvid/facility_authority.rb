@@ -15,10 +15,17 @@ module Corvid
 
     validates :facility_identifier, presence: true
     validates :authority_type, presence: true, inclusion: { in: AUTHORITY_TYPES }
+    # An authority with no start date must never read as "held forever":
+    # an undated 638 record would otherwise classify a date of service
+    # from before the contract existed at 100 percent FMAP. Same rule as
+    # CahFacility/AscFacility/FeeScheduleEntry, and the mirror of
+    # FmapRule, where a missing effective_on means dormant.
+    validates :effective_on, presence: true
     validate :expires_after_effective
 
     scope :in_force_on, ->(date) {
-      where("effective_on IS NULL OR effective_on <= ?", date)
+      where.not(effective_on: nil)
+        .where(effective_on: ..date)
         .where("expires_on IS NULL OR expires_on >= ?", date)
     }
 
@@ -27,7 +34,8 @@ module Corvid
     end
 
     def in_force_on?(date)
-      (effective_on.nil? || effective_on <= date) && (expires_on.nil? || expires_on >= date)
+      return false if effective_on.nil?
+      effective_on <= date && (expires_on.nil? || expires_on >= date)
     end
 
     private

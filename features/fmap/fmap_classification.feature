@@ -23,6 +23,11 @@ Feature: FMAP classification (rules-as-data, by date of service)
     And the best available category is "fmap_100_ihs_638"
     And the missing evidence includes "aian_attestation"
 
+  Scenario: An asserted 100 percent with no evidence chain is refused, not granted
+    When an encounter at "fac_uio_example" with date of service "2022-06-01" is classified with AIAN asserted but no evidence
+    Then the FMAP category is "fmap_regular"
+    And the missing evidence includes "evidence_refs"
+
   Scenario: A claimed determination is immutable and corrections append
     When an encounter at "fac_uio_example" with date of service "2022-06-01" is classified and referenced by claim "clm_example_1"
     Then editing the determination is rejected as immutable

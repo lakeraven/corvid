@@ -44,7 +44,10 @@ class CreateCorvidFmapCoreTables < ActiveRecord::Migration[8.1]
       t.boolean :air_eligible, null: false, default: false
       t.string :four_walls_exception_basis
       t.string :service_area
-      t.date :effective_on
+      # Required: an undated authority must never read as held for all
+      # history (a NULL start would classify a pre-contract date of
+      # service at 100 percent). Open-ended is expires_on NULL only.
+      t.date :effective_on, null: false
       t.date :expires_on
 
       t.timestamps
@@ -83,6 +86,11 @@ class CreateCorvidFmapCoreTables < ActiveRecord::Migration[8.1]
       t.string :best_available_rule_key
       t.jsonb :missing_evidence, null: false, default: []
       t.bigint :state_share_delta_cents
+
+      # Why a determination is undetermined, or landed below the tier
+      # the inputs suggested (no rules in force, no matching rule, an
+      # unevidenced 100 percent). Null when a rule applied cleanly.
+      t.string :determination_reason
 
       t.string :claim_reference
       t.bigint :superseded_by_id
