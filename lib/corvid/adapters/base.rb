@@ -168,6 +168,17 @@ module Corvid
         []
       end
 
+      # Active coverage for the patient, as an array of hashes.
+      #
+      # Three outcomes must stay distinguishable, because callers treat a
+      # non-empty result as verification:
+      #   [...]  — searched, found active coverage
+      #   []     — searched, found none
+      #   nil    — the source could not be reached (unavailable)
+      #
+      # Adapters must never return [] for a failed lookup: "no answer"
+      # is not "no insurance". Same `:unavailable` convention
+      # verify_tribal_enrollment uses via `confidence`.
       def get_coverages(patient_identifier)
         []
       end

@@ -152,6 +152,52 @@ class Corvid::EligibilityChecklistServiceInjectionTest < ActiveSupport::TestCase
     end
   end
 
+  # -- Inactive coverage is record residue, not verification -----------------
+
+  class InactiveCoveragesAdapter < RecordingAdapter
+    def initialize
+      super(coverages: [
+        { payer_name: "Example Health", policy_id: "POL-1", status: "cancelled" },
+        { payer_name: "Example Health", policy_id: "POL-2", status: "entered-in-error" }
+      ])
+    end
+  end
+
+  test "populate! does not verify insurance from cancelled or erroneous coverage" do
+    Corvid::TenantContext.with_tenant(TENANT) do
+      referral = build_referral_in_tenant
+      service = Corvid::EligibilityChecklistService.new(adapter: InactiveCoveragesAdapter.new)
+
+      service.populate!(referral)
+
+      refute referral.reload.eligibility_checklist.insurance_verified
+    end
+  end
+
+  test "check_payer_eligibility! does not verify insurance from inactive coverage" do
+    Corvid::TenantContext.with_tenant(TENANT) do
+      referral = build_referral_with_checklist_in_tenant
+      service = Corvid::EligibilityChecklistService.new(adapter: InactiveCoveragesAdapter.new)
+
+      service.check_payer_eligibility!(referral)
+
+      refute referral.reload.eligibility_checklist.insurance_verified
+    end
+  end
+
+  # A nil return means the source could not be reached. "Unavailable" is
+  # not "no insurance", and neither one completes a checklist item.
+  test "check_payer_eligibility! with an unreachable source does not flip insurance_verified" do
+    Corvid::TenantContext.with_tenant(TENANT) do
+      referral = build_referral_with_checklist_in_tenant
+      service = Corvid::EligibilityChecklistService.new(adapter: NilReturnAdapter.new)
+
+      service.check_payer_eligibility!(referral)
+
+      refute referral.reload.eligibility_checklist.insurance_verified
+    end
+  end
+
   private
 
   # Helpers must be called from within `Corvid::TenantContext.with_tenant`

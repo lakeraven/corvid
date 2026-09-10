@@ -65,8 +65,7 @@ module Corvid
       return if checklist.insurance_verified
 
       patient_id = referral.case.patient_identifier
-      coverages = @adapter.get_coverages(patient_id)
-      return unless coverages.is_a?(Array) && coverages.any?
+      return unless verifiable_coverage?(@adapter.get_coverages(patient_id))
 
       checklist.verify_item!(:insurance_verified, source: "eligibility_check")
     end
@@ -125,10 +124,25 @@ module Corvid
     def populate_insurance!(checklist, patient_id, source)
       return if checklist.insurance_verified
 
-      coverages = @adapter.get_coverages(patient_id)
-      return unless coverages.is_a?(Array) && coverages.any?
+      return unless verifiable_coverage?(@adapter.get_coverages(patient_id))
 
       checklist.verify_item!(:insurance_verified, source: source)
+    end
+
+    # Only a coverage the adapter actually found, and did not report as
+    # inactive, may complete the insurance item. A nil return means the
+    # source could not be reached (unavailable, not "no insurance"), and
+    # a reported status other than "active" — cancelled, draft,
+    # entered-in-error — is record residue, not verified coverage.
+    # Adapters that report no status at all (non-FHIR backends) are
+    # asserting the coverage they returned, and still count.
+    def verifiable_coverage?(coverages)
+      return false unless coverages.is_a?(Array)
+
+      coverages.any? do |coverage|
+        status = coverage.is_a?(Hash) ? (coverage[:status] || coverage["status"]) : nil
+        status.blank? || status.to_s == "active"
+      end
     end
   end
 end
