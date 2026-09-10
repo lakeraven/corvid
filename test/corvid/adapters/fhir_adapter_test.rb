@@ -184,6 +184,10 @@ class Corvid::Adapters::FhirAdapterTest < Minitest::Test
       line = @adapter.list_claims("pt_4").first
       assert_nil line.billed_amount, "unparseable amount does not become a bogus number"
       refute_nil line.amount_error, "present-but-unparseable amount is surfaced, not silently swallowed"
+      # amount_error reaches reporting output, so the server-supplied value
+      # is described rather than echoed — same rule as the auth path.
+      refute_match(/not-a-number/, line.amount_error)
+      assert_match(/12-character String/, line.amount_error)
     end
   end
 

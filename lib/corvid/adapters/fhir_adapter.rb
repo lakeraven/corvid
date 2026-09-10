@@ -3,6 +3,8 @@
 require "net/http"
 require "json"
 require "uri"
+require "ipaddr"
+require "openssl"
 require "date"
 require "bigdecimal"
 require "corvid/adapters/base"
@@ -19,6 +21,14 @@ module Corvid
     # implementation. Vendor-specific adapters in corvid-adapters can
     # override store_text/fetch_text/dereference to use a real backend.
     class FhirAdapter < Base
+      # Raised when a configured token_source yields a blank/non-string token.
+      class TokenSourceError < StandardError; end
+
+      # Raised when credentials would be sent over a non-TLS connection.
+      # Subclasses ArgumentError because the usual cause is a misconfigured
+      # base_url, caught at construction.
+      class InsecureTransportError < ArgumentError; end
+
       attr_reader :base_url
 
       EXTENSION_BASE_URL = "https://lakeraven.com/fhir/StructureDefinition"
@@ -67,14 +77,48 @@ module Corvid
       DEFAULT_OPEN_TIMEOUT = 10
       DEFAULT_READ_TIMEOUT = 30
 
-      def initialize(base_url:, bearer_token: nil, headers: {},
+      # The only names accepted as loopback. RFC 6761 reserves "localhost"
+      # and ".localhost" and requires resolvers to keep them on the loopback
+      # interface; every OTHER name — "ip6-localhost" and friends — is an
+      # ordinary DNS lookup that a search domain or a hostile resolver can
+      # point off-box, which would put a bearer token on the network. Literal
+      # addresses are checked numerically via IPAddr#loopback?, not by name.
+      LOOPBACK_NAME = "localhost"
+      LOOPBACK_NAME_SUFFIX = ".localhost"
+
+      def initialize(base_url:, bearer_token: nil, token_source: nil, headers: {},
                      open_timeout: DEFAULT_OPEN_TIMEOUT,
                      read_timeout: DEFAULT_READ_TIMEOUT,
                      proxy_uri: nil,
                      ca_file: nil,
-                     ca_path: nil)
-        @base_url = base_url.chomp("/")
+                     ca_path: nil,
+                     allow_insecure_http: false)
+        if token_source && !token_source.respond_to?(:call)
+          raise ArgumentError,
+                "token_source must be callable (respond to #call), " \
+                "got #{token_source.class}"
+        end
+        if bearer_token && !(bearer_token.is_a?(String) && !bearer_token.strip.empty?)
+          raise ArgumentError,
+                "bearer_token must be a non-blank string when given, " \
+                "got #{describe_token(bearer_token)}"
+        end
+
+        # Frozen: the reader hands this string to callers, and the transport
+        # check reads it again per request. An unfrozen base_url could be
+        # mutated to http:// after the construction-time check passed.
+        @base_url = base_url.chomp("/").freeze
         @bearer_token = bearer_token
+        # Off by default: an Authorization header on a cleartext connection
+        # puts a live bearer token on the wire. The opt-out is honored only
+        # for loopback hosts, and only for a literal boolean — see
+        # #strict_boolean!.
+        @allow_insecure_http = strict_boolean!(allow_insecure_http, :allow_insecure_http)
+        # A callable resolved per request — e.g. a
+        # Corvid::Auth::BackendServicesClient — so each call carries a
+        # freshly-refreshed token. Takes precedence over the static
+        # bearer_token when both are given.
+        @token_source = token_source
         @default_headers = {
           "Accept" => "application/fhir+json",
           "Content-Type" => "application/fhir+json"
@@ -84,7 +128,39 @@ module Corvid
         @proxy_uri = build_proxy_uri(proxy_uri)
         @ca_file = ca_file
         @ca_path = ca_path
+
+        # Fail at configuration time, not on the first PHI request, when
+        # credentials are paired with a non-TLS base_url. A caller-supplied
+        # Authorization header counts: it is a credential the same as a
+        # configured one, and it is the request-level check below that is
+        # authoritative either way.
+        if bearer_token || token_source || preset_authorization_header?
+          require_secure_transport!(@base_url)
+        end
       end
+
+      # True when the caller wired an Authorization header in directly.
+      # Matched case-insensitively: HTTP header names are case-insensitive
+      # and Net::HTTP will send "authorization" just as happily.
+      def preset_authorization_header?
+        @default_headers.any? { |name, _| name.to_s.casecmp?("authorization") }
+      end
+      private :preset_authorization_header?
+
+      # A config-driven opt-out must not be defeated by Ruby truthiness: the
+      # STRING "false" is truthy, so `allow_insecure_http: ENV["X"]` would
+      # silently DISABLE the protection for every value of X except nil —
+      # including "false", "0" and "". Only a literal boolean is accepted;
+      # anything else is a configuration error rather than a quiet grant.
+      def strict_boolean!(value, name)
+        return value if value == true || value == false
+
+        raise ArgumentError,
+              "#{name} must be true or false (a literal boolean), got #{value.class}. " \
+              "Parse environment variables explicitly — the string \"false\" is " \
+              "truthy in Ruby and would silently disable this check."
+      end
+      private :strict_boolean!
 
       def build_proxy_uri(raw)
         return nil if raw.nil?
@@ -455,9 +531,117 @@ module Corvid
         when :put  then Net::HTTP::Put.new(uri).tap { |r| r.body = body }
         end
         @default_headers.each { |k, v| request[k] = v }
-        request["Authorization"] = "Bearer #{@bearer_token}" if @bearer_token
+        token = resolve_bearer_token
+        request["Authorization"] = "Bearer #{token}" unless token.nil? || token.strip.empty?
+
+        # Authoritative check, keyed on what the request ACTUALLY carries
+        # rather than on what was configured: a caller-supplied
+        # headers["Authorization"] is just as much a credential as a
+        # resolved token, and base_url is not the only URL that reaches
+        # here. Runs after every header is applied and before the socket.
+        require_secure_transport!(url) if request["Authorization"]
 
         build_http(uri).request(request)
+      end
+
+      # Reject any URL that would carry an Authorization header over a
+      # non-TLS connection. Requests with no Authorization header are
+      # untouched, so genuinely unauthenticated on-prem and in-memory demo
+      # use over plain http still works.
+      #
+      # The opt-out is deliberately narrow: it applies only when every hop
+      # stays on the loopback interface, where traffic never reaches a
+      # network. Setting it does NOT license cleartext credentials to a
+      # remote host.
+      def require_secure_transport!(url)
+        uri = URI.parse(url.to_s)
+        return if uri.scheme == "https"
+        return if @allow_insecure_http && loopback_peer?(uri)
+
+        # Host only, never the path — a FHIR path carries record identifiers.
+        raise InsecureTransportError,
+              "FhirAdapter refuses to send an Authorization header over " \
+              "#{uri.scheme.inspect} (host #{uri.host.inspect}). Use https; " \
+              "#{insecure_opt_out_detail(uri)}."
+      rescue URI::InvalidURIError => e
+        raise InsecureTransportError, "invalid FHIR base URL: #{e.message}"
+      end
+
+      # "Is this loopback?" is a question about the actual network peers,
+      # not about the URL alone. A proxy is the host we really connect to,
+      # and it then makes its own hop to the target — so a cleartext request
+      # is confined to the machine only if BOTH ends are loopback. A remote
+      # proxy in front of a localhost URL still puts the token on the wire.
+      def loopback_peer?(uri)
+        return false unless loopback_host?(uri.host)
+        return false if @proxy_uri && !loopback_host?(@proxy_uri.host)
+
+        true
+      end
+
+      def insecure_opt_out_detail(uri)
+        return "pass allow_insecure_http: true for a loopback endpoint only" unless @allow_insecure_http
+
+        if @proxy_uri && !loopback_host?(@proxy_uri.host) && loopback_host?(uri.host)
+          "allow_insecure_http does not apply here: proxy_uri routes this " \
+            "request through a non-loopback host, which is the real peer"
+        else
+          "allow_insecure_http covers loopback peers only"
+        end
+      end
+
+      # Literal loopback addresses are recognized numerically; names are
+      # accepted only for the RFC 6761 reserved "localhost" family, which
+      # resolvers must keep on the loopback interface. Any other name is a
+      # DNS lookup we cannot vouch for. See LOOPBACK_NAME.
+      def loopback_host?(host)
+        return false if host.nil?
+
+        # URI#host keeps the brackets on an IPv6 literal.
+        h = host.downcase.delete_prefix("[").delete_suffix("]")
+        return true if h == LOOPBACK_NAME || h.end_with?(LOOPBACK_NAME_SUFFIX)
+
+        literal = begin
+          IPAddr.new(h)
+        rescue IPAddr::Error
+          nil
+        end
+        !literal.nil? && literal.loopback?
+      end
+
+      # Resolve the bearer token for the current request. A token_source
+      # (callable) is consulted per request and wins over the static
+      # bearer_token; returns nil when neither is configured.
+      #
+      # A configured token_source that yields a blank token is a hard error:
+      # falling through would send an unauthenticated (or malformed
+      # "Bearer ") request whose 401 looks like a credentials problem rather
+      # than the real cause — the source produced nothing. Whitespace-only
+      # counts as blank; it passes a bare empty? check but produces the same
+      # broken header.
+      def resolve_bearer_token
+        if @token_source
+          token = @token_source.call
+          unless token.is_a?(String) && !token.strip.empty?
+            raise TokenSourceError,
+                  "token_source returned #{describe_token(token)}; " \
+                  "expected a non-blank token string"
+          end
+          return token
+        end
+
+        @bearer_token
+      end
+
+      # Describe a rejected token by shape only. The value is never
+      # rendered: TokenSourceError messages reach Rails logs, and a token
+      # that merely failed *our* validation may still be live credential
+      # material.
+      def describe_token(token)
+        return "nil" if token.nil?
+        return "a blank string (#{token.length} whitespace characters)" if token.is_a?(String)
+
+        "a #{token.class}"
       end
 
       # Construct a Net::HTTP instance configured per the constructor's
@@ -472,6 +656,7 @@ module Corvid
         end
         http = klass.new(uri.host, uri.port)
         http.use_ssl = uri.scheme == "https"
+        http.verify_mode = OpenSSL::SSL::VERIFY_PEER
         http.open_timeout = @open_timeout
         http.read_timeout = @read_timeout
         http.ca_file = @ca_file if @ca_file
@@ -542,7 +727,19 @@ module Corvid
 
         [ BigDecimal(value.to_s), nil ]
       rescue ArgumentError
-        [ nil, "unparseable billed amount #{value.inspect}" ]
+        # amount_error is surfaced to callers and reporting output, so the
+        # server-supplied value is described, not echoed — same rule as the
+        # auth path: nothing off the wire reaches a message verbatim.
+        [ nil, "unparseable billed amount (#{describe_wire_value(value)})" ]
+      end
+
+      # Describe a server-supplied value by type/shape without echoing it.
+      def describe_wire_value(value)
+        return "null" if value.nil?
+        return value.to_s if value == true || value == false
+        return "a #{value.length}-character String" if value.is_a?(String)
+
+        value.class.to_s.start_with?(/[AEIOU]/i) ? "an #{value.class}" : "a #{value.class}"
       end
 
       def build_referral_reference(resource)
