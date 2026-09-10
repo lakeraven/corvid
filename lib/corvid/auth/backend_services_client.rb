@@ -95,6 +95,17 @@ module Corvid
         server_error temporarily_unavailable
       ].freeze
 
+      # The IANA registry's top-level media types. A Content-Type whose left
+      # half is not one of these is not a media type at all.
+      TOP_LEVEL_MEDIA_TYPES = %w[
+        application audio example font image message model multipart text video
+      ].freeze
+
+      # RFC 9110 token characters, length-capped. Deliberately excludes "/"
+      # and whitespace, so neither a base64 blob nor a trailing "Bearer …"
+      # can masquerade as a subtype.
+      MEDIA_SUBTYPE = /\A[a-z0-9][a-z0-9!\#$&^_.+-]{0,62}\z/
+
       # Recognized OAuth2 token-response fields, for summarizing a response
       # by which known keys it carried without naming unknown ones.
       KNOWN_GRANT_KEYS = %w[
@@ -395,11 +406,13 @@ module Corvid
         end
 
         if ttl <= 0
-          # ttl is a parsed integer here, so echoing it carries no response
-          # text — unlike the raw field, which is attacker-controlled.
+          # Routed through the same redaction as every other branch. The
+          # parsed integer happens to be safe to print, but "safe because of
+          # what the parser guarantees" is the reasoning that lets the next
+          # edit reintroduce a leak; one path for every wire value instead.
           raise TokenError,
-                "token endpoint returned non-positive expires_in (#{ttl} seconds); " \
-                "the access token is already expired"
+                "token endpoint returned non-positive expires_in " \
+                "(#{describe_response_value(raw)}); the access token is already expired"
         end
 
         ttl
@@ -445,23 +458,41 @@ module Corvid
       def describe_response_value(value, allow: [])
         return "null" if value.nil?
         return value.to_s if value == true || value == false
-        return "a #{value.class}" if value.is_a?(Numeric)
 
-        if value.is_a?(String)
-          return value if allow.any? { |ok| value.casecmp?(ok) }
-
-          return "a #{value.length}-character String"
+        if value.is_a?(String) && allow.any? { |ok| value.casecmp?(ok) }
+          return value
         end
 
-        "a #{value.class}"
+        return "a #{value.length}-character String" if value.is_a?(String)
+
+        with_article(value.class)
+      end
+
+      def with_article(word)
+        word.to_s.start_with?(/[AEIOU]/i) ? "an #{word}" : "a #{word}"
       end
 
       # Body-free diagnostics: enough to tell a captive portal from an HTML
       # error page from an empty response, with no response content.
       def response_summary(response, raw)
         content_type = response["content-type"] if response.respond_to?(:[])
-        "content-type=#{content_type ? content_type.split(';').first : 'unset'}, " \
+        "content-type=#{safe_content_type(content_type)}, " \
           "#{raw.bytesize} bytes, body redacted"
+      end
+
+      # Response HEADERS are wire data too: a hostile endpoint can park a
+      # token or an echoed assertion in Content-Type as easily as in the
+      # body. Only a strictly-parsed media type whose top level is an IANA
+      # registered one is echoed; anything else is redacted. Parameters
+      # (charset, boundary, …) are dropped wholesale — they are free text.
+      def safe_content_type(value)
+        return "unset" if value.nil?
+
+        top, sub = value.to_s.split(";").first.to_s.strip.downcase.split("/", 2)
+        return "(redacted)" unless TOP_LEVEL_MEDIA_TYPES.include?(top)
+        return "(redacted)" unless sub&.match?(MEDIA_SUBTYPE)
+
+        "#{top}/#{sub}"
       end
 
       # --- JWT client assertion --------------------------------------------

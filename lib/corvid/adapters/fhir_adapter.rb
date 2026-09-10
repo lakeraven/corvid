@@ -3,6 +3,7 @@
 require "net/http"
 require "json"
 require "uri"
+require "ipaddr"
 require "openssl"
 require "date"
 require "bigdecimal"
@@ -76,11 +77,14 @@ module Corvid
       DEFAULT_OPEN_TIMEOUT = 10
       DEFAULT_READ_TIMEOUT = 30
 
-      # Hosts for which the cleartext opt-out may be honored. Traffic to a
-      # loopback address never leaves the machine, so a bearer token on it is
-      # not exposed to the network; every other host is.
-      LOOPBACK_HOSTS = %w[localhost ip6-localhost 0:0:0:0:0:0:0:1 ::1].freeze
-      LOOPBACK_IPV4 = /\A127\.\d{1,3}\.\d{1,3}\.\d{1,3}\z/
+      # The only names accepted as loopback. RFC 6761 reserves "localhost"
+      # and ".localhost" and requires resolvers to keep them on the loopback
+      # interface; every OTHER name — "ip6-localhost" and friends — is an
+      # ordinary DNS lookup that a search domain or a hostile resolver can
+      # point off-box, which would put a bearer token on the network. Literal
+      # addresses are checked numerically via IPAddr#loopback?, not by name.
+      LOOPBACK_NAME = "localhost"
+      LOOPBACK_NAME_SUFFIX = ".localhost"
 
       def initialize(base_url:, bearer_token: nil, token_source: nil, headers: {},
                      open_timeout: DEFAULT_OPEN_TIMEOUT,
@@ -545,33 +549,64 @@ module Corvid
       # untouched, so genuinely unauthenticated on-prem and in-memory demo
       # use over plain http still works.
       #
-      # The opt-out is deliberately narrow: it applies only to loopback
-      # hosts, where the traffic never reaches a network. Setting it does
-      # NOT license cleartext credentials to a remote host.
+      # The opt-out is deliberately narrow: it applies only when every hop
+      # stays on the loopback interface, where traffic never reaches a
+      # network. Setting it does NOT license cleartext credentials to a
+      # remote host.
       def require_secure_transport!(url)
         uri = URI.parse(url.to_s)
         return if uri.scheme == "https"
-        return if @allow_insecure_http && loopback_host?(uri.host)
+        return if @allow_insecure_http && loopback_peer?(uri)
 
         # Host only, never the path — a FHIR path carries record identifiers.
-        detail = if @allow_insecure_http
-          "allow_insecure_http covers loopback hosts only"
-        else
-          "pass allow_insecure_http: true for a loopback endpoint only"
-        end
         raise InsecureTransportError,
               "FhirAdapter refuses to send an Authorization header over " \
-              "#{uri.scheme.inspect} (host #{uri.host.inspect}). Use https; #{detail}."
+              "#{uri.scheme.inspect} (host #{uri.host.inspect}). Use https; " \
+              "#{insecure_opt_out_detail(uri)}."
       rescue URI::InvalidURIError => e
         raise InsecureTransportError, "invalid FHIR base URL: #{e.message}"
       end
 
+      # "Is this loopback?" is a question about the actual network peers,
+      # not about the URL alone. A proxy is the host we really connect to,
+      # and it then makes its own hop to the target — so a cleartext request
+      # is confined to the machine only if BOTH ends are loopback. A remote
+      # proxy in front of a localhost URL still puts the token on the wire.
+      def loopback_peer?(uri)
+        return false unless loopback_host?(uri.host)
+        return false if @proxy_uri && !loopback_host?(@proxy_uri.host)
+
+        true
+      end
+
+      def insecure_opt_out_detail(uri)
+        return "pass allow_insecure_http: true for a loopback endpoint only" unless @allow_insecure_http
+
+        if @proxy_uri && !loopback_host?(@proxy_uri.host) && loopback_host?(uri.host)
+          "allow_insecure_http does not apply here: proxy_uri routes this " \
+            "request through a non-loopback host, which is the real peer"
+        else
+          "allow_insecure_http covers loopback peers only"
+        end
+      end
+
+      # Literal loopback addresses are recognized numerically; names are
+      # accepted only for the RFC 6761 reserved "localhost" family, which
+      # resolvers must keep on the loopback interface. Any other name is a
+      # DNS lookup we cannot vouch for. See LOOPBACK_NAME.
       def loopback_host?(host)
         return false if host.nil?
 
         # URI#host keeps the brackets on an IPv6 literal.
         h = host.downcase.delete_prefix("[").delete_suffix("]")
-        LOOPBACK_HOSTS.include?(h) || h.end_with?(".localhost") || h.match?(LOOPBACK_IPV4)
+        return true if h == LOOPBACK_NAME || h.end_with?(LOOPBACK_NAME_SUFFIX)
+
+        literal = begin
+          IPAddr.new(h)
+        rescue IPAddr::Error
+          nil
+        end
+        !literal.nil? && literal.loopback?
       end
 
       # Resolve the bearer token for the current request. A token_source
@@ -692,7 +727,19 @@ module Corvid
 
         [ BigDecimal(value.to_s), nil ]
       rescue ArgumentError
-        [ nil, "unparseable billed amount #{value.inspect}" ]
+        # amount_error is surfaced to callers and reporting output, so the
+        # server-supplied value is described, not echoed — same rule as the
+        # auth path: nothing off the wire reaches a message verbatim.
+        [ nil, "unparseable billed amount (#{describe_wire_value(value)})" ]
+      end
+
+      # Describe a server-supplied value by type/shape without echoing it.
+      def describe_wire_value(value)
+        return "null" if value.nil?
+        return value.to_s if value == true || value == false
+        return "a #{value.length}-character String" if value.is_a?(String)
+
+        value.class.to_s.start_with?(/[AEIOU]/i) ? "an #{value.class}" : "a #{value.class}"
       end
 
       def build_referral_reference(resource)
