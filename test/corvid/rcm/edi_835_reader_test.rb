@@ -95,4 +95,71 @@ class Corvid::Rcm::Edi835ReaderTest < Minitest::Test
       Corvid::Rcm::Edi835Reader.new(source).parse
     end
   end
+
+  # -- the file has to balance -----------------------------------------------
+  #
+  # Regression: the balance assertion used to live only in the tests, so a
+  # production file truncated after the first CLP loop parsed "successfully"
+  # and the missing claims — and their money — simply were not there.
+
+  # The payer says it paid $350 and only the first $200 claim loop arrived —
+  # exactly the shape of a file cut short in transmission.
+  def test_a_file_truncated_after_the_first_claim_loop_raises
+    source = File.read(File.join(FIXTURES, "clean_full_pay.835")).sub("BPR*I*200.00*", "BPR*I*350.00*")
+    error = assert_raises(Corvid::Rcm::Edi835Reader::ParseError) do
+      Corvid::Rcm::Edi835Reader.new(source).parse
+    end
+
+    assert_match(/does not balance/, error.message)
+    assert_match(/350\.0/, error.message)
+    assert_match(/200\.0/, error.message)
+  end
+
+  def test_a_file_that_balances_across_several_claim_loops_parses
+    source = File.read(File.join(FIXTURES, "clean_full_pay.835"))
+                 .sub("BPR*I*200.00*", "BPR*I*350.00*")
+                 .sub("SE*13*0001~", "CLP*CLM-1099*1*150.00*150.00*0*12*PAYER-CTL-1099*11~SE*15*0001~")
+    remittance = Corvid::Rcm::Edi835Reader.new(source).parse
+
+    assert_equal 2, remittance.claims.length
+    assert remittance.balanced?
+  end
+
+  # -- a missing amount is an error, not a silent zero ------------------------
+
+  def test_a_claim_loop_with_no_paid_amount_raises_rather_than_posting_zero
+    source = "TRN*1*X*1~BPR*I*200.00*C*ACH~CLP*CLM-1*1*200.00**0*12*CTL*11~"
+    error = assert_raises(Corvid::Rcm::Edi835Reader::ParseError) do
+      Corvid::Rcm::Edi835Reader.new(source).parse
+    end
+
+    assert_match(/missing CLP04 paid amount/, error.message)
+  end
+
+  def test_an_adjustment_with_no_amount_raises_rather_than_adjusting_zero
+    source = "TRN*1*X*1~BPR*I*0.00*C*NON~CLP*CLM-1*4*200.00*0.00*0*12*CTL*11~CAS*CO*45~"
+    error = assert_raises(Corvid::Rcm::Edi835Reader::ParseError) do
+      Corvid::Rcm::Edi835Reader.new(source).parse
+    end
+
+    assert_match(/missing CAS amount for CO-45/, error.message)
+  end
+
+  def test_a_service_line_with_no_paid_amount_raises
+    source = "TRN*1*X*1~BPR*I*200.00*C*ACH~CLP*CLM-1*1*200.00*200.00*0*12*CTL*11~SVC*HC>90837*200.00**1~"
+    error = assert_raises(Corvid::Rcm::Edi835Reader::ParseError) do
+      Corvid::Rcm::Edi835Reader.new(source).parse
+    end
+
+    assert_match(/missing SVC03 paid amount/, error.message)
+  end
+
+  def test_a_file_with_no_payment_amount_at_all_raises
+    source = "TRN*1*X*1~CLP*CLM-1*1*200.00*200.00*0*12*CTL*11~"
+    error = assert_raises(Corvid::Rcm::Edi835Reader::ParseError) do
+      Corvid::Rcm::Edi835Reader.new(source).parse
+    end
+
+    assert_match(/BPR02/, error.message)
+  end
 end

@@ -19,7 +19,16 @@ module Corvid
     # ST/SE transactions per file) is wave 2.
     #
     # Anything it cannot parse raises rather than returning a half-file:
-    # silently dropping a CLP loop means silently losing money.
+    # silently dropping a CLP loop means silently losing money. That principle
+    # is enforced twice here rather than left to the tests:
+    #
+    #   * a required monetary element that is absent is an ERROR, never a
+    #     silent zero — a missing CLP04 posted as $0.00 is money that vanishes
+    #     without anybody being told; and
+    #   * the file has to BALANCE. BPR02 must equal the sum of CLP04 across the
+    #     claim loops, so a file truncated mid-transmission cannot parse
+    #     "successfully" with half its claims missing. Production files are the
+    #     ones that will be malformed, so the guarantee belongs in the reader.
     class Edi835Reader
       class ParseError < StandardError; end
 
@@ -61,7 +70,7 @@ module Corvid
             # 005010X221A1 carries no currency element — USD by convention;
             # a non-USD tenant supplies it out of band.
             state[:payment_method] = elements[4]
-            state[:payment_amount] = decimal(elements[2])
+            state[:payment_amount] = required_decimal(elements[2], "BPR02 payment amount")
             state[:payment_date] = parse_date(elements[16])
           when "TRN"
             state[:remittance_identifier] = elements[2]
@@ -90,8 +99,9 @@ module Corvid
             current_claim = {
               claim_identifier: elements[1],
               status_code: elements[2],
-              billed_amount: decimal(elements[3]),
-              paid_amount: decimal(elements[4]),
+              billed_amount: required_decimal(elements[3], "CLP03 billed amount on claim #{elements[1].inspect}"),
+              paid_amount: required_decimal(elements[4], "CLP04 paid amount on claim #{elements[1].inspect}"),
+              # CLP05 is situational: absent means the patient owes nothing.
               patient_responsibility_amount: decimal(elements[5]),
               payer_control_number: elements[7],
               patient_identifier: nil,
@@ -114,8 +124,8 @@ module Corvid
             current_service = {
               procedure_code: code,
               modifiers: modifiers.reject { |m| m.to_s.empty? },
-              billed_amount: decimal(elements[2]),
-              paid_amount: decimal(elements[3]),
+              billed_amount: required_decimal(elements[2], "SVC02 billed amount on #{code.inspect}"),
+              paid_amount: required_decimal(elements[3], "SVC03 paid amount on #{code.inspect}"),
               units: elements[5].to_s.empty? ? 1 : elements[5].to_i,
               serviced_date: current_claim[:serviced_date],
               adjustments: [],
@@ -141,19 +151,36 @@ module Corvid
         claims << finalize_claim(current_claim, current_service) if current_claim
         raise ParseError, "no CLP claim loops found" if claims.empty?
 
-        Remittance.new(
+        remittance = Remittance.new(
           remittance_identifier: state[:remittance_identifier] || raise(ParseError, "missing TRN trace number"),
           payer_name: state[:payer_name],
           payee_identifier: state[:payee_identifier],
           payment_method: state[:payment_method],
-          payment_amount: state[:payment_amount] || BigDecimal(0),
+          payment_amount: state[:payment_amount] || raise(ParseError, "missing BPR02 payment amount"),
           payment_date: state[:payment_date],
           currency: state[:currency],
           claims: claims
         )
+        assert_balanced!(remittance)
+        remittance
       end
 
       private
+
+      # The 835 is a self-balancing document: the payment BPR02 actually made
+      # is the sum of what was paid on each claim (CLP04). A file that does not
+      # balance has lost claims — truncated in transit, mis-parsed here, or
+      # carrying provider-level PLB adjustments this reader does not yet
+      # understand. In every one of those cases the honest answer is to refuse
+      # the file, not to post a total nobody can reconcile.
+      def assert_balanced!(remittance)
+        return if remittance.balanced?
+
+        raise ParseError,
+              "payment does not balance: BPR02 is #{remittance.payment_amount.to_s('F')} but the " \
+              "#{remittance.claims.length} CLP loop(s) total #{remittance.claims_paid_total.to_s('F')}. " \
+              "The file is truncated or carries provider-level (PLB) adjustments, which this reader does not support."
+      end
 
       def split_segments(source)
         source.split(SEGMENT_TERMINATOR).filter_map do |raw|
@@ -177,7 +204,10 @@ module Corvid
           adjustments << Adjustment.new(
             group_code: group_code,
             reason_code: reason,
-            amount: decimal(elements[index + 1]),
+            # CAS03 is required whenever CAS02 names a reason. An adjustment
+            # with no amount is not a $0.00 adjustment, it is a broken segment.
+            amount: required_decimal(elements[index + 1],
+                                     "CAS amount for #{group_code}-#{reason}"),
             quantity: elements[index + 2].to_s.empty? ? nil : decimal(elements[index + 2])
           )
           index += 3
@@ -215,12 +245,21 @@ module Corvid
         )
       end
 
+      # For genuinely optional elements only. Everywhere a payer is obliged to
+      # state an amount, use `required_decimal`: a missing amount defaulted to
+      # zero is money that disappears without an error.
       def decimal(value)
         return BigDecimal(0) if value.nil? || value.to_s.strip.empty?
 
         BigDecimal(value.to_s.strip)
       rescue ArgumentError
         raise ParseError, "not a numeric value: #{value.inspect}"
+      end
+
+      def required_decimal(value, label)
+        raise ParseError, "missing #{label}" if value.nil? || value.to_s.strip.empty?
+
+        decimal(value)
       end
 
       def parse_date(value)

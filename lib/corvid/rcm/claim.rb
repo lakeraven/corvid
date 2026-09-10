@@ -188,12 +188,16 @@ module Corvid
     # One previously-adjudicated or previously-submitted service, used by the
     # duplicate and repeat-encounter rules. Callers supply the window they care
     # about; the scrubber never queries anything itself.
+    # `modifiers` are carried because they are what tells two same-day services
+    # apart: a prior 90837 with a distinct-service modifier and a new one
+    # without it are not the same service, and the duplicate rule has to be
+    # able to see that.
     PriorService = Data.define(
       :claim_identifier, :patient_identifier, :rendering_provider_npi,
-      :procedure_code, :serviced_date
+      :procedure_code, :modifiers, :serviced_date
     ) do
       def initialize(patient_identifier:, procedure_code:, serviced_date:,
-                     claim_identifier: nil, rendering_provider_npi: nil)
+                     claim_identifier: nil, rendering_provider_npi: nil, modifiers: [])
         super
       end
     end
