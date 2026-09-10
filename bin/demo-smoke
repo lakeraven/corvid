@@ -1,0 +1,80 @@
+#!/usr/bin/env bash
+# Smoke check for the three demo entry points.
+#
+# Runs each demo end to end and asserts the beats the audience is supposed to
+# see are actually in the output — so demo rot fails loudly instead of showing
+# up live. Deliberately independent of the minitest/cucumber suites: it shells
+# out to the same bin/demo-* scripts a presenter runs.
+#
+#   bin/demo-smoke            # all three
+#   bin/demo-smoke overlay    # one of: overlay, prc-migration, prc
+set -uo pipefail
+cd "$(dirname "$0")/.." || exit 1
+
+only="${1:-all}"
+failures=0
+tmp="$(mktemp -d)"
+trap 'rm -rf "$tmp"' EXIT
+
+check() {
+  local name="$1" script="$2"; shift 2
+  if [ "$only" != "all" ] && [ "$only" != "$name" ]; then return 0; fi
+
+  local log="$tmp/$name.log"
+  printf '== smoke: %s\n' "$name"
+  if ! "$script" >"$log" 2>&1; then
+    printf '   FAIL: %s exited non-zero\n' "$script"
+    tail -20 "$log" | sed 's/^/   | /'
+    failures=$((failures + 1))
+    return 0
+  fi
+
+  local missing=0 pattern
+  for pattern in "$@"; do
+    if ! grep -qF -- "$pattern" "$log"; then
+      printf '   FAIL: expected output missing: %s\n' "$pattern"
+      missing=1
+    fi
+  done
+  if [ "$missing" -eq 1 ]; then
+    failures=$((failures + 1))
+  else
+    printf '   ok (%s assertions)\n' "$#"
+  fi
+}
+
+# Stock-FHIR overlay: both synthetic clinics ingest over generic FHIR, PRC
+# eligibility auto-populates, and MLR repricing reports dollars recovered.
+check overlay bin/demo-overlay \
+  "Broken Rock Clinic" \
+  "Tallgrass Clinic" \
+  "Corvid::Adapters::FhirAdapter" \
+  "PRC eligibility: checklist" \
+  "Claims priced (clear): 10" \
+  "TOTAL \$ RECOVERED across the consortium: \$" \
+  "CEHRT-SAFE OVERLAY"
+
+# Governed migration: consented patient relays, non-consented patient halts,
+# both are recorded as audit Determinations.
+check prc-migration bin/demo-prc-migration \
+  "Transport: STUB" \
+  "-> MIGRATED" \
+  "-> HALTED    Data Governance Board consent not granted" \
+  "determination approved" \
+  "determination denied"
+
+# Narrated PRC happy path: referral walks the state machine to authorized with
+# a funded obligation.
+check prc bin/demo-prc \
+  "1. Patient registration" \
+  "3. Eligibility review + tribal enrollment verification" \
+  "referral.approve_management!" \
+  "funds_available=true" \
+  "-> status=authorized" \
+  "Checklist:      100.0% complete"
+
+if [ "$failures" -gt 0 ]; then
+  printf '\ndemo-smoke: %d demo(s) failed\n' "$failures"
+  exit 1
+fi
+printf '\ndemo-smoke: all demos green\n'

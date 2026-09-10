@@ -43,8 +43,16 @@ Rails.application.configure do
   # Highlight code that triggered redirect in logs.
   config.action_dispatch.verbose_redirect_logs = true
 
-  # Suppress logger output for asset requests.
-  config.assets.quiet = true
+  # NOTE: no `config.assets.*` here — this API-only dummy app has no asset
+  # pipeline gem, so touching config.assets raises NoMethodError at boot and
+  # makes every `bin/rails` call in development fail.
+
+  # The demo entry points (bin/demo-*) run db:prepare. Re-dumping the schema
+  # from a development run must never rewrite the checked-in
+  # test/dummy/db/schema.rb — under json 3.x the Rails 8.1 schema dumper cannot
+  # dump json/jsonb columns that have a default and silently drops those tables
+  # from the dump. schema.rb is generated in CI (test env) instead.
+  config.active_record.dump_schema_after_migration = false
 
   # Raises error for missing translations.
   # config.i18n.raise_on_missing_translations = true
