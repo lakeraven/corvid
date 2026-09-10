@@ -143,10 +143,55 @@ class Corvid::EligibilityChecklistServiceInjectionTest < ActiveSupport::TestCase
     end
   end
 
-  test "check_payer_eligibility! with empty coverages does not flip insurance_verified" do
+  test "check_payer_eligibility! confirms payer of last resort when every alternate resource is documented unavailable" do
+    Corvid::TenantContext.with_tenant(TENANT) do
+      referral = build_referral_with_checklist_in_tenant
+      document_all_alternate_resources(referral, status: :not_enrolled)
+      service = Corvid::EligibilityChecklistService.new(adapter: EmptyCoveragesAdapter.new)
+      service.check_payer_eligibility!(referral)
+      checklist = referral.reload.eligibility_checklist
+      assert checklist.insurance_verified
+      assert_equal "payer_of_last_resort", checklist.insurance_verification_source
+    end
+  end
+
+  test "check_payer_eligibility! with empty coverages and no alternate resource record leaves insurance unverified" do
+    # Bare absence is not a documented negative: Adapters::Base#get_coverages
+    # returns [] for backends that can't search at all.
     Corvid::TenantContext.with_tenant(TENANT) do
       referral = build_referral_with_checklist_in_tenant
       service = Corvid::EligibilityChecklistService.new(adapter: EmptyCoveragesAdapter.new)
+      service.check_payer_eligibility!(referral)
+      refute referral.reload.eligibility_checklist.insurance_verified
+    end
+  end
+
+  test "check_payer_eligibility! leaves insurance unverified while an alternate resource check is still pending" do
+    Corvid::TenantContext.with_tenant(TENANT) do
+      referral = build_referral_with_checklist_in_tenant
+      document_all_alternate_resources(referral, status: :not_enrolled)
+      referral.alternate_resource_checks.find_by!(resource_type: "medicaid").update!(status: :not_checked)
+      service = Corvid::EligibilityChecklistService.new(adapter: EmptyCoveragesAdapter.new)
+      service.check_payer_eligibility!(referral)
+      refute referral.reload.eligibility_checklist.insurance_verified
+    end
+  end
+
+  test "check_payer_eligibility! leaves insurance unverified when an alternate resource still has coverage" do
+    Corvid::TenantContext.with_tenant(TENANT) do
+      referral = build_referral_with_checklist_in_tenant
+      document_all_alternate_resources(referral, status: :not_enrolled)
+      referral.alternate_resource_checks.find_by!(resource_type: "medicare_b").update!(status: :enrolled)
+      service = Corvid::EligibilityChecklistService.new(adapter: EmptyCoveragesAdapter.new)
+      service.check_payer_eligibility!(referral)
+      refute referral.reload.eligibility_checklist.insurance_verified
+    end
+  end
+
+  test "check_payer_eligibility! with a nil adapter response leaves insurance_verified untouched" do
+    Corvid::TenantContext.with_tenant(TENANT) do
+      referral = build_referral_with_checklist_in_tenant
+      service = Corvid::EligibilityChecklistService.new(adapter: NilReturnAdapter.new)
       service.check_payer_eligibility!(referral)
       refute referral.reload.eligibility_checklist.insurance_verified
     end
@@ -170,6 +215,12 @@ class Corvid::EligibilityChecklistServiceInjectionTest < ActiveSupport::TestCase
       tenant_identifier: TENANT, facility_identifier: FACILITY
     )
     referral
+  end
+
+  def document_all_alternate_resources(referral, status:)
+    Corvid::AlternateResourceCheck::RESOURCE_TYPES.each do |type|
+      referral.alternate_resource_checks.create!(resource_type: type, status: status)
+    end
   end
 
   def poison_adapter
