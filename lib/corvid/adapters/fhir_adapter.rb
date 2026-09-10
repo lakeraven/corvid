@@ -270,16 +270,36 @@ module Corvid
       # `coverages.any?`) see real data instead of always-empty).
       # ----------------------------------------------------------------------
 
+      # Active coverage only, and only when the search actually ran.
+      #
+      # Callers (EligibilityChecklistService#populate_insurance! and
+      # #check_payer_eligibility!) treat a non-empty result as "insurance
+      # verified", so a cancelled/draft/entered-in-error Coverage left in
+      # the record must never complete a PRC checklist item. Same active
+      # requirement verify_eligibility already applies.
+      #
+      # Returns [] when the search ran and found no active coverage, and
+      # nil when the source could not be reached — a failed lookup is
+      # "unavailable", never "this patient has no insurance".
+      ACTIVE_COVERAGE_STATUS = "active"
+
       def get_coverages(patient_identifier)
-        bundle = fhir_search("Coverage", beneficiary: "Patient/#{patient_identifier}")
-        extract_entries(bundle).map do |coverage|
-          {
-            payer_name: coverage.dig("payor", 0, "display"),
-            policy_id: coverage["subscriberId"],
-            status: coverage["status"],
-            type_code: coverage.dig("type", "coding", 0, "code")
-          }
-        end
+        bundle = fhir_search("Coverage", beneficiary: "Patient/#{patient_identifier}",
+                                         status: ACTIVE_COVERAGE_STATUS)
+        return nil if bundle.nil?
+
+        extract_entries(bundle)
+          # Servers may ignore an unsupported search parameter, so filter
+          # again here rather than trusting the query to have narrowed.
+          .select { |coverage| coverage["status"] == ACTIVE_COVERAGE_STATUS }
+          .map do |coverage|
+            {
+              payer_name: coverage.dig("payor", 0, "display"),
+              policy_id: coverage["subscriberId"],
+              status: coverage["status"],
+              type_code: coverage.dig("type", "coding", 0, "code")
+            }
+          end
       end
 
       # ----------------------------------------------------------------------

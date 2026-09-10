@@ -327,6 +327,68 @@ class Corvid::Adapters::FhirAdapterTest < Minitest::Test
     end
   end
 
+  # -- Active-only, and "unavailable" is not "none" (fail-closed reads) --
+
+  def test_get_coverages_requests_active_status
+    captured = nil
+    @adapter.stub(:fhir_search, ->(type, params) { captured = [ type, params ]; { "entry" => [] } }) do
+      @adapter.get_coverages("pt_001")
+    end
+    assert_equal "Coverage", captured[0]
+    assert_equal "active", captured[1][:status]
+    assert_equal "Patient/pt_001", captured[1][:beneficiary]
+  end
+
+  def test_get_coverages_drops_non_active_coverage
+    # A server that ignores the status search parameter still must not
+    # hand cancelled/draft/entered-in-error coverage to callers that read
+    # "any coverage" as "insurance verified".
+    entries = %w[cancelled draft entered-in-error].map do |status|
+      { "resource" => { "resourceType" => "Coverage", "status" => status,
+                        "subscriberId" => "POL-#{status}" } }
+    end
+    entries << { "resource" => { "resourceType" => "Coverage", "status" => "active",
+                                 "subscriberId" => "POL-active" } }
+
+    @adapter.stub(:fhir_search, { "resourceType" => "Bundle", "entry" => entries }) do
+      result = @adapter.get_coverages("pt_001")
+      assert_equal 1, result.size
+      assert_equal "POL-active", result.first[:policy_id]
+      assert_equal "active", result.first[:status]
+    end
+  end
+
+  def test_get_coverages_drops_coverage_with_no_status
+    @adapter.stub(:fhir_search, { "entry" => [ { "resource" => { "subscriberId" => "POL-1" } } ] }) do
+      assert_equal [], @adapter.get_coverages("pt_001")
+    end
+  end
+
+  def test_get_coverages_returns_nil_when_the_search_fails
+    # fhir_search returns nil on a non-2xx (e.g. 500) or unreachable
+    # server. That must stay distinguishable from "searched, found none":
+    # a transport failure is unavailable, not "no insurance".
+    @adapter.stub(:fhir_search, nil) do
+      assert_nil @adapter.get_coverages("pt_001")
+    end
+  end
+
+  def test_fhir_search_returns_nil_on_error_response
+    failure = Net::HTTPServerError.new("1.1", "500", "Internal Server Error")
+    @adapter.stub(:http_get, failure) do
+      assert_nil @adapter.send(:fhir_search, "Coverage", beneficiary: "Patient/pt_001")
+    end
+  end
+
+  def test_empty_result_and_failed_read_are_distinguishable
+    searched_none = @adapter.stub(:fhir_search, { "entry" => [] }) { @adapter.get_coverages("pt_001") }
+    failed = @adapter.stub(:fhir_search, nil) { @adapter.get_coverages("pt_001") }
+
+    assert_equal [], searched_none
+    assert_nil failed
+    refute_equal searched_none, failed
+  end
+
   # -- Fail-closed on unknown/absent enrollment confidence (HIGH finding) --
 
   def test_verify_tribal_enrollment_confidence_defaults_unavailable_when_subfield_absent
