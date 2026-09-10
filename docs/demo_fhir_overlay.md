@@ -8,11 +8,18 @@ reprices each purchased/referred-care (PRC) charge to its **Medicare-Like Rate
 recovered.
 
 ```
-bundle exec rails demo:overlay        # seed synthetic FHIR -> ingest -> PRC/MLR -> report
-bundle exec rails demo:overlay_reset  # delete ingested cases/obligations for both tenants
+bin/demo-overlay   # gems + dev DB + reset + run, from a fresh checkout
 ```
 
-(run from `test/dummy`, or wherever the engine's rake tasks are mounted.)
+That wraps two rake tasks, which a host app that mounts the engine can call
+directly (from `test/dummy` in this repo):
+
+```
+bin/rails demo:overlay        # seed synthetic FHIR -> ingest -> PRC/MLR -> report
+bin/rails demo:overlay_reset  # delete ingested cases/obligations for both tenants
+```
+
+Prerequisites and the other demos: [`docs/demo.md`](demo.md).
 
 ## What it demonstrates
 
