@@ -39,8 +39,14 @@ module Corvid
     # keys). The signing algorithm is derived from the key type unless
     # +signing_alg:+ is given explicitly; either way the key type and curve
     # are validated to match, so a mislabelled key fails fast here rather
-    # than producing a signature the vendor silently rejects. The instance
+    # than producing a signature the vendor silently rejects. The key must
+    # be a private key of adequate strength (RSA >= 2048 bits). The instance
     # is safe to share across threads.
+    #
+    # Nothing derived from a token-endpoint response body is ever placed in
+    # an exception message: a nonconforming endpoint can return a token, or
+    # echo our signed assertion, in a body of any shape, and TokenError
+    # messages reach application logs.
     class BackendServicesClient
       # Raised when the token endpoint does not return a usable access token.
       class TokenError < StandardError; end
@@ -70,6 +76,12 @@ module Corvid
       # a fresh grant on every FHIR call, short enough to bound the blast
       # radius of an unknown real lifetime.
       DEFAULT_TOKEN_TTL = 60
+
+      # Smallest RSA modulus accepted for RS384 signing. 2048 is the floor
+      # every current guideline (NIST SP 800-57, BCP 195) puts on RSA; a
+      # shorter key would be silently accepted by many token endpoints while
+      # offering materially less protection for the assertion signature.
+      MIN_RSA_KEY_BITS = 2048
 
       DEFAULT_OPEN_TIMEOUT = 10
       DEFAULT_READ_TIMEOUT = 30
@@ -181,11 +193,22 @@ module Corvid
         end
       end
 
+      # Validate the signing key beyond its class: it must be a *private*
+      # key (a public half cannot sign, and would otherwise fail deep inside
+      # the first grant as an opaque OpenSSL error) and, for RSA, of a
+      # modern size.
       def validate_key_for_alg!(alg, key)
         case alg
         when "RS384"
           unless key.is_a?(OpenSSL::PKey::RSA)
             raise ArgumentError, "RS384 requires an RSA private key, got #{key.class}"
+          end
+          require_private_key!(key, "RS384")
+          bits = key.n&.num_bits.to_i
+          if bits < MIN_RSA_KEY_BITS
+            raise ArgumentError,
+                  "RS384 requires an RSA key of at least #{MIN_RSA_KEY_BITS} bits, " \
+                  "got #{bits}"
           end
         when "ES384"
           unless key.is_a?(OpenSSL::PKey::EC)
@@ -196,7 +219,16 @@ module Corvid
             raise ArgumentError,
                   "ES384 requires a P-384 (secp384r1) key, got curve #{curve.inspect}"
           end
+          require_private_key!(key, "ES384")
         end
+      end
+
+      def require_private_key!(key, alg)
+        return if key.private?
+
+        raise ArgumentError,
+              "#{alg} requires a PRIVATE key; the supplied #{key.class} carries " \
+              "only a public half and cannot sign the client assertion"
       end
 
       def validate_assertion_ttl!(ttl)
@@ -234,17 +266,30 @@ module Corvid
         request["Accept"] = "application/json"
         request.set_form_data(form)
 
+        parse_token_response(build_http(uri).request(request))
+      end
+
+      # Construct the Net::HTTP used for the grant. TLS with peer
+      # verification is set explicitly rather than left to Net::HTTP's
+      # default, so the setting is visible, testable, and cannot drift: this
+      # request carries a signed assertion out and a bearer token back.
+      def build_http(uri)
         http = Net::HTTP.new(uri.host, uri.port)
         http.use_ssl = uri.scheme == "https"
+        http.verify_mode = OpenSSL::SSL::VERIFY_PEER
         http.open_timeout = @open_timeout
         http.read_timeout = @read_timeout
         http.ca_file = @ca_file if @ca_file
         http.ca_path = @ca_path if @ca_path
-        response = http.request(request)
-
-        parse_token_response(response)
+        http
       end
 
+      # Parse the grant response. Nothing derived from the response *body*
+      # is ever interpolated into an exception: a nonconforming endpoint can
+      # put an access token, a refresh token, or an echo of our signed
+      # assertion in a body of any shape (a bare JSON string, form-encoding,
+      # a 5xx debug dump), and TokenError messages land in Rails logs.
+      # Diagnostics come from a safe summary instead.
       def parse_token_response(response)
         raw = response.body.to_s
         parsed = begin
@@ -254,24 +299,35 @@ module Corvid
         end
 
         unless response.is_a?(Net::HTTPSuccess)
-          detail = parsed == :unparseable ? truncate(raw) : oauth_detail(parsed)
+          detail = parsed.is_a?(Hash) ? oauth_detail(parsed) : response_summary(response, raw)
           raise TokenError, "token endpoint returned HTTP #{response.code}: #{detail}"
         end
 
         if parsed == :unparseable
           raise TokenError,
-                "token endpoint returned #{response.code} with an unparseable body: #{truncate(raw)}"
+                "token endpoint returned #{response.code} with an unparseable body " \
+                "(#{response_summary(response, raw)})"
         end
         unless parsed.is_a?(Hash)
           raise TokenError,
-                "token endpoint returned #{response.code} with a non-object JSON body: #{truncate(raw)}"
+                "token endpoint returned #{response.code} with a non-object JSON body " \
+                "(#{response_summary(response, raw)})"
         end
         parsed
       end
 
       def extract_access_token(grant)
         token = grant["access_token"]
-        return token if token.is_a?(String) && !token.empty?
+        return token if token.is_a?(String) && !token.strip.empty?
+
+        if token.is_a?(String)
+          # Whitespace-only passes a bare empty? check but would be emitted
+          # as a malformed "Bearer  " header: every subsequent call 401s and
+          # the failure presents as missing data, not as broken auth.
+          raise TokenError,
+                "token endpoint returned a blank access_token " \
+                "(#{token.length} whitespace characters)"
+        end
 
         raise TokenError, "token endpoint returned no access_token (#{oauth_detail(grant)})"
       end
@@ -289,38 +345,61 @@ module Corvid
       end
 
       # Resolve the cache lifetime from expires_in. Absent => a conservative
-      # default (avoid a grant per request); non-numeric/garbage => a hard
-      # error (a broken response, not a silent 0). Non-positive values leave
-      # the token immediately stale so the next call refetches.
+      # default (avoid a grant per request); anything else must be a
+      # *positive* number. A zero/negative lifetime means the endpoint handed
+      # us an already-expired token: caching it would serve one guaranteed
+      # 401 per grant, so the grant is failed instead. Booleans and other
+      # non-numeric garbage are a broken response, not a silent 0.
       def ttl_from(grant)
         raw = grant["expires_in"]
         return DEFAULT_TOKEN_TTL if raw.nil?
 
         ttl = case raw
+        when true, false then nil
         when Integer then raw
         when Float then raw.to_i
         when String then Integer(raw, exception: false)
         end
         raise TokenError, "token endpoint returned malformed expires_in #{raw.inspect}" if ttl.nil?
 
+        if ttl <= 0
+          raise TokenError,
+                "token endpoint returned non-positive expires_in #{raw.inspect}; " \
+                "the access token is already expired"
+        end
+
         ttl
       end
 
-      # Redact token-endpoint bodies to the OAuth error fields (or just the
-      # key names), so an access/refresh token or echoed assertion in a
+      # Redact token-endpoint bodies to the OAuth error *code* (or just the
+      # key names), so an access/refresh token or an echoed assertion in a
       # nonconforming response never lands in an exception message or log.
+      # error_description is free text the server controls and has been seen
+      # to echo the submitted assertion, so it is summarized, never quoted.
       def oauth_detail(body)
         return "non-object response" unless body.is_a?(Hash)
 
-        described = body.values_at("error", "error_description").compact
-        return described.join(": ") unless described.empty?
+        code = body["error"]
+        parts = []
+        parts << "error=#{safe_error_code(code)}" unless code.nil?
+        parts << "error_description present (redacted)" if body["error_description"]
+        return parts.join("; ") unless parts.empty?
 
         "response keys: #{body.keys.sort.join(', ')}"
       end
 
-      def truncate(str, limit = 300)
-        s = str.to_s
-        s.length > limit ? "#{s[0, limit]}…(truncated)" : s
+      # OAuth2 error codes are short registry tokens; anything else in that
+      # field is a server going off-spec and is not repeated verbatim.
+      def safe_error_code(code)
+        code.is_a?(String) && code.match?(/\A[A-Za-z0-9_.-]{1,64}\z/) ? code : "(redacted)"
+      end
+
+      # Body-free diagnostics: enough to tell a captive portal from an HTML
+      # error page from an empty response, with no response content.
+      def response_summary(response, raw)
+        content_type = response["content-type"] if response.respond_to?(:[])
+        "content-type=#{content_type ? content_type.split(';').first : 'unset'}, " \
+          "#{raw.bytesize} bytes, body redacted"
       end
 
       # --- JWT client assertion --------------------------------------------

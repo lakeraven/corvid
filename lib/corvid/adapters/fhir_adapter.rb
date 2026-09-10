@@ -3,6 +3,7 @@
 require "net/http"
 require "json"
 require "uri"
+require "openssl"
 require "date"
 require "bigdecimal"
 require "corvid/adapters/base"
@@ -21,6 +22,11 @@ module Corvid
     class FhirAdapter < Base
       # Raised when a configured token_source yields a blank/non-string token.
       class TokenSourceError < StandardError; end
+
+      # Raised when credentials would be sent over a non-TLS connection.
+      # Subclasses ArgumentError because the usual cause is a misconfigured
+      # base_url, caught at construction.
+      class InsecureTransportError < ArgumentError; end
 
       attr_reader :base_url
 
@@ -75,15 +81,28 @@ module Corvid
                      read_timeout: DEFAULT_READ_TIMEOUT,
                      proxy_uri: nil,
                      ca_file: nil,
-                     ca_path: nil)
+                     ca_path: nil,
+                     allow_insecure_http: false)
         if token_source && !token_source.respond_to?(:call)
           raise ArgumentError,
                 "token_source must be callable (respond to #call), " \
                 "got #{token_source.class}"
         end
+        if bearer_token && !(bearer_token.is_a?(String) && !bearer_token.strip.empty?)
+          raise ArgumentError,
+                "bearer_token must be a non-blank string when given, " \
+                "got #{describe_token(bearer_token)}"
+        end
 
         @base_url = base_url.chomp("/")
         @bearer_token = bearer_token
+        # Off by default: an Authorization header on a cleartext connection
+        # puts a live bearer token on the wire. The opt-out exists for
+        # localhost / test doubles, never for a real deployment.
+        @allow_insecure_http = allow_insecure_http
+        # Fail at configuration time, not on the first PHI request, when
+        # credentials are paired with a non-TLS base_url.
+        require_secure_transport!(@base_url) if bearer_token || token_source
         # A callable resolved per request — e.g. a
         # Corvid::Auth::BackendServicesClient — so each call carries a
         # freshly-refreshed token. Takes precedence over the static
@@ -470,9 +489,32 @@ module Corvid
         end
         @default_headers.each { |k, v| request[k] = v }
         token = resolve_bearer_token
-        request["Authorization"] = "Bearer #{token}" unless token.nil? || token.empty?
+        unless token.nil? || token.strip.empty?
+          # Re-checked per request: base_url is not the only way a URI can
+          # reach here, and this is the exact point where the credential
+          # would go on the wire.
+          require_secure_transport!(url)
+          request["Authorization"] = "Bearer #{token}"
+        end
 
         build_http(uri).request(request)
+      end
+
+      # Reject any URL that would carry an Authorization header over a
+      # non-TLS connection. https is required unless the operator has
+      # explicitly opted out via allow_insecure_http (localhost/testing).
+      def require_secure_transport!(url)
+        uri = URI.parse(url.to_s)
+        return if uri.scheme == "https"
+        return if @allow_insecure_http
+
+        # Host only, never the path — a FHIR path carries record identifiers.
+        raise InsecureTransportError,
+              "FhirAdapter refuses to send an Authorization header over " \
+              "#{uri.scheme.inspect} (host #{uri.host.inspect}). Use https, or pass " \
+              "allow_insecure_http: true for a localhost/test endpoint only."
+      rescue URI::InvalidURIError => e
+        raise InsecureTransportError, "invalid FHIR base URL: #{e.message}"
       end
 
       # Resolve the bearer token for the current request. A token_source
@@ -482,18 +524,32 @@ module Corvid
       # A configured token_source that yields a blank token is a hard error:
       # falling through would send an unauthenticated (or malformed
       # "Bearer ") request whose 401 looks like a credentials problem rather
-      # than the real cause — the source produced nothing.
+      # than the real cause — the source produced nothing. Whitespace-only
+      # counts as blank; it passes a bare empty? check but produces the same
+      # broken header.
       def resolve_bearer_token
         if @token_source
           token = @token_source.call
-          unless token.is_a?(String) && !token.empty?
+          unless token.is_a?(String) && !token.strip.empty?
             raise TokenSourceError,
-                  "token_source returned #{token.inspect}; expected a non-empty token string"
+                  "token_source returned #{describe_token(token)}; " \
+                  "expected a non-blank token string"
           end
           return token
         end
 
         @bearer_token
+      end
+
+      # Describe a rejected token by shape only. The value is never
+      # rendered: TokenSourceError messages reach Rails logs, and a token
+      # that merely failed *our* validation may still be live credential
+      # material.
+      def describe_token(token)
+        return "nil" if token.nil?
+        return "a blank string (#{token.length} whitespace characters)" if token.is_a?(String)
+
+        "a #{token.class}"
       end
 
       # Construct a Net::HTTP instance configured per the constructor's
@@ -508,6 +564,7 @@ module Corvid
         end
         http = klass.new(uri.host, uri.port)
         http.use_ssl = uri.scheme == "https"
+        http.verify_mode = OpenSSL::SSL::VERIFY_PEER
         http.open_timeout = @open_timeout
         http.read_timeout = @read_timeout
         http.ca_file = @ca_file if @ca_file
