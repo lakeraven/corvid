@@ -29,6 +29,12 @@ Gem::Specification.new do |spec|
   spec.add_dependency "rails", "~> 8.1"
   spec.add_dependency "aasm", "~> 5.5"
   spec.add_dependency "csv", ">= 3.0"
+  # json 3.x dropped support for passing parser options as a positional Hash.
+  # ActiveSupport::JSON.decode (through Rails 8.1.3.1, the latest release) still
+  # calls ::JSON.parse(json, options), so json >= 3 raises ArgumentError on every
+  # jsonb read and on schema dumps of jsonb columns with defaults. Lift this cap
+  # once a Rails release passes the options as keywords.
+  spec.add_dependency "json", ">= 2.7", "< 3.0"
   spec.add_dependency "money-rails", "~> 3.0"
   spec.add_dependency "ostruct", "~> 0.6"
   spec.add_dependency "pg", "~> 1.5"
