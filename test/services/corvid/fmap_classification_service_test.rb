@@ -28,7 +28,8 @@ module Corvid
         date_of_service: Date.new(2022, 6, 1),
         jurisdiction: "AZ",
         facility_authority: @uio,
-        aian_verified: true
+        aian_verified: true,
+        evidence_refs: [ "attestation:tok_example_aian" ]
       )
       assert_equal "fmap_100_uio", inside.category
       assert_equal "us-arpa-9815-uio-100", inside.rule_key
@@ -48,7 +49,8 @@ module Corvid
         date_of_service: Date.new(2026, 3, 1),
         jurisdiction: "MT",
         facility_authority: @contract_638,
-        aian_verified: true
+        aian_verified: true,
+        evidence_refs: [ "attestation:tok_example_aian" ]
       )
       assert_equal "fmap_100_ihs_638", result.category
       assert result.rule_citations.first.include?("1905(b)")
@@ -98,7 +100,8 @@ module Corvid
         date_of_service: Date.new(2026, 3, 1),
         jurisdiction: "WA",
         aian_verified: true,
-        received_through_basis: "cca"
+        received_through_basis: "cca",
+        evidence_refs: [ "cca_agreement:doc_example_1" ]
       )
       assert_equal "fmap_100_cca", result.category
     end
@@ -143,6 +146,7 @@ module Corvid
         jurisdiction: "AZ",
         facility_authority: @uio,
         aian_verified: true,
+        evidence_refs: [ "attestation:tok_example_aian" ],
         claim_reference: "clm_example_1"
       )
 
@@ -156,6 +160,106 @@ module Corvid
       assert_equal "fmap_regular", correction.category
       assert_includes FmapDetermination.current, correction
       refute_includes FmapDetermination.current, determination
+    end
+
+    # The governing invariant: an asserted input with no evidence behind
+    # it must never buy the higher federal share.
+    test "an unevidenced 100 percent is refused, not granted" do
+      result = FmapClassificationService.classify(
+        date_of_service: Date.new(2026, 3, 1),
+        jurisdiction: "MT",
+        facility_authority: @contract_638,
+        aian_verified: true,
+        evidence_refs: []
+      )
+
+      assert_equal "fmap_regular", result.category
+      assert_equal FmapClassificationService::UNEVIDENCED_100, result.determination_reason
+      assert_includes result.missing_evidence, "evidence_refs"
+      assert_equal "fmap_100_ihs_638", result.best_available_category
+      assert result.misclassification_gap?
+    end
+
+    test "classify! persists the refusal, never an unevidenced 100 percent row" do
+      determination = FmapClassificationService.classify!(
+        encounter_identifier: "enc_example_3",
+        date_of_service: Date.new(2022, 6, 1),
+        jurisdiction: "AZ",
+        facility_authority: @uio,
+        aian_verified: true
+      )
+
+      assert_equal "fmap_regular", determination.category
+      assert_equal FmapClassificationService::UNEVIDENCED_100, determination.determination_reason
+      assert_empty determination.evidence_refs
+    end
+
+    test "a persisted 100 percent determination must name its evidence" do
+      determination = FmapDetermination.new(
+        encounter_identifier: "enc_example_4",
+        date_of_service: Date.new(2022, 6, 1),
+        jurisdiction: "AZ",
+        category: "fmap_100_uio",
+        determined_at: Time.current
+      )
+
+      refute determination.valid?
+      assert determination.errors[:evidence_refs].any?
+    end
+
+    # An unloaded rules table is a broken input, not a finding of "not
+    # Medicaid": a CMS-64 run must see the refusal, not a complete-looking
+    # under-claim.
+    test "no rules in force yields undetermined, never a definitive category" do
+      FmapRule.unscoped.delete_all
+
+      result = FmapClassificationService.classify(
+        date_of_service: Date.new(2026, 3, 1),
+        jurisdiction: "MT",
+        facility_authority: @contract_638,
+        aian_verified: true,
+        evidence_refs: [ "attestation:tok_example_aian" ]
+      )
+
+      assert_equal "undetermined", result.category
+      assert result.undetermined?
+      assert_equal FmapClassificationService::NO_RULES_IN_FORCE, result.determination_reason
+      assert_nil result.fmap_percent
+      assert_empty result.rule_citations
+    end
+
+    test "a date of service before every rule's window is undetermined" do
+      result = FmapClassificationService.classify(
+        date_of_service: Date.new(1960, 1, 1),
+        jurisdiction: "MT",
+        aian_verified: false
+      )
+
+      assert_equal "undetermined", result.category
+      assert_equal FmapClassificationService::NO_RULES_IN_FORCE, result.determination_reason
+    end
+
+    test "an authority with no effective date is rejected, never in force forever" do
+      undated = FacilityAuthority.new(
+        facility_identifier: "fac_undated_example",
+        authority_type: "contract_638"
+      )
+
+      refute undated.valid?
+      assert undated.errors[:effective_on].any?
+      refute undated.in_force_on?(Date.new(2018, 6, 1))
+    end
+
+    test "a date of service before the authority started confers no basis" do
+      result = FmapClassificationService.classify(
+        date_of_service: Date.new(2018, 6, 1),
+        jurisdiction: "MT",
+        facility_authority: @contract_638,
+        aian_verified: true,
+        evidence_refs: [ "attestation:tok_example_aian" ]
+      )
+
+      assert_equal "fmap_regular", result.category
     end
   end
 end

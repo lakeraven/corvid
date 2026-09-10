@@ -36,6 +36,12 @@ module Corvid
       effective_on.nil?
     end
 
+    # The tiers that must rest on a persisted evidence chain before
+    # classification may grant them.
+    def hundred_percent?
+      category.to_s.start_with?("fmap_100") || fmap_percent == 100
+    end
+
     def matches?(facility_authority_type:, aian_verified:, received_through_basis:, coverage_group: nil)
       return false if facility_authority_types.any? && !facility_authority_types.include?(facility_authority_type.to_s)
       return false if requires_aian && !aian_verified

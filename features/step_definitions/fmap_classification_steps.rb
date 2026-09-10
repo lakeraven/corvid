@@ -39,6 +39,18 @@ When("an unverified-AIAN encounter at {string} with date of service {string} is 
   )
 end
 
+When("an encounter at {string} with date of service {string} is classified with AIAN asserted but no evidence") do |facility, dos|
+  @determination = Corvid::FmapClassificationService.classify!(
+    encounter_identifier: "enc_#{facility}_#{dos}",
+    facility_identifier: facility,
+    date_of_service: Date.parse(dos),
+    jurisdiction: "AZ",
+    facility_authority: @facility_authorities.fetch(facility),
+    aian_verified: true,
+    evidence_refs: []
+  )
+end
+
 When("an encounter at {string} with date of service {string} is classified and referenced by claim {string}") do |facility, dos, claim|
   @determination = Corvid::FmapClassificationService.classify!(
     encounter_identifier: "enc_#{facility}_#{dos}",
@@ -47,6 +59,7 @@ When("an encounter at {string} with date of service {string} is classified and r
     jurisdiction: "AZ",
     facility_authority: @facility_authorities.fetch(facility),
     aian_verified: true,
+    evidence_refs: [ "attestation:tok_example_aian" ],
     claim_reference: claim
   )
 end
