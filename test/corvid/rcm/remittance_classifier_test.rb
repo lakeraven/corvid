@@ -113,8 +113,66 @@ class Corvid::Rcm::RemittanceClassifierTest < Minitest::Test
     routing = route("denial_bundled_co97")
 
     refute_equal :denied, routing.outcome
-    assert_equal :auto_post, routing.work_queue
     refute routing.auto_closeable?, "a bundling adjustment needs a coding review before it closes"
+  end
+
+  # Regression: a paid claim carrying a CO-97 was routed to :auto_post no
+  # matter what the mapping table said, so a consumer keying on `work_queue`
+  # never saw the coding review the data asked for and the bundled line was
+  # quietly written off.
+  def test_a_paid_claim_lands_in_the_queue_its_own_reason_code_names
+    routing = route("denial_bundled_co97")
+
+    assert_equal @codes.classify("CO-97").work_queue, routing.work_queue
+    assert_equal :coding_review, routing.work_queue
+    refute routing.auto_postable?, "the mapping table says this one is not postable without a human"
+  end
+
+  def test_a_wholly_contractual_adjustment_still_routes_to_auto_post
+    claim = Corvid::Rcm::RemittanceClaim.new(
+      claim_identifier: "CLM-CO45",
+      status_code: Corvid::Rcm::CLAIM_STATUS_PROCESSED_PRIMARY,
+      billed_amount: BigDecimal("200.00"),
+      paid_amount: BigDecimal("160.00"),
+      adjustments: [ Corvid::Rcm::Adjustment.new(group_code: "CO", reason_code: "45", amount: BigDecimal("40.00")) ]
+    )
+    routing = @classifier.classify(claim)
+
+    assert_equal :auto_post, routing.work_queue
+    assert routing.auto_postable?
+    assert routing.auto_closeable?
+  end
+
+  # An adjustment needing a human outranks settled money on the same claim:
+  # the patient balance still posts, but the queue is the one with work in it.
+  def test_an_adjustment_needing_attention_outranks_the_patient_balance_for_routing
+    claim = Corvid::Rcm::RemittanceClaim.new(
+      claim_identifier: "CLM-MIX2",
+      status_code: Corvid::Rcm::CLAIM_STATUS_PROCESSED_PRIMARY,
+      billed_amount: BigDecimal("245.00"),
+      paid_amount: BigDecimal("160.00"),
+      patient_responsibility_amount: BigDecimal("40.00"),
+      adjustments: [
+        Corvid::Rcm::Adjustment.new(group_code: "PR", reason_code: "2", amount: BigDecimal("40.00")),
+        Corvid::Rcm::Adjustment.new(group_code: "CO", reason_code: "97", amount: BigDecimal("45.00"))
+      ]
+    )
+    routing = @classifier.classify(claim)
+
+    assert_equal :paid_with_patient_responsibility, routing.outcome
+    assert_equal :coding_review, routing.work_queue
+    refute routing.auto_closeable?
+  end
+
+  def test_every_routed_queue_is_one_the_mapping_table_actually_names
+    @client.fetch_remittances.flat_map { |rem| @classifier.classify_remittance(rem) }.each do |routing|
+      next if routing.work_queue.nil?
+      next if routing.work_queue == Corvid::Rcm::AdjustmentReasonCodes::HUMAN_REVIEW_QUEUE
+
+      queues = routing.classifications.map(&:work_queue)
+      assert_includes queues, routing.work_queue,
+                      "#{routing.claim_identifier} routed to a queue none of its reason codes named"
+    end
   end
 
   def test_denial_remark_codes_are_resolved_to_text

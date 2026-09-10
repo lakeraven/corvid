@@ -18,6 +18,12 @@ module Corvid
     # Checks never raise on missing data — a claim with nothing on it should
     # produce a pile of readable findings, not a stack trace.
     module ScrubChecks
+      # ICD-10-CM code shape: a letter, a digit, a third alphanumeric character,
+      # then an optional decimal point and up to four more. This is the only
+      # thing about a diagnosis code that can be verified without the code
+      # table itself — see `diagnosis_code_well_formed`.
+      ICD10_CM_CODE = /\A[A-Z][0-9][0-9A-Z](\.[0-9A-Z]{1,4})?\z/
+
       module_function
 
       # -- helpers ------------------------------------------------------------
@@ -170,8 +176,16 @@ module Corvid
                            line_sequence: item.sequence)
           end
 
+          # An unrecognised modality fails exactly as closed as a missing one.
+          # A typo or an unmapped modality is not evidence that the place of
+          # service is right — it is evidence that nobody can tell, and this
+          # rule exists precisely because a POS/modifier mismatch denies the
+          # whole telehealth book rather than one claim.
           expectation = expectations[item.encounter_modality.to_s]
-          next [] if expectation.nil?
+          if expectation.nil?
+            next fail_with({ problem: "Line #{item.sequence} (#{item.procedure_code}) records the encounter modality #{item.encounter_modality.to_s.inspect}, which this ruleset does not recognise, so its place of service cannot be verified." },
+                           line_sequence: item.sequence)
+          end
 
           allowed_pos = Array(expectation["place_of_service"])
           required = Array(expectation["required_modifiers"])
@@ -258,16 +272,50 @@ module Corvid
 
       # -- diagnosis coding ----------------------------------------------------
 
-      def billable_diagnosis_codes(claim, params, _context)
+      # The only diagnosis property that can be verified from the code alone,
+      # with no ICD-10-CM table in hand. A malformed code is not a judgement
+      # call: it never adjudicates anywhere, so this one blocks.
+      def diagnosis_code_well_formed(claim, _params, _context)
+        Array(claim.diagnoses).flat_map do |diagnosis|
+          code = diagnosis.code.to_s.strip.upcase
+          next [] if code.match?(ICD10_CM_CODE)
+
+          problem =
+            if code.empty?
+              "A diagnosis on the claim carries no code at all."
+            else
+              "Diagnosis #{code.inspect} is not a well-formed ICD-10-CM code."
+            end
+          fail_with({ problem: problem })
+        end
+      end
+
+      # Whether a code is a non-billable header is a property of the ICD-10-CM
+      # table, not of the code's shape, and Phase 0 does not carry that table.
+      # Both inputs here are therefore best-effort DATA:
+      #
+      #   * `nonbillable_codes` — a curated list of subcategory headers, and
+      #   * `billable_category_codes` — the three-character rubrics that ARE
+      #     valid leaf codes, because "three characters" does not imply
+      #     "header" (F70 and F23 are three characters and perfectly billable).
+      #
+      # Being best-effort is exactly why the rule that points at this check
+      # WARNS. A hand-maintained list that blocks is a list that eventually
+      # refuses to transmit one of the clinic's own legitimate claims, silently
+      # and with no payer response to notice it by.
+      def nonbillable_diagnosis_codes(claim, params, _context)
         chapter = params["chapter"]
-        nonbillable = Array(params["nonbillable_codes"]).map { |code| code.to_s.upcase }
+        headers = Array(params["nonbillable_codes"]).map { |code| code.to_s.upcase }
+        billable_rubrics = Array(params["billable_category_codes"]).map { |code| code.to_s.upcase }
 
         Array(claim.diagnoses).flat_map do |diagnosis|
-          code = diagnosis.code.to_s.upcase
-          if diagnosis.category_header?
-            fail_with({ problem: "Diagnosis #{code} is a three-character category header, which is never billable on a claim." })
-          elsif nonbillable.include?(code) && (chapter.nil? || diagnosis.chapter_letter.to_s.upcase == chapter.to_s.upcase)
-            fail_with({ problem: "Diagnosis #{code} is a subcategory header with billable children, so it is not billable itself." })
+          code = diagnosis.code.to_s.strip.upcase
+          next [] unless chapter.nil? || diagnosis.chapter_letter.to_s.upcase == chapter.to_s.upcase
+
+          if diagnosis.category_header? && !billable_rubrics.include?(code)
+            fail_with({ problem: "Diagnosis #{code} is a three-character category rubric that is not on the list of billable rubrics, so it is probably a header with subcategories." })
+          elsif headers.include?(code)
+            fail_with({ problem: "Diagnosis #{code} is a known subcategory header with billable children, so it is probably not billable itself." })
           else
             []
           end
@@ -303,25 +351,71 @@ module Corvid
         end
       end
 
-      def duplicate_service(claim, _params, context)
+      # A duplicate is the same patient, same date of service and same procedure
+      # code with nothing to tell the two apart — and it is worth catching on
+      # BOTH sides of the claim boundary:
+      #
+      #   * two lines on THIS claim, which the payer will deny CO-18 just as
+      #     readily as it denies a resubmission; and
+      #   * a line matching something already submitted.
+      #
+      # Modifiers are what tell two same-day services apart. A line carrying a
+      # distinct-service modifier the other one does not carry is exactly the
+      # escape hatch the remedy text promises, so it has to actually pass —
+      # otherwise a clinic with two legitimate sessions in a day can never
+      # bill the second one.
+      def duplicate_service(claim, params, context)
+        distinguishing = Array(params["distinguishing_modifiers"]).map { |mod| mod.to_s.upcase }
+        dated_items = Array(claim.items).reject { |item| item.serviced_date.nil? }
+
+        intra_claim_duplicates(dated_items, distinguishing) +
+          history_duplicates(claim, dated_items, distinguishing, context)
+      end
+
+      # Two lines on the same claim, same code, same day, nothing distinguishing
+      # them. Reported on the later line — the earlier one is the keeper.
+      def intra_claim_duplicates(dated_items, distinguishing)
+        dated_items.each_with_index.flat_map do |item, index|
+          earlier = dated_items[0...index].find do |candidate|
+            candidate.procedure_code == item.procedure_code &&
+              candidate.serviced_date == item.serviced_date &&
+              !modifiers_distinguish?(item.modifiers, candidate.modifiers, distinguishing)
+          end
+          next [] if earlier.nil?
+
+          fail_with({ problem: "Line #{item.sequence} (#{item.procedure_code} on #{item.serviced_date}) repeats line #{earlier.sequence} on this same claim, with no distinct-service modifier to tell them apart." },
+                    line_sequence: item.sequence)
+        end
+      end
+
+      def history_duplicates(claim, dated_items, distinguishing, context)
         history = context.history
         return [] if history.nil?
 
-        Array(claim.items).flat_map do |item|
-          next [] if item.serviced_date.nil?
-
+        dated_items.flat_map do |item|
           priors = history.duplicates_of(
             patient_identifier: claim.patient_identifier,
             procedure_code: item.procedure_code,
             serviced_date: item.serviced_date,
             excluding_claim_identifier: claim.identifier
-          )
+          ).reject { |prior| modifiers_distinguish?(item.modifiers, prior.modifiers, distinguishing) }
           next [] if priors.empty?
 
           references = priors.map { |prior| prior.claim_identifier || "an earlier claim" }.uniq
           fail_with({ problem: "Line #{item.sequence} (#{item.procedure_code} on #{item.serviced_date}) was already submitted for this patient on #{references.join(', ')}." },
                     line_sequence: item.sequence)
         end
+      end
+
+      # Two same-day services are distinguished when one of them carries a
+      # distinct-service modifier the other does not. Both carrying the same
+      # modifier distinguishes nothing — that is still two identical lines.
+      def modifiers_distinguish?(left, right, distinguishing)
+        return false if distinguishing.empty?
+
+        left_set = Array(left).map { |mod| mod.to_s.upcase }
+        right_set = Array(right).map { |mod| mod.to_s.upcase }
+        ((left_set - right_set) | (right_set - left_set)).any? { |mod| distinguishing.include?(mod) }
       end
 
       # Lines that can be judged against a filing window at all: the payer's

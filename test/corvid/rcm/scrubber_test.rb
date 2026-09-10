@@ -226,6 +226,28 @@ class Corvid::Rcm::ScrubberTest < Minitest::Test
     assert_match(/does not record how the encounter happened/, result.findings.first.message)
   end
 
+  # Regression: an unrecognised modality used to fall straight through the
+  # check, so a typo on a telehealth encounter shipped POS 11 with modifier 95
+  # — the whole-book denial this rule exists to prevent. Unknown fails as
+  # closed as missing.
+  def test_a_line_recording_an_unrecognised_modality_blocks
+    result = scrub(Factory.claim_with_line(encounter_modality: :telehalth_patient_home,
+                                            place_of_service: "10", modifiers: [ "95" ]))
+
+    assert_only_rule(:place_of_service_matches_encounter_modality, result)
+    assert_equal :block, result.findings.first.severity
+    refute result.submittable?
+    assert_match(/does not recognise/, result.findings.first.message)
+    assert_match(/telehalth_patient_home/, result.findings.first.message)
+  end
+
+  def test_an_unrecognised_modality_cannot_slip_a_telehealth_modifier_past_an_office_place_of_service
+    result = scrub(Factory.claim_with_line(encounter_modality: :video,
+                                            place_of_service: "11", modifiers: [ "95" ]))
+
+    refute result.submittable?, "an unverifiable modality must not transmit"
+  end
+
   # -- time-supported coding --------------------------------------------------
 
   def test_the_60_minute_code_blocks_below_53_documented_minutes
@@ -294,22 +316,69 @@ class Corvid::Rcm::ScrubberTest < Minitest::Test
 
   # -- diagnosis coding -------------------------------------------------------
 
-  def test_a_three_character_category_header_diagnosis_blocks
-    result = scrub(Factory.claim(diagnoses: [ Factory.diagnosis("F32") ]))
+  def test_a_malformed_diagnosis_code_blocks
+    result = scrub(Factory.claim(diagnoses: [ Factory.diagnosis("F4321") ]))
 
-    assert_only_rule(:billable_behavioral_health_diagnosis, result)
-    assert_match(/three-character category header/, result.findings.first.message)
+    assert_only_rule(:diagnosis_code_well_formed, result)
+    assert_equal :block, result.findings.first.severity
+    refute result.submittable?
+    assert_match(/not a well-formed ICD-10-CM code/, result.findings.first.message)
   end
 
-  def test_a_subcategory_header_with_billable_children_blocks
+  def test_a_diagnosis_with_no_code_at_all_blocks
+    result = scrub(Factory.claim(diagnoses: [ Factory.diagnosis("") ]))
+
+    assert_includes result.blocked_by, :diagnosis_code_well_formed
+    assert_match(/carries no code at all/, findings_for(result, :diagnosis_code_well_formed).first.message)
+  end
+
+  def test_a_three_character_category_rubric_warns_without_blocking
+    result = scrub(Factory.claim(diagnoses: [ Factory.diagnosis("F32") ]))
+
+    assert_only_rule(:behavioral_health_diagnosis_likely_nonbillable, result)
+    assert_equal :warn, result.findings.first.severity
+    assert_match(/three-character category rubric/, result.findings.first.message)
+  end
+
+  def test_a_subcategory_header_warns_without_blocking
     result = scrub(Factory.claim(diagnoses: [ Factory.diagnosis("F43.2") ]))
 
-    assert_only_rule(:billable_behavioral_health_diagnosis, result)
+    assert_only_rule(:behavioral_health_diagnosis_likely_nonbillable, result)
+    assert_equal :warn, result.findings.first.severity
     assert_match(/subcategory header/, result.findings.first.message)
+  end
+
+  # The point of the severity split: a hand-maintained list is allowed to be
+  # wrong about a code, but it is never allowed to stop a claim over it.
+  def test_no_diagnosis_code_can_be_blocked_by_the_hand_maintained_list
+    result = scrub(Factory.claim(diagnoses: [ Factory.diagnosis("F43.2") ]))
+
+    assert result.submittable?, "a best-effort list must never block a claim"
   end
 
   def test_a_billable_f_series_diagnosis_passes
     assert scrub(Factory.claim(diagnoses: [ Factory.diagnosis("F43.23") ])).clean?
+  end
+
+  # Regression: these are billable ICD-10-CM leaf codes with no children. They
+  # were on the non-billable list, so a claim carrying one was blocked and
+  # never transmitted — the clinic denying its own legitimate claims.
+  def test_billable_four_character_f_codes_are_not_flagged
+    %w[F33.8 F41.8 F84.8 F90.8].each do |code|
+      result = scrub(Factory.claim(diagnoses: [ Factory.diagnosis(code) ]))
+
+      assert result.clean?, "#{code} is billable and should raise no finding, got: #{result.findings.map(&:to_s).join(' | ')}"
+    end
+  end
+
+  # Regression: "three characters" does not mean "header". These rubrics have
+  # no subcategories and are billable exactly as written.
+  def test_billable_three_character_f_rubrics_are_not_flagged
+    %w[F09 F21 F23 F29 F70 F82 F99].each do |code|
+      result = scrub(Factory.claim(diagnoses: [ Factory.diagnosis(code) ]))
+
+      assert result.clean?, "#{code} is a billable rubric and should raise no finding, got: #{result.findings.map(&:to_s).join(' | ')}"
+    end
   end
 
   # -- filing window and duplicates -------------------------------------------
@@ -364,6 +433,63 @@ class Corvid::Rcm::ScrubberTest < Minitest::Test
 
   def test_no_history_means_no_duplicate_findings
     assert_empty findings_for(scrub(Factory.claim), :duplicate_service_already_submitted)
+  end
+
+  # Regression: duplicate detection used to consult history only, so the
+  # easiest duplicate of all — the same line twice on one claim — sailed
+  # through and came back CO-18.
+  def test_the_same_line_twice_on_one_claim_blocks_without_any_history
+    claim = Factory.claim(items: [ Factory.line(sequence: 1), Factory.line(sequence: 2) ])
+    result = scrub(claim)
+
+    assert_only_rule(:duplicate_service_already_submitted, result)
+    refute result.submittable?
+    assert_equal 2, result.findings.first.line_sequence
+    assert_match(/repeats line 1 on this same claim/, result.findings.first.message)
+  end
+
+  def test_two_same_day_lines_on_one_claim_pass_when_a_modifier_tells_them_apart
+    claim = Factory.claim(items: [
+      Factory.line(sequence: 1),
+      Factory.line(sequence: 2, modifiers: [ "59" ])
+    ])
+
+    assert scrub(claim).clean?
+  end
+
+  def test_two_same_day_lines_carrying_the_same_modifier_are_still_duplicates
+    claim = Factory.claim(items: [
+      Factory.line(sequence: 1, modifiers: [ "59" ]),
+      Factory.line(sequence: 2, modifiers: [ "59" ])
+    ])
+
+    assert_only_rule(:duplicate_service_already_submitted, scrub(claim))
+  end
+
+  def test_different_procedure_codes_on_the_same_day_are_not_duplicates
+    claim = Factory.claim(items: [
+      Factory.line(sequence: 1),
+      Factory.line(sequence: 2, procedure_code: "90834", documented_minutes: 45)
+    ])
+
+    assert scrub(claim).clean?
+  end
+
+  # Regression: the remedy promises a distinct-service modifier as the way to
+  # bill a genuinely separate second session. It has to actually work, or a
+  # clinic that saw a patient twice in a day can never bill the second visit.
+  def test_a_distinct_service_modifier_clears_a_history_duplicate
+    history = Factory.history(Factory.prior_service(claim_identifier: "CLM-1900"))
+    claim = Factory.claim_with_line(modifiers: [ "XE" ])
+
+    assert scrub(claim, history: history).clean?
+  end
+
+  def test_a_history_duplicate_still_blocks_when_the_prior_carries_the_same_modifier
+    history = Factory.history(Factory.prior_service(claim_identifier: "CLM-1900", modifiers: [ "XE" ]))
+    result = scrub(Factory.claim_with_line(modifiers: [ "XE" ]), history: history)
+
+    assert_only_rule(:duplicate_service_already_submitted, result)
   end
 
   # -- the engine itself ------------------------------------------------------

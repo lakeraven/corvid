@@ -120,12 +120,30 @@ module Corvid
         return [ :paid_in_full, nil, true, true ] if classifications.empty?
 
         postable = classifications.all?(&:auto_closeable?)
+        queue = work_queue_for(classifications)
         if classifications.any?(&:patient_responsibility?)
           # Postable, but the patient still owes something — not closed.
-          [ :paid_with_patient_responsibility, :patient_billing, postable, false ]
+          [ :paid_with_patient_responsibility, queue, postable, false ]
         else
-          [ :paid_with_adjustments, :auto_post, postable, postable ]
+          [ :paid_with_adjustments, queue, postable, postable ]
         end
+      end
+
+      # The queue is the DATA's answer, not a guess made here. A paid claim
+      # carrying a CO-97 is mapped to a coding review, and routing it to
+      # `auto_post` because the claim as a whole paid is how that review never
+      # happens: a consumer keying on `work_queue` would see nothing to do.
+      #
+      # So: the first adjustment that still needs a human decides the queue,
+      # and only when nothing needs a human does the settled money choose —
+      # patient responsibility to the patient queue, otherwise the queue the
+      # remaining adjustment names.
+      def work_queue_for(classifications)
+        needs_attention = classifications.reject(&:auto_closeable?)
+        return needs_attention.first.work_queue if needs_attention.any?
+
+        patient = classifications.find(&:patient_responsibility?)
+        (patient || classifications.first).work_queue
       end
     end
   end
