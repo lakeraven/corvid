@@ -471,6 +471,49 @@ class Corvid::Auth::BackendServicesClientTest < Minitest::Test
     assert_cache_untouched(client)
   end
 
+  # Response HEADERS are wire data too.
+  def test_hostile_content_type_header_is_not_echoed
+    [ "eyJhbGciOiJSUzM4NCJ9.LEAKED-ASSERTION.sig",
+      "application/json Bearer=LEAKED-TOKEN",
+      "LEAKED/TOKEN-VALUE" ].each do |content_type|
+      resp = http_response(Net::HTTPOK, "200", "not json", content_type: content_type)
+      client = stub_client(private_key: @rsa)
+      client.define_singleton_method(:post_token_request) { |_form| parse_token_response(resp) }
+      err = assert_raises(Corvid::Auth::BackendServicesClient::TokenError) { client.access_token }
+      refute_match(/LEAKED/, err.message, "leaked via Content-Type #{content_type.inspect}")
+      assert_match(/redacted/, err.message)
+    end
+  end
+
+  def test_legitimate_content_type_is_still_reported
+    resp = http_response(Net::HTTPOK, "200", "not json",
+                         content_type: "application/json; charset=utf-8")
+    client = stub_client(private_key: @rsa)
+    client.define_singleton_method(:post_token_request) { |_form| parse_token_response(resp) }
+    err = assert_raises(Corvid::Auth::BackendServicesClient::TokenError) { client.access_token }
+    assert_match(%r{content-type=application/json}, err.message)
+    refute_match(/utf-8/, err.message, "parameters are free text and are dropped")
+  end
+
+  # Negative numerics went through a different branch than the non-numeric
+  # case; every wire value now takes the same redaction path.
+  def test_negative_expires_in_value_is_not_echoed
+    client = stub_client(private_key: @rsa,
+                         response: { "access_token" => "t", "expires_in" => -300 })
+    err = assert_raises(Corvid::Auth::BackendServicesClient::TokenError) { client.access_token }
+    assert_match(/non-positive expires_in/, err.message)
+    refute_match(/-300/, err.message)
+    assert_cache_untouched(client)
+  end
+
+  def test_negative_string_expires_in_value_is_not_echoed
+    client = stub_client(private_key: @rsa,
+                         response: { "access_token" => "t", "expires_in" => "-9999" })
+    err = assert_raises(Corvid::Auth::BackendServicesClient::TokenError) { client.access_token }
+    refute_match(/9999/, err.message)
+    assert_cache_untouched(client)
+  end
+
   # Key NAMES are response-derived too.
   def test_unrecognized_response_key_names_are_counted_not_named
     client = stub_client(
@@ -533,9 +576,10 @@ class Corvid::Auth::BackendServicesClientTest < Minitest::Test
 
   # A real Net::HTTP response subclass (so is_a?(Net::HTTPSuccess) works)
   # with a canned body, for exercising parse_token_response.
-  def http_response(klass, code, body)
+  def http_response(klass, code, body, content_type: nil)
     klass.new("1.1", code, "").tap do |resp|
       resp.define_singleton_method(:body) { body }
+      resp["Content-Type"] = content_type if content_type
     end
   end
 

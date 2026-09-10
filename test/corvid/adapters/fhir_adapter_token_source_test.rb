@@ -212,10 +212,57 @@ class Corvid::Adapters::FhirAdapterTokenSourceTest < Minitest::Test
     assert_match(/loopback/, err.message)
   end
 
+  # "Is this loopback?" is about the real network peers. A remote proxy in
+  # front of a localhost URL still puts the token on the wire.
+  def test_opt_out_does_not_cover_a_loopback_url_behind_a_remote_proxy
+    err = assert_raises(Corvid::Adapters::FhirAdapter::InsecureTransportError) do
+      Corvid::Adapters::FhirAdapter.new(
+        base_url: "http://localhost:8080/r4", token_source: -> { "t" },
+        allow_insecure_http: true, proxy_uri: "http://proxy.example.com:3128"
+      )
+    end
+    assert_match(/proxy/, err.message)
+  end
+
+  def test_opt_out_still_covers_a_loopback_url_behind_a_loopback_proxy
+    adapter = Corvid::Adapters::FhirAdapter.new(
+      base_url: "http://localhost:8080/r4", token_source: -> { "t" },
+      allow_insecure_http: true, proxy_uri: "http://127.0.0.1:3128"
+    )
+    assert_equal "Bearer t",
+                 capture_request(adapter, "#{adapter.base_url}/Patient/1")["Authorization"]
+  end
+
+  # A name that is not in the RFC 6761 localhost family is an ordinary DNS
+  # lookup, which a search domain or hostile resolver can point off-box.
+  def test_dns_resolvable_loopback_aliases_are_not_treated_as_loopback
+    [ "ip6-localhost", "localhost.evil.example.com", "notlocalhost" ].each do |host|
+      assert_raises(Corvid::Adapters::FhirAdapter::InsecureTransportError,
+                    "#{host} must not be trusted as loopback") do
+        Corvid::Adapters::FhirAdapter.new(
+          base_url: "http://#{host}:8080/r4", token_source: -> { "t" },
+          allow_insecure_http: true
+        )
+      end
+    end
+  end
+
+  def test_non_loopback_literal_addresses_are_rejected
+    [ "10.0.0.1", "0.0.0.0", "[2001:db8::1]" ].each do |host|
+      assert_raises(Corvid::Adapters::FhirAdapter::InsecureTransportError,
+                    "#{host} must not be trusted as loopback") do
+        Corvid::Adapters::FhirAdapter.new(
+          base_url: "http://#{host}:8080/r4", token_source: -> { "t" },
+          allow_insecure_http: true
+        )
+      end
+    end
+  end
+
   def test_opt_out_covers_loopback_forms
     [ "http://localhost:8080/r4", "http://127.0.0.1:8080/r4",
       "http://127.1.2.3:8080/r4", "http://[::1]:8080/r4",
-      "http://fhir.localhost:8080/r4" ].each do |url|
+      "http://[0:0:0:0:0:0:0:1]:8080/r4", "http://fhir.localhost:8080/r4" ].each do |url|
       adapter = Corvid::Adapters::FhirAdapter.new(
         base_url: url, token_source: -> { "t" }, allow_insecure_http: true
       )
