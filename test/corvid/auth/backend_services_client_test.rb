@@ -433,6 +433,78 @@ class Corvid::Auth::BackendServicesClientTest < Minitest::Test
                          response: { "access_token" => "t", "token_type" => "DPoP", "expires_in" => 300 })
     err = assert_raises(Corvid::Auth::BackendServicesClient::TokenError) { client.access_token }
     assert_match(/token_type/, err.message)
+    assert_match(/DPoP/, err.message, "a known scheme name is still reported")
+  end
+
+  # --- response-derived FIELDS are redacted, not just bodies -------------------
+  #
+  # The endpoint controls every field it returns, so token_type and
+  # expires_in can carry credential material exactly as a body can.
+
+  def test_hostile_token_type_value_is_not_echoed
+    client = stub_client(
+      private_key: @rsa,
+      response: { "access_token" => "t", "expires_in" => 300,
+                  "token_type" => "Bearer eyJhbGciOiJSUzM4NCJ9.LEAKED-JWT.sig" }
+    )
+    err = assert_raises(Corvid::Auth::BackendServicesClient::TokenError) { client.access_token }
+    assert_match(/token_type/, err.message)
+    refute_match(/LEAKED-JWT/, err.message)
+    refute_match(/eyJ/, err.message)
+  end
+
+  def test_non_string_token_type_is_reported_by_class_only
+    client = stub_client(private_key: @rsa,
+                         response: { "access_token" => "t", "expires_in" => 300,
+                                     "token_type" => { "leak" => "LEAKED-VALUE" } })
+    err = assert_raises(Corvid::Auth::BackendServicesClient::TokenError) { client.access_token }
+    refute_match(/LEAKED-VALUE/, err.message)
+  end
+
+  def test_hostile_expires_in_value_is_not_echoed
+    client = stub_client(private_key: @rsa,
+                         response: { "access_token" => "t",
+                                     "expires_in" => "eyJhbGciOiJSUzM4NCJ9.LEAKED-JWT" })
+    err = assert_raises(Corvid::Auth::BackendServicesClient::TokenError) { client.access_token }
+    assert_match(/expires_in/, err.message)
+    refute_match(/LEAKED-JWT/, err.message)
+    assert_cache_untouched(client)
+  end
+
+  # Key NAMES are response-derived too.
+  def test_unrecognized_response_key_names_are_counted_not_named
+    client = stub_client(
+      private_key: @rsa,
+      response: { "eyJhbGciOiJSUzM4NCJ9.LEAKED-KEYNAME" => 1, "scope" => SCOPE }
+    )
+    err = assert_raises(Corvid::Auth::BackendServicesClient::TokenError) { client.access_token }
+    refute_match(/LEAKED-KEYNAME/, err.message)
+    assert_match(/scope/, err.message, "recognized OAuth2 keys are still named")
+    assert_match(/1 unrecognized key/, err.message)
+  end
+
+  # --- token_endpoint immutability ---------------------------------------------
+
+  def test_token_endpoint_is_frozen_and_unaffected_by_caller_mutation
+    url = String.new(TOKEN_URL)
+    client = new_client(private_key: @rsa, token_endpoint: url)
+    url.replace("http://evil.example.com/oauth2/token")
+
+    assert_equal TOKEN_URL, client.token_endpoint,
+                 "mutating the caller's string must not re-point the client"
+    assert_predicate client.token_endpoint, :frozen?
+    assert_raises(FrozenError) { client.token_endpoint.replace("http://evil.example.com/t") }
+  end
+
+  # Belt and braces: even if the endpoint were somehow re-pointed, the
+  # scheme is re-checked at the moment the signed assertion goes out.
+  def test_token_endpoint_scheme_is_revalidated_at_request_time
+    client = new_client(private_key: @rsa)
+    client.instance_variable_set(:@token_endpoint, "http://evil.example.com/oauth2/token")
+    client.define_singleton_method(:build_http) { |_uri| flunk "must not reach the network" }
+
+    err = assert_raises(ArgumentError) { client.access_token }
+    assert_match(/https/, err.message)
   end
 
   def test_error_message_does_not_leak_token_values

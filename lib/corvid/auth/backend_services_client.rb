@@ -83,6 +83,25 @@ module Corvid
       # offering materially less protection for the assertion signature.
       MIN_RSA_KEY_BITS = 2048
 
+      # Response-derived strings are never echoed except when they match one
+      # of these protocol constants, which carry no data. Everything else is
+      # reported by shape — see #describe_response_value.
+      KNOWN_TOKEN_TYPES = %w[Bearer DPoP MAC Basic Negotiate N_A].freeze
+
+      # RFC 6749 §5.2 + RFC 6750 §3.1 error codes.
+      KNOWN_ERROR_CODES = %w[
+        invalid_request invalid_client invalid_grant unauthorized_client
+        unsupported_grant_type invalid_scope invalid_token insufficient_scope
+        server_error temporarily_unavailable
+      ].freeze
+
+      # Recognized OAuth2 token-response fields, for summarizing a response
+      # by which known keys it carried without naming unknown ones.
+      KNOWN_GRANT_KEYS = %w[
+        access_token token_type expires_in scope refresh_token id_token
+        error error_description error_uri issued_token_type
+      ].freeze
+
       DEFAULT_OPEN_TIMEOUT = 10
       DEFAULT_READ_TIMEOUT = 30
 
@@ -97,7 +116,12 @@ module Corvid
                      read_timeout: DEFAULT_READ_TIMEOUT,
                      ca_file: nil,
                      ca_path: nil)
-        @token_endpoint = require_https!(token_endpoint)
+        # dup+freeze: validating the caller's string is worthless if the
+        # caller (or anyone holding the attr_reader's return value) can
+        # mutate it to http:// afterwards and steer the signed assertion
+        # onto a cleartext connection. The scheme is re-checked per request
+        # as well — see #post_token_request.
+        @token_endpoint = require_https!(token_endpoint).dup.freeze
         alg = signing_alg || derive_alg(private_key)
         unless SUPPORTED_ALGS.key?(alg)
           raise ArgumentError,
@@ -261,7 +285,9 @@ module Corvid
       # POST the form to the token endpoint and return the parsed response.
       # Isolated so it can be stubbed in tests without real network calls.
       def post_token_request(form)
-        uri = URI.parse(@token_endpoint)
+        # Re-validated here, not just at construction: this is the point
+        # where the signed assertion goes on the wire.
+        uri = URI.parse(require_https!(@token_endpoint))
         request = Net::HTTP::Post.new(uri)
         request["Accept"] = "application/json"
         request.set_form_data(form)
@@ -337,10 +363,12 @@ module Corvid
       # otherwise silently send as Bearer.
       def validate_token_type!(grant)
         type = grant["token_type"]
-        return if type.nil? || type.to_s.casecmp?("bearer")
+        return if type.nil?
+        return if type.is_a?(String) && type.casecmp?("bearer")
 
         raise TokenError,
-              "token endpoint returned unsupported token_type #{type.inspect}; " \
+              "token endpoint returned unsupported token_type " \
+              "(#{describe_response_value(type, allow: KNOWN_TOKEN_TYPES)}); " \
               "only Bearer is supported"
       end
 
@@ -360,11 +388,17 @@ module Corvid
         when Float then raw.to_i
         when String then Integer(raw, exception: false)
         end
-        raise TokenError, "token endpoint returned malformed expires_in #{raw.inspect}" if ttl.nil?
+        if ttl.nil?
+          raise TokenError,
+                "token endpoint returned malformed expires_in " \
+                "(#{describe_response_value(raw)})"
+        end
 
         if ttl <= 0
+          # ttl is a parsed integer here, so echoing it carries no response
+          # text — unlike the raw field, which is attacker-controlled.
           raise TokenError,
-                "token endpoint returned non-positive expires_in #{raw.inspect}; " \
+                "token endpoint returned non-positive expires_in (#{ttl} seconds); " \
                 "the access token is already expired"
         end
 
@@ -385,13 +419,41 @@ module Corvid
         parts << "error_description present (redacted)" if body["error_description"]
         return parts.join("; ") unless parts.empty?
 
-        "response keys: #{body.keys.sort.join(', ')}"
+        # Key NAMES are response-derived too: a nonconforming endpoint can
+        # put credential material in a key. Only recognized OAuth2 fields
+        # are named; the rest are counted.
+        known = (body.keys & KNOWN_GRANT_KEYS).sort
+        unknown = body.keys.length - known.length
+        summary = []
+        summary << "known keys: #{known.join(', ')}" unless known.empty?
+        summary << "#{unknown} unrecognized key(s)" if unknown.positive?
+        summary.empty? ? "empty response object" : summary.join("; ")
       end
 
       # OAuth2 error codes are short registry tokens; anything else in that
       # field is a server going off-spec and is not repeated verbatim.
       def safe_error_code(code)
-        code.is_a?(String) && code.match?(/\A[A-Za-z0-9_.-]{1,64}\z/) ? code : "(redacted)"
+        code.is_a?(String) && KNOWN_ERROR_CODES.include?(code) ? code : "(redacted)"
+      end
+
+      # Describe a response-derived value without echoing it. The endpoint
+      # controls every field it returns, so a hostile or broken server can
+      # park a token in token_type or expires_in exactly as easily as in the
+      # body — the same leak, one field deeper. Values are reported by
+      # type/shape, except for a short allow-list of protocol constants that
+      # carry no data.
+      def describe_response_value(value, allow: [])
+        return "null" if value.nil?
+        return value.to_s if value == true || value == false
+        return "a #{value.class}" if value.is_a?(Numeric)
+
+        if value.is_a?(String)
+          return value if allow.any? { |ok| value.casecmp?(ok) }
+
+          return "a #{value.length}-character String"
+        end
+
+        "a #{value.class}"
       end
 
       # Body-free diagnostics: enough to tell a captive portal from an HTML
