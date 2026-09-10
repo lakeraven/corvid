@@ -76,6 +76,12 @@ module Corvid
       DEFAULT_OPEN_TIMEOUT = 10
       DEFAULT_READ_TIMEOUT = 30
 
+      # Hosts for which the cleartext opt-out may be honored. Traffic to a
+      # loopback address never leaves the machine, so a bearer token on it is
+      # not exposed to the network; every other host is.
+      LOOPBACK_HOSTS = %w[localhost ip6-localhost 0:0:0:0:0:0:0:1 ::1].freeze
+      LOOPBACK_IPV4 = /\A127\.\d{1,3}\.\d{1,3}\.\d{1,3}\z/
+
       def initialize(base_url:, bearer_token: nil, token_source: nil, headers: {},
                      open_timeout: DEFAULT_OPEN_TIMEOUT,
                      read_timeout: DEFAULT_READ_TIMEOUT,
@@ -94,15 +100,16 @@ module Corvid
                 "got #{describe_token(bearer_token)}"
         end
 
-        @base_url = base_url.chomp("/")
+        # Frozen: the reader hands this string to callers, and the transport
+        # check reads it again per request. An unfrozen base_url could be
+        # mutated to http:// after the construction-time check passed.
+        @base_url = base_url.chomp("/").freeze
         @bearer_token = bearer_token
         # Off by default: an Authorization header on a cleartext connection
-        # puts a live bearer token on the wire. The opt-out exists for
-        # localhost / test doubles, never for a real deployment.
-        @allow_insecure_http = allow_insecure_http
-        # Fail at configuration time, not on the first PHI request, when
-        # credentials are paired with a non-TLS base_url.
-        require_secure_transport!(@base_url) if bearer_token || token_source
+        # puts a live bearer token on the wire. The opt-out is honored only
+        # for loopback hosts, and only for a literal boolean — see
+        # #strict_boolean!.
+        @allow_insecure_http = strict_boolean!(allow_insecure_http, :allow_insecure_http)
         # A callable resolved per request — e.g. a
         # Corvid::Auth::BackendServicesClient — so each call carries a
         # freshly-refreshed token. Takes precedence over the static
@@ -117,7 +124,39 @@ module Corvid
         @proxy_uri = build_proxy_uri(proxy_uri)
         @ca_file = ca_file
         @ca_path = ca_path
+
+        # Fail at configuration time, not on the first PHI request, when
+        # credentials are paired with a non-TLS base_url. A caller-supplied
+        # Authorization header counts: it is a credential the same as a
+        # configured one, and it is the request-level check below that is
+        # authoritative either way.
+        if bearer_token || token_source || preset_authorization_header?
+          require_secure_transport!(@base_url)
+        end
       end
+
+      # True when the caller wired an Authorization header in directly.
+      # Matched case-insensitively: HTTP header names are case-insensitive
+      # and Net::HTTP will send "authorization" just as happily.
+      def preset_authorization_header?
+        @default_headers.any? { |name, _| name.to_s.casecmp?("authorization") }
+      end
+      private :preset_authorization_header?
+
+      # A config-driven opt-out must not be defeated by Ruby truthiness: the
+      # STRING "false" is truthy, so `allow_insecure_http: ENV["X"]` would
+      # silently DISABLE the protection for every value of X except nil —
+      # including "false", "0" and "". Only a literal boolean is accepted;
+      # anything else is a configuration error rather than a quiet grant.
+      def strict_boolean!(value, name)
+        return value if value == true || value == false
+
+        raise ArgumentError,
+              "#{name} must be true or false (a literal boolean), got #{value.class}. " \
+              "Parse environment variables explicitly — the string \"false\" is " \
+              "truthy in Ruby and would silently disable this check."
+      end
+      private :strict_boolean!
 
       def build_proxy_uri(raw)
         return nil if raw.nil?
@@ -489,32 +528,50 @@ module Corvid
         end
         @default_headers.each { |k, v| request[k] = v }
         token = resolve_bearer_token
-        unless token.nil? || token.strip.empty?
-          # Re-checked per request: base_url is not the only way a URI can
-          # reach here, and this is the exact point where the credential
-          # would go on the wire.
-          require_secure_transport!(url)
-          request["Authorization"] = "Bearer #{token}"
-        end
+        request["Authorization"] = "Bearer #{token}" unless token.nil? || token.strip.empty?
+
+        # Authoritative check, keyed on what the request ACTUALLY carries
+        # rather than on what was configured: a caller-supplied
+        # headers["Authorization"] is just as much a credential as a
+        # resolved token, and base_url is not the only URL that reaches
+        # here. Runs after every header is applied and before the socket.
+        require_secure_transport!(url) if request["Authorization"]
 
         build_http(uri).request(request)
       end
 
       # Reject any URL that would carry an Authorization header over a
-      # non-TLS connection. https is required unless the operator has
-      # explicitly opted out via allow_insecure_http (localhost/testing).
+      # non-TLS connection. Requests with no Authorization header are
+      # untouched, so genuinely unauthenticated on-prem and in-memory demo
+      # use over plain http still works.
+      #
+      # The opt-out is deliberately narrow: it applies only to loopback
+      # hosts, where the traffic never reaches a network. Setting it does
+      # NOT license cleartext credentials to a remote host.
       def require_secure_transport!(url)
         uri = URI.parse(url.to_s)
         return if uri.scheme == "https"
-        return if @allow_insecure_http
+        return if @allow_insecure_http && loopback_host?(uri.host)
 
         # Host only, never the path — a FHIR path carries record identifiers.
+        detail = if @allow_insecure_http
+          "allow_insecure_http covers loopback hosts only"
+        else
+          "pass allow_insecure_http: true for a loopback endpoint only"
+        end
         raise InsecureTransportError,
               "FhirAdapter refuses to send an Authorization header over " \
-              "#{uri.scheme.inspect} (host #{uri.host.inspect}). Use https, or pass " \
-              "allow_insecure_http: true for a localhost/test endpoint only."
+              "#{uri.scheme.inspect} (host #{uri.host.inspect}). Use https; #{detail}."
       rescue URI::InvalidURIError => e
         raise InsecureTransportError, "invalid FHIR base URL: #{e.message}"
+      end
+
+      def loopback_host?(host)
+        return false if host.nil?
+
+        # URI#host keeps the brackets on an IPv6 literal.
+        h = host.downcase.delete_prefix("[").delete_suffix("]")
+        LOOPBACK_HOSTS.include?(h) || h.end_with?(".localhost") || h.match?(LOOPBACK_IPV4)
       end
 
       # Resolve the bearer token for the current request. A token_source
