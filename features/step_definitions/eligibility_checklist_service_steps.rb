@@ -92,6 +92,20 @@ When("staff runs a payer eligibility check for the referral and finds coverage")
   Corvid::EligibilityChecklistService.check_payer_eligibility!(@referral)
 end
 
+Given("every alternate resource for the referral is documented unavailable") do
+  Corvid::AlternateResourceCheck::RESOURCE_TYPES.each do |type|
+    @referral.alternate_resource_checks
+             .find_or_create_by!(resource_type: type)
+             .update!(status: :not_enrolled)
+  end
+end
+
+Given("the {string} alternate resource check is still pending") do |resource_type|
+  @referral.alternate_resource_checks
+           .find_by!(resource_type: resource_type)
+           .update!(status: :not_checked)
+end
+
 Given("the coverage adapter cannot perform the check") do
   # Simulate an adapter that can't run the coverage check (network/backend
   # miss): get_coverages returns nil rather than a (possibly empty) array.
