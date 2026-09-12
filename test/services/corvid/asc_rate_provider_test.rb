@@ -15,16 +15,17 @@ class Corvid::AscRateProviderTest < ActiveSupport::TestCase
       payment_weight: 29.2047
     )
     Corvid::AscConversionFactor.create!(
-      calendar_year: @cy,
-      locality: "NATIONAL",
-      conversion_factor: 56.322,
-      wage_index: 1.0
+      calendar_year: @cy, locality: "NATIONAL", conversion_factor: 56.322
     )
-    Corvid::AscConversionFactor.create!(
-      calendar_year: @cy,
-      locality: "01",
-      conversion_factor: 56.322,
-      wage_index: 1.085
+    # Wage index is sourced from IppsHospitalRate, not from the CF row
+    # itself (#369) — the CF row's wage_index column is unread by the
+    # rate provider (still present in schema; dropped in the #370
+    # follow-up migration).
+    Corvid::IppsHospitalRate.create!(
+      fiscal_year: @cy, locality: "NATIONAL", base_rate: 6_752.61, wage_index: 1.0
+    )
+    Corvid::IppsHospitalRate.create!(
+      fiscal_year: @cy, locality: "01", base_rate: 6_752.61, wage_index: 1.085
     )
   end
 
@@ -48,10 +49,13 @@ class Corvid::AscRateProviderTest < ActiveSupport::TestCase
 
   test "rate_for applies CBSA-coded locality and falls back to NATIONAL for unknown CBSA" do
     # The locality column is a free-form string, so 5-digit CMS CBSA codes
-    # work the same as 2-digit PFS locality codes. Preparatory coverage for
-    # per-CBSA wage-index loading (#351).
+    # work the same as 2-digit PFS locality codes. Wage index for the CBSA
+    # comes from IppsHospitalRate (#369) — the CF row is NATIONAL-only,
+    # matching the real-world CF (which doesn't vary by CBSA; only the
+    # wage index does).
     Corvid::AscHcpcsRate.unscoped.delete_all
     Corvid::AscConversionFactor.unscoped.delete_all
+    Corvid::IppsHospitalRate.unscoped.delete_all
     Corvid::AscHcpcsRate.create!(
       calendar_year: 2026,
       hcpcs_code: "0102T",
@@ -59,17 +63,14 @@ class Corvid::AscRateProviderTest < ActiveSupport::TestCase
       payment_weight: 29.2047
     )
     Corvid::AscConversionFactor.create!(
-      calendar_year: 2026,
-      locality: "NATIONAL",
-      conversion_factor: 56.322,
-      wage_index: 1.0
+      calendar_year: 2026, locality: "NATIONAL", conversion_factor: 56.322
+    )
+    Corvid::IppsHospitalRate.create!(
+      fiscal_year: 2026, locality: "NATIONAL", base_rate: 6_752.61, wage_index: 1.0
     )
     # CBSA 10180 = Abilene, TX (real CMS Core-Based Statistical Area)
-    Corvid::AscConversionFactor.create!(
-      calendar_year: 2026,
-      locality: "10180",
-      conversion_factor: 56.322,
-      wage_index: 0.92
+    Corvid::IppsHospitalRate.create!(
+      fiscal_year: 2026, locality: "10180", base_rate: 6_752.61, wage_index: 0.92
     )
 
     cbsa_rate = Corvid::AscRateProvider.rate_for(
@@ -83,6 +84,32 @@ class Corvid::AscRateProviderTest < ActiveSupport::TestCase
     assert_in_delta 1_513.28, cbsa_rate, 0.01
     # Unknown CBSA falls back to NATIONAL: 29.2047 × 56.322 × 1.0 = 1644.87
     assert_in_delta 1_644.87, unknown_cbsa_rate, 0.01
+  end
+
+  test "changing the IPPS wage index for a CBSA changes the ASC rate for that CBSA (#369)" do
+    Corvid::IppsHospitalRate.create!(
+      fiscal_year: @cy, locality: "31084", base_rate: 6_752.61, wage_index: 1.2463
+    )
+    low = Corvid::AscRateProvider.rate_for(
+      hcpcs_code: "0102T", locality: "31084", date: Date.new(2026, 6, 15)
+    )
+
+    Corvid::IppsHospitalRate.find_by(fiscal_year: @cy, locality: "31084").update!(wage_index: 1.5)
+    high = Corvid::AscRateProvider.rate_for(
+      hcpcs_code: "0102T", locality: "31084", date: Date.new(2026, 6, 15)
+    )
+
+    refute_in_delta low, high, 0.01,
+                    "updating the shared IPPS wage index for a CBSA should move the ASC rate for that CBSA"
+  end
+
+  test "rate_for falls back to wage_index 1.0 when no IPPS hospital rate is loaded at all" do
+    Corvid::IppsHospitalRate.unscoped.delete_all
+    rate = Corvid::AscRateProvider.rate_for(
+      hcpcs_code: "0102T", locality: "NATIONAL", date: Date.new(2026, 6, 15)
+    )
+    # 29.2047 × 56.322 × 1.0 = 1644.87
+    assert_in_delta 1_644.87, rate, 0.01
   end
 
   test "rate_for uses CALENDAR year — Jan 1 boundary, not Oct 1" do
@@ -125,9 +152,16 @@ class Corvid::AscRateProviderTest < ActiveSupport::TestCase
     assert_in_delta 1_800.0, jan_1,  0.01, "Jan 1, 2027 should price against CY 2027 rows"
   end
 
-  test "rate_for switches Jan 1 boundary with mixed locality availability using locality-or-NATIONAL fallback" do
+  test "wage index tracks the federal fiscal year, independent of the ASC calendar-year price switch" do
+    # The ASC weight/CF table switches on the CY boundary (Jan 1); the
+    # IPPS-sourced wage index switches on the FY boundary (Oct 1) —
+    # different calendars, per #369's design. Dec 31 2026 and Jan 1
+    # 2027 both fall in FY 2027 (which started Oct 1 2026), so they
+    # share the same wage index even though they price against
+    # different CY weight/CF rows.
     Corvid::AscHcpcsRate.unscoped.delete_all
     Corvid::AscConversionFactor.unscoped.delete_all
+    Corvid::IppsHospitalRate.unscoped.delete_all
 
     Corvid::AscHcpcsRate.create!(
       calendar_year: 2026, hcpcs_code: "0102T", payment_weight: 20.0
@@ -135,21 +169,19 @@ class Corvid::AscRateProviderTest < ActiveSupport::TestCase
     Corvid::AscHcpcsRate.create!(
       calendar_year: 2027, hcpcs_code: "0102T", payment_weight: 30.0
     )
-
-    # CY 2026 has both NATIONAL and locality-specific rows
     Corvid::AscConversionFactor.create!(
-      calendar_year: 2026, locality: "NATIONAL",
-      conversion_factor: 50.0, wage_index: 1.0
+      calendar_year: 2026, locality: "NATIONAL", conversion_factor: 50.0
     )
     Corvid::AscConversionFactor.create!(
-      calendar_year: 2026, locality: "01",
-      conversion_factor: 50.0, wage_index: 1.085
+      calendar_year: 2027, locality: "NATIONAL", conversion_factor: 60.0
     )
-
-    # CY 2027 has NATIONAL only (no locality "01" row)
-    Corvid::AscConversionFactor.create!(
-      calendar_year: 2027, locality: "NATIONAL",
-      conversion_factor: 60.0, wage_index: 1.0
+    # FY 2027 (Oct 2026 – Sep 2027) wage index for locality "01" covers
+    # both Dec 31, 2026 and Jan 1, 2027 service dates.
+    Corvid::IppsHospitalRate.create!(
+      fiscal_year: 2027, locality: "NATIONAL", base_rate: 6_752.61, wage_index: 1.0
+    )
+    Corvid::IppsHospitalRate.create!(
+      fiscal_year: 2027, locality: "01", base_rate: 6_752.61, wage_index: 1.085
     )
 
     dec_31_locality_01 = Corvid::AscRateProvider.rate_for(
@@ -159,13 +191,13 @@ class Corvid::AscRateProviderTest < ActiveSupport::TestCase
       hcpcs_code: "0102T", locality: "01", date: Date.new(2027, 1, 1)
     )
 
-    # 2026-12-31 uses CY 2026 locality-specific row: 20.0 × 50.0 × 1.085 = 1085.00
+    # Dec 31, 2026: CY 2026 weight/CF (20.0 × 50.0) × FY 2027 wage index (1.085) = 1085.00
     assert_in_delta 1_085.0, dec_31_locality_01, 0.01
-    # 2027-01-01 falls back to CY 2027 NATIONAL: 30.0 × 60.0 × 1.0 = 1800.00
-    assert_in_delta 1_800.0, jan_1_locality_01, 0.01
+    # Jan 1, 2027: CY 2027 weight/CF (30.0 × 60.0) × same FY 2027 wage index (1.085) = 1953.00
+    assert_in_delta 1_953.0, jan_1_locality_01, 0.01
 
     refute_in_delta dec_31_locality_01, jan_1_locality_01, 0.01,
-                    "Crossing Jan 1 should switch to CY 2027 NATIONAL fallback when locality row is missing"
+                    "Jan 1 switches the CY weight/CF table even though the FY wage index doesn't turn over until Oct 1"
   end
 
   test "rate_for returns nil on Jan 1 when next calendar year rows are missing" do
