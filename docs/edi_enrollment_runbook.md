@@ -568,8 +568,8 @@ The runbook is operational, but three items land in the engine:
   way to submit an enrollment or read its status — even though the clearinghouse exposes an
   enrollment API. Today enrollment status lives only in this checklist. *Recommendation: add
   enrollment submission and status to the adapter contract so the evidence register can be
-  populated programmatically rather than by hand.* Filed as a follow-up rather than done here,
-  because it is a contract change and belongs with #35.
+  populated programmatically rather than by hand.* Raised on #35 rather than changed here — it
+  is a contract change and belongs with that issue.
 - **#561 (claims end to end).** Its acceptance proof runs entirely in test mode and does not
   wait for enrollment — see §2. Its "999/277CA" acknowledgement handling needs a 999 source;
   the lifecycle timeline does not provide one.
