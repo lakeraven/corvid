@@ -63,6 +63,8 @@ column.
 
 [ ]  Payer contracts / participation agreements executed (per payer)
      owner: CLINIC      evidence: countersigned agreement + effective date per payer
+     note:  gates in-network PAYMENT and the release of held claims for that payer —
+            NOT our EDI enrollment, which runs in parallel (runbook section 1).
 
 [ ]  Bank account for receipts identified (and, if using the clearinghouse's treasury
      product, the decision to open an account in the clinic's name made)
@@ -149,19 +151,24 @@ PAYER: ______________________   PAYER ID: __________   TYPE: Medicaid | Medicare
 [ ]  837 claim submission enrollment approved
      owner: PAYER       evidence: enrollment status "approved" for 837 with this payer
 
+[ ]  Connectivity / companion-guide test passed where the payer requires one
+     owner: PAYER       evidence: the payer's test acceptance notice
+     note:  some payers gate production 837s on test acceptance, which is why this
+            line sits here and not at the end (runbook section 4.2).
+
 [ ]  835 / ERA enrollment approved
      owner: PAYER       evidence: enrollment status "approved" for 835
      note:  until this is approved, remittances do not arrive electronically and the
             reconciliation half of #561 cannot run for this payer.
 
 [ ]  EFT enrollment approved (payer deposits to the clinic's account)
-     owner: PAYER/BANK  evidence: EFT enrollment approved; prenote settled if used
+     owner: PAYER       evidence: enrollment status "approved" for EFT
+
+[ ]  Bank verification / prenote settled, where the payer or bank uses one
+     owner: BANK        evidence: prenote confirmation or the bank's verification notice
 
 [ ]  ERA and EFT reassociation confirmed — a payment matches its remittance by trace number
      owner: OPERATOR    evidence: one payment matched to one 835 by reassociation trace number
-
-[ ]  Connectivity / companion-guide test passed where the payer requires one
-     owner: PAYER       evidence: the payer's test acceptance notice
 
 [ ]  First production claim accepted (277CA accepting, not rejecting)
      owner: OPERATOR    evidence: the 277CA

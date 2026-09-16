@@ -15,17 +15,19 @@ commitment from us.
 
 You can open on schedule. You can see patients, document visits, and run the clinic while payer
 enrollment is still in progress. What waits is the *claim*, not the *care*. Claims are held in a
-queue and released once each payer's enrollment completes — and because most payers set the
-participation effective date back to the date you applied, the held claims are generally
-payable when released.
+queue and released once each payer's enrollment completes — and **where the payer sets the
+participation effective date back to the date you applied**, the held claims remain payable when
+released. Medicare does that by regulation and many state Medicaid programs do; some commercial
+payers refuse it outright. Which of your payers do is question 1 in section 4 — the held claims
+for a payer are only as safe as that payer's written answer and its timely-filing limit.
 
 This reframes credentialing from a **launch blocker** into a **cash-timing issue**. It is still
 a real issue, and section 6 is blunt about what it does to your first months of cash — but it is
 not a reason to delay opening.
 
-The thing that makes the retroactive date early is **applying early**. Retroactivity is measured
-from your application date, so every week an application sits unfiled is a week of visits that
-can never be billed.
+The thing that makes the retroactive date early is **applying early**. Where a payer grants
+retroactivity it is measured from your application date, so every week an application sits
+unfiled is a week of visits that may never be billable.
 
 ### The honest caveat
 
@@ -82,7 +84,8 @@ have different counterparties, and confusing them is how schedules slip.
 | What it produces | Submitter IDs, payer IDs, a signed trading partner agreement, electronic remittance and electronic funds transfer set up per payer | A CAQH profile, a participation contract, a fee schedule, an effective date per clinician |
 | What breaks without it | Claims are rejected before anyone looks at them; payments arrive on paper or not at all | Claims are accepted, then denied or paid out-of-network |
 
-Both must be finished before money moves. Neither one is a prerequisite of the other — with one
+Both must be finished before a payer pays an in-network claim — self-pay and sliding-fee never
+touch either (section 5), and an out-of-network claim needs only the first. Neither one is a prerequisite of the other — with one
 link: the provider number a payer issues during enrollment is often an input to that same
 payer's electronic-remittance paperwork. That is the one place the two tracks touch.
 
@@ -101,7 +104,7 @@ arrive (see the runbook), but these set the start of the clock.
 | Individual NPI (Type 1) per clinician | Identifies who rendered the service. Credentialing is per clinician. |
 | An accurate, current NPPES record | Payers validate against NPPES. Fix NPPES *before* filing anything, not after a rejection. |
 | Current state licences for every clinician | Credentialing verifies licensure directly with the source; an expired or pending licence stops the file. |
-| State Medicaid provider number | Required before the state's electronic-transaction paperwork can be filed. |
+| State Medicaid provider number | In most states, an input to the state's electronic-transaction paperwork. (Some states waive their registration step for providers using an approved clearinghouse — checking the pilot state's rule is the first thing we do, so this may block less than it appears.) |
 | Executed payer contracts | The contract, not the application, is what makes you in-network. |
 | A bank account for receipts and an authorized signer | Electronic funds transfer enrollment needs both, per payer. |
 
@@ -198,6 +201,9 @@ release:
 
 Plan working capital for the gap; do not plan around the hope that it closes faster. The single
 thing that moves this earlier is **filing complete applications sooner** — not chasing after.
+And it is per payer, not uniform: a payer whose application goes in late, or whose credentialing
+and contract-loading run to the slow end of the published figures, can push its share of the
+cash into March. We track the release date per payer, so you will see which payers are which.
 
 ---
 

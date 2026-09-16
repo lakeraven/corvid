@@ -183,8 +183,12 @@ proof for #561 need **none** of the above.
 
 ## 4. The EDI runbook: per-payer steps and durations
 
-Durations are **published figures from named sources**, not estimates. Where a payer is not
-listed, the runbook's instruction is to *find its published figure*, not to interpolate.
+Waiting-time durations are **published figures from named sources**, not estimates. Where a
+payer is not listed, the runbook's instruction is to *find its published figure*, not to
+interpolate. The §4.1 table is the exception, and says so: its rows are **our working time**
+(§0 — compressible, ours to manage), so its durations are estimates; the sources cited there
+establish the *capability*, and the first clinic's measured times replace the estimates under
+the maintenance rule in §9.
 
 ### 4.1 Once per clinic
 
@@ -237,6 +241,10 @@ Within a payer these are ordered; across payers they are fully parallel.
 
 *These payers and states are cited because they publish a number. None is asserted to be in the
 pilot's payer mix.*
+
+*Scope note on the CMS-855 rows: provider enrollment via the 855 is the **clinic's half** (§1,
+§5) — those rows are not our EDI work. They sit in this table because their timing feeds the
+same calendar: the Medicare EDI steps below them take the 855-issued identifiers as inputs.*
 
 **There is no federal SLA on payer EDI/ERA/EFT enrollment turnaround.** The CAQH CORE EFT & ERA
 operating rules (380 EFT Enrollment Data, 382 ERA Enrollment Data) standardize the enrollment
@@ -523,6 +531,17 @@ entity ─► EIN (same day online)
 **Everything else fits inside this chain**: the clearinghouse account, adapter (#35), the
 test-mode pipeline proof (#561), eligibility (#563), and every other payer's enrollment.
 
+Two branch notes, so the chain is not over-read:
+
+- **The TPA link can drop out entirely.** If the pilot state exempts providers using an
+  approved clearinghouse from trading-partner registration (§6), the 30–45-day TPA item
+  vanishes from the chain. This diagram is the *cited worst case*; the state's answer to
+  the §6 question decides whether the link exists at all.
+- **837, 835 and EFT are parallel queues once the submitter ID exists** (§2). The serial
+  rendering above shows the longest path to a *remittance* — the 835 leg. EFT gates where
+  the *funds* land, not the first claim and not ERA delivery; its 15-day pre-certification
+  runs concurrently and only extends the chain for a payer that couples them.
+
 ### The December pilot, counted backwards
 
 Today is **2026-09-14** (Sprint 1). A **2026-12-01** opening is **11 weeks** away.
@@ -530,7 +549,7 @@ Today is **2026-09-14** (Sprint 1). A **2026-12-01** opening is **11 weeks** awa
 | If the clinic already holds NPI + EIN + state Medicaid provider number | Then |
 |---|---|
 | **Yes** | The EDI half is 4–6 weeks per payer on the cited figures. Starting now, **billing-ready by 1 December is achievable with roughly 5 weeks of slack.** Enrollment must still start immediately — the slack is the buffer for a returned application, not spare time. |
-| **No** | NPI (≈3 weeks) + state Medicaid provider enrollment (unverified, commonly months) + TPA (30–45 days) **exceeds 11 weeks for the Medicaid payer.** Commercial payers may still make December. **Medicaid billing then lands in January.** |
+| **No** | NPI (≈3 weeks) + state Medicaid provider enrollment (unverified, commonly months) + TPA (30–45 days, unless the state exempts clearinghouse users — §6) **likely exceeds 11 weeks for the Medicaid payer on the cited figures.** Commercial payers may still make December. **Plan for Medicaid billing landing in January** — and verify the pilot state's provider-enrollment duration and TPA rule before treating January as fixed in either direction. |
 
 **This conditional is the single most important output of this runbook.** It must be answered
 this sprint, because it is the difference between "start now and we are fine" and "December
@@ -547,14 +566,20 @@ The arithmetic, with each link cited above:
 2. Claims for payers whose credentialing or enrollment is incomplete are **held**, not dropped.
 3. Credentialing decisions land on payer timelines (planning figure 90–120 days from
    application for commercial; see §5 for confidence).
-4. Held claims are released once effective dates are known — for Medicare and most state
-   Medicaid programs, retroactive to the application date, so the December services remain
-   billable.
+4. Held claims are released once effective dates are known — for Medicare by regulation, and
+   commonly for state Medicaid, retroactive to the application date, so those December
+   services remain billable. For commercial payers this holds **only per that payer's written
+   answer** (§5 — one publishes a flat refusal), which is why each held claim carries its own
+   timely-filing deadline rather than an assumption.
 5. The payer then pays on its own cycle after a clean claim.
 
 December services → claims released late December into January → payment on the payer's cycle →
-**cash in January–February**. This is the expected case, not the pessimistic one. Working
-capital should be planned for it. Nobody should discover it in February.
+**cash in January–February**. This is the expected case, not the pessimistic one — **and it
+assumes credentialing applications are filed complete by roughly end of September.** A payer
+whose application goes in later, or whose cycle runs to the cited slow end (120 days + up to 60
+days of contract loading, §5), pushes its share of the cash into March. The per-payer release
+dates in the checklist, not this paragraph, are the forecast. Working capital should be planned
+for the gap. Nobody should discover it in February.
 
 ---
 
