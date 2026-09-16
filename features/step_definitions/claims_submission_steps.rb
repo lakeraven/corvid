@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-# Claims submission step definitions (ported from rpms_redux)
+# Claims submission step definitions (ported from the predecessor app)
 
 def build_claim_submission(overrides = {})
   defaults = {

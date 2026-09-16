@@ -29,7 +29,7 @@ Tenant (required, hard isolation boundary)
 
 | Deployment | Tenant | Facility |
 |---|---|---|
-| A tribal nation | The nation (1 EHR instance) | Main clinic, Behavioral Health, PCH (EHR Divisions) |
+| A tribal nation | The nation (1 EHR instance) | Main clinic, Behavioral Health, Satellite clinic (EHR Divisions) |
 | A multi-state nonprofit | The nonprofit | State A, State B, State C |
 | A state Medicaid program | The state | Many tribes, each a Division |
 | A single-facility program | The program | Single facility (optional column) |
@@ -168,7 +168,7 @@ The engine never directly references host models like `Provenance`, `PhiSanitize
 
 ### 8. Jumpstart Account = Tenant (not Facility)
 
-Where corvid is mounted in a Jumpstart Pro app:
+Where corvid is mounted in the host SaaS app (a commercial Rails template):
 
 - **Jumpstart Account** maps to **Corvid Tenant** (1:1 in v1)
 - The Jumpstart Account slug or ID becomes `tenant_identifier`

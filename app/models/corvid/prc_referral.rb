@@ -178,7 +178,7 @@ module Corvid
     end
 
     # ----------------------------------------------------------------
-    # RCIS-first caching (ported from rpms_redux)
+    # RCIS-first caching (ported from the predecessor app)
     # ----------------------------------------------------------------
 
     CACHE_STALENESS_THRESHOLD_HOURS = 1
@@ -248,7 +248,7 @@ module Corvid
     end
 
     # ----------------------------------------------------------------
-    # 72-hour notification rules (ported from rpms_redux)
+    # 72-hour notification rules (ported from the predecessor app)
     # ----------------------------------------------------------------
 
     def notification_within_72_hours?

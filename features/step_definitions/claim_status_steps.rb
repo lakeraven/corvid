@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-# Claim status step definitions (ported from rpms_redux)
+# Claim status step definitions (ported from the predecessor app)
 
 Given("a submitted claim exists") do
   @claim_submission = Corvid::ClaimSubmission.create!(

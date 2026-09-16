@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-# PRC workflow step definitions (ported from rpms_redux)
+# PRC workflow step definitions (ported from the predecessor app)
 
 Given("a service request in {string} workflow state") do |state|
   case state

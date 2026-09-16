@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-# Task Management step definitions (ported from rpms_redux)
+# Task Management step definitions (ported from the predecessor app)
 
 Given("a pending task exists") do
   @task = Corvid::Task.create!(

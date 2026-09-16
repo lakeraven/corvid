@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-# Case management step definitions (ported from rpms_redux)
+# Case management step definitions (ported from the predecessor app)
 
 Given("a patient exists with DFN {string}") do |dfn|
   @patient_dfn = dfn

@@ -102,7 +102,7 @@ Examples (illustrative):
 
 | Tenant | Facilities |
 |---|---|
-| A tribal health program | Main clinic, Behavioral Health, PCH |
+| A tribal health program | Main clinic, Behavioral Health, Satellite clinic |
 | A multi-state nonprofit | State A, State B, State C |
 | A state Medicaid program | Many tribes/clinics (each a facility) |
 
