@@ -25,6 +25,24 @@ sites and ETL hops. Use them to drive parser/import compatibility tests.
 - `malformed_no_header.prc`
   - No `H` record.
   - Verifies importer fails closed with `MalformedExportError`.
+- `duplicate_ids_v1.prc`
+  - Multiple `O` records share the same `obligation_id`; multiple `P` records share the same `payment_id`.
+  - Verifies importer deduplicates with last-record-wins semantics.
+- `amount_precision_extremes_v1.prc`
+  - Sub-cent amounts and extreme (very large / very small) amounts.
+  - Verifies sub-cent truncation is counted and extreme values import without overflow or loss of cents.
+
+## Importer result contract
+
+`Corvid::PrcImporter.import` returns a hash whose keys these fixtures assert against:
+
+- `obligations_imported` — number of obligation records accepted into the import window.
+- `obligations_inserted` — number of obligations ultimately persisted after deduplication.
+- `payments_parsed` — number of payment rows parsed from the export.
+- `payments_imported` — number of payments accepted into the import window.
+- `payments_dropped_orphan` — number of payments dropped because no matching obligation was found.
+- `trailer_check` — `:ok` when the trailer reconciles, `:missing` when no trailer is present.
+- `sub_cent_truncations` — count of amount fields with precision smaller than one cent that were truncated during import.
 
 ## Notes
 
