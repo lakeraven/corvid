@@ -29,7 +29,7 @@ Tenant (required, hard isolation boundary)
 
 | Deployment | Tenant | Facility |
 |---|---|---|
-| A tribal nation | The nation (1 EHR instance) | Main clinic, Behavioral Health, PCH (EHR Divisions) |
+| A tribal nation | The nation (1 EHR instance) | Main clinic, Behavioral Health, Satellite clinic (EHR Divisions) |
 | A multi-state nonprofit | The nonprofit | State A, State B, State C |
 | A state Medicaid program | The state | Many tribes, each a Division |
 | A single-facility program | The program | Single facility (optional column) |
