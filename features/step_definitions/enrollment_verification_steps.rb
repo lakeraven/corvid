@@ -16,7 +16,7 @@ Given("a patient {string} registered in the adapter as enrolled") do |patient_id
   )
   Corvid.adapter.add_residency(patient_id,
     on_reservation: true,
-    address: "123 Main St, Broken Rock City, WA 98948",
+    address: "123 Main St, Broken Rock City, WA 98990",
     service_area: "brokenrock"
   )
 end
@@ -40,7 +40,7 @@ Given("a patient {string} registered in the adapter with an on-reservation addre
   # Patient data may already exist from a previous step; just ensure residency is set
   Corvid.adapter.add_residency(patient_id,
     on_reservation: true,
-    address: "456 Elm St, Broken Rock City, WA 98948",
+    address: "456 Elm St, Broken Rock City, WA 98990",
     service_area: "brokenrock"
   )
 end

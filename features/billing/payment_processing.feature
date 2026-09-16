@@ -1,4 +1,4 @@
-@payments @ulster-rfp
+@payments @county-rfp
 Feature: Payment Processing
   As a billing staff member
   I want to accept credit and debit card payments from patients

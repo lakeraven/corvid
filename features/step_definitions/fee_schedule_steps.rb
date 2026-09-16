@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-# Sliding fee scale step definitions (ported from rpms_redux)
+# Sliding fee scale step definitions (ported from the predecessor app)
 
 Given("a fee schedule exists with tiers:") do |table|
   tiers = table.hashes.map do |row|

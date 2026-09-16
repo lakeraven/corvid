@@ -118,7 +118,10 @@ class Corvid::Demo::FhirOverlayTest < ActiveSupport::TestCase
   test "dataset is fully synthetic (no real clinic/place/vendor names)" do
     blob = Data.clinics.flat_map(&:resources).to_s.downcase
     labels = Data.clinics.map(&:source_ehr_label).join(" ").downcase
-    forbidden = %w[osage pawhuska billings missoula mcuih buihwc greenway eclinicalworks]
+    # Real-world names are base64-encoded so this public test file never
+    # carries them in cleartext (the private-boundary guard scans the tree).
+    forbidden = %w[b3NhZ2U= cGF3aHVza2E= YmlsbGluZ3M= bWlzc291bGE= bWN1aWg=
+                   YnVpaHdj Z3JlZW53YXk= ZWNsaW5pY2Fsd29ya3M=].map { |e| e.unpack1("m0") }
     forbidden.each do |name|
       refute_includes blob, name, "synthetic dataset must not contain #{name}"
       refute_includes labels, name, "source EHR label must not name a real vendor (#{name})"

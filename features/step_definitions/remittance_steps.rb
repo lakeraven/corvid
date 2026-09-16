@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-# Remittance (835 ERA) step definitions (ported from rpms_redux)
+# Remittance (835 ERA) step definitions (ported from the predecessor app)
 
 Given("remittances are available from the clearinghouse") do
   Corvid.adapter.add_remittance("REM_001", {

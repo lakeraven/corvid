@@ -101,7 +101,7 @@ class Corvid::ChsTrdNormalizerTest < ActiveSupport::TestCase
   test "optional columns present pass through to output row" do
     csv = <<~CSV
       document_number,patient_dfn,vendor_name,procedure_code,service_date,paid_amount,place_of_service,modifiers,drg,apc,facility_zip
-      1234567,12345,ACME REGIONAL,99213,2024-06-15,180.00,11,25,470,5071,98948
+      1234567,12345,ACME REGIONAL,99213,2024-06-15,180.00,11,25,470,5071,98990
     CSV
     result = Corvid::ChsTrdNormalizer.normalize(csv)
     assert_equal 1, result[:rows].size
@@ -111,7 +111,7 @@ class Corvid::ChsTrdNormalizerTest < ActiveSupport::TestCase
     assert_equal "25", row[:modifiers]
     assert_equal "470", row[:drg]
     assert_equal "5071", row[:apc]
-    assert_equal "98948", row[:facility_zip]
+    assert_equal "98990", row[:facility_zip]
   end
 
   test "accepts IO input as well as String" do

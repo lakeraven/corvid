@@ -168,7 +168,7 @@ The engine never directly references host models like `Provenance`, `PhiSanitize
 
 ### 8. Jumpstart Account = Tenant (not Facility)
 
-Where corvid is mounted in a Jumpstart Pro app:
+Where corvid is mounted in the host SaaS app (a commercial Rails template):
 
 - **Jumpstart Account** maps to **Corvid Tenant** (1:1 in v1)
 - The Jumpstart Account slug or ID becomes `tenant_identifier`
