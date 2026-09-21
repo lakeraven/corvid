@@ -130,18 +130,34 @@ class Corvid::BudgetAvailabilityServiceInjectionTest < ActiveSupport::TestCase
     assert_equal 0.0, service.reserved_funds
   end
 
-  test "fiscal_year_budget falls back to default when adapter returns nil" do
+  test "fiscal_year_budget is unavailable (nil) when adapter returns nil" do
     service = Corvid::BudgetAvailabilityService.new(adapter: NilSummaryAdapter.new)
-    assert_equal Corvid::BudgetAvailabilityService::DEFAULT_FISCAL_YEAR_BUDGET,
-                 service.fiscal_year_budget
+    assert_nil service.fiscal_year_budget
   end
 
-  test "fiscal_year_budget falls back to default when adapter returns an empty payload" do
+  test "fiscal_year_budget is unavailable (nil) when adapter returns an empty payload" do
     service = Corvid::BudgetAvailabilityService.new(adapter: EmptySummaryAdapter.new)
-    assert_equal Corvid::BudgetAvailabilityService::DEFAULT_FISCAL_YEAR_BUDGET,
-                 service.fiscal_year_budget
+    assert_nil service.fiscal_year_budget
     assert_equal 0.0, service.remaining_budget
     assert_equal 0.0, service.reserved_funds
+  end
+
+  test "check reports budget_unavailable and withholds funds when the adapter has no data" do
+    Corvid::TenantContext.with_tenant(TENANT) do
+      ref = Corvid::PrcReferral.create!(
+        case: Corvid::Case.create!(patient_identifier: "p_na", facility_identifier: "fac_na"),
+        referral_identifier: "rf_nobudget_#{SecureRandom.hex(4)}",
+        estimated_cost_cents: 10_000,
+        currency_iso: "USD"
+      )
+
+      result = Corvid::BudgetAvailabilityService.new(adapter: NilSummaryAdapter.new).check(ref)
+
+      assert result.budget_unavailable?, "no adapter data must read as unavailable, not as a budget"
+      refute result.funds_available?
+      refute result.budget_sufficient?
+      assert_nil result.total_budget
+    end
   end
 
   private
