@@ -390,16 +390,21 @@ module Corvid
       end
 
       # ----------------------------------------------------------------------
-      # Budget — FHIR has no native budget concept; defaults to empty.
-      # Vendor adapters override.
+      # Budget — FHIR has no native budget concept. Reads degrade to an
+      # empty summary; the encumbrance WRITE must not fabricate success
+      # (same posture as #store_text): a vendor adapter that can actually
+      # reserve funds overrides #create_obligation.
       # ----------------------------------------------------------------------
 
       def get_budget_summary(facility_identifier: nil)
         {}
       end
 
-      def create_obligation(referral_identifier, amount, params = {})
-        true
+      def create_obligation(_referral_identifier, _amount, _params = {})
+        raise NotImplementedError,
+          "FhirAdapter#create_obligation requires a budget backend — " \
+          "stock FHIR cannot encumber CHS funds, so reporting success here " \
+          "would record an obligation that was never made"
       end
 
       private

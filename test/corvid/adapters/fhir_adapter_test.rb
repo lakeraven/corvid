@@ -228,6 +228,15 @@ class Corvid::Adapters::FhirAdapterTest < Minitest::Test
     end
   end
 
+  def test_create_obligation_fails_closed_without_a_budget_backend
+    # Stock FHIR has no budget concept, so the encumbrance write must not
+    # report success: a `true` here would let an authorization proceed with
+    # an obligation that was never recorded against any CHS budget.
+    assert_raises(NotImplementedError) do
+      @adapter.create_obligation("ref_001", 1500.00)
+    end
+  end
+
   # -- Tribal enrollment / identity / residency (read from Patient extensions) --
 
   def test_verify_tribal_enrollment_reads_extension
