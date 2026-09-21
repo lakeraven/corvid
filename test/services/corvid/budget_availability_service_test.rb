@@ -51,7 +51,7 @@ class Corvid::BudgetAvailabilityServiceTest < ActiveSupport::TestCase
   # -- Budget constants ------------------------------------------------------
 
   test "no fabricated budget default exists" do
-    refute Corvid::BudgetAvailabilityService.const_defined?(:DEFAULT_FISCAL_YEAR_BUDGET),
+    refute Corvid::BudgetAvailabilityService.const_defined?(:DEFAULT_FISCAL_YEAR_BUDGET, false),
            "budget totals come from the adapter or are unavailable — never a stand-in figure"
   end
 

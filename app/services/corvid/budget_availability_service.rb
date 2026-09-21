@@ -23,7 +23,8 @@ module Corvid
       summary = @adapter.get_budget_summary
       return nil unless summary
 
-      (summary[:total_budget] || summary[:total]).to_f.nonzero?
+      total = (summary[:total_budget] || summary[:total]).to_f
+      total.positive? ? total : nil
     end
 
     def reserved_funds
