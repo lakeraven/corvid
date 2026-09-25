@@ -135,5 +135,4 @@ class Corvid::IppsRateProviderTest < ActiveSupport::TestCase
       drg_code: "470", locality: "NATIONAL", date: Date.new(2026, 1, 15)
     ).release_label
   end
-
 end

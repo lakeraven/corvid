@@ -325,5 +325,4 @@ class Corvid::AscRateProviderTest < ActiveSupport::TestCase
       hcpcs_code: "0102T", locality: "NATIONAL", date: Date.new(2026, 6, 15)
     ).release_label
   end
-
 end
