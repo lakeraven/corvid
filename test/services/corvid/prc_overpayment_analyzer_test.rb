@@ -579,4 +579,24 @@ class Corvid::PrcOverpaymentAnalyzerTest < ActiveSupport::TestCase
       conversion_factor: 36.0666
     }
   end
+  test "mixed blank and real IPPS labels keep the real release on Result#rate_source_release" do
+    # DRG weight label is blank; the hospital rate carries the real CMS
+    # release. The provider's `||` currently keeps the blank (truthy ""),
+    # and the analyzer's .presence then stores nil — the real label never
+    # reaches the provenance manifest. Assert the raw real label.
+    Corvid::IppsDrgWeight.create!(
+      fiscal_year: 2009, drg_code: "470",
+      relative_weight: 2.0743, release_label: ""
+    )
+    Corvid::IppsHospitalRate.create!(
+      fiscal_year: 2009, locality: "NATIONAL",
+      base_rate: 6_000.0, wage_index: 1.0, release_label: "cms_fy2009_final_rule"
+    )
+
+    result = analyze_single_obligation(procedure: "HIP_REPLACE_THR", paid: 42_000).results.first
+    assert_equal :ipps, result.payment_system
+    assert_equal :real, result.rate_source
+    assert_equal "cms_fy2009_final_rule", result.rate_source_release
+  end
+
 end

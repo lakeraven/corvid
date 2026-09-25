@@ -271,4 +271,59 @@ class Corvid::AscRateProviderTest < ActiveSupport::TestCase
     )
     assert_equal "stub_asc_cf", lookup.release_label
   end
+  # release_label merge: the HCPCS rate is row A, the conversion factor
+  # is row B. Assertions compare the raw label, never via .presence.
+
+  test "lookup_for returns the conversion-factor label when the HCPCS rate label is blank" do
+    relabel_asc(hcpcs: "", factor: "cms_asc_cy2026")
+    assert_equal "cms_asc_cy2026", asc_release_label
+  end
+
+  test "lookup_for keeps the HCPCS rate label when the conversion-factor label is blank" do
+    relabel_asc(hcpcs: "cms_asc_cy2026", factor: "")
+    assert_equal "cms_asc_cy2026", asc_release_label
+  end
+
+  test "lookup_for returns nil when both ASC release labels are blank" do
+    # Nil, not "". "" is truthy, so the current `||` returns "" — the
+    # defect. Once blank labels are skipped, neither row contributes a
+    # label and the lookup must return nil. Asserting "" would pass today.
+    relabel_asc(hcpcs: "", factor: "")
+    assert_nil asc_release_label
+  end
+
+  test "lookup_for lets a stub label on either ASC row win over a real label" do
+    relabel_asc(hcpcs: "stub_hcpcs_v1", factor: "cms_asc_cy2026")
+    assert_equal "stub_hcpcs_v1", asc_release_label
+
+    relabel_asc(hcpcs: "cms_asc_cy2026", factor: "stub_cf_v1")
+    assert_equal "stub_cf_v1", asc_release_label
+  end
+
+  test "lookup_for treats a whitespace-only ASC label as blank" do
+    relabel_asc(hcpcs: "   ", factor: "cms_asc_cy2026")
+    assert_equal "cms_asc_cy2026", asc_release_label
+
+    relabel_asc(hcpcs: "cms_asc_cy2026", factor: "   ")
+    assert_equal "cms_asc_cy2026", asc_release_label
+
+    relabel_asc(hcpcs: "   ", factor: "   ")
+    assert_nil asc_release_label
+  end
+
+  private
+
+  def relabel_asc(hcpcs:, factor:)
+    Corvid::AscHcpcsRate.find_by!(calendar_year: @cy, hcpcs_code: "0102T")
+                        .update!(release_label: hcpcs)
+    Corvid::AscConversionFactor.find_by!(calendar_year: @cy, locality: "NATIONAL")
+                               .update!(release_label: factor)
+  end
+
+  def asc_release_label
+    Corvid::AscRateProvider.lookup_for(
+      hcpcs_code: "0102T", locality: "NATIONAL", date: Date.new(2026, 6, 15)
+    ).release_label
+  end
+
 end
