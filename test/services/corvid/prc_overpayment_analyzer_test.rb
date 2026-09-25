@@ -598,5 +598,4 @@ class Corvid::PrcOverpaymentAnalyzerTest < ActiveSupport::TestCase
     assert_equal :real, result.rate_source
     assert_equal "cms_fy2009_final_rule", result.rate_source_release
   end
-
 end

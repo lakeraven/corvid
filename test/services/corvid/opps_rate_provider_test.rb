@@ -154,5 +154,4 @@ class Corvid::OppsRateProviderTest < ActiveSupport::TestCase
       apc_code: "5071", locality: "NATIONAL", date: Date.new(2026, 6, 15)
     ).release_label
   end
-
 end
