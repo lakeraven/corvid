@@ -49,7 +49,7 @@ module Corvid
         # the resulting rate is stub-derived.
         label = [ weight_row.release_label, cf_row.release_label ]
                   .compact.find { |l| l.to_s.start_with?("stub") } ||
-                weight_row.release_label || cf_row.release_label
+                weight_row.release_label.presence || cf_row.release_label.presence
         Lookup.new(rate: rate, release_label: label)
       end
 
