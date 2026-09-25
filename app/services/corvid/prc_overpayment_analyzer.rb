@@ -272,7 +272,7 @@ module Corvid
               payment_system: :asc,
               rate_source: stub_derived ? :stub : :real,
               recovery_confidence: stub_derived ? :stub_estimate : :clear,
-              rate_source_release: asc_lookup.release_label,
+              rate_source_release: asc_lookup.release_label.presence,
               notes: stub_derived ?
                 "Ambulatory surgical center (HCPCS #{proc_info.hcpcs}). Priced via " \
                 "stub-derived ASC canonical CSV (release=#{asc_lookup.release_label})." :

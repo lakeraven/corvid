@@ -227,6 +227,84 @@ class Corvid::PrcOverpaymentAnalyzerTest < ActiveSupport::TestCase
                "blank label must normalize to nil at the analyzer boundary"
   end
 
+  test "whitespace-only release_label on the rate row collapses to nil (PFS)" do
+    # The blank case is not only "": a label of spaces is equally unusable
+    # as provenance and must not reach the manifest either.
+    Corvid::FeeScheduleEntry.where(cpt_code: "99213", locality: TEST_LOCALITY).update_all(release_label: "   ")
+    summary = analyze_single_obligation(procedure: "OFFICE_VISIT_EST", paid: 250)
+    assert_nil summary.results.first.rate_source_release,
+               "whitespace-only label must normalize to nil at the analyzer boundary"
+  end
+
+  test "blank release_label collapses to nil on the IPPS path" do
+    Corvid::IppsDrgWeight.create!(
+      fiscal_year: 2009, drg_code: "470",
+      relative_weight: 2.0743, release_label: ""
+    )
+    Corvid::IppsHospitalRate.create!(
+      fiscal_year: 2009, locality: "NATIONAL",
+      base_rate: 6_000.0, wage_index: 1.0, release_label: ""
+    )
+
+    result = analyze_single_obligation(procedure: "HIP_REPLACE_THR", paid: 42_000).results.first
+    assert_equal :ipps, result.payment_system
+    assert_equal :real, result.rate_source, "blank label must not be read as a stub"
+    assert_nil result.rate_source_release,
+               "blank IPPS label must not leak into the provenance manifest"
+  end
+
+  test "blank release_label collapses to nil on the OPPS path" do
+    Corvid::PrcProcedureDictionary.register(
+      "OUTPATIENT_TEST", hcpcs: "12345", apc: "5071",
+      description: "Test outpatient procedure"
+    )
+    Corvid::OppsApcWeight.create!(
+      calendar_year: 2009, apc_code: "5071", relative_weight: 25.4378, release_label: ""
+    )
+    Corvid::OppsConversionFactor.create!(
+      calendar_year: 2009, locality: "NATIONAL",
+      conversion_factor: 70.0, wage_index: 1.0, release_label: ""
+    )
+
+    result = analyze_single_obligation(
+      procedure: "OUTPATIENT_TEST", paid: 5_000, vendor_id: "REGULAR-HOSPITAL"
+    ).results.first
+    assert_equal :opps, result.payment_system
+    assert_equal :real, result.rate_source, "blank label must not be read as a stub"
+    assert_nil result.rate_source_release,
+               "blank OPPS label must not leak into the provenance manifest"
+  end
+
+  test "blank release_label collapses to nil on the ASC path" do
+    # Regression: the ASC branch is the fourth rate_source_release assignment
+    # site. A blank label here reached methodology.json as "" because the
+    # manifest only drops nil (.compact), so an ASC recoverable dollar showed
+    # up as an unnamed CMS release.
+    Corvid::PrcProcedureDictionary.register(
+      "OUTPATIENT_TEST", hcpcs: "12345", apc: "5071",
+      description: "Test outpatient procedure"
+    )
+    Corvid::AscHcpcsRate.create!(
+      calendar_year: 2009, hcpcs_code: "12345",
+      payment_indicator: "G2", payment_weight: 20.0, release_label: ""
+    )
+    Corvid::AscConversionFactor.create!(
+      calendar_year: 2009, locality: "NATIONAL",
+      conversion_factor: 42.0, wage_index: 1.0, release_label: ""
+    )
+    Corvid::AscFacility.create!(
+      ccn: "ASC-VENDOR-1", effective_date: Date.new(2009, 1, 1)
+    )
+
+    result = analyze_single_obligation(
+      procedure: "OUTPATIENT_TEST", paid: 1_000, vendor_id: "ASC-VENDOR-1"
+    ).results.first
+    assert_equal :asc, result.payment_system
+    assert_equal :real, result.rate_source, "blank label must not be read as a stub"
+    assert_nil result.rate_source_release,
+               "blank ASC label must not leak into the provenance manifest"
+  end
+
   test "stub-fallback (no IPPS row loaded) leaves rate_source_release nil" do
     # No IPPS rows loaded; analyzer falls back to IppsStubRateProvider,
     # which is in-code data with no release label to attribute.
