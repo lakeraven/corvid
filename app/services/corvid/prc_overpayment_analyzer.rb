@@ -167,7 +167,9 @@ module Corvid
             payment_system: :pfs,
             rate_source: :real,
             recovery_confidence: :clear,
-            rate_source_release: entry.release_label
+            # .presence collapses "" → nil so a blank label doesn't leak
+            # into methodology.json's rate_source_releases list.
+            rate_source_release: entry.release_label.presence
           )
         )
       end
@@ -195,7 +197,7 @@ module Corvid
               payment_system: :ipps,
               rate_source: stub_derived ? :stub : :real,
               recovery_confidence: stub_derived ? :stub_estimate : :clear,
-              rate_source_release: lookup.release_label,
+              rate_source_release: lookup.release_label.presence,
               notes: stub_derived ?
                 "Inpatient hospital claim (DRG #{proc_info.drg}). Priced via " \
                 "stub-derived IPPS canonical CSV (release=#{lookup.release_label}); " \
@@ -270,7 +272,7 @@ module Corvid
               payment_system: :asc,
               rate_source: stub_derived ? :stub : :real,
               recovery_confidence: stub_derived ? :stub_estimate : :clear,
-              rate_source_release: asc_lookup.release_label,
+              rate_source_release: asc_lookup.release_label.presence,
               notes: stub_derived ?
                 "Ambulatory surgical center (HCPCS #{proc_info.hcpcs}). Priced via " \
                 "stub-derived ASC canonical CSV (release=#{asc_lookup.release_label})." :
@@ -295,7 +297,7 @@ module Corvid
               payment_system: :opps,
               rate_source: stub_derived ? :stub : :real,
               recovery_confidence: stub_derived ? :stub_estimate : :clear,
-              rate_source_release: lookup.release_label,
+              rate_source_release: lookup.release_label.presence,
               notes: stub_derived ?
                 "Hospital outpatient (APC #{proc_info.apc}). Priced via " \
                 "stub-derived OPPS canonical CSV (release=#{lookup.release_label})." :
