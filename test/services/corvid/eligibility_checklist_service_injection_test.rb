@@ -12,7 +12,12 @@ class Corvid::EligibilityChecklistServiceInjectionTest < ActiveSupport::TestCase
 
   # Recording fake — every adapter call lands here so we can assert
   # routing went through the injected adapter.
-  class RecordingAdapter
+  #
+  # Inherits Corvid::Adapters::Base deliberately. A double that implements
+  # less surface than the real object hides whatever uses the rest; these
+  # overrode four methods while production adapters expose more, so a
+  # capability added to Base was invisible here until it broke at runtime.
+  class RecordingAdapter < Corvid::Adapters::Base
     attr_reader :calls
 
     def initialize(coverages: [ { plan: "Test" } ])
@@ -121,7 +126,10 @@ class Corvid::EligibilityChecklistServiceInjectionTest < ActiveSupport::TestCase
   # Adapter that returns nil instead of the expected hash/array shapes.
   # Reaching across a network or backend boundary can legitimately
   # produce nil on lookup miss; the service must not crash.
-  class NilReturnAdapter
+  class NilReturnAdapter < Corvid::Adapters::Base
+    # Overrides get_coverages (with nil), so it reports the capability as
+    # present — which is the point: the service must survive a capable
+    # adapter returning a malformed answer, not just an absent one.
     def verify_tribal_enrollment(_id);      nil; end
     def verify_identity_documents(_id);     nil; end
     def verify_residency(_id);              nil; end
