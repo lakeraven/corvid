@@ -288,16 +288,30 @@ module Corvid
                                          status: ACTIVE_COVERAGE_STATUS)
         return nil if bundle.nil?
 
-        extract_entries(bundle)
+        # A server that ignores the status parameter may page its results, so
+        # an active record can sit behind a `next` link while page one holds
+        # only cancelled ones. Walking the pages keeps [] meaning "no active
+        # coverage" rather than "none on the first page".
+        resources = collect_bundle_entries(bundle)
+        return nil if resources.nil?
+
+        resources
           # Servers may ignore an unsupported search parameter, so filter
           # again here rather than trusting the query to have narrowed.
           .select { |coverage| coverage["status"] == ACTIVE_COVERAGE_STATUS }
+          # `status: active` is not the same as "in force today": a policy can
+          # stay active with a period that has expired or not yet begun.
+          # Callers read a non-empty result as "insurance verified", so a
+          # policy not covering the patient right now must not appear.
+          .select { |coverage| coverage_in_force?(coverage) }
           .map do |coverage|
             {
               payer_name: coverage.dig("payor", 0, "display"),
               policy_id: coverage["subscriberId"],
               status: coverage["status"],
-              type_code: coverage.dig("type", "coding", 0, "code")
+              type_code: coverage.dig("type", "coding", 0, "code"),
+              coverage_start: parse_date(coverage.dig("period", "start")),
+              coverage_end: parse_date(coverage.dig("period", "end"))
             }
           end
       end
@@ -497,6 +511,18 @@ module Corvid
         execute_http(:put, url, body)
       end
 
+      # A transport failure is "could not reach the source", which callers
+      # already model as nil. Without this, an unreachable server raises out
+      # of read paths such as get_coverages and aborts checklist population --
+      # fhir_search's `return nil unless Net::HTTPSuccess` never fires,
+      # because there is no response at all.
+      TRANSPORT_ERRORS = [
+        Errno::ECONNREFUSED, Errno::ECONNRESET, Errno::EHOSTUNREACH,
+        Errno::ENETUNREACH, Errno::ETIMEDOUT, Errno::EPIPE,
+        SocketError, EOFError, IOError,
+        Net::OpenTimeout, Net::ReadTimeout, OpenSSL::SSL::SSLError
+      ].freeze
+
       def execute_http(method, url, body = nil)
         uri = URI.parse(url)
         request = case method
@@ -508,6 +534,8 @@ module Corvid
         request["Authorization"] = "Bearer #{@bearer_token}" if @bearer_token
 
         build_http(uri).request(request)
+      rescue *TRANSPORT_ERRORS
+        nil
       end
 
       # Construct a Net::HTTP instance configured per the constructor's
@@ -628,6 +656,55 @@ module Corvid
         when Array   then { "url" => url, "valueString" => value.to_json }
         else              { "url" => url, "valueString" => value.to_s }
         end
+      end
+
+      # Capped so a server returning a self-referential `next` link cannot
+      # spin here. Returns nil when a page cannot be fetched, so a partial
+      # read is never mistaken for a complete one.
+      MAX_BUNDLE_PAGES = 20
+
+      def collect_bundle_entries(bundle)
+        entries = extract_entries(bundle)
+        pages = 1
+
+        while (next_url = bundle_next_link(bundle)) && pages < MAX_BUNDLE_PAGES
+          bundle = fhir_get_url(next_url)
+          return nil if bundle.nil?
+
+          entries.concat(extract_entries(bundle))
+          pages += 1
+        end
+
+        entries
+      end
+
+      def bundle_next_link(bundle)
+        return nil unless bundle.is_a?(Hash)
+
+        link = Array(bundle["link"]).find { |l| l.is_a?(Hash) && l["relation"] == "next" }
+        url = link && link["url"]
+        url if url.is_a?(String) && !url.empty?
+      end
+
+      def fhir_get_url(url)
+        response = http_get(url)
+        return nil unless response.is_a?(Net::HTTPSuccess)
+
+        JSON.parse(response.body)
+      end
+
+      # An absent or partial period stays verifiable: FHIR treats an
+      # open-ended period as in force, so only a stated bound can exclude.
+      def coverage_in_force?(coverage, as_of: Date.today)
+        period = coverage["period"]
+        return true unless period.is_a?(Hash)
+
+        starts = parse_date(period["start"])
+        ends = parse_date(period["end"])
+        return false if starts && starts > as_of
+        return false if ends && ends < as_of
+
+        true
       end
 
       def extract_entries(bundle)

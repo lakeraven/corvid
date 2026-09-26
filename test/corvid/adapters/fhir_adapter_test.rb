@@ -336,6 +336,103 @@ class Corvid::Adapters::FhirAdapterTest < Minitest::Test
     end
   end
 
+  # -- Review findings from corvid#475 (Greptile) --------------------------
+  #
+  # Each of these reproduces a reported defect before it is fixed. The
+  # contract get_coverages documents is: [] means "searched, no active
+  # coverage", nil means "could not reach the source". Callers treat a
+  # non-empty result as "insurance verified", so anything that leaks a
+  # not-in-force policy into that array marks a PRC checklist item on a
+  # policy that is not actually covering the patient.
+
+  # P1: a transport failure must read as "unavailable" (nil), not raise out
+  # of populate!. fhir_search only guards non-success *responses*, which
+  # never fire when the connection itself fails.
+  def test_get_coverages_returns_nil_when_the_server_is_unreachable
+    raising = Object.new
+    def raising.request(*) = raise(Errno::ECONNREFUSED)
+
+    @adapter.stub(:build_http, raising) do
+      assert_nil @adapter.get_coverages("pt_001"),
+        "an unreachable server must read as unavailable (nil), not raise"
+    end
+  end
+
+  def test_get_coverages_returns_nil_on_open_timeout
+    raising = Object.new
+    def raising.request(*) = raise(Net::OpenTimeout)
+
+    @adapter.stub(:build_http, raising) do
+      assert_nil @adapter.get_coverages("pt_001")
+    end
+  end
+
+  # P1: an active Coverage whose period has expired is not in force.
+  def test_get_coverages_excludes_active_coverage_whose_period_has_ended
+    bundle = coverage_bundle(period: { "start" => "2020-01-01", "end" => "2020-12-31" })
+
+    @adapter.stub(:fhir_search, bundle) do
+      assert_equal [], @adapter.get_coverages("pt_001"),
+        "a policy that ended in 2020 must not count as verified insurance"
+    end
+  end
+
+  def test_get_coverages_excludes_active_coverage_whose_period_has_not_begun
+    future = { "start" => (Date.today + 365).to_s }
+    bundle = coverage_bundle(period: future)
+
+    @adapter.stub(:fhir_search, bundle) do
+      assert_equal [], @adapter.get_coverages("pt_001"),
+        "a policy that starts next year is not in force today"
+    end
+  end
+
+  def test_get_coverages_keeps_coverage_that_is_currently_in_force
+    period = { "start" => (Date.today - 30).to_s, "end" => (Date.today + 30).to_s }
+
+    @adapter.stub(:fhir_search, coverage_bundle(period: period)) do
+      assert_equal 1, @adapter.get_coverages("pt_001").size
+    end
+  end
+
+  def test_get_coverages_keeps_coverage_with_no_period_stated
+    @adapter.stub(:fhir_search, coverage_bundle) do
+      assert_equal 1, @adapter.get_coverages("pt_001").size,
+        "an open-ended active policy stays verifiable"
+    end
+  end
+
+  # P2: a server that ignores the status parameter and pages its results can
+  # put the active record on page 2. Filtering page 1 alone reports [] --
+  # which this method documents as "no active coverage".
+  def test_get_coverages_follows_bundle_pagination
+    page2 = coverage_bundle
+    page1 = {
+      "resourceType" => "Bundle",
+      "entry" => [ { "resource" => { "resourceType" => "Coverage", "status" => "cancelled" } } ],
+      "link" => [ { "relation" => "next", "url" => "https://fhir.example.com/r4/Coverage?page=2" } ]
+    }
+
+    @adapter.stub(:fhir_search, page1) do
+      @adapter.stub(:fhir_get_url, page2) do
+        assert_equal 1, @adapter.get_coverages("pt_001").size,
+          "an active record on page 2 must be found"
+      end
+    end
+  end
+
+  def coverage_bundle(period: nil)
+    resource = {
+      "resourceType" => "Coverage",
+      "status" => "active",
+      "payor" => [ { "display" => "Example Health Plan" } ],
+      "subscriberId" => "TGN-100254",
+      "type" => { "coding" => [ { "code" => "TRIB" } ] }
+    }
+    resource["period"] = period if period
+    { "resourceType" => "Bundle", "entry" => [ { "resource" => resource } ] }
+  end
+
   # -- Active-only, and "unavailable" is not "none" (fail-closed reads) --
 
   def test_get_coverages_requests_active_status
