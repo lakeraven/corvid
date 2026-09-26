@@ -192,16 +192,33 @@ Notes on CFs:
 Notes on APC counts:
 - Pre-CY 2016 (~330–387 weighted APCs) vs CY 2016+ (~225–258): CMS consolidated APCs in 2016 (the comprehensive-APC restructuring), dropping ~150 codes from the weighted list. Lower count is expected.
 
-## Phase 2: per-CBSA wage index
+## Phase 2: per-CBSA wage index (#369, parent #351)
 
-Phase 1 ships NATIONAL-only with `wage_index=1.0`. Real OPPS pricing
-applies a per-CBSA wage adjustment (the same wage-area data CMS uses
-for IPPS). Loading per-CBSA rows is a separate slice — adds geographic
-accuracy at the cost of a separate per-year sourcing step.
+`OppsRateProvider` no longer reads `wage_index` off
+`corvid_opps_conversion_factors` at all — as of #369, the wage index
+factor in `apc_weight × conversion_factor × wage_index` is sourced
+from `Corvid::IppsHospitalRate` (CBSA-or-NATIONAL-or-1.0 fallback
+chain), the same wage-area table IPPS uses. See
+[cms_ipps_data.md](cms_ipps_data.md#per-cbsa-wage-index-369-parent-351)
+for how to load real per-CBSA wage index data — it's the same table,
+so loading it once benefits IPPS, OPPS, and ASC pricing together.
+
+The `wage_index` column on `corvid_opps_conversion_factors` is now
+dead weight (unread by the rate provider) but still present in the
+schema; dropping it is #370, sequenced after #369 proves out.
+
+Passing a real CBSA `locality:` into `OppsRateProvider.rate_for` from
+the analyzer (rather than whatever PFS-style locality
+`PrcFacilityDictionary` currently resolves) is a separate follow-up,
+#372 — until that lands, this refactor is plumbing without a change
+in production analyzer output; it's a correctness/architecture fix
+(single source of truth for wage index) that also happens to unlock
+real per-CBSA OPPS pricing the moment #372 wires the locality through.
 
 For tribal PRC recovery in rural/non-metro areas, the wage adjustment
-is typically <5% — material but not game-changing. NATIONAL CF is
-"directionally correct" until Phase 2 lands.
+can be material — e.g. Billings, MT's real FY2026 wage index (0.8961)
+moves an OPPS APC screening rate ~10% below the flat-NATIONAL figure.
+NATIONAL CF/wage-index is "directionally correct" until #372 lands.
 
 ## ASC parity
 
