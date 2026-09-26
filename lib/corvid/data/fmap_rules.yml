@@ -1,0 +1,84 @@
+# Statutory FMAP rules as data (#546). Effective/expiration dates make
+# every rule reproducible by date of service; a statutory change is a
+# data update here, not a code release. A rule with no effective_on is
+# dormant: present as data, never in force until enactment sets a date.
+#
+# Citations are the load-bearing field — every classification a findings
+# packet reports resolves back to these strings.
+
+- rule_key: us-ihs-638-100
+  jurisdiction: US
+  category: fmap_100_ihs_638
+  fmap_percent: 100.0
+  statutory_citation: "SSA 1905(b) (third sentence); 42 CFR 433.10"
+  facility_authority_types: [ihs_direct, contract_638, compact_638]
+  received_through_bases: [facility_authority]
+  requires_aian: true
+  requires_received_through: true
+  effective_on: 1976-10-01
+  notes: >
+    100 percent federal match for services received through an IHS or
+    tribal 638 facility by AI/AN Medicaid beneficiaries.
+
+- rule_key: us-cca-100
+  jurisdiction: US
+  category: fmap_100_cca
+  fmap_percent: 100.0
+  statutory_citation: "SSA 1905(b); CMS SHO #16-002 (2016-02-26)"
+  received_through_bases: [cca]
+  requires_aian: true
+  requires_received_through: true
+  effective_on: 2016-02-26
+  notes: >
+    Services furnished by non-IHS/tribal providers are "received through"
+    an IHS/638 facility when furnished under a written care coordination
+    agreement whose scope covers the service and date.
+
+- rule_key: us-arpa-9815-uio-100
+  jurisdiction: US
+  category: fmap_100_uio
+  fmap_percent: 100.0
+  statutory_citation: "ARPA sec. 9815 (Pub. L. 117-2)"
+  facility_authority_types: [uio]
+  received_through_bases: [facility_authority]
+  requires_received_through: true
+  effective_on: 2021-04-01
+  expires_on: 2023-03-31
+  notes: >
+    Two-year 100 percent FMAP window for services furnished by Urban
+    Indian Organizations. Expired; kept in force for its window so
+    retrospective audits of 2021-2023 encounters reproduce it.
+
+- rule_key: us-uio-parity-100
+  jurisdiction: US
+  category: fmap_100_uio
+  fmap_percent: 100.0
+  statutory_citation: "Urban Indian Health Parity Act (proposed; effective on enactment)"
+  facility_authority_types: [uio]
+  received_through_bases: [facility_authority]
+  requires_received_through: true
+  notes: >
+    Dormant Parity Act readiness rule: activation is setting effective_on
+    when enacted — a rules-data update, not a release.
+
+- rule_key: us-expansion-90
+  jurisdiction: US
+  category: fmap_90_expansion
+  fmap_percent: 90.0
+  statutory_citation: "SSA 1905(y)(1)"
+  coverage_group: expansion
+  effective_on: 2020-01-01
+  notes: >
+    Steady-state 90 percent match for the ACA expansion group. The
+    2014-2019 phase-down percentages are omitted from the seed set; add
+    effective-dated rows if pre-2020 encounters need classification.
+
+- rule_key: us-regular
+  jurisdiction: US
+  category: fmap_regular
+  statutory_citation: "SSA 1905(b) (state-specific FMAP; annual Federal Register notice)"
+  effective_on: 1966-01-01
+  notes: >
+    Fallback floor. The state/year percent is jurisdiction-pack rate data
+    (RateSchedule, Phase 1); left null here so deltas against it are
+    reported as unknown rather than guessed.

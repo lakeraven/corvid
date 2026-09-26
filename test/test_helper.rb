@@ -8,6 +8,9 @@ require "rails/test_help"
 # FK-correct table cleanup. Mirrors features/support/env.rb so minitest
 # and cucumber share the same deletion order.
 def clean_corvid_tables!
+  Corvid::FmapDetermination.unscoped.delete_all
+  Corvid::FacilityAuthority.unscoped.delete_all
+  Corvid::FmapRule.unscoped.delete_all
   Corvid::FeeSchedule.unscoped.delete_all
   Corvid::FeeScheduleEntry.unscoped.delete_all
   Corvid::IppsDrgWeight.unscoped.delete_all

@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_05_17_000001) do
+ActiveRecord::Schema[8.1].define(version: 2026_08_31_000001) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
@@ -308,6 +308,20 @@ ActiveRecord::Schema[8.1].define(version: 2026_05_17_000001) do
     t.index ["tenant_identifier", "facility_identifier"], name: "idx_corvid_elig_checklists_tenant_facility"
   end
 
+  create_table "corvid_facility_authorities", force: :cascade do |t|
+    t.boolean "air_eligible", default: false, null: false
+    t.string "authority_type", null: false
+    t.datetime "created_at", null: false
+    t.date "effective_on", null: false
+    t.date "expires_on"
+    t.string "facility_identifier", null: false
+    t.string "four_walls_exception_basis"
+    t.string "service_area"
+    t.string "tenant_identifier", null: false
+    t.datetime "updated_at", null: false
+    t.index ["tenant_identifier", "facility_identifier"], name: "idx_corvid_facility_authorities_tenant_facility"
+  end
+
   create_table "corvid_fee_schedule_entries", force: :cascade do |t|
     t.decimal "conversion_factor", precision: 8, scale: 4
     t.string "cpt_code", null: false
@@ -341,6 +355,55 @@ ActiveRecord::Schema[8.1].define(version: 2026_05_17_000001) do
     t.datetime "updated_at", null: false
     t.index ["tenant_identifier", "facility_identifier"], name: "idx_on_tenant_identifier_facility_identifier_4bbe5beaee"
     t.index ["tenant_identifier", "program"], name: "index_corvid_fee_schedules_on_tenant_identifier_and_program"
+  end
+
+  create_table "corvid_fmap_determinations", force: :cascade do |t|
+    t.boolean "aian_verified", default: false, null: false
+    t.string "best_available_category"
+    t.string "best_available_rule_key"
+    t.string "category", null: false
+    t.string "claim_reference"
+    t.string "coverage_group"
+    t.datetime "created_at", null: false
+    t.date "date_of_service", null: false
+    t.string "determination_reason"
+    t.datetime "determined_at", null: false
+    t.string "encounter_identifier", null: false
+    t.jsonb "evidence_refs", default: [], null: false
+    t.string "facility_identifier"
+    t.decimal "fmap_percent", precision: 5, scale: 2
+    t.string "jurisdiction", null: false
+    t.jsonb "missing_evidence", default: [], null: false
+    t.string "person_identifier"
+    t.string "received_through_basis"
+    t.jsonb "rule_citations", default: [], null: false
+    t.string "rule_key"
+    t.bigint "state_share_delta_cents"
+    t.bigint "superseded_by_id"
+    t.string "tenant_identifier", null: false
+    t.datetime "updated_at", null: false
+    t.index ["tenant_identifier", "date_of_service"], name: "idx_corvid_fmap_determinations_tenant_dos"
+    t.index ["tenant_identifier", "encounter_identifier"], name: "idx_corvid_fmap_determinations_tenant_encounter"
+  end
+
+  create_table "corvid_fmap_rules", force: :cascade do |t|
+    t.string "category", null: false
+    t.string "coverage_group"
+    t.datetime "created_at", null: false
+    t.date "effective_on"
+    t.date "expires_on"
+    t.jsonb "facility_authority_types", default: [], null: false
+    t.decimal "fmap_percent", precision: 5, scale: 2
+    t.string "jurisdiction", default: "US", null: false
+    t.text "notes"
+    t.jsonb "received_through_bases", default: [], null: false
+    t.boolean "requires_aian", default: false, null: false
+    t.boolean "requires_received_through", default: false, null: false
+    t.string "rule_key", null: false
+    t.string "statutory_citation", null: false
+    t.datetime "updated_at", null: false
+    t.index ["jurisdiction", "effective_on"], name: "index_corvid_fmap_rules_on_jurisdiction_and_effective_on"
+    t.index ["rule_key"], name: "index_corvid_fmap_rules_on_rule_key", unique: true
   end
 
   create_table "corvid_ipps_drg_weights", force: :cascade do |t|
