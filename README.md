@@ -162,6 +162,20 @@ Each `cms:import` writes a `Corvid::CmsFeeScheduleRelease` record capturing the 
 | [0002](docs/adr/0002-architectural-foundations.md) | Tenancy, table prefixes, string enums, hooks, namespacing |
 | [0003](docs/adr/0003-phi-tokenization.md) | PHI tokenization (Stripe-style for HIPAA) |
 
+## Demos
+
+Three fully synthetic, fully offline demos ship with the engine — a stock-FHIR
+multi-clinic PRC + MLR overlay, a narrated PRC happy path, and a governed
+patient-data migration. Each is one command from a fresh checkout:
+
+```bash
+bin/demo-overlay
+bin/demo-prc
+bin/demo-prc-migration
+```
+
+Runbook: [`docs/demo.md`](docs/demo.md).
+
 ## Development
 
 ```bash
