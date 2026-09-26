@@ -305,4 +305,252 @@ class Corvid::Adapters::FhirAdapterTest < Minitest::Test
       assert_equal "Broken Rock Health Center", result[:service_area]
     end
   end
+
+  # -- get_coverages (Base defaults to [] — FhirAdapter overrides with a real search) --
+
+  def test_get_coverages_maps_coverage_bundle
+    bundle = {
+      "resourceType" => "Bundle",
+      "entry" => [ {
+        "resource" => {
+          "resourceType" => "Coverage",
+          "status" => "active",
+          "payor" => [ { "display" => "Broken Rock / IHS — Payer of Last Resort" } ],
+          "subscriberId" => "TGN-100254",
+          "type" => { "coding" => [ { "code" => "TRIB" } ] }
+        }
+      } ]
+    }
+    @adapter.stub(:fhir_search, bundle) do
+      result = @adapter.get_coverages("pt_001")
+      assert_equal 1, result.size
+      assert_equal "Broken Rock / IHS — Payer of Last Resort", result.first[:payer_name]
+      assert_equal "TGN-100254", result.first[:policy_id]
+      assert_equal "TRIB", result.first[:type_code]
+    end
+  end
+
+  def test_get_coverages_returns_empty_array_when_no_coverage
+    @adapter.stub(:fhir_search, { "resourceType" => "Bundle", "entry" => [] }) do
+      assert_equal [], @adapter.get_coverages("pt_001")
+    end
+  end
+
+  # -- Review findings from corvid#475 (Greptile) --------------------------
+  #
+  # Each of these reproduces a reported defect before it is fixed. The
+  # contract get_coverages documents is: [] means "searched, no active
+  # coverage", nil means "could not reach the source". Callers treat a
+  # non-empty result as "insurance verified", so anything that leaks a
+  # not-in-force policy into that array marks a PRC checklist item on a
+  # policy that is not actually covering the patient.
+
+  # P1: a transport failure must read as "unavailable" (nil), not raise out
+  # of populate!. fhir_search only guards non-success *responses*, which
+  # never fire when the connection itself fails.
+  def test_get_coverages_returns_nil_when_the_server_is_unreachable
+    raising = Object.new
+    def raising.request(*) = raise(Errno::ECONNREFUSED)
+
+    @adapter.stub(:build_http, raising) do
+      assert_nil @adapter.get_coverages("pt_001"),
+        "an unreachable server must read as unavailable (nil), not raise"
+    end
+  end
+
+  def test_get_coverages_returns_nil_on_open_timeout
+    raising = Object.new
+    def raising.request(*) = raise(Net::OpenTimeout)
+
+    @adapter.stub(:build_http, raising) do
+      assert_nil @adapter.get_coverages("pt_001")
+    end
+  end
+
+  # P1: an active Coverage whose period has expired is not in force.
+  def test_get_coverages_excludes_active_coverage_whose_period_has_ended
+    bundle = coverage_bundle(period: { "start" => "2020-01-01", "end" => "2020-12-31" })
+
+    @adapter.stub(:fhir_search, bundle) do
+      assert_equal [], @adapter.get_coverages("pt_001"),
+        "a policy that ended in 2020 must not count as verified insurance"
+    end
+  end
+
+  def test_get_coverages_excludes_active_coverage_whose_period_has_not_begun
+    future = { "start" => (Date.today + 365).to_s }
+    bundle = coverage_bundle(period: future)
+
+    @adapter.stub(:fhir_search, bundle) do
+      assert_equal [], @adapter.get_coverages("pt_001"),
+        "a policy that starts next year is not in force today"
+    end
+  end
+
+  def test_get_coverages_keeps_coverage_that_is_currently_in_force
+    period = { "start" => (Date.today - 30).to_s, "end" => (Date.today + 30).to_s }
+
+    @adapter.stub(:fhir_search, coverage_bundle(period: period)) do
+      assert_equal 1, @adapter.get_coverages("pt_001").size
+    end
+  end
+
+  def test_get_coverages_keeps_coverage_with_no_period_stated
+    @adapter.stub(:fhir_search, coverage_bundle) do
+      assert_equal 1, @adapter.get_coverages("pt_001").size,
+        "an open-ended active policy stays verifiable"
+    end
+  end
+
+  # P2: a server that ignores the status parameter and pages its results can
+  # put the active record on page 2. Filtering page 1 alone reports [] --
+  # which this method documents as "no active coverage".
+  def test_get_coverages_follows_bundle_pagination
+    page2 = coverage_bundle
+    page1 = {
+      "resourceType" => "Bundle",
+      "entry" => [ { "resource" => { "resourceType" => "Coverage", "status" => "cancelled" } } ],
+      "link" => [ { "relation" => "next", "url" => "https://fhir.example.com/r4/Coverage?page=2" } ]
+    }
+
+    @adapter.stub(:fhir_search, page1) do
+      @adapter.stub(:fhir_get_url, page2) do
+        assert_equal 1, @adapter.get_coverages("pt_001").size,
+          "an active record on page 2 must be found"
+      end
+    end
+  end
+
+  def coverage_bundle(period: nil)
+    resource = {
+      "resourceType" => "Coverage",
+      "status" => "active",
+      "payor" => [ { "display" => "Example Health Plan" } ],
+      "subscriberId" => "TGN-100254",
+      "type" => { "coding" => [ { "code" => "TRIB" } ] }
+    }
+    resource["period"] = period if period
+    { "resourceType" => "Bundle", "entry" => [ { "resource" => resource } ] }
+  end
+
+  # -- Active-only, and "unavailable" is not "none" (fail-closed reads) --
+
+  def test_get_coverages_requests_active_status
+    captured = nil
+    @adapter.stub(:fhir_search, ->(type, params) { captured = [ type, params ]; { "entry" => [] } }) do
+      @adapter.get_coverages("pt_001")
+    end
+    assert_equal "Coverage", captured[0]
+    assert_equal "active", captured[1][:status]
+    assert_equal "Patient/pt_001", captured[1][:beneficiary]
+  end
+
+  def test_get_coverages_drops_non_active_coverage
+    # A server that ignores the status search parameter still must not
+    # hand cancelled/draft/entered-in-error coverage to callers that read
+    # "any coverage" as "insurance verified".
+    entries = %w[cancelled draft entered-in-error].map do |status|
+      { "resource" => { "resourceType" => "Coverage", "status" => status,
+                        "subscriberId" => "POL-#{status}" } }
+    end
+    entries << { "resource" => { "resourceType" => "Coverage", "status" => "active",
+                                 "subscriberId" => "POL-active" } }
+
+    @adapter.stub(:fhir_search, { "resourceType" => "Bundle", "entry" => entries }) do
+      result = @adapter.get_coverages("pt_001")
+      assert_equal 1, result.size
+      assert_equal "POL-active", result.first[:policy_id]
+      assert_equal "active", result.first[:status]
+    end
+  end
+
+  def test_get_coverages_drops_coverage_with_no_status
+    @adapter.stub(:fhir_search, { "entry" => [ { "resource" => { "subscriberId" => "POL-1" } } ] }) do
+      assert_equal [], @adapter.get_coverages("pt_001")
+    end
+  end
+
+  def test_get_coverages_returns_nil_when_the_search_fails
+    # fhir_search returns nil on a non-2xx (e.g. 500) or unreachable
+    # server. That must stay distinguishable from "searched, found none":
+    # a transport failure is unavailable, not "no insurance".
+    @adapter.stub(:fhir_search, nil) do
+      assert_nil @adapter.get_coverages("pt_001")
+    end
+  end
+
+  def test_fhir_search_returns_nil_on_error_response
+    failure = Net::HTTPServerError.new("1.1", "500", "Internal Server Error")
+    @adapter.stub(:http_get, failure) do
+      assert_nil @adapter.send(:fhir_search, "Coverage", beneficiary: "Patient/pt_001")
+    end
+  end
+
+  def test_empty_result_and_failed_read_are_distinguishable
+    searched_none = @adapter.stub(:fhir_search, { "entry" => [] }) { @adapter.get_coverages("pt_001") }
+    failed = @adapter.stub(:fhir_search, nil) { @adapter.get_coverages("pt_001") }
+
+    assert_equal [], searched_none
+    assert_nil failed
+    refute_equal searched_none, failed
+  end
+
+  # -- Fail-closed on unknown/absent enrollment confidence (HIGH finding) --
+
+  def test_verify_tribal_enrollment_confidence_defaults_unavailable_when_subfield_absent
+    # Extension present but with NO confidence sub-field must NOT be treated as
+    # ":verified" — an unstated confidence is unknown, so fail closed.
+    resource = {
+      "id" => "pt_001",
+      "extension" => [ {
+        "url" => "https://lakeraven.com/fhir/StructureDefinition/tribal-enrollment",
+        "extension" => [
+          { "url" => "enrolled", "valueBoolean" => true },
+          { "url" => "membershipNumber", "valueString" => "TGN-100254" }
+        ]
+      } ]
+    }
+    @adapter.stub(:fhir_read, resource) do
+      result = @adapter.verify_tribal_enrollment("pt_001")
+      assert_equal :unavailable, result[:confidence]
+    end
+  end
+
+  def test_verify_tribal_enrollment_confidence_normalizes_and_whitelists
+    # A recognized value in a different case normalizes; an unrecognized value
+    # (e.g. "provisional") is not on the whitelist and fails closed.
+    variants = { "UNAVAILABLE" => :unavailable, "provisional" => :unavailable, "  Stale  " => :stale }
+    variants.each do |raw, expected|
+      resource = {
+        "id" => "pt_001",
+        "extension" => [ {
+          "url" => "https://lakeraven.com/fhir/StructureDefinition/tribal-enrollment",
+          "extension" => [
+            { "url" => "enrolled", "valueBoolean" => true },
+            { "url" => "confidence", "valueString" => raw }
+          ]
+        } ]
+      }
+      @adapter.stub(:fhir_read, resource) do
+        result = @adapter.verify_tribal_enrollment("pt_001")
+        assert_equal expected, result[:confidence], "confidence #{raw.inspect} should normalize to #{expected.inspect}"
+      end
+    end
+  end
+
+  def test_verify_methods_fail_closed_when_fhir_read_returns_nil
+    # Server 404 / missing resource: fhir_read returns nil. All verify_* methods
+    # must fail closed with no crash.
+    @adapter.stub(:fhir_read, nil) do
+      enrollment = @adapter.verify_tribal_enrollment("pt_missing")
+      assert_equal false, enrollment[:enrolled]
+      assert_equal :unavailable, enrollment[:confidence]
+
+      identity = @adapter.verify_identity_documents("pt_missing")
+      assert_equal false, identity[:ssn_present]
+
+      residency = @adapter.verify_residency("pt_missing")
+      assert_equal false, residency[:on_reservation]
+    end
+  end
 end
