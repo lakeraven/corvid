@@ -1,0 +1,310 @@
+# Claim scrub rules — DATA, not code.
+#
+# A rule names a `check` (a predicate implemented in ScrubChecks), the `params`
+# that configure it, the `severity` of a failure, and the two halves of the
+# message a biller reads: `message` says what is wrong on THIS claim, `remedy`
+# says what to do about it. Rules carry effective dates so a rule that changed
+# on a date can be re-evaluated as of the date of service rather than today.
+#
+# severity:
+#   block — do not transmit. The claim will be rejected or denied as submitted.
+#   warn  — transmit, but a human should see it.
+#
+# Editing this file is a data change: adding a payer's filing window or a new
+# time threshold does not require touching Ruby.
+ruleset_version: "1.0.0"
+
+rules:
+  # ---------------------------------------------------------------------------
+  # Structural completeness — the claim cannot be adjudicated without these.
+  # ---------------------------------------------------------------------------
+  - id: rendering_provider_npi_present
+    category: structural_completeness
+    severity: block
+    effective_start: "2026-01-01"
+    check: npi_valid
+    params:
+      field: rendering_provider_npi
+      label: rendering provider
+    message: "The rendering provider NPI is %{problem}."
+    remedy: "Add the rendering clinician's 10-digit NPI to the claim. A professional claim without one is refused at the front door."
+
+  - id: billing_provider_npi_present
+    category: structural_completeness
+    severity: block
+    effective_start: "2026-01-01"
+    check: npi_valid
+    params:
+      field: billing_provider_npi
+      label: billing provider
+    message: "The billing provider NPI is %{problem}."
+    remedy: "Add the billing entity's 10-digit group NPI. This is the NPI the payer pays, and it must be on file with them."
+
+  - id: billing_provider_tax_id_present
+    category: structural_completeness
+    severity: block
+    effective_start: "2026-01-01"
+    check: tax_id_valid
+    params:
+      field: billing_provider_tax_id
+    message: "The billing provider tax identification number is %{problem}."
+    remedy: "Add the billing entity's 9-digit EIN. Payment cannot be issued without a tax id to pay it to."
+
+  - id: rendering_provider_taxonomy_present
+    category: structural_completeness
+    severity: block
+    effective_start: "2026-01-01"
+    check: taxonomy_valid
+    params:
+      field: rendering_provider_taxonomy
+    message: "The rendering provider taxonomy code is %{problem}."
+    remedy: "Add the clinician's 10-character Health Care Provider Taxonomy code. Behavioral-health payers route claims on it, and the wrong one denies the whole book."
+
+  - id: payer_identifier_present
+    category: structural_completeness
+    severity: block
+    effective_start: "2026-01-01"
+    check: coverage_field_present
+    params:
+      field: payer_identifier
+      label: payer identifier
+    message: "The claim has no payer identifier."
+    remedy: "Attach the coverage record carrying the payer's electronic payer id. Without it the clearinghouse cannot route the claim to anyone."
+
+  - id: coverage_active_on_service_date
+    category: structural_completeness
+    severity: block
+    effective_start: "2026-01-01"
+    check: coverage_active_on_service_date
+    params: {}
+    message: "Coverage is %{problem} for the date of service."
+    remedy: "Re-verify eligibility for the date of service. Submitting against terminated coverage buys a denial and a wasted filing window."
+
+  - id: patient_demographics_match_subscriber
+    category: structural_completeness
+    severity: block
+    effective_start: "2026-01-01"
+    check: subscriber_demographics_match
+    params: {}
+    message: "The patient's demographics do not match the coverage subscriber: %{problem}."
+    remedy: "The patient is the subscriber on this coverage, so name, date of birth, and gender must match the payer's member record exactly. Correct whichever side is wrong before submitting — a mismatch is the single most common front-door rejection."
+
+  - id: diagnosis_pointers_resolve
+    category: structural_completeness
+    severity: block
+    effective_start: "2026-01-01"
+    check: diagnosis_pointers_resolve
+    params: {}
+    message: "%{problem}"
+    remedy: "Point every service line at a diagnosis that is actually on the claim."
+
+  # ---------------------------------------------------------------------------
+  # Place of service and telehealth modifier coherence.
+  #
+  # These BLOCK. A POS/modifier mismatch does not deny one claim — it denies an
+  # entire telehealth book of business, silently, for as long as nobody
+  # notices. Effective 2024-01-01, when the post-PHE POS 10 / POS 02 split took
+  # over from the emergency flexibilities.
+  # ---------------------------------------------------------------------------
+  - id: place_of_service_matches_encounter_modality
+    category: place_of_service
+    severity: block
+    effective_start: "2024-01-01"
+    check: place_of_service_matches_modality
+    params:
+      expectations:
+        in_person:
+          description: "an in-person office visit"
+          place_of_service: [ "11" ]
+          required_modifiers: []
+          forbidden_modifiers: [ "95", "93" ]
+        telehealth_patient_home:
+          description: "telehealth with the patient in their home"
+          place_of_service: [ "10" ]
+          required_modifiers: [ "95" ]
+          forbidden_modifiers: [ "93" ]
+        telehealth_other:
+          description: "telehealth with the patient at a site other than their home"
+          place_of_service: [ "02" ]
+          required_modifiers: [ "95" ]
+          forbidden_modifiers: [ "93" ]
+        audio_only:
+          description: "an audio-only (telephone) encounter"
+          place_of_service: [ "02", "10" ]
+          required_modifiers: [ "93" ]
+          forbidden_modifiers: [ "95" ]
+    message: "%{problem}"
+    remedy: "Fix the place of service and modifiers to match how the encounter actually happened. A telehealth POS/modifier mismatch denies every claim in the book, not just this one."
+
+  - id: audio_only_modifier_policy_confirmed
+    category: place_of_service
+    severity: warn
+    effective_start: "2024-01-01"
+    check: audio_only_policy_configured
+    params:
+      default_modifier: "93"
+    message: "This payer has no configured audio-only modifier policy; the claim was scrubbed against the default modifier %{default_modifier}."
+    remedy: "Confirm with the payer which modifier they require for audio-only behavioral health and record it on the coverage. Audio-only policy is payer-specific and changes more often than the rest of telehealth."
+
+  # ---------------------------------------------------------------------------
+  # Time-supported coding. Documented time has to support the code billed.
+  # ---------------------------------------------------------------------------
+  - id: psychotherapy_60_minute_time_support
+    category: time_supported_coding
+    severity: block
+    effective_start: "2026-01-01"
+    check: minimum_documented_minutes
+    params:
+      procedure_code: "90837"
+      minimum_minutes: 53
+    message: "%{code} was billed with %{documented} of documented time; it requires at least %{minimum} minutes."
+    remedy: "Either correct the documented session time if the note supports it, or bill the 45-minute code instead. Billing the 60-minute code on short documentation is the audit finding that takes the whole year of claims with it."
+
+  - id: psychotherapy_45_minute_time_support
+    category: time_supported_coding
+    severity: block
+    effective_start: "2026-01-01"
+    check: documented_minutes_in_range
+    params:
+      procedure_code: "90834"
+      minimum_minutes: 38
+      maximum_minutes: 52
+      above_range_code: "90837"
+    message: "%{code} was billed with %{documented} of documented time; it requires %{minimum}-%{maximum} minutes."
+    remedy: "Below the range, bill the shorter code. Above it, bill %{above_range_code}. Either way the code has to follow the documented time, not the other way round."
+
+  - id: diagnostic_evaluation_repeat_within_window
+    category: time_supported_coding
+    severity: warn
+    effective_start: "2026-01-01"
+    check: repeat_service_within_months
+    params:
+      procedure_code: "90791"
+      months: 12
+      same_rendering_provider: true
+    message: "%{code} was already billed for this patient by this rendering provider on %{prior_dates}, within the last %{months} months."
+    remedy: "Most payers allow one diagnostic evaluation per patient per provider per year. Confirm this repeat is clinically warranted and documented as such, or the payer will deny it as a duplicate service."
+
+  # ---------------------------------------------------------------------------
+  # Diagnosis coding.
+  # ---------------------------------------------------------------------------
+  # Whether an ICD-10-CM code is billable is a fact in the ICD-10-CM table, and
+  # Phase 0 does not carry that table (the import is wave 2). So this splits in
+  # two, along the line between what can be VERIFIED and what is a best guess:
+  #
+  #   * the code's shape can be verified from the code alone — that BLOCKS;
+  #   * whether it is a header is a lookup we cannot do yet — that WARNS.
+  #
+  # The severity split is the whole point. A hand-maintained list of
+  # "non-billable" codes that BLOCKS will, sooner or later, refuse to transmit
+  # one of the clinic's own legitimate claims — and unlike a payer denial,
+  # nothing arrives to tell anybody it happened. A wrong warning costs a biller
+  # ten seconds; a wrong block costs the whole claim, silently. Until the real
+  # billable-code table lands, the guess does not get to stop a claim.
+  - id: diagnosis_code_well_formed
+    category: diagnosis_coding
+    severity: block
+    effective_start: "2026-01-01"
+    check: diagnosis_code_well_formed
+    params: {}
+    message: "%{problem}"
+    remedy: "Correct the diagnosis code. A code that is not a well-formed ICD-10-CM code is refused at the front door by every payer — this never adjudicates anywhere."
+
+  - id: behavioral_health_diagnosis_likely_nonbillable
+    category: diagnosis_coding
+    severity: warn
+    effective_start: "2026-01-01"
+    check: nonbillable_diagnosis_codes
+    params:
+      chapter: "F"
+      # Three-character F rubrics that ARE valid billable leaf codes. Kept
+      # because "three characters" does NOT mean "header": F70 and F23 are
+      # three characters and perfectly billable, and blocking them would deny
+      # real behavioral-health claims. Anything in the F chapter with three
+      # characters and NOT on this list is flagged as a probable header.
+      billable_category_codes:
+        - "F04"
+        - "F05"
+        - "F09"
+        - "F21"
+        - "F22"
+        - "F23"
+        - "F24"
+        - "F28"
+        - "F29"
+        - "F39"
+        - "F54"
+        - "F59"
+        - "F66"
+        - "F69"
+        - "F70"
+        - "F71"
+        - "F72"
+        - "F73"
+        - "F79"
+        - "F82"
+        - "F88"
+        - "F89"
+        - "F99"
+      # Four-character F-chapter subcategory headers that carry children and so
+      # are not billable themselves. Hand-curated and therefore PARTIAL and
+      # fallible — which is why this rule warns. It is also revision-sensitive:
+      # F32.8 and F43.8 only became headers when their children were added in
+      # later ICD-10-CM revisions, so this list is correct for the revision in
+      # force over the rule's effective window and no further.
+      nonbillable_codes:
+        - "F10.1"
+        - "F10.2"
+        - "F11.1"
+        - "F11.2"
+        - "F20.8"
+        - "F31.7"
+        - "F32.8"
+        - "F33.4"
+        - "F43.1"
+        - "F43.2"
+        - "F43.8"
+        - "F50.8"
+    message: "%{problem}"
+    remedy: "Check the code against the current ICD-10-CM table. If it is a header, replace it with the billable subcategory that matches the documented presentation — payers reject header codes outright. If it is billable as written, submit it: this rule works from a partial hand-maintained list, not the full billable-code table."
+
+  # ---------------------------------------------------------------------------
+  # Filing window and duplicates.
+  # ---------------------------------------------------------------------------
+  # Two rules, not one, so severity stays a property of the DATA: half the
+  # window gone is a warning, the window closed is a block.
+  - id: timely_filing_window_half_elapsed
+    category: timely_filing
+    severity: warn
+    effective_start: "2026-01-01"
+    check: timely_filing_elapsed
+    params:
+      at_least_fraction: 0.5
+    message: "%{elapsed} of the payer's %{window}-day filing window has already elapsed on %{code} (date of service %{serviced_date}); %{remaining} days remain."
+    remedy: "File this claim now rather than batching it. Half the window is the point where a rejection-and-rework cycle stops fitting in the time left."
+
+  - id: timely_filing_window_expired
+    category: timely_filing
+    severity: block
+    effective_start: "2026-01-01"
+    check: timely_filing_expired
+    params: {}
+    message: "The payer's %{window}-day filing window for %{code} (date of service %{serviced_date}) closed on %{deadline}."
+    remedy: "Do not transmit. Establish whether there is proof of a timely original submission or a payer delay to appeal with; otherwise this is a write-off, and the process that let it age is the thing to fix."
+
+  # Catches duplicates on both sides of the claim boundary: two identical lines
+  # on THIS claim earn a CO-18 just as readily as a resubmission does.
+  #
+  # `distinguishing_modifiers` are the modifiers that make two same-day services
+  # genuinely distinct. Without them the rule has no escape hatch and a clinic
+  # that legitimately saw a patient twice in a day can never bill the second
+  # session — the remedy below would be promising something the check refuses.
+  - id: duplicate_service_already_submitted
+    category: duplicate
+    severity: block
+    effective_start: "2026-01-01"
+    check: duplicate_service
+    params:
+      distinguishing_modifiers: [ "59", "XE", "XP", "XS", "XU", "76", "77" ]
+    message: "%{problem}"
+    remedy: "Confirm whether this is the same session already submitted. If it is, do not resubmit — work the original claim. If two genuinely distinct sessions happened on the same day, submit with the appropriate distinct-service modifier and documentation."
