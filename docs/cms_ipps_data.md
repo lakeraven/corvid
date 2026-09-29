@@ -23,7 +23,7 @@ For each fiscal year the relevant tables are:
 | --- | --- | --- |
 | Table 5 | MS-DRG list, relative weights, mean LOS | `corvid_ipps_drg_weights` |
 | Table 1A / 1B | National Adjusted Operating Standardized Amounts (labor + nonlabor) | `corvid_ipps_hospital_rates.base_rate` (NATIONAL row) |
-| Table 4A / 4B | Wage indexes by CBSA / state | `corvid_ipps_hospital_rates.wage_index` (per-locality rows; future) |
+| Wage Index PUF (Table 2 equivalent) | Occupational-mix-adjusted wage index by CBSA / rural-state area | `corvid_ipps_hospital_rates.wage_index` (per-locality rows — see "Per-CBSA wage index" below) |
 
 CMS distributes these as ZIPs containing both `.txt` (tab-delimited)
 and `.xlsx` versions. The `.txt` is easier to parse and matches the
@@ -179,3 +179,63 @@ not MS-DRG. The PrcProcedureDictionary maps procedure descriptions
 to MS-DRG codes; routing FY 2007 obligations through the analyzer
 would also need a CMS-DRG → MS-DRG crosswalk (CMS published one
 during the FY 2008 transition).
+
+## Per-CBSA wage index (#369, parent #351)
+
+Every `corvid_ipps_hospital_rates` row shipped so far has been
+`locality: "NATIONAL"` with `wage_index: 1.0` — real DRG weight and
+base-rate data, but no geographic wage adjustment. CMS's real IPPS
+(and OPPS/ASC — they share the same wage-area data) payment varies
+the operating standardized amount by CBSA wage index, often by
+±30–40% relative to the national average. `IppsHospitalRate` and its
+`.lookup(fiscal_year:, locality:)` method already supported
+per-locality rows (CBSA-or-NATIONAL fallback) — only the *data* was
+missing.
+
+`Corvid::CmsIppsWageIndexNormalizer` (added in this PR) reads CMS's
+annual **Wage Index Public Use File**
+(`fy{YEAR}-ipps-fr-wage-index-puf.zip`, linked from the Final Rule
+home page's "Wage Index" section) and produces the same canonical
+`ipps_hospital_rates_FY{year}.csv` shape the existing
+`cms:ipps:import_hospital_rates` / `cms:ipps:fetch_release` tasks
+already consume — no new importer needed. Use it via:
+
+```bash
+rake "cms:ipps:normalize_wage_index[2026,/tmp/wage_index_2026/3.\ FY26...cbsaoccmix_nooccmix.txt,/tmp/ipps_hospital_rates_FY2026.csv,6752.61,cms_fy2026_final_rule]"
+rake cms:ipps:import_hospital_rates[2026,/tmp/ipps_hospital_rates_FY2026.csv,cms_fy2026_final_rule]
+```
+
+The wage index figure used is the **occupational-mix-adjusted**
+value (CMS's Table 2 equivalent) — pre-reclassification,
+pre-rural-floor, pre-out-migration-adjustment, pre-budget-neutrality.
+Same "screening estimate, not adjudication" posture the analyzer
+already documents for IME/DSH/outlier (#320/#321): materially more
+accurate than a flat 1.0, not a byte-for-byte reproduction of a
+specific hospital's actual payable wage index.
+
+Validated end-to-end against the real FY2026 CMS file (465 CBSA/
+rural-state rows): Billings, MT (CBSA 13740) carries a 0.8961 wage
+index — an OPPS APC 5071 screening rate of $2,083.79 vs. $2,325.40 at
+the flat NATIONAL default, a ~10% difference that matters for tribal
+PRC recovery-triage accuracy in low-wage-index rural areas.
+
+**Data loaded in the shared `cms-fee-schedules-v1` GitHub Release:**
+FY 2026 only (as of this PR — a maintainer with release-upload access
+should run the recipe above for additional fiscal years and re-run
+`gh release upload`). `OppsRateProvider` and `AscRateProvider` now
+source wage index from this table (#369); until the analyzer itself
+passes a real CBSA locality (blocked on #372's zip→CBSA resolution),
+production OPPS/ASC pricing still resolves to the IPPS NATIONAL row
+(wage_index 1.0) in practice — this PR lands the plumbing and the
+per-CBSA data table, not the last-mile wiring from facility ZIP to
+CBSA code.
+
+Remaining in this cluster:
+- **#370** — drop the now-unused `wage_index` column from
+  `corvid_opps_conversion_factors` / `corvid_asc_conversion_factors`
+  (kept in this PR to avoid a data-loss migration before #369 is
+  proven in production).
+- **#372** — resolve `facility.locality` to a real CBSA code from the
+  facility ZIP so the per-CBSA wage index in this table actually
+  changes OPPS/ASC pricing on production obligations, not just in
+  direct rate-provider calls.
