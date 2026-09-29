@@ -6,6 +6,11 @@ module Corvid
   # fail-loud enforcement that prevents accidental cross-tenant access.
   class MissingTenantContextError < StandardError; end
 
+  # Raised when staff explicitly ask for a payer-eligibility check and the
+  # configured adapter cannot perform one. A refusal, not a negative result:
+  # "we could not determine" must never be recorded as "we determined no".
+  class CoverageDiscoveryUnavailable < StandardError; end
+
   # Thread-local tenant and facility context.
   #
   # In Rails apps, prefer ActiveSupport::CurrentAttributes (the engine's

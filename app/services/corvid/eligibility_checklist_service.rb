@@ -64,6 +64,17 @@ module Corvid
       raise ArgumentError, "No eligibility checklist for referral #{referral.referral_identifier}" unless checklist
       return if checklist.insurance_verified
 
+      # Staff asked for this explicitly. An adapter that cannot query payers
+      # must refuse out loud — returning quietly is indistinguishable from
+      # "we checked and found no other coverage", which is the answer that
+      # lets PRC pay (42 CFR 136.61).
+      unless @adapter.supports_coverage_discovery?
+        raise CoverageDiscoveryUnavailable,
+          "#{@adapter.class.name} cannot query payer coverage, so payer eligibility " \
+          "was not checked. This is not a finding of no coverage. Configure an adapter " \
+          "that implements #get_coverages before relying on payer-of-last-resort."
+      end
+
       patient_id = referral.case.patient_identifier
       coverages = @adapter.get_coverages(patient_id)
       return unless coverages.is_a?(Array) && coverages.any?
@@ -122,13 +133,31 @@ module Corvid
       checklist.verify_item!(:residency_verified, source: source)
     end
 
+    # Auto-populate is best-effort across four items; one unavailable
+    # capability must not abort the other three, so this skips rather than
+    # raising (unlike the staff-triggered `check_payer_eligibility!`). It
+    # says so in the log — silence here is what made the gap invisible.
     def populate_insurance!(checklist, patient_id, source)
       return if checklist.insurance_verified
+
+      unless @adapter.supports_coverage_discovery?
+        log_coverage_discovery_unavailable
+        return
+      end
 
       coverages = @adapter.get_coverages(patient_id)
       return unless coverages.is_a?(Array) && coverages.any?
 
       checklist.verify_item!(:insurance_verified, source: source)
+    end
+
+    def log_coverage_discovery_unavailable
+      return unless defined?(Rails) && Rails.respond_to?(:logger) && Rails.logger
+
+      Rails.logger.warn(
+        "[corvid] #{@adapter.class.name} cannot query payer coverage; " \
+        "insurance_verified left unset. Not a finding of no coverage."
+      )
     end
   end
 end
