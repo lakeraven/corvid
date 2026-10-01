@@ -214,13 +214,26 @@ pathway.** [J, from [V] text]
 
 **The defect that is real.** The IFC asserts three separate times that American Indian
 status "is not subject to change," and builds the reverification prohibition on it. [V]
-That premise holds for prongs (1) and (3), and largely for (2). It is **not** categorically
-true for prong (4), because the content of prong (4) lives in §136.12 — whose test is
-"belonging to the Indian community served by the local facilities and program," with
-§136.12(b) providing for determinations in doubtful cases that can be revisited. [V]
 
-So the rule bars states from ever rechecking a status that, on one of its four pathways, is
-contingent rather than immutable.
+**No prong of §447.51 is immutable.** An earlier draft of this section conceded prongs (1)
+and (3); that concession was wrong. [J]
+
+| Prong | How it can change |
+|---|---|
+| (1) member of a federally recognized tribe | **Disenrollment** — a sovereign act nations do exercise. Also relinquishment, which enrollment in another nation generally requires. Also a change in a nation's federal recognition. |
+| (2) urban resident, member or 1st/2nd-degree descendant | Residency can end. A state can withdraw state recognition, on which one branch of this prong depends. |
+| (3) considered by the Secretary of the Interior to be an Indian for any purpose | The most stable, but still an administrative determination rather than a fact. |
+| (4) considered by the Secretary of HHS to be an Indian for purposes of eligibility for Indian health care services | Content lives in §136.12, whose test is "belonging to the Indian community served by the local facilities and program," with §136.12(b) providing for doubtful cases to be revisited. [V] Community regard can lapse; people move. |
+
+So the rule bars states from ever rechecking a status that is contingent on **every** one of
+its four pathways — not merely on the fourth.
+
+**But the disjunction absorbs most of it.** §447.51's prongs are joined by "or," and §136.12
+operates independently. [V] A person who loses one basis may still satisfy another: a
+disenrolled citizen may remain a first- or second-degree descendant of a member, or remain
+regarded as Indian by the community where they live. [J] So in practice the *composite*
+status is far more durable than any single prong — which is probably what CMS meant and is
+certainly not what CMS wrote.
 
 **Two observations, and the second is the one to carry:**
 
@@ -350,6 +363,20 @@ Four consequences. The first is a hard rule.
 4. **It is why federation is architecturally necessary, not merely preferable.** You cannot
    build a registry of a set defined partly by local community regard. The breadth of the
    definition forces locality. [J]
+
+**Disenrollment is the sharpest demonstration of the gap, and the most politically charged
+case this design will ever touch.** Because §447.51 is a disjunction and §136.12 operates
+independently (§0.8), a person a nation has **affirmatively declared not to be a citizen**
+may remain federally service-eligible, and a clinic determination may read `true` for them.
+[J]
+
+That is the over-inclusion direction at its most consequential, and it sets a boundary the
+design must hold on both sides: the transaction reports **whether a clinic serves someone**,
+and it must be incapable of reporting, implying, or being used to infer **what a nation has
+decided about its citizenry**. A nation's enrollment decisions are its own; whether a
+clinic may still see that person is a separate decision, made by the clinic under federal
+rules. We report the second and must never expose the first. §8 item 6 and §5.4.6 are the
+mechanisms. [J]
 
 **A noted digression, resolved elsewhere:** community regard can lapse — someone vouched
 for in one year may move away the next. That is real, and it is precisely why the IFC's "not
@@ -751,6 +778,24 @@ That 7% is the most important number in this section. [J]
    the loop. This is a new coercion surface that §5.3 does not have, and §5.6 shows it is
    not hypothetical. [J]
 
+#### 5.4.6 Revocation must not become a disenrollment feed
+
+Falls out of §0.8 and §1.7, and it is the credential analogue of §8 item 6. [J]
+
+A credential whose sole claim is service eligibility must **not** be revoked because an
+underlying prong changed. If it were, the status list would publish a machine-readable
+signal, timed to a nation's governance action, about a named individual — strictly worse
+than the query-pattern residue §5.4 was adopted to eliminate.
+
+Revocation is therefore reserved for **issuance error and key compromise**, and nothing
+else. Credentials carry no routine expiry that would force re-presentation and
+re-determination, which §0.2 makes unnecessary anyway.
+
+The uncomfortable corollary, stated plainly: a credential may remain valid for someone a
+nation has since disenrolled. That is the correct behaviour under §1.7 — the credential
+asserts what a clinic determined, not what a nation decided — but it is the kind of thing
+that must be said out loud to a tribal partner before it is discovered. [J]
+
 #### 5.4.5 Verdict
 
 **Recommended as the documentation-tier carrier, sequenced second.** [J] It shares §5.3's
@@ -1003,9 +1048,11 @@ same transaction with a different base URL — *provided* §9 holds. [J]
 ## 8. What the tribal endpoint must expose (§5.3)
 
 1. One authenticated route answering §2's question for one named individual.
-2. A read of the determination already recorded at RPMS registration. The authoritative
-   RPMS field(s) and the RPC path to them: **[G]**, §11 — this is step 1 of §12 and it is
-   the one gap that blocks implementation outright.
+2. A read of the determination already recorded at RPMS registration — file #9000001,
+   fields `1111` / `1112` only, never `.07` / `1108` / `1109` / `1110` (§11 item 3). Field
+   `1108` TRIBE OF MEMBERSHIP would move on a disenrollment; `1111` / `1112` need not.
+   Reading the enrollment fields would make the endpoint sensitive to a nation's governance
+   actions, which is §1.7's prohibition expressed as a field list.
 3. A query log the operator can read: requesting state, agreement reference, subject token,
    timestamp, answer returned, `messageId`. Pattern after
    `Corvid::BillingTransaction.log_transaction!`. [V, repo]
@@ -1013,6 +1060,19 @@ same transaction with a different base URL — *provided* §9 holds. [J]
    coordinating with us or with any other operator. [J]
 5. Nothing else. No search, no list, no batch, no "patients matching" endpoint, no
    reporting surface over the query log beyond the operator's own view.
+6. **An immutable first answer.** On any repeat query about the same subject, the endpoint
+   returns the **original** answer with its **original** timestamp, or refuses — it must not
+   perform a fresh determination.
+
+   Reason, and it is not fastidiousness: §0.8 establishes that every prong can change, and
+   disenrollment is one way (§1.7). If the endpoint re-determined on each call, a state
+   that asked twice could observe the bit change — and a change in that bit, for this
+   population, is readable as a tribal governance action leaking through a Medicaid API.
+   §0.2 forbids the state from re-asking, so the hole is mostly closed by regulation; but a
+   guarantee that depends on the consumer obeying someone else's rule is not a guarantee.
+   **Enforce §0.2 at the source.** [J]
+
+   This also makes the endpoint idempotent, which is independently worth having.
 
 ---
 
@@ -1266,6 +1326,9 @@ someone looks closely.
   biometric, and nothing here requires it.
 - **Describing this transaction as verifying who is Indian** (§1.7). Not in code, not in a
   PR title, not in a deck. The assertion is service eligibility, determined by a facility.
+- **Policing, reporting, or enabling inference of enrollment or disenrollment** (§1.7,
+  §8 item 6, §5.4.6). A nation's decisions about its citizenry must not be observable
+  through this transaction, including by repeated querying or by revocation timing.
 - **Any use of the transaction or credential outside Medicaid or CHIP eligibility
   determination** (§1.7 consequence 3). Because the federal set over-includes relative to
   tribal citizenship, reuse elsewhere is not merely out of scope — it is wrong, and wrong
