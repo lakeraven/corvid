@@ -116,7 +116,7 @@ confidentiality, disclosure, maintenance, or use of information." [V]
 "from certain alternative Federal electronic services, such as the Emmy API." [V]
 
 The named data sources CMS has lined up so far are the VA and the National Student
-Clearinghouse. **AI/AN status is not among them.** [V]
+Clearinghouse. **Indian health service eligibility is not among them.** [V]
 
 ### 0.4 CMS has already built and open-sourced the shape of the answer
 
@@ -157,7 +157,7 @@ than the brief assumes, and the forcing event is the documentation requirement, 
 requirement's start date. [J] That *helps* the sequencing worry in brief §10.1: there is a
 real 2027 window to get a data source approved before paper becomes mandatory. [J]
 
-### 0.6 The rule is silent on *how* to verify AI/AN status electronically
+### 0.6 The rule is silent on *how* to verify service eligibility electronically
 
 The IFC contains **no** reference to X12, to the 270/271 transaction, to IHS data, to
 tribal health systems, or to an I/T/U data path. The only instruction is "existing data
@@ -300,6 +300,61 @@ is read through the adapter seam from RPMS and **is not persisted by corvid**. C
 existing `Corvid::BillingTransaction` already models exactly this shape — a tokenized
 request/response audit row for clearinghouse traffic — and is the obvious parent pattern.
 [V, repo] [J for the conclusion]
+
+### 1.7 The federal definition is broader than tribal citizenship, and the language must never blur them
+
+Raised in review, and it is the most important framing constraint in this document. [J]
+
+**The set relation.** §447.51's prong (2) reaches a person who resides in an urban center and
+is a member of "a tribe, band, or other organized group of Indians, **including those
+tribes, bands, or groups terminated since 1940 and those recognized now or in the future by
+the State in which they reside**, or who is a **descendant, in the first or second degree**,
+of any such member." [V] §136.12 adds the community-regard test. [V]
+
+So the federal service-eligible set includes people whom **no federally recognized nation
+claims as a citizen**: members of state-recognized tribes, members of terminated tribes,
+second-degree descendants, and people recognized by the community they live in rather than
+by a roll.
+
+**America's definition is broader than any tribe's, and deliberately so.** It is a service
+program discharging a trust obligation to a population, not a membership roster; the urban
+provisions exist because federal relocation policy scattered people away from their
+nations in the first place. [J] The breadth is not sloppiness in the way §0.8's defect is
+sloppiness — it is the point of the program.
+
+**The asymmetry runs opposite to the usual fear.** The historical grievance is federal
+definitions being *narrower* and imposed — Dawes rolls, BIA blood quantum, termination.
+Here the federal definition is wider. But it is the same objection either way: **a
+definition of who is Indian, made somewhere other than by a nation.** [J] If this design is
+ever described as verifying who is Indian, that is the objection it will meet, and the
+objection will be correct.
+
+Four consequences. The first is a hard rule.
+
+1. **Naming discipline, enforced like §1.5.** The transaction asserts **"eligible for
+   services from an Indian health provider."** It never asserts "is Indian," "Indian
+   status," "AI/AN status," or "verified AI/AN." This binds field names, feature files,
+   OpenAPI descriptions, log lines, commit messages, PR titles, and anything shown to a
+   partner or a state. CMS's own text says "status as an American Indian"; **we quote that
+   language, we do not adopt it.**
+2. **What we may never claim to a tribal partner.** Not "we help the state identify your
+   citizens" — the set is not your citizens. The true claim is narrower, and stronger for
+   being true: **"your clinic confirms who your clinic serves."**
+3. **Over-inclusion is the misuse direction, and it harms nations rather than
+   individuals.** A `true` may describe someone a nation does not recognize. So a portable
+   credential (§5.4) will not merely be demanded by parties with no right to it — it will
+   be **misread as evidence of tribal membership**, over-inclusively, eroding exactly the
+   authority to define citizenship that §1.5 protects. This is a sharper version of
+   §5.4.4 item 6 and a reason the credential must carry a scoped purpose and be unusable
+   outside Medicaid eligibility determination. [J]
+4. **It is why federation is architecturally necessary, not merely preferable.** You cannot
+   build a registry of a set defined partly by local community regard. The breadth of the
+   definition forces locality. [J]
+
+**A noted digression, resolved elsewhere:** community regard can lapse — someone vouched
+for in one year may move away the next. That is real, and it is precisely why the IFC's "not
+subject to change" premise fails for this prong. See §0.8; it changes nothing here, because
+§0.2 forbids the state from rechecking regardless.
 
 ---
 
@@ -1209,6 +1264,12 @@ someone looks closely.
   people this serves.
 - Biometric identity proofing of any kind. §5.6's exclusion evidence is specifically
   biometric, and nothing here requires it.
+- **Describing this transaction as verifying who is Indian** (§1.7). Not in code, not in a
+  PR title, not in a deck. The assertion is service eligibility, determined by a facility.
+- **Any use of the transaction or credential outside Medicaid or CHIP eligibility
+  determination** (§1.7 consequence 3). Because the federal set over-includes relative to
+  tribal citizenship, reuse elsewhere is not merely out of scope — it is wrong, and wrong
+  in the direction that undermines nations' authority to define their own citizenry.
 
 ---
 
