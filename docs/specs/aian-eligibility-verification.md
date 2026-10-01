@@ -191,6 +191,53 @@ per **§435.945(h)**. If and when CMS puts AI/AN data on the Hub, **§435.557(e)
 obliges the State to migrate within 12 months, or seek **§435.945(k)** approval to keep
 the direct connection. [V for each citation; J for the composition]
 
+### 0.8 A drafting defect worth recording — and it runs in our favour
+
+Raised in review as "the CMS definition is sloppy — a non-Indian mother of an Indian child
+is Medicaid-eligible for life." The specific claim does not survive the text, but the
+instinct behind it finds a real defect, and a different one. [J]
+
+**What the text actually says.** §447.51 is a closed four-prong list: (1) member of a
+federally recognized tribe; (2) resides in an urban center and meets one of four
+sub-criteria; (3) considered by the Secretary of the Interior to be an Indian for any
+purpose; or (4) "is considered by the Secretary of Health and Human Services to be an
+Indian **for purposes of eligibility for Indian health care services**." [V]
+
+A non-Indian woman pregnant with an eligible Indian's child receives IHS services under
+§136.12(a) **as a non-Indian**, and explicitly "only during the period of her pregnancy
+through postpartum (generally about 6 weeks after delivery)." [V] She is not "considered
+to be an Indian," and the eligibility is time-limited on its face. Same structure for
+non-Indian household members served to control acute infectious disease or a public health
+hazard. Neither is within §447.51, so neither is a specified excluded individual under
+§435.554(c)(2). **No lifetime work-requirement exemption arises from the pregnancy
+pathway.** [J, from [V] text]
+
+**The defect that is real.** The IFC asserts three separate times that American Indian
+status "is not subject to change," and builds the reverification prohibition on it. [V]
+That premise holds for prongs (1) and (3), and largely for (2). It is **not** categorically
+true for prong (4), because the content of prong (4) lives in §136.12 — whose test is
+"belonging to the Indian community served by the local facilities and program," with
+§136.12(b) providing for determinations in doubtful cases that can be revisited. [V]
+
+So the rule bars states from ever rechecking a status that, on one of its four pathways, is
+contingent rather than immutable.
+
+**Two observations, and the second is the one to carry:**
+
+1. **The IFC never cites §136.12.** Zero occurrences. [V] It routes entirely through
+   §447.51, whose operative prong for our population is a bare delegation to the
+   Secretary's judgment with no test stated in the regulation itself. That is genuinely
+   loose drafting, and it is loose at exactly the point this design depends on.
+2. **The looseness runs protectively, not fraudulently.** Its effect is that once a status
+   is established it is permanent **by rule**. For the people this design serves that is
+   the single most valuable property in the whole rule (§0.2), and it is why the
+   transaction is once-per-lifetime. We should not advocate tightening it. We should
+   record that we noticed, because a reviewer who finds it independently will otherwise
+   assume we did not. [J]
+
+Comments on the IFC closed 31 July 2026, so this is a note for the final rule, not a
+comment opportunity. **[G]** on whether a final rule is scheduled.
+
 ---
 
 ## 1. Inviolable constraints
@@ -305,7 +352,7 @@ direction *and* subject matter. [J] Everything in §5.1 follows from this.
 
 ---
 
-## 5. The three carriers
+## 5. The carriers
 
 ### 5.1 X12 270/271 — Health Care Eligibility Benefit Inquiry and Response
 
@@ -543,27 +590,332 @@ fabrication this document's constraints forbid.
 
 #### 5.3.3 Verdict
 
-**Recommended carrier.** [J] It is the only one of the three that is consumable by a state
-in 2027 without a standards-change critical path, structurally satisfies §1.1, and
-conforms to a federal pattern instead of competing with one.
+**Recommended as the ex parte carrier.** [J] It is the only one of the first three that is
+consumable by a state in 2027 without a standards-change critical path, structurally
+satisfies §1.1, and conforms to a federal pattern instead of competing with one. §5.4
+is its complement, not its competitor.
+
+### 5.4 Patient-held verifiable credential (holder-mediated)
+
+Added after review raised it. It is not a variant of §5.3 — it inverts who initiates, and
+that inversion resolves two things §5.3 cannot. [J]
+
+Shape: the clinic **issues** a signed credential asserting service eligibility; the
+**patient holds** it; the state **verifies** it. Issuer / holder / verifier, the standard
+three-party model.
+
+#### 5.4.1 What is authoritatively established
+
+- **W3C Verifiable Credentials Data Model 2.0 is a W3C Recommendation, published
+  15 May 2025** — the stage at which W3C recommends wide deployment. VCDM 2.1 is a
+  Working Draft (11 May 2026) and is **not** the current Recommendation. [V]
+- The VC 2.0 family includes Data Integrity, cryptographic suites, JOSE/COSE securing,
+  controlled identifiers, and **status lists** for revocation. [V] Revocation is therefore
+  a fetched status document, not a ledger (see §5.5).
+- **SD-JWT VC** (`draft-ietf-oauth-sd-jwt-vc`) is Standards Track, was in IETF Last Call
+  ending 2026-09-15 at draft-19, with expected publication **2026-12-21**. [V] It provides
+  issuer-bounded selective disclosure, which is optional in the spec. [V]
+- **NIST SP 800-63 Revision 4 is final, published July 2025.** [V] IAL/AAL assurance
+  levels referenced anywhere in this design mean Rev 4.
+- **There is a health-sector precedent: SMART Health Cards.** The HL7 **SMART Health Cards
+  and Links IG, v1.0.0, STU 1**, published by HL7 International / FHIR Infrastructure with
+  the Verifiable Clinical Information coalition, Argonaut, and CARIN Alliance. Built on
+  FHIR R4, JWS (RFC 7515), JWT (RFC 7519), X.509 and DEFLATE. It defines a
+  `$health-cards-issue` operation, and credentials travel as a QR code, a
+  `.smart-health-card` file, or an operation response. Stated issuers include labs,
+  pharmacies, **healthcare providers**, EHRs, public health departments and immunization
+  registries. [V]
+  **Caveat on how I read it:** I read the continuous build, which declares itself "not an
+  authorized publication." The authorized publication's status is **[G]**.
+- **The SMART Health Cards IG specifies no eligibility, coverage, or non-clinical attribute
+  profile.** [V] So the framework is reusable; the payload is not defined. We would be
+  extending, not conforming — which is a weaker position than §5.3's Emmy conformance and
+  should be stated as such. [J]
+
+#### 5.4.2 Government precedent, and its measured limits
+
+- **California Identity Gateway** — a state identity-and-eligibility verification platform
+  with a digital wallet pilot, described in the CDT Digital Identification ID Pilot Program
+  Report (2026). [V]
+- **Utah** has directed its Division of Technology Services to recommend on verifiable
+  digital credentials and to create a government pilot. [V]
+- **No Medicaid program is known to accept a digital credential for eligibility today.**
+  **[G]** — I searched and found none; absence of a search result is not proof of absence.
+- **What the Medicaid work-requirement pilots actually do:** Louisiana and Arizona are
+  piloting mobile-first tools (one from the nonprofit Digital Public Works) that verify
+  **income only**, by connecting to payroll providers. They **cannot confirm exemptions**.
+  Louisiana texted 13,000 enrollees; **894 completed — under 7%.** Named limits: rural
+  connectivity, enrollee awareness, digital literacy. [V]
+
+That 7% is the most important number in this section. [J]
+
+#### 5.4.3 What it fixes — and these are §10 and §9's hard problems
+
+1. **It dissolves the query-pattern disclosure rather than contracting against it.** §10's
+   weakest row is operator audit rights over state-side retention, which has no regulatory
+   basis. If the patient presents, **the state asks no one**, so there is no query log on
+   either side to govern. [J]
+2. **It closes §9 rule 2.** The "state has a person and does not know which endpoint to
+   ask" problem disappears without a directory — and therefore without the roll
+   reconstructed by another route. [J]
+3. **It removes the endpoint-capacity blocker**, which the brief's §5.2 names as the
+   binding constraint on federation. Issuance has no uptime, no SLA, no inbound traffic. [J]
+4. **It turns the 1 Jan 2028 mandate into the adoption driver.** §435.557(b)(2)(ii) requires
+   documentation whenever reasonably available; a clinic-signed credential **is**
+   documentation, issued by the authority §447.51's definition chain points at. [J]
+5. **Staleness is a near-non-issue here, unusually.** §0.2's reverification prohibition means
+   the attribute does not change. Wrongly-issued credentials still need a status mechanism,
+   but a status check concerns a *credential*, not a person — a materially smaller
+   disclosure than §5.3's per-person query. [J]
+
+#### 5.4.4 What it breaks
+
+1. **It is not ex parte, and the statute's architecture is ex parte.** Section 1902(xx)(5)
+   requires verification using reliable information available to the State "without
+   requiring additional information from an applicant or a beneficiary." The hierarchy is
+   ex parte first, ask the person second. A credential requires the person to act. [V for
+   the obligation; J for the consequence]
+2. **The burden lands on exactly the wrong people.** See §5.4.2's 7%, and §5.6's measured
+   exclusion at national scale. This is the reason §5.4 cannot be the only path. [J]
+3. **The trust registry is §9 rule 2 relocated.** Verifiers need to know which issuer keys
+   are legitimate. That is a list of Indian health care providers and their public keys —
+   a list of *institutions*, not people, and I/T/U facility lists are already public. A
+   much better trade than a patient directory, but it re-opens a smaller version of the
+   brief's §5.2 operator question. [J]
+4. **The regulatory path is more expensive than §5.3's.** Naming a data source in a
+   verification plan is ordinary permitted machinery. Getting a state to accept a novel
+   credential format is a policy decision with no existing hook: **CMS-2454-IFC contains no
+   mention of verifiable credentials, wallets, or digital identity.** [V]
+5. **Containers accrete fields.** The moment the credential carries tribe, enrollment
+   number, or blood quantum it becomes a *portable enrollment document* — worse than §5.3,
+   because it is durable rather than transient. §1.1 and §1.5 are more load-bearing here,
+   not less. Selective disclosure helps only if the credential was minimal to begin
+   with. [J]
+6. **A portable credential can be demanded.** Landlords, employers, other benefit programs,
+   law enforcement. A query cannot be demanded of a patient, because the patient is not in
+   the loop. This is a new coercion surface that §5.3 does not have, and §5.6 shows it is
+   not hypothetical. [J]
+
+#### 5.4.5 Verdict
+
+**Recommended as the documentation-tier carrier, sequenced second.** [J] It shares §5.3's
+determination source, one-bit discipline, provenance rule, and enrollment refusal — it is
+a second *presentation* of the same core, not a second system.
+
+### 5.5 Why not a distributed ledger
+
+Asked in review, and a reviewer will ask again, so it is answered in the document. [J]
+
+**First, a conflation to clear:** verifiable credentials do not require a blockchain. VCDM
+2.0 secures credentials with JOSE/COSE or Data Integrity proofs and handles revocation
+through status lists. [V] Nothing in §5.4 implies a ledger. Aadhaar — the largest identity
+system ever built — has none either. [V, §5.6]
+
+**Second, the two candidate uses, and why boring infrastructure wins both:**
+
+| Candidate use | Better answer |
+|---|---|
+| Issuer key registry | A signed trust list over HTTPS, or DNS-anchored keys. Every state can already consume both. |
+| Revocation status | The VC 2.0 status-list mechanism — a fetched document. [V] |
+
+**Third, the disqualifying objections, in order of severity:** [J]
+
+1. **Immutability is a liability when the subject has correction rights.** A §136.12
+   determination can be wrong and gets corrected; §136.12(b) exists precisely for doubtful
+   cases. A permanent, append-only record of who was asserted to be an Indian beneficiary
+   is the opposite of what this design needs — and OCAP requires that a community be able
+   to *withdraw*. An immutable ledger cannot honour a withdrawal.
+2. **A shared ledger is shared custody.** The design's premise is that each clinic retains
+   its own record and no one else sees it. A ledger across tribes creates collective
+   visibility by construction — it is the central roll with extra steps and worse
+   governance.
+3. **Correlation.** Even hashed or pseudonymous entries, written per person per event,
+   are a permanent public correlation surface against a small population. Small-cell
+   suppression exists in `rook` for a reason; a ledger is its negation.
+4. **It adds an adoption blocker to a design whose main virtue is cheap consumption.**
+   No state eligibility system can consume a chain. §5.3 is one HTTPS client.
+5. **It would read as unserious** to CMS and to tribal counsel, and would cost us the
+   credibility the rest of this document is trying to earn.
+
+**The one steelman, stated fairly:** an append-only *transparency log* of issuer key
+history, Certificate-Transparency-shaped, containing no personal data and only institutional
+keys. That is defensible, it is not a blockchain in any useful sense, and it is strictly
+optional — it hardens §5.5's trust list without touching patient data. If anyone wants a
+ledger-shaped thing, this is the only place one belongs. [J]
+
+### 5.6 What population-scale DPI already measured
+
+Two national systems are directly instructive, one for the primitive and one for the
+mechanism. Both are also warnings, and the warnings are quantified. [J for the framing;
+[V] for each figure]
+
+**Aadhaar (India) — validates the primitive, indicts the dependency.**
+
+Its core authentication API answers yes/no, with attribute release (eKYC) a separate,
+consented operation. The largest identity deployment in history settled on a **boolean**,
+and kept authentication architecturally distinct from attribute disclosure. That is §1.1,
+independently arrived at, at national scale. [J]
+
+The exclusion evidence: [V]
+
+- Drèze et al., ~1,000 households in 32 villages in Jharkhand — **exclusion errors as high
+  as 20%** where biometric authentication was required for every sale.
+- State of Aadhaar Report (2020) — **over 30%** of those who hit authentication failure at
+  a ration outlet **did not receive rations at all**.
+- Right to Food Campaign — **more than 20 starvation deaths** documented in 2017 where
+  Aadhaar problems blocked PDS access.
+- India's Public Accounts Committee has flagged biometric verification failure excluding
+  genuine beneficiaries and called for a review of UIDAI. UIDAI's documented response to
+  such reports has been blanket denial.
+
+Causes: fingerprints worn by manual labour, biometric degradation with age, connectivity
+gaps, server failures, wrong seeding or linking. [V] **Every one of those maps onto a rural
+tribal population.** [J]
+
+Set beside §5.4.2's Louisiana result — under 7% completion — these are two independent
+measurements, different continents, different scales, same finding: **a verification rail
+that gates benefits excludes at the margin, and the margin is poor, rural, elderly,
+disabled and offline.** [J]
+
+Aadhaar is also the canonical case of one identifier becoming a universal key through
+seeding across databases — §5.4.4 item 6, realised. [J]
+
+**gov.br (Brazil) — contributes graduated assurance.**
+
+Bronze: account with data validated against tax, social security, or traffic databases.
+Silver: facial biometrics against the driver's licence database, or internet-banking
+validation, or institutional login. Gold: facial biometrics against the Electoral Justice
+database, the national ID QR code, or ICP-Brasil PKI. [V]
+
+The transferable idea is not biometrics. It is that **one service accepts several strengths
+of proof rather than mandating one** — which is what §435.557(b)(2)(iii) already requires
+when it obliges agencies to accept information other than documentation where none is
+reasonably available. Tiering is not a workaround for the rule; it is the rule. [J]
+
+**CadÚnico (Brazil) — the model to refuse, explicitly.**
+
+A single central registry of low-income families, gateway to 30-plus federal programs,
+widely regarded as administratively successful. [V] It is also §5.2's federal option taken
+to its conclusion: one roll, state-held, as the entrance to all benefits — the thing the
+brief says never to ask for.
+
+The distinction to state carefully, because CadÚnico will be raised as a counterexample:
+**Brazilians' own state holds their registry; AI/AN people would have a different sovereign
+holding theirs.** That is a jurisdictional difference, not a privacy one, and it is why the
+comparison fails even where the engineering succeeds. [J]
+
+**From neither system: a universal identifier.** The Aadhaar number and the CPF are what
+made both powerful and both dangerous. Facility-scoped HRNs are the correct granularity; a
+national AI/AN identifier would be the roll with a primary key. [J]
+
+### 5.7 Precedent a state already accepts: delegated certification
+
+Raised in review, and it is the best state-facing framing in this document, because it is
+mundane. [J]
+
+**California smog check.** A licensed private station performs the test. The BAR-97
+Emissions Inspection System transmits the result to the **Vehicle Information Database
+(VID)**; the VID transmits an electronic certificate of compliance to the **DMV**, which
+relies on it for registration. The station also hands the customer a **Vehicle Inspection
+Report (VIR)** and keeps a copy. The Bureau of Automotive Repair licenses stations and
+technicians, and the VID tracks station and technician data. [V]
+
+So a state agency already gates a benefit on an assertion made by a distributed network of
+accredited non-state parties, consuming a pass/fail rather than the underlying
+measurements. "You already do this for cars" is a cheaper opening with a state Medicaid
+agency than any argument from first principles. [J]
+
+**The structural observation worth more than the rhetoric: smog check runs both of this
+document's carriers at once.** The electronic certificate to DMV is the ex parte path
+(§5.3). The VIR in the customer's hand is the holder-mediated path (§5.4). The same system
+does both, for the same determination, and neither is considered redundant. That is the
+two-tier recommendation in §6, already deployed at scale in an unrelated domain. [J]
+
+**Where the analogy breaks, and it matters:** **BAR licenses the stations.** The state is
+the accreditor. A state Medicaid agency cannot be the accreditor of tribal clinics — I/T/U
+status is federal and sovereign, and a state licensing tribal health programs to speak
+about their own patients inverts the sovereignty the design exists to protect. [J]
+
+**Design consequence for §5.5's trust list:** the issuer trust anchor must be **federal
+(the IHS/I/T/U facility list) or tribal — never a state**. Each state verifies against a
+list it does not control. Record this as a constraint, not a preference.
+
+Also: the subject of a smog check is a car. No privacy interest, no sovereign, no
+query-pattern disclosure. The analogy is for the state-facing pitch and for the two-path
+structure. It carries nothing into §10. [J]
 
 ---
 
 ## 6. Recommendation
 
-| | §5.1 X12 270/271 | §5.2 FHIR CoverageEligibility | §5.3 Minimal API (Emmy-shaped) |
-|---|---|---|---|
-| Exists today, authoritatively specified | **Yes** [V] | Yes, ML2 Trial Use [V] | Yes, as a CC0 federal precedent [V] |
-| Semantic fit | Inverts roles; no slot for the fact | Requires modelling I/T/U as insurer | Direct |
-| Boolean + provenance + timestamp, structurally | **No** — free text only [V/J] | Partly (`inforce`) [V] | Yes |
-| Leak surface beyond §1.1 | Benefit/plan context by construction | Coverage/payment implication | Minimal by design |
-| Operator-agnostic | Poor — payer identity is structural | Moderate | Yes — one provenance field |
-| Standards critical path | X12 ECO + HIPAA rulemaking — **misses 2028** [J] | HL7 profile authoring | None |
-| State-side change | Largest | Medium | Smallest |
-| Tribal-side change | Largest | Medium | Smallest |
+| | §5.1 X12 270/271 | §5.2 FHIR CoverageEligibility | §5.3 Minimal API | §5.4 Held credential |
+|---|---|---|---|---|
+| Exists today, authoritatively specified | **Yes** [V] | Yes, ML2 Trial Use [V] | Yes, CC0 federal precedent [V] | Yes — VCDM 2.0 Rec. [V] |
+| Semantic fit | Inverts roles; no slot | I/T/U as insurer | Direct | Direct |
+| Boolean + provenance + timestamp | **No** — free text only [V/J] | Partly (`inforce`) [V] | Yes | Yes |
+| Leak surface beyond §1.1 | Benefit/plan context | Coverage implication | Minimal | Minimal, but **durable** |
+| Operator-agnostic | Poor | Moderate | Yes | Yes — no endpoint at all |
+| Standards critical path | X12 ECO + rulemaking — **misses 2028** [J] | HL7 profile authoring | None | Payload profile; SD-JWT VC RFC due 2026-12-21 [V] |
+| Regulatory hook | n/a | n/a | **Exists today** | Policy decision; rule is silent [V] |
+| Ex parte? | yes | yes | **yes** | **no** — person must act [V] |
+| Query-pattern leak (§10) | contractual | contractual | contractual | **none** |
+| §9 directory problem | unsolved | unsolved | unsolved | **solved** |
+| Endpoint capacity needed | yes | yes | yes | **no** |
+| Coercible from the patient | no | no | no | **yes** |
+| State-side change | Largest | Medium | Smallest | Medium |
+| Tribal-side change | Largest | Medium | Small | Smallest |
 
-**Build §5.3, with `VerificationResult`'s vocabulary, as an electronic data source under
-42 CFR 435.557(b)(1)(ii) named in the State's §435.945(j) verification plan.** [J]
+**Build §5.3 and §5.4, in that order, as two presentations of one determination.** [J]
+§5.3 is the ex parte tier the statute prefers and has a regulatory hook today. §5.4 is the
+documentation tier that the 1 Jan 2028 mandate creates demand for, and it is the only
+option that dissolves §10's query-pattern residue and §9's directory problem. Neither is
+sufficient alone — §5.6's measured exclusion is why.
+
+**Specify the determination-read layer once, carrier-agnostically.** Both carriers share
+the same source (RPMS `1111`/`1112`), the same one-bit discipline, the same
+provenance-names-the-clinic rule, and the same enrollment refusal. Only the presentation
+differs.
+
+### 6.1 Tier the evidence; never remove the floor
+
+From §5.6's gov.br finding and §435.557(b)(2)(iii), which already obliges agencies to accept
+information other than documentation where none is reasonably available: [V for the
+obligation; J for the ladder]
+
+| Tier | Evidence | Carrier |
+|---|---|---|
+| 1 | Clinic-signed credential | §5.4 |
+| 2 | Clinic response to an ex parte query | §5.3 |
+| 3 | Existing AI/AN data already on the state application | status quo |
+| 4 | **Self-attestation** | status quo — and NCUIH's actual ask of CMS [V] |
+
+**Strengthen the top; never remove the bottom.** A design that displaces tier 4 argues
+against the advocacy organizations whose support this needs, and §5.6 shows what happens
+when a verification rail becomes the only path. Our claim is that tiers 1–2 *reduce how
+often* tiers 3–4 are reached — not that they replace them. [J]
+
+### 6.2 On self-attestation and citizenship — the sovereignty argument this design wins
+
+Raised in review: a person should not be able to claim citizenship of another sovereign as
+a matter of course, and Indian Country has an unresolved problem with false claiming.
+
+Both true, and **neither is what this transaction does.** §435.554(c)(2) asks whether a
+person is eligible for services from an Indian health provider — a determination made by a
+*facility*, not citizenship conferred by a *nation*. So the design threads between the two
+failure modes that otherwise bracket this problem: [J]
+
+- **Pure self-attestation** lets an individual assert a relationship to a sovereign that
+  the sovereign never confirmed.
+- **Enrollment verification** asks a nation to confirm its citizenry to a state.
+
+A clinic assertion does neither. It also already embeds community judgment rather than
+individual claim — §136.12's test is whether the person "is regarded as an Indian by the
+community in which he/she lives." [V]
+
+**What this design does not solve, and must not claim to:** false claiming of Indian
+identity generally — in employment, grants, admissions, the arts, academia. That is
+governed elsewhere, by nations, and §1.5 and §13 keep this work out of it. Being clear
+about the boundary is what makes the narrower claim credible. [J]
 
 **Carry §5.1.5 as a separate, smaller work item** — the State→provider 271 that reports the
 established exclusion and cost-sharing exemption back to I/T/U clinics. It is independently
@@ -577,7 +929,7 @@ same transaction with a different base URL — *provided* §9 holds. [J]
 
 ---
 
-## 7. What the state eligibility system must do (recommended carrier)
+## 7. What the state eligibility system must do (§5.3, the ex parte tier)
 
 1. Determine the source effective under §435.557(b)(1)(ii) and document it in the
    verification plan per §435.557(b)(1)(iii) / §435.945(j). [V for the obligation]
@@ -593,7 +945,7 @@ same transaction with a different base URL — *provided* §9 holds. [J]
    system that re-queries at each renewal is non-conformant with the rule, not merely
    impolite.
 
-## 8. What the tribal endpoint must expose
+## 8. What the tribal endpoint must expose (§5.3)
 
 1. One authenticated route answering §2's question for one named individual.
 2. A read of the determination already recorded at RPMS registration. The authoritative
@@ -645,6 +997,9 @@ problem, not a solved one.
 
 ## 10. What the state retains — the §5.3 controls
 
+(§5.4 largely dissolves this section; see §5.4.3 item 1. These controls govern the ex parte
+tier, which ships first and is the one the statute prefers.)
+
 Brief §5.3 requires that no derived AI/AN cohort accumulate on the state side. Separating
 what regulation already gives us from what must be contracted matters, because the brief
 says to raise this in writing first, and a list that overstates the regulatory baseline
@@ -690,10 +1045,36 @@ Listed because brief §9 item 4 is right that an unadmitted gap is the failure m
    normative code lists, and I have not proposed a value.**
 2. **[G] X12 ECO/CMG cycle time**, and whether a new code could reach a HIPAA-adopted TR3
    before 1 Jan 2028. The request process is verified to exist; its timeline is not.
-3. **[G] The authoritative RPMS field and RPC that hold the §136.12 / §447.51
-   determination.** This is step 1 of §12 and the only gap that blocks implementation.
-   Not researched in this pass — it is an `rpms-rpc` / `lakeraven-ehr` question, not a
-   standards question.
+3. **[Partially closed] The RPMS field holding the §136.12 / §447.51 determination.**
+   Established from `rpms-rpc/lib/rpms_rpc/api/tribal.rb`, whose field numbers are recorded
+   there as verified against the FOIA data dictionary and the live DD (per `rpms-ops`
+   `docs/REGISTRATION_RPC_CONTRACTS.md` §5 and the `AGED1.m`/`AGED2.m` field maps). File
+   **#9000001 IHS PATIENT (`^AUPNPAT`)**: [V, repo]
+
+   | Field | Name | Class |
+   |---|---|---|
+   | `.07` | TRIBAL ENROLLMENT NO. | enrollment — **do not read** |
+   | `1108` | TRIBE OF MEMBERSHIP (→ TRIBE #9999999.03) | enrollment — **do not read** |
+   | `1109` | TRIBE QUANTUM | descent — **do not read** |
+   | `1110` | INDIAN BLOOD QUANTUM | descent — **do not read** |
+   | **`1111`** | **CLASSIFICATION/BENEFICIARY** (→ BENEFICIARY #9999999.25) | the determination |
+   | **`1112`** | **ELIGIBILITY STATUS** (set `I`/`D`/`C`/`P`) | the determination |
+   | `1118` | CURRENT COMMUNITY | context |
+
+   Reads run on the generic FileMan RPCs (`DDR GETS ENTRY DATA` / `DDR LISTER` /
+   `DDR VALIDATOR`) via `RpmsRpc::DdrFileman`, returning `GETS^DIQ` internal/external
+   pairs. [V, repo]
+
+   **That the determination and the enrollment data sit in adjacent fields of the same file
+   is the central implementation hazard.** §1.5's rule must become a test that fails if
+   `.07`, `1108`, `1109` or `1110` appear anywhere in the read path.
+
+   **Still open — and now the first question in the findings report:** the semantics of
+   `1112`'s `I`/`D`/`C`/`P` set. If ELIGIBILITY STATUS encodes direct-care versus
+   purchased/referred-care *scope* rather than the §136.12 beneficiary determination, then
+   `1111` is the only correct field and `1112` is a decoy. **[G]** — not guessed here.
+   Also open: how both fields behave at a site that has never curated them, and across
+   FileMan versions in the wild. **[G]**
 4. **[G] The HIPAA Privacy Rule basis for the tribal endpoint's disclosure.** Whether this
    is 45 CFR 164.512(k) (government programs providing public benefits), 164.506
    (health care operations), an authorization, or a §435.945(i) agreement acting as the
@@ -722,6 +1103,25 @@ Listed because brief §9 item 4 is right that an unadmitted gap is the failure m
    §5.1.2 is the reason, and TCEDI does not touch it. [J]
 9. **[G] CMS voluntary module pre-certification requirements** — brief §9 item 5. Not
    researched. It decides packaging, not protocol.
+10. **[G] The authorized-publication status of the HL7 SMART Health Cards and Links IG.**
+   I read the continuous build, which declares itself "not an authorized publication"
+   while reporting v1.0.0 / STU 1. The balloted artifact's status is unestablished. [V on
+   what the build says; G on the publication]
+11. **[G] Whether any Medicaid or CHIP program accepts a digital credential for
+   eligibility today.** I searched and found none; state activity I did find is
+   identity-and-wallet infrastructure (California Identity Gateway and its wallet pilot;
+   Utah's directed pilot), not benefit-attribute credentials. Absence of a result is not
+   proof of absence.
+12. **[G] Whether any payload profile exists anywhere for an eligibility or coverage
+   attribute as a verifiable credential.** The SMART Health Cards IG specifies none. [V]
+   If one exists, we conform instead of authoring — the same move the Emmy finding bought
+   for §5.3, and worth one more search before §12 step 3.
+13. **[G] Wallet and device reality for the served population.** §5.6 quantifies the
+   failure mode at national scale and §5.4.2 at pilot scale, but neither measures *our*
+   population. Smartphone penetration, connectivity, and wallet viability across
+   participating sites is a field question, and §5.4 should not be scoped before someone
+   answers it.
+14. **[G] Whether a final rule following CMS-2454-IFC is scheduled** (§0.8).
 
 ---
 
@@ -759,6 +1159,13 @@ Listed because brief §9 item 4 is right that an unadmitted gap is the failure m
 6. **The §5.1.5 companion item** — State→provider 271 reporting of the established
    exclusion — scoped separately once step 1 lands. It shares none of this design's
    blockers.
+7. **§5.4 credential track, after §5.3 ships and not before.** Sequencing reason, not
+   preference: §5.3 has a regulatory hook today and §5.4 needs a state policy decision, so
+   building §5.4 first means asking for the harder thing with nothing deployed. Two
+   prerequisites that are not ours: §11 item 12 (does a payload profile already exist) and
+   §11 item 13 (device and connectivity reality at participating sites). The trust-anchor
+   constraint from §5.7 — federal or tribal, never a state — is settled and does not need
+   re-litigating.
 
 Steps 1 and 2 are cheap and can run now. Steps 3–6 should not start before step 1 is
 reviewed, and step 5 should not start before step 4, for the reason brief §5.3 gives:
@@ -788,6 +1195,20 @@ someone looks closely.
   (§11 item 8).
 - Changes to corvid's PHI tokenization boundary (ADR 0003) or tenancy model (ADR 0002).
   If this design appears to require one, the design is wrong.
+- **Any distributed ledger or blockchain** (§5.5). The sole exception a reviewer may raise
+  is an append-only transparency log of *institutional issuer keys*, carrying no personal
+  data; that is optional hardening of §5.5's trust list and nothing more.
+- **A universal AI/AN identifier** of any kind, national or cross-site (§5.6). Facility-
+  scoped HRNs are the correct granularity.
+- **Displacing self-attestation** (§6.1 tier 4). The design reduces how often it is
+  reached; it does not replace it, and must not be sold as replacing it.
+- **False claiming of Indian identity outside Medicaid** — employment, grants, admissions,
+  the arts, academia (§6.2). Governed by nations, elsewhere.
+- Advocating that CMS tighten the §447.51 definition or the reverification prohibition
+  (§0.8). We record the defect; we do not campaign against a provision that protects the
+  people this serves.
+- Biometric identity proofing of any kind. §5.6's exclusion evidence is specifically
+  biometric, and nothing here requires it.
 
 ---
 
@@ -806,6 +1227,13 @@ Statute and regulation, read directly:
 
 Standards and specifications:
 
+- W3C Verifiable Credentials Data Model **2.0**, W3C Recommendation, 15 May 2025
+  (v2.1 is a Working Draft, 11 May 2026, and is not the Recommendation)
+- IETF `draft-ietf-oauth-sd-jwt-vc` (SD-JWT VC), Standards Track, Last Call to 2026-09-15,
+  expected publication 2026-12-21
+- NIST SP 800-63 Revision 4, final, July 2025
+- HL7 SMART Health Cards and Links IG v1.0.0 / STU 1 — **continuous build read, not the
+  authorized publication**
 - HL7 FHIR R4 `CoverageEligibilityRequest`, `CoverageEligibilityResponse`,
   `VerificationResult`
 - HL7 US Core `us-core-tribal-affiliation` (STU 9 / v9.0.0; introduced 6.0.0)
@@ -818,6 +1246,19 @@ Code and precedent:
 
 - `github.com/CMSgov/emmy-api`, CC0-1.0, OpenAPI `api-spec/v0`, inspected 2026-09-30
   (repository description marked `[DEPRECATED]`)
+
+Comparative and empirical:
+
+- Drèze et al., Jharkhand household survey (biometric authentication exclusion);
+  State of Aadhaar Report 2020; Right to Food Campaign 2017 documentation; India's
+  Public Accounts Committee review of UIDAI
+- gov.br assurance tiers (bronze / silver / gold); Cadastro Único and Bolsa Família
+- KFF Health News on Louisiana and Arizona Medicaid work-requirement technology pilots
+  (income-only verification; 894 of 13,000 completion)
+- California Department of Technology, Digital Identification ID Pilot Program Report
+  (2026); Utah Division of Technology Services verifiable-credential pilot direction
+- California Bureau of Automotive Repair Smog Check Manual / Reference Guide
+  (licensed station → VID → DMV certificate of compliance; customer-held VIR)
 - CMS Transmittal R13839OTN (CR 14473), TCEDI as Part A/B MAC X12 production translator
 - This repository: ADR 0002, ADR 0003, `Corvid::BillingTransaction`,
   `Corvid::Adapters::Base#check_eligibility_detailed`
