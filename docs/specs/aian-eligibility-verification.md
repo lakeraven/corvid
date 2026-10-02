@@ -1060,19 +1060,55 @@ same transaction with a different base URL — *provided* §9 holds. [J]
    coordinating with us or with any other operator. [J]
 5. Nothing else. No search, no list, no batch, no "patients matching" endpoint, no
    reporting surface over the query log beyond the operator's own view.
-6. **An immutable first answer.** On any repeat query about the same subject, the endpoint
-   returns the **original** answer with its **original** timestamp, or refuses — it must not
-   perform a fresh determination.
+6. **Asymmetric immutability.** A **determination** (`true` or `false`), once given, is
+   replayed verbatim with its original timestamp on any repeat query — the endpoint must not
+   re-determine. **`unknown` is not a determination and must never be frozen.**
 
-   Reason, and it is not fastidiousness: §0.8 establishes that every prong can change, and
-   disenrollment is one way (§1.7). If the endpoint re-determined on each call, a state
-   that asked twice could observe the bit change — and a change in that bit, for this
-   population, is readable as a tribal governance action leaking through a Medicaid API.
-   §0.2 forbids the state from re-asking, so the hole is mostly closed by regulation; but a
-   guarantee that depends on the consumer obeying someone else's rule is not a guarantee.
-   **Enforce §0.2 at the source.** [J]
+   **Correction — an earlier draft of this item froze all three answers, and that was a
+   defect with a victim.** [J] If a state asks before a person has established care, the
+   honest answer is `unknown`; freezing it would mean that once the person *does* register
+   and become service-eligible, the endpoint is architecturally prevented from ever saying
+   so. A rule written to protect nations from disenrollment surveillance would have
+   permanently locked eligible people out of the exclusion — the exact coverage loss this
+   design exists to prevent. Found by the §12 step-4 gate, not by the author.
 
-   This also makes the endpoint idempotent, which is independently worth having.
+   So: `unknown` → `true` is a permitted transition and the only permitted one. `true` never
+   changes. `false` never changes. The endpoint therefore cannot be used to watch a
+   determination be withdrawn, which is the §1.7 guarantee, while remaining able to report a
+   determination that did not exist yet.
+
+   Rationale for the immutable half: §0.8 establishes that every prong can change, and
+   disenrollment is one way (§1.7). A state that asked twice and saw `true` become `false`
+   would be reading a nation's governance action through a Medicaid interface. §0.2 forbids
+   re-asking, but a guarantee that depends on the consumer obeying someone else's rule is not
+   a guarantee. **Enforce §0.2 at the source.** [J]
+
+7. **Volume and purpose controls, because sequential single queries are a search.** [J]
+   Found by the same gate pass. §1.1 forbids search and batch, but nothing in items 1–6 stops
+   a state issuing one lawful single-subject query per person across its whole Medicaid
+   caseload and, from the pattern of `unknown` answers, **mapping the boundary of a
+   provider's patient population**. That is a bulk extract assembled one permitted call at a
+   time.
+
+   Required: a per-requester rate and volume ceiling set by the operator; the operator's
+   query log surfacing volume and `unknown`-rate anomalies, not just individual calls; and
+   the §435.945(i) agreement binding queries to named individuals already in an eligibility
+   determination, with no speculative or population-wide querying. Cheap to build now,
+   impossible to retrofit once a state has integrated. **The ceiling is the operator's to
+   set, never ours and never the state's.**
+
+8. **An `unknown` answer creates no record.** The agreement must require that `unknown` be
+   treated as "not confirmed by this means" and generate no durable state-side artifact. An
+   absence that nobody asserted is still information about a person's relationship to the
+   Indian health system (§10). [J]
+
+9. **The limits of items 6–8, stated so they are not oversold.** None of these constrains
+   what a state does *after* it has an answer, and none closes the multi-provider path: a
+   state asking provider A (`unknown`) then provider B (`true`) obtains two lawful first
+   answers and infers a registration pattern anyway. That is §9 rule 2 — the unsolved
+   directory problem — reappearing as a disclosure channel rather than a usability gap, and
+   it is **not fixed here**. Nor is cross-channel leakage, where a state holds `unknown` from
+   §5.3 and the person later presents a §5.4 credential. Both belong in §11. [J]
 
 ---
 
@@ -1237,6 +1273,25 @@ Listed because brief §9 item 4 is right that an unadmitted gap is the failure m
    participating sites is a field question, and §5.4 should not be scoped before someone
    answers it.
 14. **[G] Whether a final rule following CMS-2454-IFC is scheduled** (§0.8).
+15. **[Open, not a research gap — an unsolved design problem] Multi-provider serial
+   querying.** §8 item 9. A state may obtain one lawful first answer from each of several
+   providers and reconstruct a registration pattern. §9 rule 2's refusal to build a directory
+   is what leaves this open; the alternatives we can see (a shared answered-subject ledger
+   across providers, or a federated "already answered elsewhere" check) each require
+   providers to learn which of their peers a state asked about, which is worse. **Carry it to
+   the §12 step-4 governance review as an open problem rather than solving it
+   unilaterally.**
+16. **[Open] Cross-channel leakage between §5.3 and §5.4.** A state holding `unknown` from a
+   query, who later receives a credential asserting `true`, learns the transition — which is
+   the §8 item 6 transition and therefore benign — but the converse (credential presented,
+   then a query returning `false`) is not analysed. Analyse before §5.4 is scoped.
+17. **[G] Identity matching and wrongful non-match.** §5.3.1 specifies exact SSN matching and
+   refuses demographic fallback, because a near-match against this population is itself a
+   disclosure. The cost is unmeasured: I/T/U records are known to carry missing or mismatched
+   SSNs, and an exact-match-only design produces `unknown` for people who are in fact
+   service-eligible — wrongful non-match, which lands as a documentation demand in 2028. The
+   rate is a field question and nobody has measured it. It is the strongest argument for
+   keeping §6.1 tier 4 permanently.
 
 ---
 
