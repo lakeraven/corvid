@@ -8,7 +8,7 @@ demand documents from the person. The determination that matters is already made
 health providers at registration. There is currently no way for a state to ask.
 
 **Purpose of this document.** Not to seek approval of a design. To set out the issues we
-have found, including the ones that count against building anything, and three outcomes
+have found, including the ones that count against building anything, and **four outcomes**
 that are open — with what each protects and what each costs. The decision is not ours.
 
 **Status.** Design only. Nothing built. No state approached. No tribal partner has agreed to
@@ -350,8 +350,9 @@ correct if §2.1 is unacceptable at any price.
   a lawyer. It decides whether B and C are even available.
 - **The wrongful non-match rate** (§2.6).
 - **Whether tribal law permits a provider to answer a state** — not ours to resolve.
-- Device and connectivity reality at participating sites, if the person-carried variant
-  (§3.2) is in play.
+- Device, connectivity and wallet reality for the people served — **decisive for outcome B**
+  (§4), and the one unknown that could rule it out on its own. §2.8 is why we will not
+  estimate it from a desk.
 
 ---
 
