@@ -4,6 +4,7 @@
 
 Given("there are paid claim submissions in the system") do
   3.times do |i|
+    service_date = [ Date.current - (i + 5).days, Date.current.beginning_of_quarter ].max
     Corvid::ClaimSubmission.create!(
       tenant_identifier: @tenant,
       facility_identifier: @facility,
@@ -13,20 +14,41 @@ Given("there are paid claim submissions in the system") do
       status: "paid",
       billed_amount: 500.00 + (i * 100),
       paid_amount: 400.00 + (i * 80),
-      paid_date: Date.current - i.days,
-      # Clamped into the current quarter. The report filters on service_date
+      # Both dates are clamped into the current quarter, and paid_date is never
+      # before service_date. The report filters on service_date
       # (ClaimSubmission.in_date_range), so a bare `Date.current - (i + 5).days`
-      # lands in the PREVIOUS quarter for the first 7 days of every quarter, so
-      # the report sums none of the seeded claims (days 1-5) or only some of
-      # them (1 of 3 on day 6, 2 of 3 on day 7) — either way the total does not
-      # match. Green 2026-09-26, red 2026-10-01.
-      service_date: [ Date.current - (i + 5).days, Date.current.beginning_of_quarter ].max,
+      # falls in the PREVIOUS quarter during a quarter's first week: on days 1-5
+      # none of the three seeded claims are in-window, on day 6 one is, on day 7
+      # two are. Green 2026-09-26, red 2026-10-01.
+      service_date: service_date,
+      paid_date: [ Date.current - i.days, service_date ].max,
       provider_identifier: "pr_art6_#{i % 2}",
       state_share: (400.00 + (i * 80)) * 0.5,
       county_share: (400.00 + (i * 80)) * 0.5,
       submitted_at: (i + 10).days.ago
     )
   end
+
+  # A decoy in the PREVIOUS quarter, so the report's service_date filter is
+  # observable. Without it every seeded claim is in-window by construction and
+  # the suite passes even with `in_date_range` deleted from the report.
+  decoy_service_date = Date.current.beginning_of_quarter - 10.days
+  Corvid::ClaimSubmission.create!(
+    tenant_identifier: @tenant,
+    facility_identifier: @facility,
+    patient_identifier: "pt_art6_decoy",
+    claim_identifier: "CLM_ART6_DECOY",
+    claim_type: "professional",
+    status: "paid",
+    billed_amount: 999.00,
+    paid_amount: 777.00,
+    paid_date: decoy_service_date,
+    service_date: decoy_service_date,
+    provider_identifier: "pr_art6_decoy",
+    state_share: 388.50,
+    county_share: 388.50,
+    submitted_at: 40.days.ago
+  )
 end
 
 When("I generate an Article 6 summary report for the current quarter") do
