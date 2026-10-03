@@ -155,6 +155,17 @@ A new `corvid_payer_rule_consents` record (tenant-scoped, §4.1) captures:
   exclude specific facilities (e.g. a behavioral health division) from
   contribution, because ADR-0002's facility layer already carries
   different sensitivity for some programs.
+
+  **Precedence, because `TenantScoped` filters by tenant only** (and so will
+  not enforce this for us — see §4.5): a row with a non-null
+  `facility_identifier` ALWAYS wins over the tenant-level row for that
+  facility, in both directions. A tenant-level grant therefore means "every
+  facility except those with a facility-level row that is not contributing",
+  and with no tenant-level grant only facilities with their own contributing
+  row are included. The effective set is computed explicitly and applied as a
+  `facility_identifier` filter on extraction; a facility that is merely
+  *absent* from the consent table is **not** included under a tenant-level
+  grant unless the tenant-level row exists. Absence is never permission.
 - **Governance reference**: a pointer (host-owned token, not a corvid FK)
   to the actual authorization record — e.g. a tribal Data Governance
   Board resolution, a facility board vote, a signed BAA amendment. Corvid
@@ -239,9 +250,25 @@ module Corvid
     validates :governance_reference_token, presence: true, if: -> { status == "active" }
     validates :granted_by_identifier, presence: true, if: -> { status == "active" }
 
-    scope :active, -> { where(status: "active") }
+    # `active` FAILS CLOSED on the re-consent deadline. Nothing else in this
+    # design moves a row to "expired", so a scope of `where(status: "active")`
+    # alone would leave an unreviewed board decision authorized forever —
+    # exactly what §2.2's time-boxing exists to prevent. A row with no
+    # review_due_at is therefore not active either: a missing deadline is an
+    # unanswered question, not permission.
+    scope :active, -> {
+      where(status: "active")
+        .where.not(review_due_at: nil)
+        .where(review_due_at: Time.current..)
+    }
     scope :contributing, -> { active.where(scope: %w[contribute both]) }
     scope :consuming,    -> { active.where(scope: %w[consume both]) }
+
+    # Bumped by any revocation or scope change. The extraction job captures it
+    # at the start of a run and re-verifies it at each publish (§4.5), so a
+    # revocation invalidates work already in flight.
+    # increments on: status change, scope change, facility carve-out change
+    attribute :consent_generation, :integer
   end
 end
 ```
@@ -260,24 +287,48 @@ module Corvid
     include TenantScoped
 
     belongs_to :consent, class_name: "Corvid::PayerRuleConsent"
-    # rule_pattern_hash references a row in the shared store by hash only —
-    # no FK, since the shared store must never be queryable "by tenant".
+    # rule_pattern_hash references a row in the shared store by hash only.
+    # The missing FK is a readability choice, NOT a control: the hash is the
+    # join key either way. See the access-control note below.
   end
 end
 ```
 
 Columns: `tenant_identifier`, `consent_id`, `rule_pattern_hash`,
 `claims_contributed_count`, `run_at`. Lets a tenant answer "what did we
-contribute, when" without any other tenant — or corvid staff — being able
-to run that query in reverse from the shared table.
+contribute, when".
+
+**This table is linkage-bearing, and the schema does not prevent reverse
+lookup.** It holds `(tenant_identifier, rule_pattern_hash)` — the same pair
+as the §4.3 ledger — so anyone able to read both this table and the shared
+store can join them on the hash with no foreign key needed. Dropping the FK
+to `SharedPayerRule` buys a little clarity and no protection at all. What
+actually constrains the join is **access control, not shape**:
+
+- `TenantScoped` confines tenant reads to the tenant's own rows, so one
+  tenant cannot read another's receipts. That part is structural.
+- Corvid **staff** access is the real exposure, and it is not solved by
+  tenancy. Reads of this table and of §4.3's ledger must be restricted to
+  the aggregation role, audited, and excluded from ordinary support
+  tooling and any admin UI. A support engineer who can read both tables
+  can attribute every shared pattern to the tenant that contributed it.
+- The restriction is a deployment and IAM obligation, not something this
+  schema enforces. It belongs in the §5 legal review, because "we chose
+  not to add a foreign key" is not a de-identification control.
 
 ### 4.3 Contributor-linkage ledger (internal only — not a consumer-facing table)
 
-A separate, tightly access-restricted table is the only place a
-`(tenant_identifier, rule_pattern_hash)` pair exists together. It exists
-solely so the aggregation job can compute *distinct contributing tenant
-count* (needed for the k-anonymity gate in §1.3.3) without storing a
-tenant list on the shared row itself.
+A separate, tightly access-restricted table carries the
+`(tenant_identifier, rule_pattern_hash)` pair so the aggregation job can
+compute *distinct contributing tenant count* (needed for the k-anonymity
+gate in §1.3.3) without storing a tenant list on the shared row itself.
+
+**Correction to an earlier claim in this doc:** this ledger is *not* the only
+place that pair exists. The per-tenant audit table (§4.2) necessarily holds it
+too — that is what makes the tenant's own receipt possible — so there are two
+linkage-bearing tables, not one, and both need the staff-access restrictions
+described in §4.2. Any statement elsewhere that linkage exists in exactly one
+place is wrong; this is the corrected version.
 
 ```ruby
 # app/models/corvid/shared_payer_rule_contributor.rb  (sketch — internal, no public read API)
@@ -345,43 +396,72 @@ traceable — relevant to the Expert Determination in §5).
 
 ### 4.5 Extraction pipeline (contribution path)
 
-Runs as a periodic job, iterating only over tenants with an active
-`contribute` consent, using the *existing* tenant-context mechanism
-(`lib/corvid/tenant_context.rb`) rather than any new cross-tenant query
-capability:
+Runs as **one host-scheduled job per tenant**. There is deliberately no
+cross-tenant query: `PayerRuleConsent` is itself `TenantScoped` (§4.1), so
+corvid cannot enumerate contributing tenants and must not try — without a
+tenant context the query raises, and with one it returns only that tenant.
+The tenant list belongs to the **host**, which already knows its tenants;
+`unscoped` is not an option here, because bypassing tenancy to find out who
+consented is the exact capability this design is supposed not to have.
+
+Authorization is checked **at publish time, not at enumeration time**. A
+status recheck alone still races a revocation that lands mid-run, so the job
+captures `consent_generation` when it starts and re-verifies it inside the
+same lock that revocation takes. A revoke bumps the generation, so in-flight
+work fails closed rather than finishing — which is what §2.2's "immediately
+stops future contribution" actually requires.
 
 ```ruby
-Corvid::PayerRuleConsent.contributing.distinct.pluck(:tenant_identifier).each do |tenant_id|
-  Corvid::TenantContext.with_tenant(tenant_id) do
-    # Ordinary TenantScoped reads — this job sees exactly what any other
-    # tenant-scoped code would see for this tenant, nothing more.
-    finalized = Corvid::ClaimSubmission.rejected.or(Corvid::ClaimSubmission.paid)
-                  .where("updated_at > ?", checkpoint_for(tenant_id))
+# Scheduled by the HOST, per tenant. Corvid never picks the tenant list.
+class Corvid::PayerRuleExtractionJob
+  def perform(tenant_identifier)
+    Corvid::TenantContext.with_tenant(tenant_identifier) do
+      consent = Corvid::PayerRuleConsent.contributing.order(:granted_at).last
+      return unless consent   # no consent -> no data leaves, structurally
 
-    finalized.find_each do |claim|
-      # ADR-0003 dereference path — ephemeral, in-memory, never persisted
-      # to any corvid table in raw form.
-      carc, rarc   = extract_from_remittance(claim)   # from BillingTransaction remittance, not free text
-      procedures   = Corvid.adapter.fetch_text(claim.procedure_codes_token)
-      diagnoses    = Corvid.adapter.fetch_text(claim.diagnosis_codes_token)
-      payer_id     = canonical_payer_id_for(claim.payer_identifier) # public crosswalk, not payer_name_token
+      generation = consent.consent_generation
+      # Facility precedence from §2.2 — TenantScoped filters by tenant only,
+      # so the facility carve-out has to be applied explicitly here.
+      facilities = Corvid::PayerRuleConsent.effective_contributing_facilities
 
-      pattern = build_anonymized_pattern(payer_id:, claim.claim_type, procedures, diagnoses, carc, rarc, ...)
-      hash    = pattern.rule_pattern_hash
+      finalized = Corvid::ClaimSubmission.rejected.or(Corvid::ClaimSubmission.paid)
+                    .where(facility_identifier: facilities)
+                    .where("updated_at > ?", checkpoint_for(tenant_identifier))
 
-      # Contributor-linkage ledger: dedup per tenant, never exposed downstream
-      new_contributor = Corvid::SharedPayerRuleContributor
-        .find_or_create_by(tenant_identifier: tenant_id, rule_pattern_hash: hash)
-        .previously_new_record?
+      finalized.find_each do |claim|
+        # ADR-0003 dereference path — ephemeral, in-memory, never persisted
+        # to any corvid table in raw form.
+        carc, rarc = extract_from_remittance(claim)  # structured 835, not free text
+        procedures = Corvid.adapter.fetch_text(claim.procedure_codes_token)
+        diagnoses  = Corvid.adapter.fetch_text(claim.diagnosis_codes_token)
+        payer_id   = canonical_payer_id_for(claim.payer_identifier) # public crosswalk
 
-      Corvid::SharedPayerRule.upsert_pattern(pattern, new_contributor:)
-      Corvid::TenantContext.with_tenant(tenant_id) do
-        Corvid::PayerRuleContributionAudit.create!(rule_pattern_hash: hash, ...)
+        pattern = build_anonymized_pattern(payer_id:, claim.claim_type, procedures, diagnoses, carc, rarc, ...)
+        hash    = pattern.rule_pattern_hash
+
+        # PUBLISH-TIME AUTHORIZATION. Same lock revocation takes, so a revoke
+        # that lands mid-run cannot be overtaken by an in-flight publish.
+        Corvid::PayerRuleConsent.with_revocation_lock(tenant_identifier) do
+          current = Corvid::PayerRuleConsent.contributing.order(:granted_at).last
+          raise Corvid::ConsentWithdrawn if current.nil? ||
+                                            current.consent_generation != generation ||
+                                            !facilities.include?(claim.facility_identifier)
+
+          new_contributor = Corvid::SharedPayerRuleContributor
+            .find_or_create_by(tenant_identifier:, rule_pattern_hash: hash)
+            .previously_new_record?
+          Corvid::SharedPayerRule.upsert_pattern(pattern, new_contributor:)
+          Corvid::PayerRuleContributionAudit.create!(rule_pattern_hash: hash, ...)
+        end
       end
     end
   end
 end
 ```
+
+`Corvid::ConsentWithdrawn` aborts the run rather than skipping the row: a
+revocation part-way through a batch should stop the batch, not quietly
+contribute the first half.
 
 Preferring CARC/RARC from the **structured 835 remittance**
 (`corvid_billing_transactions`, `transaction_type: "remittance"`) over
