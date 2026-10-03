@@ -14,7 +14,11 @@ Given("there are paid claim submissions in the system") do
       billed_amount: 500.00 + (i * 100),
       paid_amount: 400.00 + (i * 80),
       paid_date: Date.current - i.days,
-      service_date: Date.current - (i + 5).days,
+      # Clamped into the current quarter. The report filters on service_date
+      # (ClaimSubmission.in_date_range), so a bare `Date.current - (i + 5).days`
+      # lands in the PREVIOUS quarter for the first 7 days of every quarter and
+      # the report then sums nothing — green 2026-09-26, red 2026-10-01.
+      service_date: [ Date.current - (i + 5).days, Date.current.beginning_of_quarter ].max,
       provider_identifier: "pr_art6_#{i % 2}",
       state_share: (400.00 + (i * 80)) * 0.5,
       county_share: (400.00 + (i * 80)) * 0.5,

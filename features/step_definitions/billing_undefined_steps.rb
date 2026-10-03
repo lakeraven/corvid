@@ -105,12 +105,20 @@ end
 Then("the billed amounts should match the sum of ClaimSubmission billed amounts") do
   total_dollars = Corvid::ClaimSubmission.paid.sum(:billed_amount_cents) / 100.0
   report_total = @report.is_a?(Hash) ? @report[:total_billed] : @report.sum { |r| r[:billed] || 0 }
+  # Non-vacuity guard: narrowing the left side to the report's own date window
+  # would make this pass as 0 == 0 and assert nothing. The seed must land
+  # in-window instead.
+  assert_operator total_dollars, :>, 0, "seeded claims produced no billed total; the comparison would be vacuous"
   assert_in_delta total_dollars, report_total.to_f, 0.01
 end
 
 Then("the paid amounts should match the sum of ClaimSubmission paid amounts") do
   total_dollars = Corvid::ClaimSubmission.paid.sum(:paid_amount_cents) / 100.0
   report_total = @report.is_a?(Hash) ? @report[:total_paid] : @report.sum { |r| r[:paid] || 0 }
+  # Non-vacuity guard: narrowing the left side to the report's own date window
+  # would make this pass as 0 == 0 and assert nothing. The seed must land
+  # in-window instead.
+  assert_operator total_dollars, :>, 0, "seeded claims produced no paid total; the comparison would be vacuous"
   assert_in_delta total_dollars, report_total.to_f, 0.01
 end
 
