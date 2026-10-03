@@ -15,11 +15,15 @@ Given("there are paid claim submissions in the system") do
       billed_amount: 500.00 + (i * 100),
       paid_amount: 400.00 + (i * 80),
       # Both dates are clamped into the current quarter, and paid_date is never
-      # before service_date. The report filters on service_date
-      # (ClaimSubmission.in_date_range), so a bare `Date.current - (i + 5).days`
-      # falls in the PREVIOUS quarter during a quarter's first week: on days 1-5
-      # none of the three seeded claims are in-window, on day 6 one is, on day 7
-      # two are. Green 2026-09-26, red 2026-10-01.
+      # before service_date.
+      #
+      # WHY: the report filters on service_date (ClaimSubmission.in_date_range).
+      # An UNCLAMPED `Date.current - (i + 5).days` falls in the previous quarter
+      # during a quarter's first week -- of the three claims none were in-window
+      # on days 1-5, one on day 6, two on day 7 -- so the report summed less than
+      # the suite expected. Green 2026-09-26, red 2026-10-01. With the clamp all
+      # three are always in-window; the decoys below are what keep the filter
+      # itself under test.
       service_date: service_date,
       paid_date: [ Date.current - i.days, service_date ].max,
       provider_identifier: "pr_art6_#{i % 2}",
@@ -29,26 +33,37 @@ Given("there are paid claim submissions in the system") do
     )
   end
 
-  # A decoy in the PREVIOUS quarter, so the report's service_date filter is
-  # observable. Without it every seeded claim is in-window by construction and
-  # the suite passes even with `in_date_range` deleted from the report.
-  decoy_service_date = Date.current.beginning_of_quarter - 10.days
-  Corvid::ClaimSubmission.create!(
-    tenant_identifier: @tenant,
-    facility_identifier: @facility,
-    patient_identifier: "pt_art6_decoy",
-    claim_identifier: "CLM_ART6_DECOY",
-    claim_type: "professional",
-    status: "paid",
-    billed_amount: 999.00,
-    paid_amount: 777.00,
-    paid_date: decoy_service_date,
-    service_date: decoy_service_date,
-    provider_identifier: "pr_art6_decoy",
-    state_share: 388.50,
-    county_share: 388.50,
-    submitted_at: 40.days.ago
-  )
+  # Two decoys OUTSIDE the current quarter, so the report's service_date window
+  # is observable in BOTH directions. Without them every seeded claim is
+  # in-window by construction and the suite passes with `in_date_range` deleted.
+  #
+  # The early decoy's paid_date is deliberately in the CURRENT quarter while its
+  # service_date is in the previous one: that is what catches a report filtering
+  # the wrong COLUMN (paid_date instead of service_date), which a decoy with both
+  # dates in the past cannot catch. The late decoy catches a missing upper bound.
+  [
+    { suffix: "early", service_date: Date.current.beginning_of_quarter - 10.days,
+      paid_date: Date.current, billed: 999.00, paid: 777.00 },
+    { suffix: "late", service_date: Date.current.end_of_quarter + 10.days,
+      paid_date: Date.current.end_of_quarter + 10.days, billed: 888.00, paid: 666.00 }
+  ].each do |decoy|
+    Corvid::ClaimSubmission.create!(
+      tenant_identifier: @tenant,
+      facility_identifier: @facility,
+      patient_identifier: "pt_art6_decoy_#{decoy[:suffix]}",
+      claim_identifier: "CLM_ART6_DECOY_#{decoy[:suffix].upcase}",
+      claim_type: "professional",
+      status: "paid",
+      billed_amount: decoy[:billed],
+      paid_amount: decoy[:paid],
+      paid_date: decoy[:paid_date],
+      service_date: decoy[:service_date],
+      provider_identifier: "pr_art6_decoy_#{decoy[:suffix]}",
+      state_share: decoy[:paid] / 2,
+      county_share: decoy[:paid] / 2,
+      submitted_at: 40.days.ago
+    )
+  end
 end
 
 When("I generate an Article 6 summary report for the current quarter") do
