@@ -149,30 +149,49 @@ class Corvid::CaseTest < ActiveSupport::TestCase
     end
   end
 
-  # -- Cached patient data ---------------------------------------------------
+  # -- Patient display name: resolved, never stored --------------------------
+  #
+  # These three tests previously asserted that a case COULD store a cached
+  # patient name and DOB, and that cache_patient_data! wrote them. The columns
+  # and the method are gone (ADR 0003: no corvid_* table holds a patient name
+  # or date of birth), so the tests now assert the opposite — that the engine
+  # has nowhere to put one.
 
-  test "can store cached patient name" do
+  test "a case cannot store a cached patient name" do
     with_tenant(TEST_TENANT) do
-      kase = Corvid::Case.create!(patient_identifier: "pt_cache", patient_name_cached: "John Smith")
-      assert_equal "John Smith", kase.patient_name_cached
+      assert_raises(ActiveModel::UnknownAttributeError) do
+        Corvid::Case.create!(patient_identifier: "pt_cache", patient_name_cached: "John Smith")
+      end
     end
   end
 
-  test "can store cached patient dob" do
+  test "a case cannot store a cached patient dob" do
     with_tenant(TEST_TENANT) do
-      kase = Corvid::Case.create!(patient_identifier: "pt_dob", patient_dob_cached: Date.parse("1980-05-15"))
-      assert_equal Date.parse("1980-05-15"), kase.patient_dob_cached
+      assert_raises(ActiveModel::UnknownAttributeError) do
+        Corvid::Case.create!(patient_identifier: "pt_dob", patient_dob_cached: Date.parse("1980-05-15"))
+      end
     end
   end
 
-  test "cache_patient_data! stores adapter data" do
-    Corvid.adapter.add_patient("pt_cache_test", display_name: "CACHE,TEST", dob: Date.new(1985, 6, 15), sex: "M", ssn_last4: "1234")
+  test "display_name resolves through the adapter and is not persisted" do
+    Corvid.adapter.add_patient("pt_display", display_name: "CACHE,TEST", dob: Date.new(1985, 6, 15), sex: "M", ssn_last4: "1234")
     with_tenant(TEST_TENANT) do
-      kase = Corvid::Case.create!(patient_identifier: "pt_cache_test")
-      kase.cache_patient_data!
-      kase.reload
-      assert_equal "CACHE,TEST", kase.patient_name_cached
-      assert_equal Date.new(1985, 6, 15), kase.patient_dob_cached
+      kase = Corvid::Case.create!(patient_identifier: "pt_display")
+      assert_equal "CACHE,TEST", kase.display_name
+
+      # The name came from the adapter, so it must not appear in the row.
+      row = Corvid::Case.connection.select_one(
+        "SELECT * FROM corvid_cases WHERE id = #{kase.id}"
+      )
+      refute(row.values.any? { |v| v.to_s.include?("CACHE,TEST") },
+        "a patient name reached the corvid_cases row: #{row.inspect}")
+    end
+  end
+
+  test "display_name degrades to a placeholder when the patient cannot be resolved" do
+    with_tenant(TEST_TENANT) do
+      kase = Corvid::Case.create!(patient_identifier: "pt_not_in_adapter")
+      assert_equal "Unknown Patient", kase.display_name
     end
   end
 

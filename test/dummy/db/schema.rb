@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_05_17_000001) do
+ActiveRecord::Schema[8.1].define(version: 2026_10_02_000001) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
@@ -171,9 +171,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_05_17_000001) do
     t.datetime "intake_at"
     t.string "lifecycle_status", default: "intake", null: false
     t.string "notes_token"
-    t.date "patient_dob_cached"
     t.string "patient_identifier", null: false
-    t.string "patient_name_cached"
     t.string "program_data_token"
     t.string "status", default: "active", null: false
     t.string "tenant_identifier", null: false
