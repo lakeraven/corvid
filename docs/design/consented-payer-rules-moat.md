@@ -89,7 +89,7 @@ fields":
    internally (accumulating) but is not queryable.
 4. **Small-cell suppression**, not just identifier removal. Per the
    standing rule that Safe Harbor is insufficient for tribal data and
-   Expert Determination is required (`feedback_tribal_data_expert_determination`),
+   Expert Determination is required,
    the de-identification method for this store must be reviewed as an
    Expert Determination, not asserted as Safe Harbor. Small-cell
    suppression (IHS/CDC-style, suppressing counts below a floor) is
