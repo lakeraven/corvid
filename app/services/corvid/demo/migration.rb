@@ -68,7 +68,6 @@ module Corvid
               facility_identifier: FACILITY,
               patient_identifier: patient_ref
             ) do |c|
-              c.patient_name_cached = spec[:name]
               c.status = "active"
               c.lifecycle_status = "intake"
               c.intake_at = Time.current
