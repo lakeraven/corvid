@@ -2,139 +2,296 @@ require "test_helper"
 require "yaml"
 
 module Corvid
+  # Enforces the acceptance criterion in docs/adr/0003-phi-tokenization.md:
+  # "A corvid database dump, viewed without vault access, must reveal no PHI."
+  #
+  # DEFAULT-DENY, and that is the whole design. The first version of this guard
+  # matched column NAMES against a list of PHI-ish words, which is the wrong net
+  # for this claim: the claim is about what a column can HOLD, and the columns
+  # that can hold free PHI are exactly the string/text/jsonb/binary ones. A
+  # name-based net passed `subscriber`, `guarantor`, `pt_full`, a jsonb called
+  # `clinical_summary` and a text called `progress_note` — all verified by probe.
+  #
+  # So: every column is a violation unless it is permitted by TYPE or by an
+  # explicit naming convention, or disclosed in docs/phi-column-exceptions.yml.
+  # Adding a column that can hold PHI now fails CI by default, and the way to
+  # ship it is to disclose it — not to think of a name the regex misses.
   class PhiSchemaGuardTest < ActiveSupport::TestCase
     # Engine root, NOT Rails.root. In an engine's suite Rails.root is the dummy
-    # app (test/dummy), so Rails.root.join("docs") silently resolves to a path
-    # that does not exist, load_exceptions returns empty, and every exception
-    # fails as though it were new. Found by running it; static reading missed it.
+    # app (test/dummy), so Rails.root.join("docs") resolves to a path that does
+    # not exist, exceptions load empty, and every entry fails as though new.
     EXCEPTIONS_FILE = Corvid::Engine.root.join("docs", "phi-column-exceptions.yml")
 
-    # Tables that hold public CMS reference data, not patient-linked.
+    # Rails' own bookkeeping, not ours.
+    INFRA_TABLES = %w[ar_internal_metadata schema_migrations].freeze
+
+    # Public CMS reference data: rates, weights, localities, crosswalks. Not
+    # patient-linked, so a CPT or DRG code here is a published fact rather than
+    # a clinical fact about a person.
+    #
+    # EXACT names, never prefixes. The previous version matched with
+    # `start_with?`, which meant a table called `corvid_cah_patient_surveys`
+    # would inherit the `corvid_cah` exemption and hide a `patient_name` column
+    # (verified by probe). It also listed 14 names of which 8 were not real
+    # tables — the list "worked" only because 4 stubs happened to prefix-match.
     REFERENCE_TABLES = %w[
-      corvid_fee_schedules
-      corvid_fee_schedule_entries
-      corvid_cms_fee_schedule_releases
-      corvid_ipps
-      corvid_ipps_rates
-      corvid_opps
-      corvid_opps_rates
-      corvid_asc
-      corvid_asc_rates
-      corvid_cah
+      corvid_asc_conversion_factors
+      corvid_asc_facilities
+      corvid_asc_hcpcs_rates
       corvid_cah_facilities
-      corvid_npi_ccn
+      corvid_cms_fee_schedule_releases
+      corvid_fee_schedule_entries
+      corvid_fee_schedules
+      corvid_ipps_drg_weights
+      corvid_ipps_hospital_rates
       corvid_npi_ccn_crosswalks
+      corvid_opps_apc_weights
+      corvid_opps_conversion_factors
       corvid_zip_localities
     ].freeze
 
-    # These are hardcoded as failures in this test per instructions.
-    HARD_FAILURES = [
-      [ "corvid_cases", "patient_name_cached" ],
-      [ "corvid_cases", "patient_dob_cached" ]
+    # Types that cannot hold free text, so cannot hold narrative PHI. A number
+    # or a boolean can still be identifying in combination, which is the host
+    # responsibility ADR 0003 section 3 documents — it is not what this guard
+    # is for.
+    SAFE_TYPES = %i[integer bigint decimal float boolean].freeze
+
+    # Column names permitted DESPITE being a text-ish type, each with the reason
+    # it is safe. Type-gated: the previous version applied these by name alone,
+    # so `patient_name_identifier` and `birth_date_at` were exempted by the
+    # `_identifier` and `_at` rules (verified by probe).
+    def permitted_by_convention?(name, type, table)
+      case
+      when name == "id" || name.end_with?("_id")       then true  # Rails keys (ADR 0001)
+      when name.end_with?("_token")                    then %i[string text].include?(type)
+      when name.end_with?("_identifier")               then type == :string
+      when name.end_with?("_at")                       then type == :datetime
+      when name.end_with?("_cents")                    then true
+      when name == "currency_iso"                      then type == :string
+      when ENUM_COLUMNS.include?(name)                 then type == :string
+      when PROVENANCE_COLUMNS.include?(name)           then type == :string
+      when polymorphic_type_column?(name, type, table) then true
+      else false
+      end
+    end
+
+    # Rails polymorphic partner: a `*_type` string that has a matching `*_id`
+    # column on the same table holds a CLASS NAME, not data. Detected as a pair
+    # rather than permitted by suffix, because `transaction_type`,
+    # `provider_type` and `claim_type` are enums and `program_type` is workflow
+    # state — a blanket `_type` permit would wave all of them through.
+    def polymorphic_type_column?(name, type, table)
+      return false unless type == :string && name.end_with?("_type")
+
+      partner = "#{name.delete_suffix('_type')}_id"
+      ActiveRecord::Base.connection.columns(table).any? { |c| c.name == partner }
+    end
+
+    # Workflow enums, plus api_name — which is an API's name, not a person's,
+    # and is check-constrained to four values in the schema (so its capacity is
+    # bounded, which is what default-deny actually cares about).
+    #
+    # Stored as strings by ADR 0003 section 3 ("Status,
+    # priority, decision codes — stored as enum strings. Not PHI alone.").
+    # Narrow and explicit: a text column called `role` must not ride in on this
+    # (verified by probe), hence the type gate above.
+    ENUM_COLUMNS = %w[
+      status lifecycle_status priority program_type current_activity
+      closure_reason decision enrollment_status resource_type role
+      priority_system claim_type direction payment_system
+      provider_confidence recovery_confidence decision_method
+      transaction_type provider_type outcome
+      api_name
     ].freeze
 
-    def test_no_phi_in_schema
+    # Software and reference-data provenance, not patient data: which version
+    # of the analyzer ran, which CMS release the rate came from, which workflow
+    # milestone a task belongs to, and a digest. Named explicitly rather than
+    # pattern-matched, so adding one is a reviewed line of code.
+    PROVENANCE_COLUMNS = %w[
+      analyzer_version rate_source rate_source_release cms_release_tag
+      milestone_key verification_snapshot_hash
+    ].freeze
+
+    # Workforce tenure, not a patient's dates. A care-team member is a
+    # practitioner_identifier (an opaque token per ADR 0001), so these two
+    # dates say when a practitioner joined and left a team. Permitted here
+    # rather than disclosed as an exception, because they are not patient data
+    # and listing non-issues in the disclosure file overstates the problem.
+    PERMITTED_WORKFORCE_DATES = [
+      %w[corvid_care_team_members start_date],
+      %w[corvid_care_team_members end_date]
+    ].freeze
+
+    # Always a violation, regardless of what the exceptions file says. These two
+    # columns were dropped by this change; listing them means the drop cannot be
+    # quietly undone by a later migration plus a yml entry.
+    HARD_FAILURES = [
+      %w[corvid_cases patient_name_cached],
+      %w[corvid_cases patient_dob_cached]
+    ].freeze
+
+    VALID_CLASSIFICATIONS = %w[patient_phi accepted_workflow_date needs_decision unclassified].freeze
+
+    def test_no_undisclosed_phi_capable_columns
       exceptions = load_exceptions
       violations = []
       tables_scanned = 0
       columns_scanned = 0
 
-      ActiveRecord::Base.connection.tables.grep(/^corvid_/).each do |table_name|
+      # ALL tables, not just corvid_*. engine.rb appends this engine's
+      # db/migrate to the host's migration paths, so an engine migration can
+      # create a table with any name at all in a host database — a `patients`
+      # table with `full_name` was invisible to the corvid_-only scan (verified
+      # by probe). The dummy database has no non-corvid tables, so scanning
+      # everything costs nothing and closes the hole.
+      ActiveRecord::Base.connection.tables.each do |table|
+        next if INFRA_TABLES.include?(table)
+        next if REFERENCE_TABLES.include?(table)
+
         tables_scanned += 1
-        is_reference_table = REFERENCE_TABLES.any? { |rt| table_name == rt || table_name.start_with?(rt) }
 
-        ActiveRecord::Base.connection.columns(table_name).each do |column|
+        ActiveRecord::Base.connection.columns(table).each do |column|
           columns_scanned += 1
-          col_name = column.name
+          name = column.name
+          type = column.type
 
-          # Allowed by ADR 0001 / 0003
-          next if col_name.end_with?("_token", "_identifier")
-          next if %w[tenant_identifier facility_identifier].include?(col_name)
-          next if %w[status lifecycle_status priority program_type current_activity closure_reason decision enrollment_status resource_type role].include?(col_name)
-          next if col_name == "currency_iso" || col_name.end_with?("_cents") || col_name == "amount"
-          next if col_name.end_with?("_at") # timestamps
+          hard = HARD_FAILURES.include?([ table, name ])
 
-          # Reference tables are exempt from the PHI pattern scan
-          next if is_reference_table
-
-          reason = detect_phi_pattern(col_name, column.type)
-
-          if reason
-            if exceptions[table_name]&.include?(col_name) && !HARD_FAILURES.include?([ table_name, col_name ])
-              # Known exception, ignore
-            else
-              violations << { table: table_name, column: col_name, reason: reason }
-            end
+          unless hard
+            next if SAFE_TYPES.include?(type)
+            next if permitted_by_convention?(name, type, table)
+            next if PERMITTED_WORKFORCE_DATES.include?([ table, name ])
+            next if exceptions[table]&.include?(name)
           end
+
+          violations << {
+            table: table,
+            column: name,
+            type: type,
+            reason: hipaa_category(name, type),
+            hard: hard
+          }
         end
       end
 
       if violations.any?
-        grouped = violations.group_by { |v| v[:table] }
-        msg = "Found plaintext PHI columns in the schema:\n\n"
-        grouped.each do |table, cols|
-          msg += "#{table}:\n"
-          cols.each do |c|
-            msg += "  - #{c[:column]} (#{c[:reason]})\n"
-          end
-        end
-        msg += "\nIf these are known and accepted for now, add them to docs/phi-column-exceptions.yml"
-        flunk msg
+        flunk build_message(violations)
       end
 
-      # A scan that examined nothing also finds no violations. Without these,
-      # this test passes with ZERO assertions — and would keep passing if the
-      # connection returned no tables, if the /^corvid_/ grep stopped matching,
-      # or if someone narrowed the loop. Assert the scan did work, not merely
-      # that it was quiet.
-      assert_operator tables_scanned, :>=, 20,
-        "scanned only #{tables_scanned} corvid_* tables — the scan is broken, not the schema clean"
-      assert_operator columns_scanned, :>=, 150,
+      # A scan that examined nothing also finds no violations, and that is
+      # indistinguishable from a clean schema.
+      #
+      # MEASURED, not guessed: 18 tables and 286 columns today (31 corvid
+      # tables less the 13 reference tables). The floors sit just under, so
+      # losing a table or a dozen columns to a widened exemption fails here
+      # rather than passing quietly. The first version used 20/150 against
+      # 31/400 — loose enough to lose a third of the schema unnoticed — and the
+      # second used 300, which was the pre-exclusion count and failed on a
+      # clean schema. Raise these when tables are added.
+      assert_operator tables_scanned, :>=, 18,
+        "scanned only #{tables_scanned} tables — the scan is broken, not the schema clean"
+      assert_operator columns_scanned, :>=, 280,
         "scanned only #{columns_scanned} columns — the scan is broken, not the schema clean"
+    end
+
+    # The exceptions file is a disclosure document with dates in it. If the
+    # dates are never read it is a permanent allowlist wearing a deadline, and
+    # on the day after the last date a public repo shows a missed promise
+    # instead of a kept one.
+    def test_exception_entries_are_honest
+      raw = YAML.load_file(EXCEPTIONS_FILE) || []
+
+      bad_class = raw.reject { |e| VALID_CLASSIFICATIONS.include?(e["classification"]) }
+      assert_empty bad_class.map { |e| "#{e['table']}.#{e['column']}=#{e['classification']}" },
+        "every exception needs a classification from #{VALID_CLASSIFICATIONS.join(', ')}"
+
+      # A false positive is not a disclosed exception — it is a gap in this
+      # guard's allowlist, and it belongs in ENUM_COLUMNS or
+      # permitted_by_convention? where widening the net is reviewed as code.
+      # Leaving them here inflates the count in the one document whose purpose
+      # is credibility.
+      assert_empty raw.select { |e| e["classification"] == "false_positive" },
+        "false_positive entries belong in the guard's allowlist, not the disclosure file"
+
+      # A patient_phi entry with neither a date nor a named blocker is a
+      # permanent allowlist entry wearing a classification. Tokenization is the
+      # usual remediation and it needs a vault, which does not exist yet — so
+      # `blocked_on` is legitimate, but it has to NAME the blocker rather than
+      # leave the entry open-ended.
+      undated = raw.select do |e|
+        e["classification"] == "patient_phi" &&
+          e["remediate_by"].nil? && e["blocked_on"].to_s.strip.empty?
+      end
+      assert_empty undated.map { |e| "#{e['table']}.#{e['column']}" },
+        "a patient_phi entry needs a remediate_by date or a named blocked_on"
+
+      expired = raw.select do |e|
+        next false if %w[needs_decision unclassified].include?(e["classification"])
+        next false if e["classification"] == "accepted_workflow_date"
+        next false if e["remediate_by"].nil?
+        next false unless e["blocked_on"].to_s.strip.empty?
+
+        Date.parse(e["remediate_by"].to_s) < Date.current
+      end
+      assert_empty expired.map { |e| "#{e['table']}.#{e['column']} due #{e['remediate_by']}" },
+        "remediate_by has passed — either remediate the column or re-date the entry deliberately"
     end
 
     private
 
-    def load_exceptions
-      return {} unless File.exist?(EXCEPTIONS_FILE)
-
-      data = YAML.load_file(EXCEPTIONS_FILE) || []
-
-      # Transform to hash of table => [columns]
-      exceptions = Hash.new { |h, k| h[k] = [] }
-      data.each do |entry|
-        exceptions[entry["table"]] << entry["column"]
+    def build_message(violations)
+      hard = violations.select { |v| v[:hard] }
+      soft = violations.reject { |v| v[:hard] }
+      msg = +"Columns that can hold PHI and are not disclosed:\n\n"
+      if hard.any?
+        msg << "HARD FAILURES (never permitted, exceptions file cannot suppress these):\n"
+        hard.each { |v| msg << "  #{v[:table]}.#{v[:column]} (#{v[:type]}) — #{v[:reason]}\n" }
+        msg << "\n"
       end
-      exceptions
+      soft.group_by { |v| v[:table] }.sort.each do |table, cols|
+        msg << "#{table}:\n"
+        cols.sort_by { |c| c[:column] }.each do |c|
+          msg << "  - #{c[:column]} (#{c[:type]}) — #{c[:reason]}\n"
+        end
+      end
+      msg << "\nEither tokenize/drop the column, permit it by convention in this test "
+      msg << "(reviewed as code), or disclose it in docs/phi-column-exceptions.yml with a "
+      msg << "classification and a real date."
+      msg
     end
 
-    def detect_phi_pattern(name, type)
-      if name.match?(/name/)
-        "(A) Names"
-      elsif name.match?(/dob|birth/)
-        "(C) All elements of dates directly related to an individual"
-      elsif name.match?(/ssn/)
-        "(G) Social security numbers"
-      elsif name.match?(/mrn|dfn/)
-        "(H) Medical record numbers"
-      elsif name.match?(/address/)
-        "(B) Geographic subdivisions smaller than a state"
-      elsif name.match?(/phone/)
-        "(D) Telephone numbers"
-      elsif name.match?(/email/)
-        "(F) Electronic mail addresses"
-      elsif name.match?(/policy/)
-        "(I) Health plan beneficiary numbers"
-      elsif name.match?(/group_number/)
-        "(I) Health plan beneficiary numbers"
-      elsif name.match?(/authorization_number/)
-        "(J) Account numbers"
-      elsif name.match?(/check_number/)
-        "(J) Account numbers"
-      elsif type == :date || type == :datetime
-        "(C) All elements of dates directly related to an individual (bare date/datetime)"
+    # Why this column would be an identifier under 45 CFR 164.514(b)(2) if it
+    # held what its name suggests. Advisory: under default-deny a column is
+    # flagged for its TYPE, and the category is there to help whoever triages.
+    def hipaa_category(name, type)
+      case
+      when name.match?(/name/)              then "(A) Names"
+      when name.match?(/dob|birth/)         then "(C) Dates directly related to an individual"
+      when name.match?(/address|city|zip/)  then "(B) Geographic subdivisions"
+      when name.match?(/phone|fax/)         then "(D) Telephone numbers"
+      when name.match?(/email/)             then "(F) Email addresses"
+      when name.match?(/ssn/)               then "(G) Social security numbers"
+      when name.match?(/mrn|dfn/)           then "(H) Medical record numbers"
+      when name.match?(/policy|member/)     then "(I) Health plan beneficiary numbers"
+      when name.match?(/account|check_number|authorization_number/)
+        "(R) Any other unique identifying number"
+      when name.match?(/url|uri/)           then "(M) URLs"
+      when type == :date || type == :datetime
+        "(C) Dates directly related to an individual"
+      when %i[text jsonb binary].include?(type)
+        "free-form #{type} — can hold any of (A)-(R)"
       else
-        nil
+        "free-form #{type} — capacity unconstrained"
+      end
+    end
+
+    def load_exceptions
+      return Hash.new { |h, k| h[k] = [] } unless File.exist?(EXCEPTIONS_FILE)
+
+      data = YAML.load_file(EXCEPTIONS_FILE) || []
+      data.each_with_object(Hash.new { |h, k| h[k] = [] }) do |entry, acc|
+        acc[entry["table"]] << entry["column"]
       end
     end
   end
