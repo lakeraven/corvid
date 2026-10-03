@@ -33,6 +33,41 @@ Given("there are paid claim submissions in the system") do
     )
   end
 
+  # Two BOUNDARY claims exactly on the window edges, both in-window and both
+  # counted in the expected sum. They are what kill an off-by-one on either
+  # bound: without a row on quarter_start, `quarter_start.next_day..` passes;
+  # without one on quarter_end, `..quarter_end - 1.day` passes. The clamped
+  # claims above only sit on quarter_start during a quarter's first week, so
+  # relying on them makes the kill date-dependent.
+  #
+  # The NON-PAID row is what keeps the `.paid` scope under test: with every
+  # seeded row paid, dropping `.paid` from the report changes nothing.
+  [
+    { suffix: "start", service_date: Date.current.beginning_of_quarter, status: "paid",
+      billed: 111.00, paid: 101.00 },
+    { suffix: "end", service_date: Date.current.end_of_quarter, status: "paid",
+      billed: 222.00, paid: 202.00 },
+    { suffix: "unpaid", service_date: Date.current.beginning_of_quarter + 1.day,
+      status: "submitted", billed: 555.00, paid: 0.00 }
+  ].each do |edge|
+    Corvid::ClaimSubmission.create!(
+      tenant_identifier: @tenant,
+      facility_identifier: @facility,
+      patient_identifier: "pt_art6_edge_#{edge[:suffix]}",
+      claim_identifier: "CLM_ART6_EDGE_#{edge[:suffix].upcase}",
+      claim_type: "professional",
+      status: edge[:status],
+      billed_amount: edge[:billed],
+      paid_amount: edge[:paid],
+      paid_date: edge[:status] == "paid" ? edge[:service_date] : nil,
+      service_date: edge[:service_date],
+      provider_identifier: "pr_art6_edge_#{edge[:suffix]}",
+      state_share: edge[:paid] / 2,
+      county_share: edge[:paid] / 2,
+      submitted_at: 40.days.ago
+    )
+  end
+
   # Two decoys OUTSIDE the current quarter, so the report's service_date window
   # is observable in BOTH directions. Without them every seeded claim is
   # in-window by construction and the suite passes with `in_date_range` deleted.
