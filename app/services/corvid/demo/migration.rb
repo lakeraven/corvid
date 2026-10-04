@@ -58,8 +58,10 @@ module Corvid
 
       module_function
 
-      # Idempotent: find-or-create the two hero cases. No PHI at rest beyond the
-      # optional synthetic cached display name. Returns the hero patient_refs.
+      # Idempotent: find-or-create the two hero cases. NO PHI at rest at all —
+      # the cached display name this used to write is gone with the column
+      # (ADR 0003), so the demo's hero names now resolve through the adapter
+      # like every other name. Returns the hero patient_refs.
       def seed!(tenant: DEFAULT_TENANT)
         Corvid.with_tenant(tenant) do
           HEROES.each do |patient_ref, spec|
@@ -68,7 +70,6 @@ module Corvid
               facility_identifier: FACILITY,
               patient_identifier: patient_ref
             ) do |c|
-              c.patient_name_cached = spec[:name]
               c.status = "active"
               c.lifecycle_status = "intake"
               c.intake_at = Time.current
