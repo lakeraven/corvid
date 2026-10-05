@@ -168,8 +168,33 @@ module Corvid
         []
       end
 
+      # Coverage a patient already holds, used by the PRC payer-of-last-resort
+      # path. Base returns `[]` so callers degrade rather than crash.
+      #
+      # `[]` is therefore AMBIGUOUS: it means "this patient has no other
+      # coverage" from an adapter that looked, and "nobody looked" from one
+      # that inherits this. Under 42 CFR 136.61 those are opposite answers —
+      # the first supports paying, the second supports nothing. Callers that
+      # act on the result MUST consult `supports_coverage_discovery?` first
+      # and refuse rather than treat silence as an answer.
       def get_coverages(patient_identifier)
         []
+      end
+
+      # Whether this adapter can actually answer `get_coverages`.
+      #
+      # Derived from the method owner rather than a hand-kept flag or an
+      # adapter allowlist: an adapter that implements discovery is one that
+      # overrides the method, so a new adapter cannot forget to declare
+      # itself and an existing one cannot drift out of sync with its own
+      # implementation.
+      #
+      # `Corvid::Adapters::FhirAdapter` does NOT override `get_coverages`,
+      # so it reports false. That is the honest answer — FHIR `Coverage`
+      # search is not implemented there, and a 270/271 round trip certainly
+      # is not (see lakeraven-integrations#34 for the X12 side).
+      def supports_coverage_discovery?
+        method(:get_coverages).owner != Corvid::Adapters::Base
       end
 
       # Read purchased/referred-care billed line items for a patient from
