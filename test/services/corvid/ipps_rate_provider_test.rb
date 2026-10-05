@@ -78,4 +78,61 @@ class Corvid::IppsRateProviderTest < ActiveSupport::TestCase
   test "source returns :ipps_real symbol to match the rate-provider contract" do
     assert_equal :ipps_real, Corvid::IppsRateProvider.source
   end
+  # release_label merge: the DRG weight is row A, the hospital rate is
+  # row B. "" is truthy, so `a || b` keeps a blank A and drops a real B.
+  # Assertions compare the raw label — never via .presence — so a blank
+  # winner fails here instead of being normalized away.
+
+  test "lookup_for returns the hospital rate label when the DRG weight label is blank" do
+    relabel_ipps(weight: "", hospital: "cms_ipps_fy2026")
+    assert_equal "cms_ipps_fy2026", ipps_release_label
+  end
+
+  test "lookup_for keeps the DRG weight label when the hospital rate label is blank" do
+    relabel_ipps(weight: "cms_ipps_fy2026", hospital: "")
+    assert_equal "cms_ipps_fy2026", ipps_release_label
+  end
+
+  test "lookup_for returns nil when both IPPS release labels are blank" do
+    # Nil, not "". The current `||` returns "" because "" is truthy, and
+    # that empty string is what the analyzer then drops. A merge that
+    # skips blank labels has nothing left to return, so the contract is nil.
+    # Asserting "" would pass against the defect.
+    relabel_ipps(weight: "", hospital: "")
+    assert_nil ipps_release_label
+  end
+
+  test "lookup_for lets a stub label on either IPPS row win over a real label" do
+    relabel_ipps(weight: "stub_drg_v1", hospital: "cms_ipps_fy2026")
+    assert_equal "stub_drg_v1", ipps_release_label
+
+    relabel_ipps(weight: "cms_ipps_fy2026", hospital: "stub_hospital_v1")
+    assert_equal "stub_hospital_v1", ipps_release_label
+  end
+
+  test "lookup_for treats a whitespace-only IPPS label as blank" do
+    relabel_ipps(weight: "   ", hospital: "cms_ipps_fy2026")
+    assert_equal "cms_ipps_fy2026", ipps_release_label
+
+    relabel_ipps(weight: "cms_ipps_fy2026", hospital: "   ")
+    assert_equal "cms_ipps_fy2026", ipps_release_label
+
+    relabel_ipps(weight: "   ", hospital: "   ")
+    assert_nil ipps_release_label
+  end
+
+  private
+
+  def relabel_ipps(weight:, hospital:)
+    Corvid::IppsDrgWeight.find_by!(fiscal_year: @fy, drg_code: "470")
+                         .update!(release_label: weight)
+    Corvid::IppsHospitalRate.find_by!(fiscal_year: @fy, locality: "NATIONAL")
+                            .update!(release_label: hospital)
+  end
+
+  def ipps_release_label
+    Corvid::IppsRateProvider.lookup_for(
+      drg_code: "470", locality: "NATIONAL", date: Date.new(2026, 1, 15)
+    ).release_label
+  end
 end
