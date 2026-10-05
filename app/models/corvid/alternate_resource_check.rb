@@ -37,8 +37,12 @@ module Corvid
     FEDERAL_TYPES = %w[medicare_a medicare_b medicare_d medicaid va_benefits].freeze
     PRIVATE_TYPES = %w[private_insurance workers_comp auto_insurance liability_coverage].freeze
 
+    # A settled "this resource will not pay" result — the only statuses that
+    # count as documented evidence toward payer-of-last-resort.
+    UNAVAILABLE_STATUSES = %w[not_enrolled denied exhausted].freeze
+
     scope :active_coverage, -> { where(status: %w[enrolled pending_enrollment]) }
-    scope :unavailable, -> { where(status: %w[not_enrolled denied exhausted]) }
+    scope :unavailable, -> { where(status: UNAVAILABLE_STATUSES) }
     scope :pending, -> { where(status: %w[not_checked checking pending_enrollment]) }
     scope :federal, -> { where(resource_type: FEDERAL_TYPES) }
     scope :private_payer, -> { where(resource_type: PRIVATE_TYPES) }

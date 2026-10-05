@@ -66,9 +66,25 @@ module Corvid
 
       patient_id = referral.case.patient_identifier
       coverages = @adapter.get_coverages(patient_id)
-      return unless coverages.is_a?(Array) && coverages.any?
+      # A nil / non-array response means the adapter couldn't run the check —
+      # leave insurance for staff to attest.
+      return unless coverages.is_a?(Array)
 
-      checklist.verify_item!(:insurance_verified, source: "eligibility_check")
+      if coverages.any?
+        checklist.verify_item!(:insurance_verified, source: "eligibility_check")
+        return
+      end
+
+      # An empty array on its own is NOT evidence of anything.
+      # `Adapters::Base#get_coverages` returns [] for any backend that simply
+      # can't search, so "searched, found none" and "never searched" are
+      # indistinguishable at this call site. 42 CFR 136.61 wants a *documented*
+      # negative, so only confirm payer-of-last-resort when the referral already
+      # carries a complete set of settled AlternateResourceCheck rows — which
+      # payer was checked, what came back, and when.
+      return unless alternate_resources_documented_unavailable?(referral)
+
+      checklist.verify_item!(:insurance_verified, source: "payer_of_last_resort")
     end
 
     # Class-method shims for backward compatibility.
@@ -91,6 +107,19 @@ module Corvid
     end
 
     private
+
+    # True only when every alternate resource type carries a recorded,
+    # settled "no coverage" result. An absent or still-pending row means the
+    # resource was never verified, which is not a documented negative — and a
+    # vacuous "all of nothing" must never read as confirmation.
+    def alternate_resources_documented_unavailable?(referral)
+      recorded = referral.alternate_resource_checks.pluck(:resource_type, :status).to_h
+      types = Corvid::AlternateResourceCheck::RESOURCE_TYPES
+      return false unless types.all? { |type| recorded.key?(type) }
+
+      unavailable = Corvid::AlternateResourceCheck::UNAVAILABLE_STATUSES
+      types.all? { |type| unavailable.include?(recorded[type]) }
+    end
 
     def populate_enrollment!(checklist, patient_id, source)
       return if checklist.enrollment_verified
