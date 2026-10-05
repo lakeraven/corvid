@@ -81,3 +81,53 @@ jobs:
 
       - name: Run BDD features
         run: bundle exec cucumber --tags "not @wip" --format progress
+
+  # Independent of the test job on purpose: the demos are the pilot-demo
+  # critical path and must stay runnable even while the suite is red.
+  demo-smoke:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      RAILS_ENV: development
+      DATABASE_URL: postgres://postgres:postgres@localhost:5432/corvid_dummy_development
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Ruby
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "4.0.2"
+          bundler-cache: true
+
+      - name: Cache dummy app gems
+        uses: actions/cache@v4
+        with:
+          path: test/dummy/vendor/bundle
+          key: dummy-gems-${{ runner.os }}-ruby-4.0.2-${{ hashFiles('test/dummy/Gemfile.lock') }}
+          restore-keys: |
+            dummy-gems-${{ runner.os }}-ruby-4.0.2-
+
+      - name: Install dummy app dependencies
+        run: |
+          cd test/dummy
+          bundle config set --local path 'vendor/bundle'
+          bundle install --jobs 4
+
+      - name: Run every demo end to end
+        run: bin/demo-smoke
+
+      - name: Assert demos did not rewrite tracked files
+        run: git diff --exit-code

@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+# Entry point: stock-FHIR overlay demo (multi-clinic PRC + MLR).
+#
+# Runs from a fresh checkout: installs gems, prepares the development DB,
+# resets any prior demo rows, then runs the demo. Fully synthetic, fully
+# offline. See docs/demo.md.
+set -euo pipefail
+cd "$(dirname "$0")/../test/dummy"
+
+bundle check >/dev/null 2>&1 || bundle install
+bin/rails db:prepare
+bin/rails demo:overlay_reset
+exec bin/rails demo:overlay

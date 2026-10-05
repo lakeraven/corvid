@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# Entry point: narrated PRC happy-path demo — registration -> eligibility /
+# tribal enrollment -> referral -> management approval -> obligation/budget.
+# Every beat is tagged [REAL] (engine-native, PG-backed) or [MOCK] (offline
+# adapter). Fully synthetic, fully offline. See docs/demo.md.
+#
+# This demo is self-resetting: it destroys its own prior case on each run, so
+# there is no separate reset task.
+set -euo pipefail
+cd "$(dirname "$0")/../test/dummy"
+
+bundle check >/dev/null 2>&1 || bundle install
+bin/rails db:prepare
+exec bin/rails demo:prc

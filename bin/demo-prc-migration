@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# Entry point: governed PRC migration demo (consent gate + minimum-necessary
+# bundle + audit Determination), against an in-process stub target so it runs
+# fully offline. Fully synthetic. See docs/demo.md.
+set -euo pipefail
+cd "$(dirname "$0")/../test/dummy"
+
+bundle check >/dev/null 2>&1 || bundle install
+bin/rails db:prepare
+bin/rails demo:migration_reset
+exec bin/rails demo:migrate

@@ -55,15 +55,18 @@ issue's repo and are not verified here.
 
 ```bash
 cd corvid
-bundle install                       # first time only
-cd test/dummy && RAILS_ENV=test bin/rails db:prepare && cd ../..  # first time only
-
-cd test/dummy
-RAILS_ENV=test bin/rails demo:prc
+bin/demo-prc
 ```
+
+That is the whole thing: the entry point installs gems, prepares the
+**development** database, and runs the demo. See [`docs/demo.md`](demo.md) for
+prerequisites and the other two demos.
 
 The task is safely re-runnable — it deletes any prior demo `Case` for the
 same patient/facility before creating fresh records.
+
+Do not run the demo against `RAILS_ENV=test`: the test database is owned by
+the suites, which purge and reload it out from under you.
 
 To confirm the whole PRC surface (not just the demo path) is green:
 
@@ -89,7 +92,7 @@ adapter is wired directly in `lib/tasks/demo.rake`.
 
 ## Step-by-step: what the audience sees
 
-Running `RAILS_ENV=test bin/rails demo:prc` prints a narrated transcript.
+Running `bin/demo-prc` prints a narrated transcript.
 Each line is tagged `[REAL]` (actual engine/Postgres operation) or `[MOCK]`
 (adapter-simulated external system).
 
