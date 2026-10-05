@@ -134,6 +134,15 @@ class Corvid::Adapters::FhirAdapterNetworkTest < Minitest::Test
     assert http.use_ssl?
   end
 
+  # Peer verification is set explicitly, not left to a Net::HTTP default
+  # that a future refactor could silently change.
+  def test_https_uri_verifies_the_peer_certificate
+    adapter = Corvid::Adapters::FhirAdapter.new(base_url: BASE)
+    http = adapter.send(:build_http, TARGET)
+
+    assert_equal OpenSSL::SSL::VERIFY_PEER, http.verify_mode
+  end
+
   def test_http_uri_does_not_enable_ssl
     adapter = Corvid::Adapters::FhirAdapter.new(base_url: "http://internal.example.com/r4")
     http = adapter.send(:build_http, URI.parse("http://internal.example.com/r4/Patient/1"))
