@@ -1,0 +1,103 @@
+# CARC / RARC mapping — DATA, not code.
+#
+# Every entry answers three questions for a human being:
+#   reason  — what the payer actually said, in English
+#   action  — the prescribed next action, specific enough to work from
+#   queue   — which work queue the claim lands in
+#
+# `disposition` separates money that is already settled from money still in
+# play. A DENIAL here is always an adjudicated refusal (see remittance.rb);
+# a clearinghouse/intake REJECTION never appears in this table because it was
+# never adjudicated and carries no CARC.
+#
+# This table is deliberately partial. Codes absent from it are NOT guessed at:
+# the classifier routes them to human review and refuses to auto-close them.
+# Adding a code here is a data change, reviewable by a billing lead.
+version: "1.0.0"
+effective_start: "2026-01-01"
+
+dispositions:
+  contractual: "Provider write-off required by contract. Patient may not be balance-billed."
+  patient_responsibility: "Balance moves to the patient's statement."
+  denial: "Adjudicated refusal to pay. Appeal or write off — never treat as a rejection."
+  informational: "No money moves. Records a fact about the adjudication."
+
+carc:
+  # ---- Contractual / expected -------------------------------------------
+  CO-45:
+    reason: "Charge exceeds the payer's contracted fee schedule or maximum allowable."
+    action: "Post as a contractual adjustment. No follow-up unless the contracted rate looks wrong for this code."
+    queue: auto_post
+    disposition: contractual
+    auto_postable: true
+  CO-253:
+    reason: "Sequestration — federal payment reduction."
+    action: "Post as a contractual adjustment. Not appealable."
+    queue: auto_post
+    disposition: contractual
+    auto_postable: true
+
+  # ---- Patient responsibility -------------------------------------------
+  PR-1:
+    reason: "Applied to the patient's deductible."
+    action: "Move to the patient statement as deductible. Check for a secondary payer before billing the patient."
+    queue: patient_billing
+    disposition: patient_responsibility
+    auto_postable: true
+  PR-2:
+    reason: "Coinsurance."
+    action: "Move to the patient statement as coinsurance. Check for a secondary payer before billing the patient."
+    queue: patient_billing
+    disposition: patient_responsibility
+    auto_postable: true
+  PR-3:
+    reason: "Copayment."
+    action: "Move to the patient statement as copay. Reconcile against any copay collected at the visit."
+    queue: patient_billing
+    disposition: patient_responsibility
+    auto_postable: true
+
+  # ---- Denials -----------------------------------------------------------
+  CO-16:
+    reason: "Claim or service lacks information, or has a submission or billing error."
+    action: "Read the accompanying RARC — it names the missing element. Correct the claim and resubmit as a corrected claim; do not appeal."
+    queue: missing_information
+    disposition: denial
+    auto_postable: false
+  CO-18:
+    reason: "Exact duplicate of a claim or service already adjudicated."
+    action: "Find the original claim and confirm it paid. If it paid, close this one as a duplicate. If the original was denied, work that claim, not this one. If this was genuinely a second distinct session on the same day, resubmit with the appropriate distinct-service modifier and documentation."
+    queue: duplicate_review
+    disposition: denial
+    auto_postable: false
+  CO-29:
+    reason: "Time limit for filing has expired."
+    action: "Establish why the claim missed the window. If there is proof of timely original submission or a payer delay, appeal with the submission history attached; otherwise write off and fix the process that let it age."
+    queue: timely_filing_appeal
+    disposition: denial
+    auto_postable: false
+  CO-50:
+    reason: "Not deemed a medical necessity by the payer."
+    action: "Pull the session documentation and compare it to the payer's medical-necessity policy for the code. Appeal with the treatment plan and progress notes where the documentation supports it."
+    queue: medical_necessity_appeal
+    disposition: denial
+    auto_postable: false
+  CO-97:
+    reason: "Benefit for this service is included in the payment for another service already adjudicated (bundled)."
+    action: "Confirm the bundling is correct for this code pair. If the services were genuinely separate, resubmit the line with the appropriate unbundling modifier and documentation; otherwise write off the bundled line only — the primary line still pays."
+    queue: coding_review
+    disposition: denial
+    auto_postable: false
+  CO-197:
+    reason: "Precertification, authorization, or notification was absent."
+    action: "Check whether an authorization existed and was omitted from the claim — if so, resubmit as a corrected claim with the authorization number. If no authorization was obtained, request a retroactive authorization where the payer allows one; otherwise this is a write-off and an intake-process fix."
+    queue: authorization
+    disposition: denial
+    auto_postable: false
+
+# RARC remark codes qualify a CARC — they are never routed on alone.
+rarc:
+  N286: "Missing, incomplete, or invalid referring provider primary identifier."
+  N522: "Duplicate of a claim processed, or to be processed, as a crossover claim."
+  N115: "Decision was based on a local coverage determination."
+  M15: "Separately billed services or tests have been bundled as they are considered components of the same procedure."
