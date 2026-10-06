@@ -26,6 +26,14 @@ module Corvid
     has_many :tasks, as: :taskable, dependent: :destroy, class_name: "Corvid::Task"
     has_many :alternate_resource_checks, dependent: :destroy, class_name: "Corvid::AlternateResourceCheck"
     has_many :committee_reviews, dependent: :destroy, class_name: "Corvid::CommitteeReview"
+    # Fulfilment is a lifecycle distinct from authorization (see
+    # Corvid::ReferralFulfilment) — no shared states with the `status` AASM
+    # above, just its own append-only report trail hung off this referral.
+    #
+    # restrict, not destroy: the trail is the evidence that care was delivered.
+    # Cascading a destroy through it would let deleting a referral rewrite the
+    # record of what happened.
+    has_many :fulfilment_reports, dependent: :restrict_with_error, class_name: "Corvid::ReferralFulfilmentReport"
 
     validates :referral_identifier, presence: true
     validates :referral_identifier, uniqueness: { scope: [ :tenant_identifier, :facility_identifier ] }
