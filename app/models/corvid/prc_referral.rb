@@ -29,7 +29,10 @@ module Corvid
     # corvid#595: fulfilment is a distinct lifecycle from authorization (see
     # Corvid::ReferralFulfilment) — no shared states with the `status` AASM
     # above, just its own append-only report trail hung off this referral.
-    has_many :fulfilment_reports, dependent: :destroy, class_name: "Corvid::ReferralFulfilmentReport"
+    # restrict, not destroy: the report trail is the evidence that care was
+    # delivered, and it decides whether a claim may be billed. Cascading a
+    # destroy through it would let deleting a referral rewrite billing history.
+    has_many :fulfilment_reports, dependent: :restrict_with_error, class_name: "Corvid::ReferralFulfilmentReport"
     has_many :claim_submissions, dependent: :nullify, class_name: "Corvid::ClaimSubmission"
 
     validates :referral_identifier, presence: true

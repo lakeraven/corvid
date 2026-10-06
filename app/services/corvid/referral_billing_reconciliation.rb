@@ -62,8 +62,27 @@ module Corvid
         attrs[:paid_amount] = line_item[:paid_amount] if line_item[:paid_amount]
         attrs[:adjustment_amount] = line_item[:adjustment_amount] if line_item[:adjustment_amount]
         attrs[:patient_responsibility] = line_item[:patient_responsibility] if line_item[:patient_responsibility]
-        attrs[:status] = line_item[:paid_amount].to_f > 0 ? "paid" : claim.status
+        # An 835 satisfies a claim when payment, contractual adjustments and
+        # patient responsibility together account for the billed amount. Any
+        # positive payment used to close the claim, so a $100 remittance
+        # against a $425 claim reported as fully paid and the $325 balance
+        # silently stopped being owed.
+        attrs[:status] = claim_satisfied?(claim, line_item) ? "paid" : claim.status
         claim.update!(attrs)
+      end
+
+      # STATUSES carries no partially-paid state, so a short payment leaves the
+      # claim in its prior status — outstanding — rather than being recorded as
+      # settled.
+      def claim_satisfied?(claim, line_item)
+        billed = claim.billed_amount.to_f
+        return false unless billed > 0
+
+        accounted = line_item[:paid_amount].to_f +
+          line_item[:adjustment_amount].to_f +
+          line_item[:patient_responsibility].to_f
+
+        line_item[:paid_amount].to_f > 0 && accounted >= billed
       end
     end
   end

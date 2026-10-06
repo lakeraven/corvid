@@ -20,6 +20,12 @@ module Corvid
     STATUSES = %w[draft submitted accepted rejected paid denied appealed error].freeze
     CLAIM_TYPES = %w[professional institutional dental].freeze
 
+    # Raised by #submit! when this claim is linked to a PRC referral that has
+    # not been authorized. Delivered care is not sufficient: PRC authorizes
+    # before care is purchased, so billing an unauthorized referral bills care
+    # the programme never agreed to buy.
+    class ReferralNotAuthorized < StandardError; end
+
     # Raised by #submit! when this claim is structurally linked to a PRC
     # referral whose fulfilment has not recorded delivered care. Review
     # finding (PR #598): the fulfilment gate must live here, not only in
@@ -116,6 +122,7 @@ module Corvid
     end
 
     def submit!
+      enforce_referral_authorization_gate!
       enforce_referral_fulfilment_gate!
       result = Corvid.adapter.submit_claim(to_claim_data)
       update!(
@@ -178,6 +185,19 @@ module Corvid
     # referral may only be submitted once fulfilment has recorded
     # delivered care. Claims with no referral association (billed
     # outside the PRC referral workflow, or legacy rows) are unaffected.
+    # Authorization and fulfilment are separate preconditions and both belong
+    # here rather than only in Corvid::MedicaidReferralBilling: #submit! is a
+    # public entry point, so a guarantee enforced only by the wrapper is not a
+    # guarantee.
+    def enforce_referral_authorization_gate!
+      return if prc_referral.blank?
+      return if prc_referral.status == "authorized"
+
+      raise ReferralNotAuthorized,
+        "Claim for referral #{prc_referral.referral_identifier} cannot be submitted: " \
+        "the referral is #{prc_referral.status}, not authorized"
+    end
+
     def enforce_referral_fulfilment_gate!
       return if prc_referral.blank?
       return if Corvid::ReferralFulfilment.billable_for_delivered_care?(prc_referral)

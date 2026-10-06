@@ -45,6 +45,14 @@ module Corvid
     scope :delivered, -> { where(outcome: "delivered") }
     scope :not_delivered, -> { where(outcome: "not_delivered") }
 
+    # Append-only, enforced rather than described. A fulfilment report is the
+    # evidence a claim is billed against, so a corrected report is a NEW report
+    # (the derived status reads the latest), never an edit or a deletion of the
+    # original. Without these a caller can rewrite billing history through
+    # ordinary ActiveRecord.
+    before_update { throw(:abort) }
+    before_destroy { throw(:abort) }
+
     def delivered?
       outcome == "delivered"
     end

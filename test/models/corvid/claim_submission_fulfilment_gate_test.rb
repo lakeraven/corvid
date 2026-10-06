@@ -57,9 +57,16 @@ class Corvid::ClaimSubmissionFulfilmentGateTest < ActiveSupport::TestCase
 
   private
 
+  # Authorized, because these tests isolate the FULFILMENT gate. Leaving the
+  # referral in `draft` made the "proceeds once fulfilment is recorded" case
+  # assert that an unauthorized referral could be billed — pinning a bypass as
+  # correct rather than testing the gate under test. Authorization is covered
+  # separately in referral_billing_review_blockers_test.rb.
   def create_referral(referral_id)
     kase = Corvid::Case.create!(patient_identifier: "pt_gate_#{referral_id}", facility_identifier: "fac_gate")
-    Corvid::PrcReferral.create!(case: kase, referral_identifier: referral_id, facility_identifier: "fac_gate")
+    referral = Corvid::PrcReferral.create!(case: kase, referral_identifier: referral_id, facility_identifier: "fac_gate")
+    Corvid::MedicaidReferralWorkflow.bootstrap_authorized_medicaid_referral!(referral)
+    referral.reload
   end
 
   def create_claim(referral)
