@@ -20,9 +20,18 @@ module Corvid
     STATUSES = %w[draft submitted accepted rejected paid denied appealed error].freeze
     CLAIM_TYPES = %w[professional institutional dental].freeze
 
+    # corvid#595: structural link from a claim to the referral it bills,
+    # so an obligation against a capped appropriation can be reconciled
+    # against delivered care. Optional — claims billed outside the PRC
+    # referral workflow (or legacy rows) have no referral to attach to.
+    belongs_to :prc_referral, class_name: "Corvid::PrcReferral", optional: true
+
     validates :patient_identifier, presence: true
     validates :status, inclusion: { in: STATUSES }
     validates :claim_type, inclusion: { in: CLAIM_TYPES }
+
+    before_validation :resolve_prc_referral_from_identifier,
+      if: -> { prc_referral_id.blank? && referral_identifier.present? }
 
     scope :by_status, ->(status) { where(status: status) }
     scope :pending, -> { where(status: %w[submitted accepted]) }
@@ -135,6 +144,17 @@ module Corvid
     end
 
     private
+
+    # Best-effort backfill: a claim created with only referral_identifier
+    # (the opaque external token, per ADR 0001) gets its structural FK
+    # resolved automatically when a matching referral exists in this
+    # tenant. No match is not an error — plenty of claims (other billing
+    # specs, pre-#595 fixtures) carry a referral_identifier that was never
+    # a real Corvid::PrcReferral row.
+    def resolve_prc_referral_from_identifier
+      found = Corvid::PrcReferral.find_by(referral_identifier: referral_identifier)
+      self.prc_referral = found if found
+    end
 
     def to_claim_data
       {

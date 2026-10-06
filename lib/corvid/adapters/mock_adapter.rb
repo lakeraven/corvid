@@ -31,7 +31,9 @@ module Corvid
         conditions: "cn",
         attendees: "at",
         documents: "dc",
-        determination: "de"
+        determination: "de",
+        procedure_code: "pc",
+        fulfilment_detail: "fd"
       }.freeze
 
       def initialize
@@ -52,7 +54,8 @@ module Corvid
           display_name: attrs[:display_name],
           dob: attrs[:dob],
           sex: attrs[:sex],
-          ssn_last4: attrs[:ssn_last4]
+          ssn_last4: attrs[:ssn_last4],
+          american_indian_alaska_native: attrs[:american_indian_alaska_native]
         )
       end
 
@@ -479,7 +482,9 @@ module Corvid
           urgent: attrs[:urgent],
           chs_approval_status: attrs[:chs_approval_status],
           service_requested: attrs[:service_requested],
-          requesting_provider_identifier: attrs[:requesting_provider_identifier]
+          requesting_provider_identifier: attrs[:requesting_provider_identifier],
+          rendering_provider_identifier: attrs[:rendering_provider_identifier],
+          service_site: attrs[:service_site]
         )
       end
 

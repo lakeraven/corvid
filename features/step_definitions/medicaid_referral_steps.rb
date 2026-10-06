@@ -10,7 +10,16 @@ module MedicaidReferralSteps
     referral.begin_eligibility_review! unless referral.eligibility_review?
     Corvid::EligibilityChecklistService.populate!(referral)
     Corvid::EligibilityChecklistService.verify_item!(referral, :application_complete, by: "pr_staff_001")
+    # The payer-eligibility-check mechanism itself (and its "source" value)
+    # is the Staff completes application... scenario's own assertion
+    # target, exercised there via "staff runs a payer eligibility check
+    # ...and finds coverage" (which seeds adapter coverage first). This
+    # helper is plain arrangement for the Medicaid-payer scenarios below
+    # it, which don't seed coverage data, so it verifies manually rather
+    # than depending on a 270/271 check that would find nothing here.
     Corvid::EligibilityChecklistService.check_payer_eligibility!(referral)
+    Corvid::EligibilityChecklistService.verify_item!(referral, :insurance_verified, source: "manual") unless
+      referral.reload.eligibility_checklist&.insurance_verified
     Corvid::EligibilityChecklistService.verify_item!(referral, :clinical_necessity_documented, source: "manual")
     referral.reload.request_management_approval! if referral.may_request_management_approval?
     referral.pending_approval_by = approver

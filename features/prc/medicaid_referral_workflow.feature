@@ -40,7 +40,7 @@ Feature: Medicaid primary payer — PRC referral workflow
     And staff runs a payer eligibility check for the referral and finds coverage
     And I manually verify "clinical_necessity_documented" with source "manual"
     Then "insurance_verified" should be true
-    And the insurance verification source should be "payer_eligibility"
+    And the insurance verification source should be "eligibility_check"
     And 6 non-approval items should be complete
 
   # =============================================================================

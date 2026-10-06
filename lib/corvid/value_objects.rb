@@ -9,14 +9,28 @@
 # ReferralReference#reason_token).
 
 module Corvid
-  PatientReference = Data.define(:identifier, :display_name, :dob, :sex, :ssn_last4) do
+  # american_indian_alaska_native is optional (defaults to nil/"unknown",
+  # never false-by-omission) so adapters that don't source race/ethnicity
+  # data (e.g. FhirAdapter today) keep working without asserting a negative.
+  PatientReference = Data.define(:identifier, :display_name, :dob, :sex, :ssn_last4,
+    :american_indian_alaska_native) do
+    def initialize(american_indian_alaska_native: nil, **rest)
+      super(**rest, american_indian_alaska_native: american_indian_alaska_native)
+    end
+
     def full_name = display_name
+    def american_indian_alaska_native? = american_indian_alaska_native == true
   end
 
   PractitionerReference = Data.define(:identifier, :display_name, :npi, :specialty) do
     def full_name = display_name
   end
 
+  # rendering_provider_identifier and service_site are optional (default
+  # nil) so existing adapter builders that don't pass them keep working.
+  # service_site distinguishes care rendered at the tribal facility itself
+  # from care referred out to a non-tribal specialist — corvid#546 federal
+  # share classification needs this to know which Prong applies.
   ReferralReference = Data.define(
     :identifier,
     :patient_identifier,
@@ -29,10 +43,17 @@ module Corvid
     :urgent,
     :chs_approval_status,
     :service_requested,
-    :requesting_provider_identifier
+    :requesting_provider_identifier,
+    :rendering_provider_identifier,
+    :service_site
   ) do
+    def initialize(rendering_provider_identifier: nil, service_site: nil, **rest)
+      super(**rest, rendering_provider_identifier: rendering_provider_identifier, service_site: service_site)
+    end
+
     def emergent? = emergent == true
     def urgent? = urgent == true
+    def outside_specialist? = service_site == "non_tribal_specialist"
   end
 
   CareTeamMemberReference = Data.define(:practitioner_identifier, :role, :name, :status)
