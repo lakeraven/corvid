@@ -20,9 +20,22 @@ module Corvid
     STATUSES = %w[draft submitted accepted rejected paid denied appealed error].freeze
     CLAIM_TYPES = %w[professional institutional dental].freeze
 
+    # Raised by #submit! when this claim bills a PRC referral that has not been
+    # authorized. PRC authorizes before care is purchased, so billing an
+    # unauthorized referral bills care the programme never agreed to buy.
+    class ReferralNotAuthorized < StandardError; end
+
+    # The referral this claim bills, where there is one. Optional: claims
+    # billed outside the referral workflow, and legacy rows the backfill could
+    # not match unambiguously, carry no reference.
+    belongs_to :prc_referral, class_name: "Corvid::PrcReferral", optional: true
+
     validates :patient_identifier, presence: true
     validates :status, inclusion: { in: STATUSES }
     validates :claim_type, inclusion: { in: CLAIM_TYPES }
+
+    before_validation :resolve_prc_referral_from_identifier,
+      if: -> { prc_referral_id.blank? && referral_identifier.present? }
 
     scope :by_status, ->(status) { where(status: status) }
     scope :pending, -> { where(status: %w[submitted accepted]) }
@@ -100,6 +113,7 @@ module Corvid
     end
 
     def submit!
+      enforce_referral_authorization_gate!
       result = Corvid.adapter.submit_claim(to_claim_data)
       update!(
         claim_identifier: result[:claim_identifier],
@@ -135,6 +149,72 @@ module Corvid
     end
 
     private
+
+    # Link this claim to the referral it bills, but only where that link is
+    # unambiguous. PrcReferral scopes uniqueness to [tenant, facility], and
+    # PostgreSQL treats NULLs as distinct in a unique index, so several
+    # referrals can share a tenant and identifier while facility_identifier is
+    # NULL. Taking the first row back would attach a claim to an arbitrary
+    # one — another patient's referral. Where more than one matches, the claim
+    # stays unlinked and #submit! refuses it rather than billing against a
+    # referral nobody chose.
+    def resolve_prc_referral_from_identifier
+      candidates = Corvid::PrcReferral
+        .where(facility_identifier: facility_identifier, referral_identifier: referral_identifier)
+        .limit(2)
+        .to_a
+
+      self.prc_referral = candidates.first if candidates.size == 1
+    end
+
+    # A claim that bills a PRC referral may only be submitted once that
+    # referral is authorized.
+    #
+    # referral_identifier is a loose external reference: plenty of claims carry
+    # a payer's or provider's referral number with no PrcReferral behind it
+    # (see features/billing/claims_submission.feature), and those are ordinary
+    # billing, not PRC billing. So an identifier matching nothing is allowed
+    # through — the claim is simply not a PRC claim.
+    #
+    # What is NOT allowed through is an identifier that matches PRC referrals
+    # ambiguously. There a PRC referral demonstrably exists under that
+    # identifier and we cannot tell which, so we cannot establish that the one
+    # being billed was authorized.
+    #
+    # Resolution happens here rather than relying on the association, because
+    # the resolver runs on save: a claim can reach #submit! carrying an
+    # identifier whose prc_referral_id is still NULL, and returning early on a
+    # blank association would skip exactly the rows the gate exists for.
+    def enforce_referral_authorization_gate!
+      resolve_prc_referral_from_identifier if prc_referral.blank? && referral_identifier.present?
+
+      if prc_referral.blank?
+        raise ReferralNotAuthorized,
+          "Claim naming referral #{referral_identifier} cannot be submitted: " \
+          "several PRC referrals share that identifier, so the one being billed " \
+          "cannot be established" if ambiguous_referral_match?
+
+        return
+      end
+
+      # Re-read before deciding. The association may have been loaded earlier
+      # in this object's life, and authorizing care is exactly the kind of
+      # thing that happens between loading a claim and submitting it.
+      current = prc_referral.reload
+      return if current.status == "authorized"
+
+      raise ReferralNotAuthorized,
+        "Claim for referral #{current.referral_identifier} cannot be submitted: " \
+        "the referral is #{current.status}, not authorized"
+    end
+
+    def ambiguous_referral_match?
+      return false if referral_identifier.blank?
+
+      Corvid::PrcReferral
+        .where(facility_identifier: facility_identifier, referral_identifier: referral_identifier)
+        .limit(2).count > 1
+    end
 
     def to_claim_data
       {
