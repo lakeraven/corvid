@@ -13,6 +13,7 @@ module Corvid
 
     class << self
       def submit_claim!(referral:, cpt_code:, charge:, provider_identifier:)
+        reject_unless_authorized!(referral)
         reject_unless_fulfilled!(referral)
 
         claim = Corvid::ClaimSubmission.create!(
@@ -38,6 +39,22 @@ module Corvid
       end
 
       private
+
+      # Review finding (PR #598): authorization answers "may we pay for
+      # this" — this class's own header comment says a claim is billable
+      # once BOTH authorization and fulfilment are true, but only
+      # fulfilment was checked. Since ReferralFulfilment.record_external_report!
+      # deliberately accepts a report for a referral in any AASM state
+      # (fulfilment is a distinct lifecycle — see PrcReferral), an
+      # unauthorized referral could otherwise be billed the moment it
+      # received a "delivered" report.
+      def reject_unless_authorized!(referral)
+        return if referral.authorized?
+
+        raise SubmissionRejected,
+          "Medicaid claim for referral #{referral.referral_identifier} rejected: " \
+          "referral is not authorized (status=#{referral.status})"
+      end
 
       def reject_unless_fulfilled!(referral)
         return if Corvid::ReferralFulfilment.billable_for_delivered_care?(referral)

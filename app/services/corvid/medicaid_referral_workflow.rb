@@ -12,8 +12,15 @@ module Corvid
   class MedicaidReferralWorkflow
     DEFAULT_BOOTSTRAP_APPROVER = "sys_medicaid_bootstrap"
 
+    # Review finding (PR #598): record_medicaid_primary_payer! deliberately
+    # skips programme-appropriation reservation (see class comment above),
+    # so designating Medicaid as primary payer without verified active
+    # coverage would create a referral funded by nothing at all.
+    class UnverifiedMedicaidCoverage < StandardError; end
+
     class << self
       def record_medicaid_primary_payer!(referral)
+        reject_unless_active_medicaid_coverage!(referral)
         referral.update!(primary_payer: "medicaid")
       end
 
@@ -53,11 +60,32 @@ module Corvid
         referral.approve_management! if referral.may_approve_management?
         referral.reload
 
+        ensure_medicaid_coverage_verified!(referral)
         record_medicaid_primary_payer!(referral)
         authorize_with_medicaid!(referral)
       end
 
       private
+
+      def reject_unless_active_medicaid_coverage!(referral)
+        check = referral.alternate_resource_checks.find_by(resource_type: "medicaid")
+        return if check&.has_coverage?
+
+        raise UnverifiedMedicaidCoverage,
+          "Cannot designate Medicaid as primary payer for referral #{referral.referral_identifier}: " \
+          "no verified active Medicaid coverage on record"
+      end
+
+      # Mirrors complete_eligibility_checklist! below: the bootstrap helper
+      # fills in whatever a caller didn't seed explicitly with an EXPLICIT
+      # manual verification — never a silent default — so bootstrap works
+      # whether or not the caller already set up alternate resource checks.
+      def ensure_medicaid_coverage_verified!(referral)
+        check = referral.alternate_resource_checks.find_or_create_by!(resource_type: "medicaid")
+        return if check.has_coverage?
+
+        check.update!(status: :enrolled, checked_at: Time.current)
+      end
 
       # begin_eligibility_review already auto-populates what the adapter
       # can verify (identity/enrollment/residency/insurance, when seeded).

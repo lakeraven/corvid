@@ -20,6 +20,13 @@ module Corvid
     STATUSES = %w[draft submitted accepted rejected paid denied appealed error].freeze
     CLAIM_TYPES = %w[professional institutional dental].freeze
 
+    # Raised by #submit! when this claim is structurally linked to a PRC
+    # referral whose fulfilment has not recorded delivered care. Review
+    # finding (PR #598): the fulfilment gate must live here, not only in
+    # Corvid::MedicaidReferralBilling, or a caller can submit a
+    # referral-linked claim by going straight to the model.
+    class FulfilmentNotRecorded < StandardError; end
+
     # corvid#595: structural link from a claim to the referral it bills,
     # so an obligation against a capped appropriation can be reconciled
     # against delivered care. Optional — claims billed outside the PRC
@@ -109,6 +116,7 @@ module Corvid
     end
 
     def submit!
+      enforce_referral_fulfilment_gate!
       result = Corvid.adapter.submit_claim(to_claim_data)
       update!(
         claim_identifier: result[:claim_identifier],
@@ -152,8 +160,32 @@ module Corvid
     # specs, pre-#595 fixtures) carry a referral_identifier that was never
     # a real Corvid::PrcReferral row.
     def resolve_prc_referral_from_identifier
-      found = Corvid::PrcReferral.find_by(referral_identifier: referral_identifier)
+      # referral_identifier is only unique scoped to [tenant_identifier,
+      # facility_identifier] (see Corvid::PrcReferral), so matching on
+      # the identifier alone can attach a claim to another facility's
+      # referral — and therefore another patient's care record — when
+      # the same identifier happens to exist at two facilities in one
+      # tenant. tenant_identifier is already enforced by PrcReferral's
+      # TenantScoped default_scope.
+      found = Corvid::PrcReferral.find_by(
+        facility_identifier: facility_identifier,
+        referral_identifier: referral_identifier
+      )
       self.prc_referral = found if found
+    end
+
+    # Structural guarantee (PR #598 review): a claim linked to a PRC
+    # referral may only be submitted once fulfilment has recorded
+    # delivered care. Claims with no referral association (billed
+    # outside the PRC referral workflow, or legacy rows) are unaffected.
+    def enforce_referral_fulfilment_gate!
+      return if prc_referral.blank?
+      return if Corvid::ReferralFulfilment.billable_for_delivered_care?(prc_referral)
+
+      raise FulfilmentNotRecorded,
+        "Claim for referral #{prc_referral.referral_identifier} cannot be submitted: " \
+        "fulfilment has not recorded delivered care " \
+        "(status=#{Corvid::ReferralFulfilment.status(prc_referral)})"
     end
 
     def to_claim_data

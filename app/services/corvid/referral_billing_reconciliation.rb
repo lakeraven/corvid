@@ -10,8 +10,17 @@ module Corvid
   class ReferralBillingReconciliation
     Result = Struct.new(:referral_identifier, :status, :fulfilment_verified, :claim, keyword_init: true)
 
+    # Raised when the claim passed to #reconcile! is not structurally
+    # linked to the referral passed alongside it (PR #598 review): the
+    # two arguments were previously trusted independently, so a paid
+    # claim for one referral could be reported reconciled against a
+    # different referral's delivered-care fact.
+    class AssociationMismatch < StandardError; end
+
     class << self
       def reconcile!(referral:, claim:)
+        ensure_claim_matches_referral!(referral, claim)
+
         apply_remittance!(claim) unless claim.paid? || claim.rejected?
         claim.reload
 
@@ -26,6 +35,14 @@ module Corvid
       end
 
       private
+
+      def ensure_claim_matches_referral!(referral, claim)
+        return if claim.prc_referral_id.present? && claim.prc_referral_id == referral.id
+
+        raise AssociationMismatch,
+          "Claim #{claim.id} (prc_referral_id=#{claim.prc_referral_id.inspect}) is not linked to " \
+          "referral #{referral.referral_identifier} (id=#{referral.id}); refusing to reconcile"
+      end
 
       # Same matching/apply logic as the existing remittance-polling step
       # ("I process the remittance" in billing_shared_steps.rb), scoped to

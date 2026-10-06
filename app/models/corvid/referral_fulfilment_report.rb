@@ -33,8 +33,15 @@ module Corvid
     validates :outcome, inclusion: { in: OUTCOMES }
     validates :reported_at, presence: true
 
-    scope :chronological, -> { order(reported_at: :asc) }
-    scope :reverse_chronological, -> { order(reported_at: :desc) }
+    # Secondary sort by id breaks ties when two reports share one
+    # reported_at value (PR #598 review) — without it, Postgres may
+    # return either row first and #latest_report becomes nondeterministic.
+    # id ascending is insertion order, so the later-APPENDED report
+    # always wins a tie, matching "most recent report wins" in spirit
+    # (most recently known about, when the reported times themselves
+    # can't distinguish them).
+    scope :chronological, -> { order(reported_at: :asc, id: :asc) }
+    scope :reverse_chronological, -> { order(reported_at: :desc, id: :desc) }
     scope :delivered, -> { where(outcome: "delivered") }
     scope :not_delivered, -> { where(outcome: "not_delivered") }
 

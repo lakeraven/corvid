@@ -33,15 +33,6 @@ module Corvid
         )
       end
 
-      # Discards all reports for a referral. Used by specs to set up "no
-      # external fulfilment report has been received" — a real caller
-      # would have no legitimate reason to erase reporting history, but
-      # the method is intentionally here (not open-coded in a step
-      # definition) so it's one obvious place, not scattered deletes.
-      def clear_reports!(referral)
-        referral.fulfilment_reports.destroy_all
-      end
-
       def latest_report(referral)
         referral.fulfilment_reports.reverse_chronological.first
       end

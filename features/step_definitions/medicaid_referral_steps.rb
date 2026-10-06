@@ -54,6 +54,15 @@ module MedicaidReferralSteps
 
     flunk "Corvid::ReferralBillingReconciliation is not implemented"
   end
+
+  # Test-only arrangement for "no external fulfilment report has been
+  # received" fixtures. PR #598 review: production code (
+  # Corvid::ReferralFulfilment) must never expose a way to erase
+  # fulfilment history, so this lives here instead of as a class method
+  # on that service.
+  def clear_fulfilment_reports_for_test!(referral)
+    referral.fulfilment_reports.destroy_all
+  end
 end
 
 World(MedicaidReferralSteps)
@@ -171,12 +180,12 @@ end
 
 Given("no external fulfilment report has been received for the referral") do
   require_referral_fulfilment!
-  Corvid::ReferralFulfilment.clear_reports!(@referral)
+  clear_fulfilment_reports_for_test!(@referral)
 end
 
 Given("no external fulfilment report has been received for referral {string}") do |referral_id|
   require_referral_fulfilment!
-  Corvid::ReferralFulfilment.clear_reports!(referral_for(referral_id))
+  clear_fulfilment_reports_for_test!(referral_for(referral_id))
 end
 
 When("a Medicaid claim is drafted for the referral") do
