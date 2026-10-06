@@ -210,6 +210,12 @@ Given("all 12 alternate resource checks are created for the referral") do
   Corvid::AlternateResourceCheck.create_all_for_referral(@referral)
 end
 
+# corvid#595: same API, phrased without the literal count — used by the
+# Medicaid primary-payer scenarios where the "12" isn't the point.
+Given("all alternate resource checks are created for the referral") do
+  Corvid::AlternateResourceCheck.create_all_for_referral(@referral)
+end
+
 Given("only {int} checks have been verified") do |count|
   @referral.alternate_resource_checks.order(:id).limit(count).each do |check|
     check.update!(status: :not_enrolled, checked_at: Time.current)

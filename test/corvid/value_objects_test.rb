@@ -8,8 +8,25 @@ class Corvid::ValueObjectsTest < Minitest::Test
   # -- PatientReference -------------------------------------------------------
 
   def test_patient_reference_has_expected_fields
-    assert_equal %i[identifier display_name dob sex ssn_last4],
+    assert_equal %i[identifier display_name dob sex ssn_last4 american_indian_alaska_native],
                  Corvid::PatientReference.members
+  end
+
+  def test_patient_reference_american_indian_alaska_native_defaults_to_unknown
+    pt = Corvid::PatientReference.new(
+      identifier: "pt_test", display_name: "TEST,PATIENT",
+      dob: nil, sex: nil, ssn_last4: nil
+    )
+    assert_nil pt.american_indian_alaska_native
+    refute pt.american_indian_alaska_native?
+  end
+
+  def test_patient_reference_american_indian_alaska_native_predicate
+    pt = Corvid::PatientReference.new(
+      identifier: "pt_test", display_name: "TEST,PATIENT",
+      dob: nil, sex: nil, ssn_last4: nil, american_indian_alaska_native: true
+    )
+    assert pt.american_indian_alaska_native?
   end
 
   def test_patient_reference_full_name_aliases_display_name
@@ -49,9 +66,16 @@ class Corvid::ValueObjectsTest < Minitest::Test
       identifier patient_identifier status reason_token
       estimated_cost medical_priority_level authorization_number
       emergent urgent chs_approval_status service_requested
-      requesting_provider_identifier
+      requesting_provider_identifier rendering_provider_identifier
+      service_site
     ]
     assert_equal expected, Corvid::ReferralReference.members
+  end
+
+  def test_referral_reference_outside_specialist_predicate
+    refute build_referral(service_site: nil).outside_specialist?
+    refute build_referral(service_site: "tribal_facility").outside_specialist?
+    assert build_referral(service_site: "non_tribal_specialist").outside_specialist?
   end
 
   def test_referral_reference_emergent_predicate

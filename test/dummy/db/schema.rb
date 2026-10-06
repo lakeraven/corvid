@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_10_02_000001) do
+ActiveRecord::Schema[8.1].define(version: 2026_10_06_000003) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
@@ -211,7 +211,9 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_02_000001) do
     t.datetime "submitted_at"
     t.string "tenant_identifier", null: false
     t.datetime "updated_at", null: false
+    t.bigint "prc_referral_id"
     t.index ["claim_identifier"], name: "index_corvid_claim_submissions_on_claim_identifier", unique: true
+    t.index ["prc_referral_id"], name: "index_corvid_claim_submissions_on_prc_referral_id"
     t.index ["tenant_identifier", "patient_identifier"], name: "idx_on_tenant_identifier_patient_identifier_0a950bd516"
     t.index ["tenant_identifier", "status"], name: "index_corvid_claim_submissions_on_tenant_identifier_and_status"
     t.check_constraint "claim_type::text = ANY (ARRAY['professional'::character varying::text, 'institutional'::character varying::text, 'dental'::character varying::text])", name: "corvid_claim_submissions_type_check"
@@ -525,10 +527,29 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_02_000001) do
     t.string "submitted_by_identifier"
     t.string "tenant_identifier", null: false
     t.datetime "updated_at", null: false
+    t.string "primary_payer"
     t.index ["case_id"], name: "index_corvid_prc_referrals_on_case_id"
     t.index ["tenant_identifier", "facility_identifier", "referral_identifier"], name: "idx_corvid_prc_referrals_tenant_referral", unique: true
     t.index ["tenant_identifier", "status"], name: "index_corvid_prc_referrals_on_tenant_identifier_and_status"
+    t.check_constraint "primary_payer IS NULL OR (primary_payer::text = ANY (ARRAY['medicaid'::character varying, 'programme'::character varying]::text[]))", name: "corvid_prc_referrals_primary_payer_check"
     t.check_constraint "status::text = ANY (ARRAY['draft'::character varying::text, 'submitted'::character varying::text, 'eligibility_review'::character varying::text, 'management_approval'::character varying::text, 'alternate_resource_review'::character varying::text, 'priority_assignment'::character varying::text, 'committee_review'::character varying::text, 'exception_review'::character varying::text, 'authorized'::character varying::text, 'denied'::character varying::text, 'deferred'::character varying::text, 'cancelled'::character varying::text])", name: "corvid_prc_referrals_status_check"
+  end
+
+  create_table "corvid_referral_fulfilment_reports", force: :cascade do |t|
+    t.string "tenant_identifier", null: false
+    t.string "facility_identifier"
+    t.bigint "prc_referral_id", null: false
+    t.string "source", null: false
+    t.string "outcome", null: false
+    t.datetime "reported_at", null: false
+    t.string "detail_token"
+    t.datetime "created_at", null: false
+    t.datetime "updated_at", null: false
+    t.index ["prc_referral_id", "reported_at"], name: "idx_corvid_fulfilment_reports_referral_reported_at"
+    t.index ["prc_referral_id"], name: "index_corvid_referral_fulfilment_reports_on_prc_referral_id"
+    t.index ["tenant_identifier", "prc_referral_id"], name: "idx_corvid_fulfilment_reports_tenant_referral"
+    t.check_constraint "outcome::text = ANY (ARRAY['delivered'::character varying, 'not_delivered'::character varying]::text[])", name: "corvid_fulfilment_reports_outcome_check"
+    t.check_constraint "source::text = ANY (ARRAY['receiving_specialist'::character varying, 'patient'::character varying, 'staff'::character varying, 'other'::character varying]::text[])", name: "corvid_fulfilment_reports_source_check"
   end
 
   create_table "corvid_tasks", force: :cascade do |t|
@@ -573,9 +594,11 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_02_000001) do
   add_foreign_key "corvid_care_team_members", "corvid_care_teams", column: "care_team_id"
   add_foreign_key "corvid_case_programs", "corvid_cases", column: "case_id"
   add_foreign_key "corvid_cases", "corvid_care_teams", column: "care_team_id"
+  add_foreign_key "corvid_claim_submissions", "corvid_prc_referrals", column: "prc_referral_id"
   add_foreign_key "corvid_committee_reviews", "corvid_prc_referrals", column: "prc_referral_id"
   add_foreign_key "corvid_eligibility_checklists", "corvid_prc_referrals", column: "prc_referral_id"
   add_foreign_key "corvid_prc_overpayment_analyses", "corvid_prc_obligations", column: "prc_obligation_id"
   add_foreign_key "corvid_prc_payments", "corvid_prc_obligations", column: "prc_obligation_id"
   add_foreign_key "corvid_prc_referrals", "corvid_cases", column: "case_id"
+  add_foreign_key "corvid_referral_fulfilment_reports", "corvid_prc_referrals", column: "prc_referral_id"
 end
