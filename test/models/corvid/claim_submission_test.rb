@@ -120,6 +120,17 @@ class Corvid::ClaimSubmissionTest < ActiveSupport::TestCase
     end
   end
 
+  test "rejected and denied scopes do not overlap" do
+    with_tenant(TENANT) do
+      rejected = create_claim(status: "rejected")
+      denied = create_claim(status: "denied")
+
+      assert_equal [ rejected ], Corvid::ClaimSubmission.rejected.to_a
+      assert_equal [ denied ], Corvid::ClaimSubmission.denied.to_a
+      assert_equal [ rejected, denied ].sort_by(&:id), Corvid::ClaimSubmission.rejected_or_denied.order(:id).to_a
+    end
+  end
+
   test "for_referral scope filters by referral_identifier" do
     with_tenant(TENANT) do
       claim1 = create_claim(referral_identifier: "ref_100")
@@ -161,12 +172,17 @@ class Corvid::ClaimSubmissionTest < ActiveSupport::TestCase
     end
   end
 
-  test "rejected? returns true when status is rejected or denied" do
+  test "rejected? and denied? distinguish the two outcomes" do
     with_tenant(TENANT) do
-      %w[rejected denied].each do |status|
-        claim = Corvid::ClaimSubmission.new(status: status)
-        assert claim.rejected?, "Expected rejected? for status #{status}"
-      end
+      rejected = Corvid::ClaimSubmission.new(status: "rejected")
+      denied = Corvid::ClaimSubmission.new(status: "denied")
+
+      assert rejected.rejected?
+      refute rejected.denied?
+      assert denied.denied?
+      refute denied.rejected?
+      assert rejected.rejected_or_denied?
+      assert denied.rejected_or_denied?
     end
   end
 
@@ -205,13 +221,59 @@ class Corvid::ClaimSubmissionTest < ActiveSupport::TestCase
     end
   end
 
-  test "mark_rejected! updates status and denial reason" do
+  test "mark_rejected! records the rejection reason, not a denial reason" do
     with_tenant(TENANT) do
       claim = create_claim(status: "submitted")
       claim.mark_rejected!(reason_token: "rt_invalid_member")
 
-      assert_equal "rejected", claim.reload.status
-      assert_equal "rt_invalid_member", claim.denial_reason_token
+      claim.reload
+      assert_equal "rejected", claim.status
+      assert_equal "rt_invalid_member", claim.rejection_reason_token
+      assert_nil claim.denial_reason_token
+      assert_not_nil claim.rejected_at
+      assert_nil claim.denied_at
+    end
+  end
+
+  test "mark_denied! records CARC/RARC codes and when it was denied" do
+    with_tenant(TENANT) do
+      claim = create_claim(status: "accepted")
+      claim.mark_denied!(reason_codes: [ "CO-97", "N130" ], reason_token: "rt_remark")
+
+      claim.reload
+      assert_equal "denied", claim.status
+      assert_equal %w[CO-97 N130], claim.denial_reason_codes
+      assert_equal "rt_remark", claim.denial_reason_token
+      assert_not_nil claim.denied_at
+      assert_nil claim.rejected_at
+    end
+  end
+
+  test "rejected_at is kept after a rejected claim is resubmitted and paid" do
+    with_tenant(TENANT) do
+      claim = create_claim(status: "submitted")
+      claim.mark_rejected!(reason_token: "rt_bad_npi")
+      rejected_at = claim.reload.rejected_at
+
+      claim.update!(status: "submitted")
+      claim.mark_paid!(paid_amount: 80.0)
+
+      assert_equal "paid", claim.reload.status
+      assert_equal rejected_at, claim.rejected_at
+    end
+  end
+
+  test "check_status! stamps the time and codes when the clearinghouse reports a denial" do
+    with_tenant(TENANT) do
+      claim = create_claim(status: "accepted", claim_identifier: "CLM-DENY-1")
+      Corvid.adapter.add_claim("CLM-DENY-1", { status: "denied", denial_reason_codes: [ "CO-16" ] })
+
+      claim.check_status!
+
+      claim.reload
+      assert claim.denied?
+      assert_equal [ "CO-16" ], claim.denial_reason_codes
+      assert_not_nil claim.denied_at
     end
   end
 
@@ -267,12 +329,66 @@ class Corvid::ClaimSubmissionTest < ActiveSupport::TestCase
     end
   end
 
-  test "acceptance_rate calculates percentage" do
+  test "payment_rate is paid over finalized claims" do
     with_tenant(TENANT) do
       3.times { create_claim(status: "paid") }
       1.times { create_claim(status: "rejected") }
 
-      assert_in_delta 75.0, Corvid::ClaimSubmission.acceptance_rate
+      assert_in_delta 75.0, Corvid::ClaimSubmission.payment_rate
+    end
+  end
+
+  test "acceptance_rate is kept as an alias of payment_rate" do
+    with_tenant(TENANT) do
+      3.times { create_claim(status: "paid") }
+      1.times { create_claim(status: "denied") }
+
+      assert_in_delta Corvid::ClaimSubmission.payment_rate, Corvid::ClaimSubmission.acceptance_rate
+    end
+  end
+
+  test "rejection_rate counts claims ever rejected among claims sent" do
+    with_tenant(TENANT) do
+      sent = { submitted_at: 1.day.ago }
+      create_claim(status: "paid", **sent)
+      create_claim(status: "paid", **sent)
+      create_claim(status: "rejected", **sent)
+      create_claim(status: "paid", rejected_at: 2.days.ago, **sent) # rejected, fixed, paid
+      create_claim(status: "draft") # never sent, not counted
+
+      assert_in_delta 50.0, Corvid::ClaimSubmission.rejection_rate
+    end
+  end
+
+  test "denial_rate counts claims ever denied among adjudicated claims and ignores rejections" do
+    with_tenant(TENANT) do
+      create_claim(status: "paid")
+      create_claim(status: "paid")
+      create_claim(status: "denied")
+      create_claim(status: "paid", denied_at: 3.days.ago) # denied, appealed, paid
+      create_claim(status: "rejected") # never adjudicated, not counted
+
+      assert_in_delta 50.0, Corvid::ClaimSubmission.denial_rate
+    end
+  end
+
+  test "first_pass_rate counts claims paid without a rejection or denial" do
+    with_tenant(TENANT) do
+      create_claim(status: "paid")
+      create_claim(status: "paid", rejected_at: 2.days.ago)
+      create_claim(status: "paid", denied_at: 2.days.ago)
+      create_claim(status: "denied")
+      create_claim(status: "submitted") # no outcome yet, not counted
+
+      assert_in_delta 25.0, Corvid::ClaimSubmission.first_pass_rate
+    end
+  end
+
+  test "KPI rates are 0.0 with no claims" do
+    with_tenant(TENANT) do
+      %i[rejection_rate denial_rate first_pass_rate payment_rate].each do |kpi|
+        assert_equal 0.0, Corvid::ClaimSubmission.public_send(kpi), kpi.to_s
+      end
     end
   end
 
