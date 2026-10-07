@@ -84,6 +84,25 @@ class Corvid::ClaimReferralBackfillTest < ActiveSupport::TestCase
     end
   end
 
+  # The model counts every referral under the identifier and facility BEFORE
+  # looking at the patient, so it refuses this. If the backfill filters by
+  # patient first, it counts one match and links — and a linked claim skips
+  # resolution at submit, so identical data gets opposite answers depending on
+  # which path touched the row.
+  test "a claim is left alone when duplicates share the identifier, even if one is its patient" do
+    with_tenant(TENANT) do
+      mine = referral_at(nil, "BF-DUP-PT")
+      patient = mine.case.patient_identifier
+      duplicate_referral_at(nil, "BF-DUP-PT")
+      claim = unlinked_claim(facility: nil, referral_identifier: "BF-DUP-PT", patient: patient)
+
+      backfill!
+
+      assert_nil claim.reload.prc_referral_id,
+        "the model refuses this match; the backfill must not disagree with it"
+    end
+  end
+
   test "a claim whose identifier matches nothing is left alone" do
     with_tenant(TENANT) do
       claim = unlinked_claim(facility: "fac_a", referral_identifier: "BF-NOTHING")
