@@ -63,6 +63,38 @@ class Corvid::ReferralFulfilmentAppendOnlyTest < ActiveSupport::TestCase
     end
   end
 
+  # The guarantee is scoped, and the scope is the point: callbacks and the
+  # association restriction cover every path that goes through an object.
+  # ActiveRecord's bulk SQL APIs skip callbacks by design, so they are NOT
+  # covered, and the seeders and test cleanup use exactly those to discard a
+  # demo. Pinning that boundary here keeps it a stated limit rather than a
+  # surprise — closing it needs a database trigger, which schema.rb cannot
+  # represent.
+  test "bulk SQL APIs bypass the object-level guarantee, by design" do
+    with_tenant(TENANT) do
+      report = recorded_report("rf_bulk_bypass")
+
+      Corvid::ReferralFulfilmentReport.where(id: report.id).delete_all
+
+      refute Corvid::ReferralFulfilmentReport.exists?(report.id),
+        "delete_all skips callbacks; the seeders rely on this to rebuild a demo"
+    end
+  end
+
+  test "a fresh referral is awaiting a report and is not billable" do
+    with_tenant(TENANT) do
+      kase = Corvid::Case.create!(patient_identifier: "pt_fresh", facility_identifier: "fac_append_only")
+      referral = Corvid::PrcReferral.create!(
+        case: kase, referral_identifier: "rf_fresh", facility_identifier: "fac_append_only"
+      )
+
+      assert_equal "awaiting_report", Corvid::ReferralFulfilment.status(referral),
+        "a referral nobody has reported on has not had care delivered"
+      refute Corvid::ReferralFulfilment.billable_for_delivered_care?(referral),
+        "no evidence of delivered care must never read as billable"
+    end
+  end
+
   test "recording a second report never removes the first" do
     with_tenant(TENANT) do
       kase = Corvid::Case.create!(patient_identifier: "pt_append_only", facility_identifier: "fac_append_only")
