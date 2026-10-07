@@ -12,7 +12,14 @@
 # retroactively. #up therefore backfills with the same rule the model applies
 # going forward.
 #
-# That rule refuses to guess. PrcReferral scopes uniqueness to
+# That rule refuses to guess, on two counts.
+#
+# The referral must belong to the same patient. A single match on facility and
+# identifier says nothing about whose care it authorized, so joining through
+# the referral's case is what stops patient B's claim being linked to patient
+# A's referral — and then billed against A's authorization.
+#
+# And the match must be unique. PrcReferral scopes uniqueness to
 # [tenant_identifier, facility_identifier], which does NOT make a match unique:
 # PostgreSQL treats NULLs as distinct in a unique index, so any number of
 # referrals may share a tenant and identifier while facility_identifier is
@@ -54,6 +61,9 @@ class AddPrcReferralReferenceToCorvidClaimSubmissions < ActiveRecord::Migration[
           ON c.referral_identifier = r.referral_identifier
          AND c.tenant_identifier = r.tenant_identifier
          AND c.facility_identifier IS NOT DISTINCT FROM r.facility_identifier
+        JOIN corvid_cases AS k
+          ON k.id = r.case_id
+         AND k.patient_identifier = c.patient_identifier
         WHERE c.prc_referral_id IS NULL
           AND c.referral_identifier IS NOT NULL
         GROUP BY c.id

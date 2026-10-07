@@ -19,7 +19,8 @@ class Corvid::ClaimReferralBackfillTest < ActiveSupport::TestCase
   test "a claim with exactly one matching referral is linked" do
     with_tenant(TENANT) do
       referral = referral_at("fac_a", "BF-1")
-      claim = unlinked_claim(facility: "fac_a", referral_identifier: "BF-1")
+      claim = unlinked_claim(facility: "fac_a", referral_identifier: "BF-1",
+        patient: referral.case.patient_identifier)
 
       backfill!
 
@@ -55,6 +56,34 @@ class Corvid::ClaimReferralBackfillTest < ActiveSupport::TestCase
     end
   end
 
+  # A single match on facility and identifier says nothing about whose care the
+  # referral authorized. Linking on that alone would hand patient B's claim to
+  # patient A's referral, in a one-shot migration nobody is watching.
+  test "a claim is not linked to another patient's referral" do
+    with_tenant(TENANT) do
+      referral = referral_at("fac_a", "BF-XPAT")
+      claim = unlinked_claim(facility: "fac_a", referral_identifier: "BF-XPAT")
+      refute_equal referral.case.patient_identifier, claim.patient_identifier, "precondition"
+
+      backfill!
+
+      assert_nil claim.reload.prc_referral_id,
+        "the referral belongs to a different patient"
+    end
+  end
+
+  test "a claim is linked when the referral is for the same patient" do
+    with_tenant(TENANT) do
+      referral = referral_at("fac_a", "BF-SAMEPT")
+      claim = unlinked_claim(facility: "fac_a", referral_identifier: "BF-SAMEPT",
+        patient: referral.case.patient_identifier)
+
+      backfill!
+
+      assert_equal referral.id, claim.reload.prc_referral_id
+    end
+  end
+
   test "a claim whose identifier matches nothing is left alone" do
     with_tenant(TENANT) do
       claim = unlinked_claim(facility: "fac_a", referral_identifier: "BF-NOTHING")
@@ -83,7 +112,8 @@ class Corvid::ClaimReferralBackfillTest < ActiveSupport::TestCase
   test "the backfill is idempotent" do
     with_tenant(TENANT) do
       referral = referral_at("fac_a", "BF-6")
-      claim = unlinked_claim(facility: "fac_a", referral_identifier: "BF-6")
+      claim = unlinked_claim(facility: "fac_a", referral_identifier: "BF-6",
+        patient: referral.case.patient_identifier)
 
       backfill!
       first_pass = claim.reload.prc_referral_id
@@ -125,10 +155,10 @@ class Corvid::ClaimReferralBackfillTest < ActiveSupport::TestCase
   # A row as it exists before the migration: identifier present, reference
   # NULL. The model's resolver would fill it on save, so it is cleared after
   # creation to reproduce the pre-migration state the backfill actually meets.
-  def unlinked_claim(facility:, referral_identifier:)
+  def unlinked_claim(facility:, referral_identifier:, patient: nil)
     claim = Corvid::ClaimSubmission.create!(
       tenant_identifier: TENANT, facility_identifier: facility,
-      patient_identifier: "pt_claim_#{SecureRandom.hex(3)}",
+      patient_identifier: patient || "pt_claim_#{SecureRandom.hex(3)}",
       referral_identifier: referral_identifier, claim_type: "professional",
       service_date: Date.current, billed_amount: 100.0, status: "draft"
     )

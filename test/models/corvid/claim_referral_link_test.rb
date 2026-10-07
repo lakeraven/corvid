@@ -13,7 +13,8 @@ class Corvid::ClaimReferralLinkTest < ActiveSupport::TestCase
   test "a claim resolves to the referral sharing its facility and identifier" do
     with_tenant(TENANT) do
       referral = referral_at("fac_a", "REF-LINK-1")
-      claim = build_claim(facility: "fac_a", referral_identifier: "REF-LINK-1")
+      claim = build_claim(facility: "fac_a", referral_identifier: "REF-LINK-1",
+        patient: referral.case.patient_identifier)
 
       claim.save!
 
@@ -55,7 +56,8 @@ class Corvid::ClaimReferralLinkTest < ActiveSupport::TestCase
   test "submit! refuses a claim whose referral is not authorized" do
     with_tenant(TENANT) do
       referral = referral_at("fac_a", "REF-GATE-1")
-      claim = build_claim(facility: "fac_a", referral_identifier: "REF-GATE-1")
+      claim = build_claim(facility: "fac_a", referral_identifier: "REF-GATE-1",
+        patient: referral.case.patient_identifier)
       claim.save!
 
       assert_equal "draft", referral.reload.status, "precondition"
@@ -70,7 +72,8 @@ class Corvid::ClaimReferralLinkTest < ActiveSupport::TestCase
   test "submit! proceeds once the referral is authorized" do
     with_tenant(TENANT) do
       referral = referral_at("fac_a", "REF-GATE-2")
-      claim = build_claim(facility: "fac_a", referral_identifier: "REF-GATE-2")
+      claim = build_claim(facility: "fac_a", referral_identifier: "REF-GATE-2",
+        patient: referral.case.patient_identifier)
       claim.save!
       authorize!(referral)
 
@@ -120,12 +123,97 @@ class Corvid::ClaimReferralLinkTest < ActiveSupport::TestCase
     end
   end
 
+  # --- the referral must be this patient's ---------------------------------
+  #
+  # A single match on facility and identifier says nothing about whose care it
+  # authorized. Without a patient check, patient B's claim links to patient
+  # A's referral and submit! then accepts A's authorization for B's bill.
+
+  test "a claim does not resolve to another patient's referral" do
+    with_tenant(TENANT) do
+      referral = referral_at("fac_a", "REF-XPAT-1")
+      claim = build_claim(facility: "fac_a", referral_identifier: "REF-XPAT-1")
+      refute_equal referral.case.patient_identifier, claim.patient_identifier, "precondition"
+
+      claim.save!
+
+      assert_nil claim.reload.prc_referral_id,
+        "a referral for a different patient is not this claim's referral"
+    end
+  end
+
+  test "submit! refuses a claim naming another patient's referral" do
+    with_tenant(TENANT) do
+      referral = referral_at("fac_a", "REF-XPAT-2")
+      authorize!(referral)
+      claim = build_claim(facility: "fac_a", referral_identifier: "REF-XPAT-2")
+      claim.save!
+
+      error = assert_raises(Corvid::ClaimSubmission::ReferralNotAuthorized) { claim.submit! }
+      assert_match(/not this patient's/, error.message)
+    end
+  end
+
+  test "a claim resolves when the referral is for the same patient" do
+    with_tenant(TENANT) do
+      referral = referral_at("fac_a", "REF-SAMEPT-1")
+      claim = build_claim(facility: "fac_a", referral_identifier: "REF-SAMEPT-1",
+        patient: referral.case.patient_identifier)
+      claim.save!
+
+      assert_equal referral.id, claim.reload.prc_referral_id
+    end
+  end
+
+  # --- an edited claim re-resolves -----------------------------------------
+  #
+  # Resolving only a blank link left an edited claim pointing at the referral
+  # it used to name: submit! checked that one's authorization while
+  # to_claim_data sent the new identifier to the payer.
+
+  test "changing the referral identifier re-resolves the link" do
+    with_tenant(TENANT) do
+      authorized = referral_at("fac_a", "REF-EDIT-A")
+      patient = authorized.case.patient_identifier
+      authorize!(authorized)
+      draft = referral_at_for_patient("fac_a", "REF-EDIT-B", patient)
+
+      claim = build_claim(facility: "fac_a", referral_identifier: "REF-EDIT-A", patient: patient)
+      claim.save!
+      assert_equal authorized.id, claim.reload.prc_referral_id, "precondition"
+
+      claim.update!(referral_identifier: "REF-EDIT-B")
+
+      assert_equal draft.id, claim.reload.prc_referral_id,
+        "the link must follow the identifier the payer will be sent"
+      assert_raises(Corvid::ClaimSubmission::ReferralNotAuthorized) { claim.submit! }
+    end
+  end
+
+  # --- the gate resolves a claim that reaches it unlinked -------------------
+
+  test "submit! refuses an unlinked claim whose referral is not authorized" do
+    with_tenant(TENANT) do
+      referral = referral_at("fac_a", "REF-UNLINKED-1")
+      patient = referral.case.patient_identifier
+      claim = build_claim(facility: "fac_a", referral_identifier: "REF-UNLINKED-1", patient: patient)
+      claim.save!
+      claim.update_column(:prc_referral_id, nil)
+      claim.reload
+
+      assert_nil claim.prc_referral_id, "precondition: reaches the gate unlinked"
+
+      assert_raises(Corvid::ClaimSubmission::ReferralNotAuthorized) { claim.submit! }
+    end
+  end
+
   # --- the referral side ---------------------------------------------------
 
   test "destroying a referral leaves its claims standing, unlinked" do
     with_tenant(TENANT) do
       referral = referral_at("fac_a", "REF-NULLIFY-1")
-      claim = build_claim(facility: "fac_a", referral_identifier: "REF-NULLIFY-1")
+      claim = build_claim(facility: "fac_a", referral_identifier: "REF-NULLIFY-1",
+        patient: referral.case.patient_identifier)
       claim.save!
       assert_equal referral.id, claim.reload.prc_referral_id
 
@@ -164,10 +252,17 @@ class Corvid::ClaimReferralLinkTest < ActiveSupport::TestCase
     referral
   end
 
-  def build_claim(facility:, referral_identifier:)
+  def referral_at_for_patient(facility, identifier, patient)
+    kase = Corvid::Case.create!(patient_identifier: patient, facility_identifier: facility)
+    Corvid::PrcReferral.create!(
+      case: kase, referral_identifier: identifier, facility_identifier: facility
+    )
+  end
+
+  def build_claim(facility:, referral_identifier:, patient: nil)
     Corvid::ClaimSubmission.new(
       tenant_identifier: TENANT, facility_identifier: facility,
-      patient_identifier: "pt_claim_#{SecureRandom.hex(3)}",
+      patient_identifier: patient || "pt_claim_#{SecureRandom.hex(3)}",
       referral_identifier: referral_identifier, claim_type: "professional",
       service_date: Date.current, billed_amount: 100.0, status: "draft"
     )
