@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_10_06_000002) do
+ActiveRecord::Schema[8.1].define(version: 2026_10_06_000003) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
@@ -211,7 +211,9 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_06_000002) do
     t.string "provider_type"
     t.datetime "created_at", null: false
     t.datetime "updated_at", null: false
+    t.bigint "prc_referral_id"
     t.index ["claim_identifier"], name: "index_corvid_claim_submissions_on_claim_identifier", unique: true
+    t.index ["prc_referral_id"], name: "index_corvid_claim_submissions_on_prc_referral_id"
     t.index ["tenant_identifier", "patient_identifier"], name: "idx_on_tenant_identifier_patient_identifier_0a950bd516"
     t.index ["tenant_identifier", "status"], name: "index_corvid_claim_submissions_on_tenant_identifier_and_status"
     t.check_constraint "claim_type::text = ANY (ARRAY['professional'::character varying, 'institutional'::character varying, 'dental'::character varying]::text[])", name: "corvid_claim_submissions_type_check"
@@ -590,6 +592,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_06_000002) do
   add_foreign_key "corvid_care_team_members", "corvid_care_teams", column: "care_team_id"
   add_foreign_key "corvid_case_programs", "corvid_cases", column: "case_id"
   add_foreign_key "corvid_cases", "corvid_care_teams", column: "care_team_id"
+  add_foreign_key "corvid_claim_submissions", "corvid_prc_referrals", column: "prc_referral_id"
   add_foreign_key "corvid_committee_reviews", "corvid_prc_referrals", column: "prc_referral_id"
   add_foreign_key "corvid_eligibility_checklists", "corvid_prc_referrals", column: "prc_referral_id"
   add_foreign_key "corvid_prc_overpayment_analyses", "corvid_prc_obligations", column: "prc_obligation_id"

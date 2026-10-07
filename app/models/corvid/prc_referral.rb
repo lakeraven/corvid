@@ -34,6 +34,9 @@ module Corvid
     # Cascading a destroy through it would let deleting a referral rewrite the
     # record of what happened.
     has_many :fulfilment_reports, dependent: :restrict_with_error, class_name: "Corvid::ReferralFulfilmentReport"
+    # nullify, not destroy: a claim outlives the referral that occasioned it —
+    # it has its own lifecycle with the payer and its own financial record.
+    has_many :claim_submissions, dependent: :nullify, class_name: "Corvid::ClaimSubmission"
 
     validates :referral_identifier, presence: true
     validates :referral_identifier, uniqueness: { scope: [ :tenant_identifier, :facility_identifier ] }
