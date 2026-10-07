@@ -42,10 +42,21 @@ module Corvid
     before_validation :resolve_prc_referral_from_identifier,
       if: :referral_link_inputs_changed?
 
+    # Every path into rejected or denied (submit!, check_status!, the mark_*
+    # helpers, remittance processing) records when it first happened, so the
+    # KPIs above still count the claim after its status moves on.
+    before_save :stamp_rejection_and_denial_times, if: :will_save_change_to_status?
+
     scope :by_status, ->(status) { where(status: status) }
     scope :pending, -> { where(status: %w[submitted accepted]) }
     scope :paid, -> { where(status: "paid") }
-    scope :rejected, -> { where(status: %w[rejected denied]) }
+    # A rejection is a front-end refusal before adjudication (999 / 277CA):
+    # fix the claim and resubmit. A denial is the payer's adjudicated decision
+    # not to pay (835 CARC/RARC): appeal or write off. They are different work
+    # queues and different KPIs, so the scopes keep them apart.
+    scope :rejected, -> { where(status: "rejected") }
+    scope :denied, -> { where(status: "denied") }
+    scope :rejected_or_denied, -> { where(status: %w[rejected denied]) }
     scope :professional, -> { where(claim_type: "professional") }
     scope :institutional, -> { where(claim_type: "institutional") }
     scope :for_patient, ->(id) { where(patient_identifier: id) }
@@ -69,13 +80,52 @@ module Corvid
       end
     end
 
-    def self.acceptance_rate
-      finalized = where(status: %w[paid rejected denied]).count
-      return 0.0 if finalized == 0
+    # KPI helpers. Each is a percentage of the current scope, so callers can
+    # narrow first: ClaimSubmission.in_date_range(range).where(payer_identifier: p).denial_rate
+    #
+    # They read rejected_at / denied_at rather than status, because status
+    # moves on (a rejected claim is resubmitted, a denied claim is appealed and
+    # paid) while the fact that it was rejected or denied still counts.
 
-      paid_count = where(status: "paid").count
-      (paid_count.to_f / finalized * 100).round(1)
+    # Share of claims sent to the clearinghouse that were rejected before
+    # adjudication at least once.
+    def self.rejection_rate
+      percentage(where.not(rejected_at: nil), of: where.not(submitted_at: nil))
     end
+
+    # Share of claims the payer adjudicated (paid, or denied at least once)
+    # that were denied at least once.
+    def self.denial_rate
+      adjudicated = where(status: "paid").or(where.not(denied_at: nil))
+      percentage(adjudicated.where.not(denied_at: nil), of: adjudicated)
+    end
+
+    # Share of claims with an outcome that were paid without ever being
+    # rejected or denied: the claim went out once and came back paid.
+    def self.first_pass_rate
+      outcome = where(status: "paid").or(where.not(rejected_at: nil)).or(where.not(denied_at: nil))
+      percentage(where(status: "paid", rejected_at: nil, denied_at: nil), of: outcome)
+    end
+
+    # Share of finalized claims (paid, rejected or denied) that are paid.
+    def self.payment_rate
+      percentage(where(status: "paid"), of: where(status: %w[paid rejected denied]))
+    end
+
+    # Deprecated: this was always paid / (paid + rejected + denied), which is a
+    # payment rate, not an acceptance rate. Use payment_rate, or
+    # rejection_rate for front-end acceptance.
+    def self.acceptance_rate
+      payment_rate
+    end
+
+    def self.percentage(subset, of:)
+      total = of.count
+      return 0.0 if total == 0
+
+      (subset.count.to_f / total * 100).round(1)
+    end
+    private_class_method :percentage
 
     def professional?
       claim_type == "professional"
@@ -94,6 +144,14 @@ module Corvid
     end
 
     def rejected?
+      status == "rejected"
+    end
+
+    def denied?
+      status == "denied"
+    end
+
+    def rejected_or_denied?
       %w[rejected denied].include?(status)
     end
 
@@ -113,8 +171,20 @@ module Corvid
       update!(status: "paid", paid_amount: paid_amount)
     end
 
+    # Front-end rejection (999 / 277CA). reason_token is a vault token for the
+    # rejection reason text.
     def mark_rejected!(reason_token:)
-      update!(status: "rejected", denial_reason_token: reason_token)
+      update!(status: "rejected", rejection_reason_token: reason_token)
+    end
+
+    # Adjudicated denial (835). reason_codes are CARC/RARC codes such as
+    # "CO-97"; reason_token is an optional vault token for remark text.
+    def mark_denied!(reason_codes: [], reason_token: nil)
+      update!(
+        status: "denied",
+        denial_reason_codes: Array(reason_codes).map(&:to_s),
+        denial_reason_token: reason_token || denial_reason_token
+      )
     end
 
     def submit!
@@ -133,6 +203,8 @@ module Corvid
       result = Corvid.adapter.check_claim_status(claim_identifier)
       attrs = { last_checked_at: Time.current }
       attrs[:status] = result[:status] if STATUSES.include?(result[:status])
+      attrs[:rejection_reason_token] = result[:rejection_reason_token] if result[:rejection_reason_token]
+      attrs[:denial_reason_codes] = Array(result[:denial_reason_codes]).map(&:to_s) if result[:denial_reason_codes]
       attrs[:paid_amount] = result[:paid_amount] if result[:paid_amount]
       attrs[:adjustment_amount] = result[:adjustment_amount] if result[:adjustment_amount]
       attrs[:paid_date] = result[:paid_date] if result[:paid_date]
@@ -154,6 +226,11 @@ module Corvid
     end
 
     private
+
+    def stamp_rejection_and_denial_times
+      self.rejected_at ||= Time.current if status == "rejected"
+      self.denied_at ||= Time.current if status == "denied"
+    end
 
     # Link this claim to the referral it bills, but only where that link is
     # unambiguous. PrcReferral scopes uniqueness to [tenant, facility], and

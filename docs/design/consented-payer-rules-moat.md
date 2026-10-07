@@ -424,14 +424,14 @@ class Corvid::PayerRuleExtractionJob
       # so the facility carve-out has to be applied explicitly here.
       facilities = Corvid::PayerRuleConsent.effective_contributing_facilities
 
-      finalized = Corvid::ClaimSubmission.rejected.or(Corvid::ClaimSubmission.paid)
+      finalized = Corvid::ClaimSubmission.rejected_or_denied.or(Corvid::ClaimSubmission.paid)
                     .where(facility_identifier: facilities)
                     .where("updated_at > ?", checkpoint_for(tenant_identifier))
 
       finalized.find_each do |claim|
         # ADR-0003 dereference path — ephemeral, in-memory, never persisted
         # to any corvid table in raw form.
-        carc, rarc = extract_from_remittance(claim)  # structured 835, not free text
+        carc, rarc = extract_from_remittance(claim)  # structured 835 (claim.denial_reason_codes), not free text
         procedures = Corvid.adapter.fetch_text(claim.procedure_codes_token)
         diagnoses  = Corvid.adapter.fetch_text(claim.diagnosis_codes_token)
         payer_id   = canonical_payer_id_for(claim.payer_identifier) # public crosswalk
@@ -571,7 +571,7 @@ feature stays in "design reviewed, not built" state. ENG-7's task 4
 - [ADR 0002: Architectural foundations](../adr/0002-architectural-foundations.md) — tenancy, `TenantScoped`, no unscoped escape hatch
 - [ADR 0003: PHI tokenization](../adr/0003-phi-tokenization.md) — vault/adapter, dereference path, Expert-Determination-adjacent compliance-language discipline
 - `app/models/concerns/corvid/tenant_scoped.rb` — the invariant this design deliberately carves an exception into (§4.4)
-- `app/models/corvid/claim_submission.rb` — `denial_reason_token`, `procedure_codes_token`, `diagnosis_codes_token`, `payer_name_token`
+- `app/models/corvid/claim_submission.rb` — `denial_reason_codes` (CARC/RARC from the 835), `denial_reason_token`, `procedure_codes_token`, `diagnosis_codes_token`, `payer_name_token`
 - `app/models/corvid/determination.rb` — `reasons_token`, denial outcomes
 - `app/models/corvid/billing_transaction.rb` — remittance transaction log, source for structured CARC/RARC (§4.5)
 - `app/models/corvid/fee_schedule_entry.rb`, `app/models/corvid/cms_fee_schedule_release.rb` — existing precedent for a non-tenant-scoped, PHI-free shared table

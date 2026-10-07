@@ -372,7 +372,9 @@ module Corvid
         { status: claim[:status] || "accepted",
           paid_amount: claim[:paid_amount],
           adjustment_amount: claim[:adjustment_amount],
-          paid_date: claim[:paid_date] }
+          paid_date: claim[:paid_date],
+          rejection_reason_token: claim[:rejection_reason_token],
+          denial_reason_codes: claim[:denial_reason_codes] }.compact
       end
 
       def fetch_remittances(date_range: nil)

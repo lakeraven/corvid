@@ -233,11 +233,19 @@ module Corvid
 
       # Check claim status (276/277). Returns { status: str, paid_amount: decimal,
       #   adjustment_amount: decimal, paid_date: date }
+      # Optional keys: rejection_reason_token (vault token for a front-end
+      # rejection reason) and denial_reason_codes (array of CARC/RARC codes,
+      # e.g. ["CO-97"]).
       def check_claim_status(claim_identifier)
         raise NotImplementedError, "#{self.class}#check_claim_status not implemented"
       end
 
-      # Fetch remittances (835 ERA). Returns array of remittance hashes.
+      # Fetch remittances (835 ERA). Returns array of remittance hashes:
+      #   { remittance_identifier:, payer_name:, payment_date:, total_paid:,
+      #     line_items: [ { claim_identifier:, paid_amount:, adjustment_amount:,
+      #                     patient_responsibility:, status:, adjustment_codes: } ] }
+      # A line item with status "denied" is an adjudicated denial; its
+      # adjustment_codes are CARC/RARC codes. Apply with Corvid::RemittanceProcessor.
       def fetch_remittances(date_range: nil)
         raise NotImplementedError, "#{self.class}#fetch_remittances not implemented"
       end
