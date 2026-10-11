@@ -64,6 +64,11 @@ module Corvid
         "charity_care"      => "CHAR"
       }.freeze
 
+      # What kind of I/T/U site this server's encounters come from, for the
+      # H.R. 1 AI/AN exemption (ADR 0007). nil means the server is not known
+      # to be an I/T/U site, so list_itu_encounters declines.
+      ITU_FACILITY_KINDS = %i[ihs tribal urban].freeze
+
       DEFAULT_OPEN_TIMEOUT = 10
       DEFAULT_READ_TIMEOUT = 30
 
@@ -72,7 +77,8 @@ module Corvid
                      read_timeout: DEFAULT_READ_TIMEOUT,
                      proxy_uri: nil,
                      ca_file: nil,
-                     ca_path: nil)
+                     ca_path: nil,
+                     itu_facility_kind: nil)
         @base_url = base_url.chomp("/")
         @bearer_token = bearer_token
         @default_headers = {
@@ -84,6 +90,10 @@ module Corvid
         @proxy_uri = build_proxy_uri(proxy_uri)
         @ca_file = ca_file
         @ca_path = ca_path
+        @itu_facility_kind = itu_facility_kind&.to_sym
+        if @itu_facility_kind && !ITU_FACILITY_KINDS.include?(@itu_facility_kind)
+          raise ArgumentError, "itu_facility_kind must be one of #{ITU_FACILITY_KINDS.join(', ')} (got #{itu_facility_kind.inspect})"
+        end
       end
 
       def build_proxy_uri(raw)
@@ -290,17 +300,19 @@ module Corvid
       end
 
       # ----------------------------------------------------------------------
-      # Enrollment verification — FHIR R4 / US Core have no native tribal
-      # enrollment concept, so this reads Lakeraven's tribal-enrollment
-      # extension on Patient (see TRIBAL_ENROLLMENT_EXTENSION_URL below).
-      # Servers that don't populate the extension fall back to
-      # "unavailable" (fail-closed) exactly as before — this is additive,
-      # not a behavior change for plain-vanilla FHIR servers.
+      # Enrollment verification — reads Lakeraven's tribal-enrollment
+      # extension on Patient (see TRIBAL_ENROLLMENT_EXTENSION_URL below),
+      # then the US Core tribal-affiliation extension (USCDI v3) that
+      # certified EHRs such as NextGen carry. US Core affiliation counts only
+      # when its isEnrolled flag is present; affiliation alone is not
+      # enrollment. Servers with neither fall back to "unavailable"
+      # (fail-closed).
       # ----------------------------------------------------------------------
 
       TRIBAL_ENROLLMENT_EXTENSION_URL = "#{EXTENSION_BASE_URL}/tribal-enrollment"
       RESIDENCY_EXTENSION_URL = "#{EXTENSION_BASE_URL}/residency"
       US_CORE_BIRTHPLACE_URL = "http://hl7.org/fhir/us/core/StructureDefinition/us-core-birthplace"
+      US_CORE_TRIBAL_AFFILIATION_URL = "http://hl7.org/fhir/us/core/StructureDefinition/us-core-tribal-affiliation"
 
       def verify_tribal_enrollment(patient_identifier)
         unavailable = {
@@ -312,7 +324,7 @@ module Corvid
         return unavailable unless patient
 
         ext = find_extension(patient, TRIBAL_ENROLLMENT_EXTENSION_URL)
-        return unavailable unless ext
+        return us_core_tribal_enrollment(patient) || unavailable unless ext
 
         {
           enrolled: sub_extension_value(ext, "enrolled") == true,
@@ -322,6 +334,35 @@ module Corvid
           confidence: (sub_extension_value(ext, "confidence") || "verified").to_sym,
           verified_at: Time.current
         }
+      end
+
+      # ----------------------------------------------------------------------
+      # I/T/U encounters — every finished or in-progress Encounter on a server
+      # configured with itu_facility_kind (e.g. a tribal clinic's EHR) is
+      # service received at an I/T/U site.
+      # ----------------------------------------------------------------------
+
+      COUNTED_ENCOUNTER_STATUSES = %w[finished in-progress].freeze
+
+      def list_itu_encounters(patient_identifier, since: nil)
+        return super unless @itu_facility_kind
+
+        params = { patient: patient_identifier }
+        params[:date] = "ge#{since.to_date.iso8601}" if since
+        bundle = fhir_search("Encounter", params)
+        return { encounters: [], confidence: :unavailable } unless bundle
+
+        encounters = extract_entries(bundle).filter_map do |enc|
+          next unless COUNTED_ENCOUNTER_STATUSES.include?(enc["status"])
+
+          service_date = parse_date(enc.dig("period", "start"))
+          next unless service_date
+          next if since && service_date < since.to_date
+
+          { service_date: service_date, facility_kind: @itu_facility_kind }
+        end
+
+        { encounters: encounters, confidence: :verified }
       end
 
       def verify_identity_documents(patient_identifier)
@@ -607,6 +648,25 @@ module Corvid
       def extract_npi(resource)
         npi = Array(resource["identifier"]).find { |id| id["system"] == "http://hl7.org/fhir/sid/us-npi" }
         npi&.dig("value")
+      end
+
+      def us_core_tribal_enrollment(patient)
+        ext = find_extension(patient, US_CORE_TRIBAL_AFFILIATION_URL)
+        return nil unless ext
+
+        is_enrolled = Array(ext["extension"]).find { |e| e["url"] == "isEnrolled" }
+        return nil unless is_enrolled&.key?("valueBoolean")
+
+        coding = Array(ext["extension"]).find { |e| e["url"] == "tribalAffiliation" }
+          &.dig("valueCodeableConcept", "coding", 0) || {}
+        {
+          enrolled: is_enrolled["valueBoolean"] == true,
+          membership_number: nil,
+          tribe_name: coding["display"],
+          tribe_code: coding["code"],
+          confidence: :verified,
+          verified_at: Time.current
+        }
       end
 
       def find_extension(resource, url)

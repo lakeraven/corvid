@@ -272,6 +272,119 @@ class Corvid::Adapters::FhirAdapterTest < Minitest::Test
     end
   end
 
+  US_CORE_TRIBAL_AFFILIATION_URL = "http://hl7.org/fhir/us/core/StructureDefinition/us-core-tribal-affiliation"
+
+  def us_core_tribal_patient(is_enrolled:)
+    sub = [ {
+      "url" => "tribalAffiliation",
+      "valueCodeableConcept" => { "coding" => [ {
+        "system" => "http://terminology.hl7.org/CodeSystem/v3-TribalEntityUS",
+        "code" => "TEST1", "display" => "Test Rancheria"
+      } ] }
+    } ]
+    sub << { "url" => "isEnrolled", "valueBoolean" => is_enrolled } unless is_enrolled.nil?
+    { "id" => "pt_001", "extension" => [ { "url" => US_CORE_TRIBAL_AFFILIATION_URL, "extension" => sub } ] }
+  end
+
+  def test_verify_tribal_enrollment_reads_us_core_tribal_affiliation
+    # Certified EHRs (e.g. NextGen) carry USCDI v3 tribal affiliation with an
+    # isEnrolled flag rather than Lakeraven's extension.
+    @adapter.stub(:fhir_read, us_core_tribal_patient(is_enrolled: true)) do
+      result = @adapter.verify_tribal_enrollment("pt_001")
+      assert_equal true, result[:enrolled]
+      assert_equal "TEST1", result[:tribe_code]
+      assert_equal "Test Rancheria", result[:tribe_name]
+      assert_nil result[:membership_number]
+      assert_equal :verified, result[:confidence]
+    end
+  end
+
+  def test_us_core_affiliation_without_is_enrolled_is_not_evidence_of_enrollment
+    # Affiliation alone is not enrollment, and absence is not a "no".
+    @adapter.stub(:fhir_read, us_core_tribal_patient(is_enrolled: nil)) do
+      result = @adapter.verify_tribal_enrollment("pt_001")
+      assert_equal false, result[:enrolled]
+      assert_equal :unavailable, result[:confidence]
+    end
+  end
+
+  def test_lakeraven_extension_takes_precedence_over_us_core
+    resource = us_core_tribal_patient(is_enrolled: false)
+    resource["extension"] << {
+      "url" => "https://lakeraven.com/fhir/StructureDefinition/tribal-enrollment",
+      "extension" => [ { "url" => "enrolled", "valueBoolean" => true }, { "url" => "tribeCode", "valueString" => "TGN" } ]
+    }
+    @adapter.stub(:fhir_read, resource) do
+      result = @adapter.verify_tribal_enrollment("pt_001")
+      assert_equal true, result[:enrolled]
+      assert_equal "TGN", result[:tribe_code]
+    end
+  end
+
+  # -- I/T/U encounters (Encounter resources at a tribal or urban clinic) --
+
+  def encounter(start, status: "finished")
+    { "resourceType" => "Encounter", "status" => status, "period" => { "start" => start } }
+  end
+
+  def test_list_itu_encounters_requires_a_configured_facility_kind
+    # A FHIR server not known to be an I/T/U site can't say whether its
+    # encounters count, so it declines and the exemption service skips it.
+    assert_raises(NotImplementedError) { @adapter.list_itu_encounters("pt_001") }
+  end
+
+  def test_list_itu_encounters_rejects_unknown_facility_kind
+    assert_raises(ArgumentError) do
+      Corvid::Adapters::FhirAdapter.new(base_url: "https://fhir.example.com/r4", itu_facility_kind: :hospital)
+    end
+  end
+
+  def test_list_itu_encounters_maps_finished_encounters_at_a_tribal_clinic
+    adapter = Corvid::Adapters::FhirAdapter.new(base_url: "https://fhir.example.com/r4", itu_facility_kind: :tribal)
+    bundle = { "entry" => [
+      { "resource" => encounter("2026-03-04T09:00:00-08:00") },
+      { "resource" => encounter("2026-05-01", status: "cancelled") },
+      { "resource" => encounter("2026-06-10T14:30:00Z", status: "in-progress") }
+    ] }
+    adapter.stub(:fhir_search, bundle) do
+      result = adapter.list_itu_encounters("pt_001")
+      assert_equal :verified, result[:confidence]
+      assert_equal [ Date.new(2026, 3, 4), Date.new(2026, 6, 10) ], result[:encounters].map { |e| e[:service_date] }
+      assert_equal [ :tribal ], result[:encounters].map { |e| e[:facility_kind] }.uniq
+    end
+  end
+
+  def test_list_itu_encounters_passes_since_as_a_date_filter
+    adapter = Corvid::Adapters::FhirAdapter.new(base_url: "https://fhir.example.com/r4", itu_facility_kind: :urban)
+    seen = nil
+    search = ->(type, params) { seen = [ type, params ]; { "entry" => [] } }
+    adapter.stub(:fhir_search, search) do
+      adapter.list_itu_encounters("pt_001", since: Date.new(2026, 1, 1))
+    end
+    assert_equal "Encounter", seen[0]
+    assert_equal "pt_001", seen[1][:patient]
+    assert_equal "ge2026-01-01", seen[1][:date]
+  end
+
+  def test_list_itu_encounters_drops_encounters_before_since
+    # Servers that ignore the date parameter must not leak older visits.
+    adapter = Corvid::Adapters::FhirAdapter.new(base_url: "https://fhir.example.com/r4", itu_facility_kind: :tribal)
+    bundle = { "entry" => [ { "resource" => encounter("2025-12-31") }, { "resource" => encounter("2026-01-02") } ] }
+    adapter.stub(:fhir_search, bundle) do
+      result = adapter.list_itu_encounters("pt_001", since: Date.new(2026, 1, 1))
+      assert_equal [ Date.new(2026, 1, 2) ], result[:encounters].map { |e| e[:service_date] }
+    end
+  end
+
+  def test_list_itu_encounters_is_unavailable_when_the_search_fails
+    adapter = Corvid::Adapters::FhirAdapter.new(base_url: "https://fhir.example.com/r4", itu_facility_kind: :tribal)
+    adapter.stub(:fhir_search, nil) do
+      result = adapter.list_itu_encounters("pt_001")
+      assert_equal :unavailable, result[:confidence]
+      assert_empty result[:encounters]
+    end
+  end
+
   def test_verify_identity_documents_derives_from_patient_resource
     resource = {
       "id" => "pt_001",
