@@ -190,6 +190,18 @@ module Corvid
         raise NotImplementedError, "#{self.class}#verify_eligibility not implemented"
       end
 
+      # The provider's determination that the person is eligible for services
+      # from an Indian health provider.
+      #
+      # Returns { determination: :eligible|:not_eligible|:unknown,
+      #           asserted_by: String|nil, determined_at: Time|nil,
+      #           confidence: :verified|:unavailable }.
+      # `asserted_by` identifies the provider that made the determination.
+      # `:unavailable` means the source could not be asked.
+      def indian_health_service_eligibility(patient_identifier)
+        raise NotImplementedError, "#{self.class}#indian_health_service_eligibility not implemented"
+      end
+
       # ----------------------------------------------------------------------
       # Enrollment verification (for PRC eligibility checklist)
       # ----------------------------------------------------------------------

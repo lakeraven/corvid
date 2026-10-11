@@ -10,9 +10,27 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_10_06_000003) do
+ActiveRecord::Schema[8.1].define(version: 2026_10_11_000002) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
+
+  create_table "corvid_indian_health_eligibility_inquiries", force: :cascade do |t|
+    t.string "tenant_identifier", null: false
+    t.string "requester_identifier", null: false
+    t.string "agreement_reference", null: false
+    t.string "person_identifier", null: false
+    t.string "answer", null: false
+    t.string "data_source"
+    t.datetime "asserted_at", precision: 6
+    t.string "message_id", null: false
+    t.boolean "replayed", default: false, null: false
+    t.datetime "created_at", null: false
+    t.datetime "updated_at", null: false
+    t.index ["message_id"], name: "idx_corvid_ihe_inquiries_message_id", unique: true
+    t.index ["tenant_identifier", "person_identifier", "created_at"], name: "idx_corvid_ihe_inquiries_tenant_person_created"
+    t.index ["tenant_identifier", "requester_identifier", "created_at"], name: "idx_corvid_ihe_inquiries_tenant_requester_created"
+    t.check_constraint "answer::text = ANY (ARRAY['eligible'::character varying, 'not_eligible'::character varying, 'unknown'::character varying, 'unavailable'::character varying, 'refused'::character varying]::text[])", name: "corvid_ihe_inquiries_answer_check"
+  end
 
   create_table "corvid_alternate_resource_checks", force: :cascade do |t|
     t.bigint "prc_referral_id", null: false
