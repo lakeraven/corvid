@@ -1,8 +1,8 @@
 # frozen_string_literal: true
 
 # Query log for Indian health eligibility inquiries (ADR 0008).
-# One row per inquiry. asserted_at is ISO-8601 text so a replay can return
-# the provider's original instant.
+# One row per inquiry. asserted_at is datetime(6): the provider's time,
+# replayed as the same instant.
 class CreateCorvidIndianHealthEligibilityInquiries < ActiveRecord::Migration[8.1]
   ANSWERS = %w[eligible not_eligible unknown unavailable refused].freeze
 
@@ -14,7 +14,7 @@ class CreateCorvidIndianHealthEligibilityInquiries < ActiveRecord::Migration[8.1
       t.string :person_identifier, null: false
       t.string :answer, null: false
       t.string :data_source
-      t.string :asserted_at
+      t.datetime :asserted_at, precision: 6
       t.string :message_id, null: false
       t.boolean :replayed, null: false, default: false
 

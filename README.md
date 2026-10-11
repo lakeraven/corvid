@@ -8,7 +8,7 @@ Corvid runs service authorization and referral workflows, eligibility and payer-
 
 - **PRC/CHS** — IHS/tribal Purchased/Referred Care referral authorization **and Medicare-Like-Rates repricing** of outside claims
 - **State Medicaid** — prior authorization and care coordination across many tribes/facilities
-- **H.R. 1 community-engagement exemption** — carry an Indian health provider's determination that a person is eligible for services from an Indian health provider, without warehousing enrollment records
+- **H.R. 1 community-engagement exemption** — record the answer an Indian health provider gave about whether a person is eligible for services from an Indian health provider. Corvid stores no determination of its own.
 - **Cross-org coordination** — a de facto HIE control plane that lets programs share the right data without warehousing each other's records
 - **City homelessness** — housing placement and service delivery
 - **Foster care** — case management across counties and states

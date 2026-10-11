@@ -3,18 +3,39 @@
 module Corvid
   # Asks whether an Indian health provider has determined that a person is
   # eligible for services from an Indian health provider, and appends a query
-  # log row. The engine does not decide, and it does not keep enrollment,
-  # descent, citizenship, or corporation shareholding. See ADR 0008.
+  # log row. The engine does not decide, and it stores no determination of
+  # its own. See ADR 0008.
   #
   # A later inquiry for the same tenant and person replays the first
   # eligible or not_eligible answer and does not call the adapter. unknown
-  # and unavailable are asked again. The volume ceiling fails closed.
+  # is asked again. A source that cannot be asked is logged as unavailable
+  # and raised, not returned as an answer. The volume ceiling fails closed
+  # and is applied before replay, under one per-tenant advisory lock.
   class IndianHealthEligibilityService
     class CeilingNotConfigured < StandardError; end
-    class CeilingExceeded < StandardError; end
+
+    class CeilingExceeded < StandardError
+      attr_reader :message_id
+
+      def initialize(message_id:)
+        @message_id = message_id
+        super("indian health eligibility inquiry ceiling exceeded")
+      end
+    end
+
+    class SourceUnavailable < StandardError
+      attr_reader :message_id
+
+      def initialize(message_id:)
+        @message_id = message_id
+        super("indian health eligibility source is unavailable")
+      end
+    end
 
     PASS_THROUGH = %i[eligible not_eligible unknown].freeze
     DECISIVE = %w[eligible not_eligible].freeze
+    LOCK_KEY_PREFIX = "corvid_indian_health_eligibility:"
+    LOCK_SQL = "SELECT pg_advisory_xact_lock(hashtext(?))"
 
     Result = Struct.new(
       :answer, :data_source, :asserted_at, :message_id, :replayed,
@@ -29,14 +50,18 @@ module Corvid
       @adapter = adapter
     end
 
+    # Ceiling check through the log insert, under one per-tenant lock.
+    # Refused and unavailable rows are committed, then raised outside the
+    # transaction so the rollback does not drop them.
     def inquire(person_identifier:, requester_identifier:, agreement_reference:)
       validate!(person_identifier, requester_identifier, agreement_reference)
-      ceiling = configured_ceiling
-      refuse_when_over!(ceiling, person_identifier, requester_identifier, agreement_reference)
+      outcome = IndianHealthEligibilityInquiry.transaction do
+        lock_tenant!
+        resolve(person_identifier, requester_identifier, agreement_reference)
+      end
+      raise outcome if outcome.is_a?(StandardError)
 
-      prior = decisive_prior(person_identifier)
-      attrs = prior ? replay_attrs(prior) : read_provider(person_identifier)
-      record(attrs, person_identifier, requester_identifier, agreement_reference, replayed: !prior.nil?)
+      outcome
     end
 
     private
@@ -48,18 +73,36 @@ module Corvid
       raise ArgumentError, "person_identifier, requester_identifier, and agreement_reference are required"
     end
 
+    def lock_tenant!
+      key = "#{LOCK_KEY_PREFIX}#{Corvid::TenantContext.require_tenant!}"
+      sql = IndianHealthEligibilityInquiry.sanitize_sql_array([ LOCK_SQL, key ])
+      IndianHealthEligibilityInquiry.connection.select_value(sql)
+    end
+
+    def resolve(person, requester, agreement)
+      ceiling = configured_ceiling
+      return refuse(person, requester, agreement) if over_ceiling?(requester, ceiling)
+
+      prior = decisive_prior(person)
+      return record(replay_attrs(prior), person, requester, agreement, replayed: true) if prior
+
+      attrs = provider_attrs(person)
+      return unavailable(person, requester, agreement) unless attrs
+
+      record(attrs, person, requester, agreement, replayed: false)
+    end
+
     def configured_ceiling
       ceiling = Corvid.configuration.indian_health_eligibility_ceiling
-      return ceiling if ceiling.is_a?(Hash) && !ceiling[:limit].nil? && !ceiling[:period].nil?
+      limit = ceiling[:limit] if ceiling.is_a?(Hash)
+      period = ceiling[:period] if ceiling.is_a?(Hash)
+      return ceiling if limit.is_a?(Integer) && limit >= 0 && period.is_a?(ActiveSupport::Duration)
 
       raise CeilingNotConfigured, "indian_health_eligibility_ceiling is not configured"
     end
 
-    def refuse_when_over!(ceiling, person, requester, agreement)
-      return if usage(requester, ceiling[:period]) < ceiling[:limit]
-
-      record(REFUSED, person, requester, agreement, replayed: false)
-      raise CeilingExceeded, "indian health eligibility inquiry ceiling exceeded"
+    def over_ceiling?(requester, ceiling)
+      usage(requester, ceiling[:period]) >= ceiling[:limit]
     end
 
     def usage(requester, period)
@@ -67,6 +110,16 @@ module Corvid
         .where(requester_identifier: requester, created_at: period.ago..)
         .where.not(answer: "refused")
         .count
+    end
+
+    def refuse(person, requester, agreement)
+      logged = insert(REFUSED, person, requester, agreement, replayed: false)
+      CeilingExceeded.new(message_id: logged.message_id)
+    end
+
+    def unavailable(person, requester, agreement)
+      logged = insert(UNAVAILABLE, person, requester, agreement, replayed: false)
+      SourceUnavailable.new(message_id: logged.message_id)
     end
 
     def decisive_prior(person_identifier)
@@ -84,23 +137,62 @@ module Corvid
       }
     end
 
-    def read_provider(person_identifier)
-      response = @adapter.indian_health_service_eligibility(person_identifier)
+    def provider_attrs(person_identifier)
+      response = fetch_provider(person_identifier)
+      accepted_response(response) if response
+    end
+
+    def fetch_provider(person_identifier)
+      @adapter.indian_health_service_eligibility(person_identifier)
+    rescue StandardError, NotImplementedError
+      nil
+    end
+
+    def accepted_response(response)
+      return unless response.is_a?(Hash) && response[:confidence] == :verified
+
       determination = response[:determination]
-      return UNAVAILABLE if response[:confidence] == :unavailable
-      return UNAVAILABLE unless PASS_THROUGH.include?(determination)
+      return unless PASS_THROUGH.include?(determination)
+      return unknown_response(response) if determination == :unknown
+      return unless decisive_provenance?(response)
 
       {
         answer: determination,
         data_source: response[:asserted_by],
         asserted_at: response[:determined_at]
       }
-    rescue StandardError, NotImplementedError
-      UNAVAILABLE
+    end
+
+    def unknown_response(response)
+      asserted_by = response[:asserted_by]
+      determined_at = response[:determined_at]
+      return if !asserted_by.nil? && !asserted_by.is_a?(String)
+      return if !determined_at.nil? && !time_like?(determined_at)
+
+      { answer: :unknown, data_source: asserted_by, asserted_at: determined_at }
+    end
+
+    def decisive_provenance?(response)
+      asserted_by = response[:asserted_by]
+      asserted_by.is_a?(String) && !asserted_by.strip.empty? && time_like?(response[:determined_at])
+    end
+
+    def time_like?(value)
+      value.respond_to?(:acts_like?) && value.acts_like?(:time)
     end
 
     def record(attrs, person, requester, agreement, replayed:)
-      message_id = SecureRandom.uuid
+      logged = insert(attrs, person, requester, agreement, replayed: replayed)
+      Result.new(
+        answer: attrs.fetch(:answer),
+        data_source: attrs[:data_source],
+        asserted_at: attrs[:asserted_at],
+        message_id: logged.message_id,
+        replayed: replayed
+      )
+    end
+
+    def insert(attrs, person, requester, agreement, replayed:)
       IndianHealthEligibilityInquiry.create!(
         requester_identifier: requester,
         agreement_reference: agreement,
@@ -108,14 +200,13 @@ module Corvid
         answer: attrs.fetch(:answer).to_s,
         data_source: attrs[:data_source],
         asserted_at: attrs[:asserted_at],
-        message_id: message_id,
+        message_id: SecureRandom.uuid,
         replayed: replayed
       )
-      Result.new(message_id: message_id, replayed: replayed, **attrs)
     end
 
     REFUSED = { answer: :refused, data_source: nil, asserted_at: nil }.freeze
     UNAVAILABLE = { answer: :unavailable, data_source: nil, asserted_at: nil }.freeze
-    private_constant :REFUSED, :UNAVAILABLE
+    private_constant :PASS_THROUGH, :DECISIVE, :LOCK_KEY_PREFIX, :LOCK_SQL, :REFUSED, :UNAVAILABLE
   end
 end
