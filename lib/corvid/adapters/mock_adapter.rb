@@ -356,18 +356,6 @@ module Corvid
         }
       end
 
-      def verify_california_indian(patient_identifier)
-        record = @california_indians[patient_identifier.to_s]
-        return { california_indian: false, path: nil, confidence: :verified, verified_at: Time.current } unless record
-
-        {
-          california_indian: record[:california_indian],
-          path: record[:path],
-          confidence: record.fetch(:confidence, :verified),
-          verified_at: Time.current
-        }
-      end
-
       def list_itu_encounters(patient_identifier, since: nil)
         encounters = @itu_encounters.fetch(patient_identifier.to_s, [])
         encounters = encounters.select { |e| e[:service_date] >= since } if since
@@ -485,10 +473,6 @@ module Corvid
         @anc_shareholders[patient_identifier.to_s] = attrs
       end
 
-      def add_california_indian(patient_identifier, attrs)
-        @california_indians[patient_identifier.to_s] = attrs
-      end
-
       def add_itu_encounter(patient_identifier, attrs)
         (@itu_encounters[patient_identifier.to_s] ||= []) << attrs
       end
@@ -520,7 +504,6 @@ module Corvid
         @residencies = {}
         @descents = {}
         @anc_shareholders = {}
-        @california_indians = {}
         @itu_encounters = {}
         @coverages = {}
         @claims = {}
