@@ -17,7 +17,6 @@ class Corvid::AianExemptionServiceTest < ActiveSupport::TestCase
     Corvid::TenantContext.reset!
     Corvid.configure { |c| c.adapter = Corvid::Adapters::MockAdapter.new }
     Corvid::AianExemptionDetermination.unscoped.delete_all
-    Corvid::TenantContext.current_tenant_identifier = TENANT
     @adapter = Corvid.adapter
   end
 
@@ -26,8 +25,14 @@ class Corvid::AianExemptionServiceTest < ActiveSupport::TestCase
   end
 
   def determine(person, **opts)
-    Corvid::AianExemptionService.new(**opts.slice(:sources))
-      .determine(person_identifier: person, as_of_date: AS_OF, **opts.except(:sources))
+    with_tenant(TENANT) do
+      Corvid::AianExemptionService.new(**opts.slice(:sources))
+        .determine(person_identifier: person, as_of_date: AS_OF, **opts.except(:sources))
+    end
+  end
+
+  def determination(id)
+    with_tenant(TENANT) { Corvid::AianExemptionDetermination.find(id) }
   end
 
   # ---- Each basis establishes the exemption -----------------------------------
@@ -153,7 +158,7 @@ class Corvid::AianExemptionServiceTest < ActiveSupport::TestCase
 
     result = determine("pt_audit", decided_by_identifier: "user_42")
 
-    row = Corvid::AianExemptionDetermination.find(result.determination_id)
+    row = determination(result.determination_id)
     assert_equal "exempt", row.status
     assert_equal [ "enrolled_tribal_member" ], row.bases
     assert_equal "user_42", row.decided_by_identifier
@@ -166,7 +171,9 @@ class Corvid::AianExemptionServiceTest < ActiveSupport::TestCase
   test "class-method shim routes through the global adapter" do
     @adapter.add_enrollment("pt_shim", enrolled: true, tribe_code: "DEMO", confidence: :verified)
 
-    result = Corvid::AianExemptionService.determine(person_identifier: "pt_shim", as_of_date: AS_OF)
+    result = with_tenant(TENANT) do
+      Corvid::AianExemptionService.determine(person_identifier: "pt_shim", as_of_date: AS_OF)
+    end
 
     assert_equal :exempt, result.status
   end
@@ -177,7 +184,7 @@ class Corvid::AianExemptionServiceTest < ActiveSupport::TestCase
     @adapter.add_enrollment("pt_fhir", enrolled: true, tribe_code: "DEMO", confidence: :verified)
 
     result = determine("pt_fhir")
-    fhir = Corvid::AianExemptionDetermination.find(result.determination_id).to_fhir_verification_result
+    fhir = determination(result.determination_id).to_fhir_verification_result
 
     assert_equal "VerificationResult", fhir[:resourceType]
     assert_equal "validated", fhir[:status]
@@ -188,7 +195,7 @@ class Corvid::AianExemptionServiceTest < ActiveSupport::TestCase
 
   test "an unestablished determination renders as an in-process VerificationResult, not a failure" do
     result = determine("pt_none")
-    fhir = Corvid::AianExemptionDetermination.find(result.determination_id).to_fhir_verification_result
+    fhir = determination(result.determination_id).to_fhir_verification_result
 
     assert_equal "in-process", fhir[:status]
     assert_empty fhir[:primarySource]
