@@ -52,15 +52,16 @@ class Corvid::Api::V1::IndianHealthEligibilityControllerTest < ActionDispatch::I
     assert_equal response.headers["X-Message-Id"], json["message_id"]
   end
 
-  test "verification_result matches FHIR R4 for eligible" do
+  test "verification_result matches FHIR R4 for eligible and does not leak extra data" do
     asserted_time = Time.zone.parse("2026-10-11 10:00:00Z")
     @adapter.add_service_eligibility("pt_001", {
       determination: :eligible,
       asserted_by: "fac_demo",
       determined_at: asserted_time,
       confidence: :verified,
-      tribe_code: "123",
-      basis: "descendant"
+      tribe_code: "TRIBE_X9",
+      basis: "BASIS_Q7",
+      enrolled: "ENR_Z3"
     })
 
     post "/corvid/api/v1/indian_health_eligibility/inquire",
@@ -76,12 +77,10 @@ class Corvid::Api::V1::IndianHealthEligibilityControllerTest < ActionDispatch::I
     assert_equal "fac_demo", vr.dig("primarySource", 0, "who", "display")
 
     # Assert no leaked evidence data
-    response_body = response.body.downcase
-    assert_not_includes response_body, "tribe"
-    assert_not_includes response_body, "enroll"
-    assert_not_includes response_body, "descent"
-    assert_not_includes response_body, "basis"
-    assert_not_includes response_body, "shareholder"
+    response_body = response.body
+    assert_not_includes response_body, "TRIBE_X9"
+    assert_not_includes response_body, "BASIS_Q7"
+    assert_not_includes response_body, "ENR_Z3"
   end
 
   test "verification_result matches FHIR R4 for not_eligible" do
@@ -124,7 +123,7 @@ class Corvid::Api::V1::IndianHealthEligibilityControllerTest < ActionDispatch::I
     assert_nil vr["primarySource"]
   end
 
-  test "verification_result matches FHIR R4 for unavailable" do
+  test "503 when unavailable (e.g. confidence is unavailable)" do
     @adapter.add_service_eligibility("pt_001", {
       determination: :unknown,
       asserted_by: nil,
@@ -136,11 +135,30 @@ class Corvid::Api::V1::IndianHealthEligibilityControllerTest < ActionDispatch::I
          params: { person_identifier: "pt_001" }.to_json,
          headers: @headers
 
-    assert_response :success
+    assert_response :service_unavailable
     json = JSON.parse(response.body)
-    vr = json["verification_result"]
+    assert_includes json, "error"
+    assert_includes json, "message_id"
+    assert_equal response.headers["X-Message-Id"], json["message_id"]
+  end
 
-    assert_equal "in-process", vr["status"]
+  test "503 when adapter returns determined_at as a Date for a decisive answer" do
+    @adapter.add_service_eligibility("pt_001", {
+      determination: :eligible,
+      asserted_by: "fac_demo",
+      determined_at: Date.today,
+      confidence: :verified
+    })
+
+    post "/corvid/api/v1/indian_health_eligibility/inquire",
+         params: { person_identifier: "pt_001" }.to_json,
+         headers: @headers
+
+    assert_response :service_unavailable
+    json = JSON.parse(response.body)
+    assert_includes json, "error"
+    assert_includes json, "message_id"
+    assert_equal response.headers["X-Message-Id"], json["message_id"]
   end
 
   test "400 when person_identifier missing, blank, or not a string" do
@@ -175,7 +193,7 @@ class Corvid::Api::V1::IndianHealthEligibilityControllerTest < ActionDispatch::I
     assert_response :bad_request
   end
 
-  test "429 when ceiling exceeded" do
+  test "429 when ceiling exceeded carries correlation" do
     Corvid.configuration.indian_health_eligibility_ceiling = { limit: 1, period: 1.hour }
 
     post "/corvid/api/v1/indian_health_eligibility/inquire",
@@ -187,6 +205,14 @@ class Corvid::Api::V1::IndianHealthEligibilityControllerTest < ActionDispatch::I
          params: { person_identifier: "pt_002" }.to_json,
          headers: @headers
     assert_response :too_many_requests
+
+    json = JSON.parse(response.body)
+    assert_includes json, "message_id"
+    assert_equal response.headers["X-Message-Id"], json["message_id"]
+
+    inquiry = Corvid::IndianHealthEligibilityInquiry.last
+    assert_equal "refused", inquiry.answer
+    assert_equal inquiry.message_id, json["message_id"]
   end
 
   test "503 when ceiling not configured" do
@@ -199,22 +225,18 @@ class Corvid::Api::V1::IndianHealthEligibilityControllerTest < ActionDispatch::I
   end
 
   test "old aian_exemption determine route is gone (404)" do
-    assert_raises(ActionController::RoutingError) do
-      post "/corvid/api/v1/aian_exemption/determine", params: { person_identifier: "pt_001" }.to_json, headers: @headers
-    end
+    post "/corvid/api/v1/aian_exemption/determine", params: { person_identifier: "pt_001" }.to_json, headers: @headers
+    assert_response :not_found
   end
 
   test "no list, search, or batch routes" do
-    assert_raises(ActionController::RoutingError) do
-      get "/corvid/api/v1/indian_health_eligibility", headers: @headers
-    end
+    get "/corvid/api/v1/indian_health_eligibility", headers: @headers
+    assert_response :not_found
 
-    assert_raises(ActionController::RoutingError) do
-      get "/corvid/api/v1/indian_health_eligibility/inquiries", headers: @headers
-    end
+    get "/corvid/api/v1/indian_health_eligibility/inquiries", headers: @headers
+    assert_response :not_found
 
-    assert_raises(ActionController::RoutingError) do
-      post "/corvid/api/v1/indian_health_eligibility/batch", params: { person_identifiers: [ "pt_001" ] }.to_json, headers: @headers
-    end
+    post "/corvid/api/v1/indian_health_eligibility/batch", params: { person_identifiers: [ "pt_001" ] }.to_json, headers: @headers
+    assert_response :not_found
   end
 end

@@ -24,6 +24,11 @@ class Corvid::IndianHealthEligibilityInquiryTest < ActiveSupport::TestCase
     assert_equal expected_columns, actual_columns, "Table columns do not match the exact expected schema"
   end
 
+  test "asserted_at column type is datetime" do
+    column = Corvid::IndianHealthEligibilityInquiry.columns_hash["asserted_at"]
+    assert_equal :datetime, column.type
+  end
+
   test "answer column has a database CHECK constraint for allowed values" do
     # Assuming the table exists and Corvid::IndianHealthEligibilityInquiry model is there,
     # we need to ensure the DB rejects an invalid answer.

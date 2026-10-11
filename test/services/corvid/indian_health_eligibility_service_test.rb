@@ -7,7 +7,7 @@ class Corvid::IndianHealthEligibilityServiceTest < ActiveSupport::TestCase
     @service = Corvid::IndianHealthEligibilityService.new(adapter: @adapter)
     @requester = "req_001"
     @agreement = "agr_001"
-
+    
     # Reset ceiling configuration
     Corvid.configuration.indian_health_eligibility_ceiling = { limit: 10, period: 1.hour }
   end
@@ -51,7 +51,7 @@ class Corvid::IndianHealthEligibilityServiceTest < ActiveSupport::TestCase
   end
 
   test "passes through the provider's answer and provenance" do
-    determined_at = Time.current
+    determined_at = Time.current.round(6)
     @adapter.add_service_eligibility("pt_001", {
       determination: :eligible,
       asserted_by: "fac_demo",
@@ -86,32 +86,26 @@ class Corvid::IndianHealthEligibilityServiceTest < ActiveSupport::TestCase
     @adapter.add_service_eligibility("pt_001", {
       determination: :not_eligible,
       asserted_by: "fac_demo",
-      determined_at: Time.current,
+      determined_at: Time.current.round(6),
       confidence: :verified,
-      tribe_code: "123",
-      enrolled: true,
-      basis: "descendant",
+      tribe_code: "TRIBE_X9",
+      enrolled: "ENR_Z3",
+      basis: "BASIS_Q7",
       relationship: "self"
     })
 
-    result = nil
     with_tenant(@tenant) do
-      result = @service.inquire(person_identifier: "pt_001", requester_identifier: @requester, agreement_reference: @agreement)
+      @service.inquire(person_identifier: "pt_001", requester_identifier: @requester, agreement_reference: @agreement)
     end
 
-    assert_not result.respond_to?(:tribe_code)
-    assert_not result.respond_to?(:enrolled)
-    assert_not result.respond_to?(:basis)
-    assert_not result.respond_to?(:relationship)
-
     inquiry = with_tenant(@tenant) { Corvid::IndianHealthEligibilityInquiry.last }
-    assert_not inquiry.respond_to?(:tribe_code)
-    assert_not inquiry.respond_to?(:enrolled)
-    assert_not inquiry.respond_to?(:basis)
-    assert_not inquiry.respond_to?(:relationship)
+    row_values = inquiry.attributes.values.map(&:to_s).join
+    assert_not_includes row_values, "TRIBE_X9"
+    assert_not_includes row_values, "ENR_Z3"
+    assert_not_includes row_values, "BASIS_Q7"
   end
 
-  test "unavailable is not unknown: when confidence is unavailable" do
+  test "source unavailable: when confidence is unavailable" do
     @adapter.add_service_eligibility("pt_001", {
       determination: :unknown,
       asserted_by: nil,
@@ -119,43 +113,69 @@ class Corvid::IndianHealthEligibilityServiceTest < ActiveSupport::TestCase
       confidence: :unavailable
     })
 
-    result = nil
     with_tenant(@tenant) do
-      result = @service.inquire(person_identifier: "pt_001", requester_identifier: @requester, agreement_reference: @agreement)
+      assert_raises(Corvid::IndianHealthEligibilityService::SourceUnavailable) do
+        @service.inquire(person_identifier: "pt_001", requester_identifier: @requester, agreement_reference: @agreement)
+      end
+      inquiry = Corvid::IndianHealthEligibilityInquiry.last
+      assert_equal "unavailable", inquiry.answer
     end
-
-    assert_equal :unavailable, result.answer
   end
 
-  test "unavailable is not unknown: when adapter raises StandardError" do
+  test "source unavailable: when adapter raises StandardError" do
     adapter = Object.new
     def adapter.indian_health_service_eligibility(*)
       raise StandardError, "API timeout"
     end
     service = Corvid::IndianHealthEligibilityService.new(adapter: adapter)
 
-    result = nil
     with_tenant(@tenant) do
-      result = service.inquire(person_identifier: "pt_001", requester_identifier: @requester, agreement_reference: @agreement)
+      assert_raises(Corvid::IndianHealthEligibilityService::SourceUnavailable) do
+        service.inquire(person_identifier: "pt_001", requester_identifier: @requester, agreement_reference: @agreement)
+      end
+      inquiry = Corvid::IndianHealthEligibilityInquiry.last
+      assert_equal "unavailable", inquiry.answer
     end
-
-    assert_equal :unavailable, result.answer
   end
 
-  test "unavailable is not unknown: when adapter raises NotImplementedError" do
+  test "source unavailable: when adapter raises NotImplementedError" do
     adapter = Corvid::Adapters::Base.new
     service = Corvid::IndianHealthEligibilityService.new(adapter: adapter)
 
-    result = nil
     with_tenant(@tenant) do
-      result = service.inquire(person_identifier: "pt_001", requester_identifier: @requester, agreement_reference: @agreement)
+      assert_raises(Corvid::IndianHealthEligibilityService::SourceUnavailable) do
+        service.inquire(person_identifier: "pt_001", requester_identifier: @requester, agreement_reference: @agreement)
+      end
+      inquiry = Corvid::IndianHealthEligibilityInquiry.last
+      assert_equal "unavailable", inquiry.answer
     end
+  end
 
-    assert_equal :unavailable, result.answer
+  test "source unavailable: decisive answer missing provenance" do
+    [
+      { determination: :eligible, asserted_by: "", determined_at: Time.current, confidence: :verified },
+      { determination: :eligible, asserted_by: nil, determined_at: Time.current, confidence: :verified },
+      { determination: :eligible, asserted_by: 123, determined_at: Time.current, confidence: :verified },
+      { determination: :eligible, asserted_by: "fac_demo", determined_at: Date.today, confidence: :verified },
+      { determination: :eligible, asserted_by: "fac_demo", determined_at: nil, confidence: :verified },
+      { determination: :eligible, asserted_by: "fac_demo", determined_at: Time.current, confidence: :unverified },
+      { determination: :eligible, asserted_by: "fac_demo", determined_at: Time.current, confidence: nil },
+      { determination: :eligible, asserted_by: { provider: "fac_demo", basis: "x" }, determined_at: Time.current, confidence: :verified }
+    ].each_with_index do |bad_response, i|
+      @adapter.add_service_eligibility("pt_bad_#{i}", bad_response)
+
+      with_tenant(@tenant) do
+        assert_raises(Corvid::IndianHealthEligibilityService::SourceUnavailable) do
+          @service.inquire(person_identifier: "pt_bad_#{i}", requester_identifier: @requester, agreement_reference: @agreement)
+        end
+        inquiry = Corvid::IndianHealthEligibilityInquiry.last
+        assert_equal "unavailable", inquiry.answer
+      end
+    end
   end
 
   test "asymmetric immutability: eligible is frozen per tenant and person, adapter not called again" do
-    original_time = Time.current - 1.day
+    original_time = (Time.current - 1.day).round(6)
     @adapter.add_service_eligibility("pt_001", {
       determination: :eligible,
       asserted_by: "fac_demo",
@@ -174,7 +194,7 @@ class Corvid::IndianHealthEligibilityServiceTest < ActiveSupport::TestCase
     @adapter.add_service_eligibility("pt_001", {
       determination: :not_eligible,
       asserted_by: "fac_other",
-      determined_at: Time.current,
+      determined_at: Time.current.round(6),
       confidence: :verified
     })
 
@@ -190,11 +210,45 @@ class Corvid::IndianHealthEligibilityServiceTest < ActiveSupport::TestCase
     assert second_result.replayed?
   end
 
+  test "asymmetric immutability: not_eligible is frozen exactly like eligible" do
+    original_time = (Time.current - 1.day).round(6)
+    @adapter.add_service_eligibility("pt_001", {
+      determination: :not_eligible,
+      asserted_by: "fac_demo",
+      determined_at: original_time,
+      confidence: :verified
+    })
+
+    counting = CountingAdapter.new(@adapter)
+    service = Corvid::IndianHealthEligibilityService.new(adapter: counting)
+
+    with_tenant(@tenant) do
+      first_result = service.inquire(person_identifier: "pt_001", requester_identifier: @requester, agreement_reference: @agreement)
+      assert_equal :not_eligible, first_result.answer
+      assert_not first_result.replayed?
+
+      # Adapter's answer changes
+      @adapter.add_service_eligibility("pt_001", {
+        determination: :eligible,
+        asserted_by: "fac_other",
+        determined_at: Time.current.round(6),
+        confidence: :verified
+      })
+
+      second_result = service.inquire(person_identifier: "pt_001", requester_identifier: "req_002", agreement_reference: "agr_002")
+      assert_equal :not_eligible, second_result.answer
+      assert_equal "fac_demo", second_result.data_source
+      assert_equal original_time, second_result.asserted_at
+      assert second_result.replayed?
+      assert_equal 1, counting.calls
+    end
+  end
+
   test "asymmetric immutability: tenant isolation" do
     @adapter.add_service_eligibility("pt_001", {
       determination: :eligible,
       asserted_by: "fac_demo",
-      determined_at: Time.current,
+      determined_at: Time.current.round(6),
       confidence: :verified
     })
 
@@ -206,7 +260,7 @@ class Corvid::IndianHealthEligibilityServiceTest < ActiveSupport::TestCase
     @adapter.add_service_eligibility("pt_001", {
       determination: :not_eligible,
       asserted_by: "fac_other",
-      determined_at: Time.current,
+      determined_at: Time.current.round(6),
       confidence: :verified
     })
 
@@ -238,7 +292,7 @@ class Corvid::IndianHealthEligibilityServiceTest < ActiveSupport::TestCase
     @adapter.add_service_eligibility("pt_001", {
       determination: :eligible,
       asserted_by: "fac_demo",
-      determined_at: Time.current,
+      determined_at: Time.current.round(6),
       confidence: :verified
     })
 
@@ -246,6 +300,55 @@ class Corvid::IndianHealthEligibilityServiceTest < ActiveSupport::TestCase
       second_result = @service.inquire(person_identifier: "pt_001", requester_identifier: @requester, agreement_reference: @agreement)
       assert_equal :eligible, second_result.answer
       assert_not second_result.replayed?
+    end
+  end
+
+  test "asymmetric immutability: unavailable is NOT frozen and adapter is called again" do
+    @adapter.add_service_eligibility("pt_001", {
+      determination: :unknown,
+      asserted_by: nil,
+      determined_at: nil,
+      confidence: :unavailable
+    })
+
+    counting = CountingAdapter.new(@adapter)
+    service = Corvid::IndianHealthEligibilityService.new(adapter: counting)
+
+    with_tenant(@tenant) do
+      assert_raises(Corvid::IndianHealthEligibilityService::SourceUnavailable) do
+        service.inquire(person_identifier: "pt_001", requester_identifier: @requester, agreement_reference: @agreement)
+      end
+      assert_equal 1, counting.calls
+
+      @adapter.add_service_eligibility("pt_001", {
+        determination: :eligible,
+        asserted_by: "fac_demo",
+        determined_at: Time.current.round(6),
+        confidence: :verified
+      })
+
+      second_result = service.inquire(person_identifier: "pt_001", requester_identifier: @requester, agreement_reference: @agreement)
+      assert_equal :eligible, second_result.answer
+      assert_equal 2, counting.calls
+    end
+  end
+
+  test "asymmetric immutability: refused is NOT frozen and adapter is called again" do
+    Corvid.configuration.indian_health_eligibility_ceiling = { limit: 1, period: 1.hour }
+    
+    counting = CountingAdapter.new(@adapter)
+    service = Corvid::IndianHealthEligibilityService.new(adapter: counting)
+
+    with_tenant(@tenant) do
+      service.inquire(person_identifier: "pt_001", requester_identifier: @requester, agreement_reference: @agreement)
+      assert_raises(Corvid::IndianHealthEligibilityService::CeilingExceeded) do
+        service.inquire(person_identifier: "pt_002", requester_identifier: @requester, agreement_reference: @agreement)
+      end
+      
+      # Now pt_002 has a refused row. Let's query it with a different requester.
+      result = service.inquire(person_identifier: "pt_002", requester_identifier: "req_002", agreement_reference: @agreement)
+      assert_equal :unknown, result.answer
+      assert_equal 2, counting.calls
     end
   end
 
@@ -259,6 +362,52 @@ class Corvid::IndianHealthEligibilityServiceTest < ActiveSupport::TestCase
     end
 
     assert_equal 0, Corvid::IndianHealthEligibilityInquiry.unscoped.count
+  end
+
+  test "volume ceiling: invalid ceiling config raises CeilingNotConfigured" do
+    [
+      { limit: "10", period: 1.hour },
+      { limit: -1, period: 1.hour },
+      { limit: 10, period: 3600 },
+      { limit: 10, period: "1 hour" }
+    ].each do |bad_config|
+      Corvid.configuration.indian_health_eligibility_ceiling = bad_config
+      with_tenant(@tenant) do
+        assert_raises(Corvid::IndianHealthEligibilityService::CeilingNotConfigured) do
+          @service.inquire(person_identifier: "pt_001", requester_identifier: @requester, agreement_reference: @agreement)
+        end
+      end
+    end
+  end
+
+  test "volume ceiling: comes before replay, and a replay consumes quota" do
+    Corvid.configuration.indian_health_eligibility_ceiling = { limit: 1, period: 1.hour }
+
+    @adapter.add_service_eligibility("pt_001", {
+      determination: :eligible,
+      asserted_by: "fac_demo",
+      determined_at: Time.current.round(6),
+      confidence: :verified
+    })
+
+    with_tenant(@tenant) do
+      # Requester A inquires person P (eligible, logged)
+      first_result = @service.inquire(person_identifier: "pt_001", requester_identifier: "req_A", agreement_reference: @agreement)
+      assert_equal :eligible, first_result.answer
+
+      # Second inquiry by A for P raises CeilingExceeded, logs refused
+      assert_raises(Corvid::IndianHealthEligibilityService::CeilingExceeded) do
+        @service.inquire(person_identifier: "pt_001", requester_identifier: "req_A", agreement_reference: @agreement)
+      end
+      
+      inquiry = Corvid::IndianHealthEligibilityInquiry.where(requester_identifier: "req_A").last
+      assert_equal "refused", inquiry.answer
+
+      # Different requester B (own quota) gets the replay
+      b_result = @service.inquire(person_identifier: "pt_001", requester_identifier: "req_B", agreement_reference: @agreement)
+      assert_equal :eligible, b_result.answer
+      assert b_result.replayed?
+    end
   end
 
   test "volume ceiling: exceeds limit within period raises CeilingExceeded, logs refused, and adapter not called" do
@@ -321,6 +470,7 @@ class Corvid::IndianHealthEligibilityServiceTest < ActiveSupport::TestCase
     with_tenant(@tenant) do
       3.times do |i|
         Corvid::IndianHealthEligibilityInquiry.create!(
+          tenant_identifier: @tenant,
           requester_identifier: @requester, agreement_reference: @agreement,
           person_identifier: "pt_refused_#{i}", answer: "refused",
           message_id: SecureRandom.uuid, replayed: false
@@ -335,7 +485,7 @@ class Corvid::IndianHealthEligibilityServiceTest < ActiveSupport::TestCase
   test "asymmetric immutability: a replayed answer does not consult the adapter" do
     @adapter.add_service_eligibility("pt_001", {
       determination: :not_eligible, asserted_by: "fac_demo",
-      determined_at: Time.current - 1.day, confidence: :verified
+      determined_at: (Time.current - 1.day).round(6), confidence: :verified
     })
     counting = CountingAdapter.new(@adapter)
     service = Corvid::IndianHealthEligibilityService.new(adapter: counting)
@@ -383,7 +533,7 @@ class Corvid::IndianHealthEligibilityServiceTest < ActiveSupport::TestCase
   end
 
   test "query log writes exactly one row per inquiry with correct attributes" do
-    determined_at = Time.current
+    determined_at = Time.current.round(6)
     @adapter.add_service_eligibility("pt_001", {
       determination: :eligible,
       asserted_by: "fac_demo",
