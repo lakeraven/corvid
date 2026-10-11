@@ -19,6 +19,7 @@ module Corvid
         rescue_from Corvid::IndianHealthEligibilityService::SourceUnavailable, with: :render_source_unavailable
         rescue_from Corvid::IndianHealthEligibilityService::CeilingExceeded, with: :render_ceiling_exceeded
         rescue_from Corvid::IndianHealthEligibilityService::CeilingNotConfigured, with: :render_ceiling_missing
+        rescue_from Corvid::IndianHealthEligibilityService::Busy, with: :render_busy
 
         def inquire
           person = params[:person_identifier]
@@ -50,7 +51,7 @@ module Corvid
             message_id: result.message_id,
             answer: result.answer.to_s,
             data_source: result.data_source,
-            asserted_at: result.asserted_at&.iso8601,
+            asserted_at: rendered_time(result.asserted_at),
             verification_result: verification_result(result)
           }
         end
@@ -60,7 +61,7 @@ module Corvid
             resourceType: "VerificationResult",
             status: FHIR_STATUS.fetch(result.answer.to_s)
           }
-          body[:statusDate] = result.asserted_at.iso8601 if result.asserted_at
+          body[:statusDate] = rendered_time(result.asserted_at) if result.asserted_at
           body[:primarySource] = [ { who: { display: result.data_source } } ] if result.data_source
           body
         end
@@ -80,6 +81,16 @@ module Corvid
           response.headers["X-Message-Id"] = error.message_id
           render json: { error: "inquiry ceiling exceeded", message_id: error.message_id },
             status: :too_many_requests
+        end
+
+        # UTC, so a replay read back from the log renders exactly as the
+        # first answer did, whatever offset the provider used.
+        def rendered_time(time)
+          time&.utc&.iso8601
+        end
+
+        def render_busy(_error)
+          render json: { error: "another inquiry is in progress; retry" }, status: :service_unavailable
         end
 
         def render_ceiling_missing(_error)

@@ -27,6 +27,7 @@ class Corvid::IndianHealthEligibilityInquiryTest < ActiveSupport::TestCase
   test "asserted_at column type is datetime" do
     column = Corvid::IndianHealthEligibilityInquiry.columns_hash["asserted_at"]
     assert_equal :datetime, column.type
+    assert_equal 6, column.precision
   end
 
   test "answer column has a database CHECK constraint for allowed values" do

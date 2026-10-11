@@ -23,6 +23,10 @@ module Corvid
       end
     end
 
+    # Another inquiry for the tenant held the lock past LOCK_TIMEOUT. Nothing
+    # is logged, so there is no message_id.
+    class Busy < StandardError; end
+
     class SourceUnavailable < StandardError
       attr_reader :message_id
 
@@ -36,6 +40,7 @@ module Corvid
     DECISIVE = %w[eligible not_eligible].freeze
     LOCK_KEY_PREFIX = "corvid_indian_health_eligibility:"
     LOCK_SQL = "SELECT pg_advisory_xact_lock(hashtext(?))"
+    LOCK_TIMEOUT = "5s"
 
     Result = Struct.new(
       :answer, :data_source, :asserted_at, :message_id, :replayed,
@@ -62,6 +67,8 @@ module Corvid
       raise outcome if outcome.is_a?(StandardError)
 
       outcome
+    rescue ActiveRecord::LockWaitTimeout
+      raise Busy, "another inquiry for this tenant is in progress"
     end
 
     private
@@ -75,8 +82,9 @@ module Corvid
 
     def lock_tenant!
       key = "#{LOCK_KEY_PREFIX}#{Corvid::TenantContext.require_tenant!}"
-      sql = IndianHealthEligibilityInquiry.sanitize_sql_array([ LOCK_SQL, key ])
-      IndianHealthEligibilityInquiry.connection.select_value(sql)
+      connection = IndianHealthEligibilityInquiry.connection
+      connection.execute("SET LOCAL lock_timeout = '#{LOCK_TIMEOUT}'")
+      connection.execute(IndianHealthEligibilityInquiry.sanitize_sql_array([ LOCK_SQL, key ]))
     end
 
     def resolve(person, requester, agreement)
@@ -96,7 +104,7 @@ module Corvid
       ceiling = Corvid.configuration.indian_health_eligibility_ceiling
       limit = ceiling[:limit] if ceiling.is_a?(Hash)
       period = ceiling[:period] if ceiling.is_a?(Hash)
-      return ceiling if limit.is_a?(Integer) && limit >= 0 && period.is_a?(ActiveSupport::Duration)
+      return ceiling if limit.is_a?(Integer) && limit >= 0 && period.is_a?(ActiveSupport::Duration) && period.positive?
 
       raise CeilingNotConfigured, "indian_health_eligibility_ceiling is not configured"
     end
@@ -142,8 +150,12 @@ module Corvid
       accepted_response(response) if response
     end
 
+    # A savepoint, so an adapter whose own query fails does not abort the
+    # transaction the unavailable row is written in.
     def fetch_provider(person_identifier)
-      @adapter.indian_health_service_eligibility(person_identifier)
+      IndianHealthEligibilityInquiry.transaction(requires_new: true) do
+        @adapter.indian_health_service_eligibility(person_identifier)
+      end
     rescue StandardError, NotImplementedError
       nil
     end
@@ -207,6 +219,6 @@ module Corvid
 
     REFUSED = { answer: :refused, data_source: nil, asserted_at: nil }.freeze
     UNAVAILABLE = { answer: :unavailable, data_source: nil, asserted_at: nil }.freeze
-    private_constant :PASS_THROUGH, :DECISIVE, :LOCK_KEY_PREFIX, :LOCK_SQL, :REFUSED, :UNAVAILABLE
+    private_constant :PASS_THROUGH, :DECISIVE, :LOCK_KEY_PREFIX, :LOCK_SQL, :LOCK_TIMEOUT, :REFUSED, :UNAVAILABLE
   end
 end

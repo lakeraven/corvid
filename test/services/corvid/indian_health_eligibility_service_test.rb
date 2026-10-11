@@ -369,7 +369,9 @@ class Corvid::IndianHealthEligibilityServiceTest < ActiveSupport::TestCase
       { limit: "10", period: 1.hour },
       { limit: -1, period: 1.hour },
       { limit: 10, period: 3600 },
-      { limit: 10, period: "1 hour" }
+      { limit: 10, period: "1 hour" },
+      { limit: 10, period: 0.seconds },
+      { limit: 10, period: -1.hour }
     ].each do |bad_config|
       Corvid.configuration.indian_health_eligibility_ceiling = bad_config
       with_tenant(@tenant) do
@@ -407,6 +409,11 @@ class Corvid::IndianHealthEligibilityServiceTest < ActiveSupport::TestCase
       b_result = @service.inquire(person_identifier: "pt_001", requester_identifier: "req_B", agreement_reference: @agreement)
       assert_equal :eligible, b_result.answer
       assert b_result.replayed?
+
+      # B's replay consumed B's quota
+      assert_raises(Corvid::IndianHealthEligibilityService::CeilingExceeded) do
+        @service.inquire(person_identifier: "pt_001", requester_identifier: "req_B", agreement_reference: @agreement)
+      end
     end
   end
 
@@ -414,16 +421,20 @@ class Corvid::IndianHealthEligibilityServiceTest < ActiveSupport::TestCase
     limit = 2
     Corvid.configuration.indian_health_eligibility_ceiling = { limit: limit, period: 1.hour }
 
+    counting = CountingAdapter.new(@adapter)
+    service = Corvid::IndianHealthEligibilityService.new(adapter: counting)
+
     # Unseeded adapter returns unknown
     with_tenant(@tenant) do
       limit.times do |i|
-        @service.inquire(person_identifier: "pt_#{i}", requester_identifier: @requester, agreement_reference: @agreement)
+        service.inquire(person_identifier: "pt_#{i}", requester_identifier: @requester, agreement_reference: @agreement)
       end
 
-      # Next inquiry should be refused
+      # Next inquiry should be refused without asking the provider
       assert_raises(Corvid::IndianHealthEligibilityService::CeilingExceeded) do
-        @service.inquire(person_identifier: "pt_blocked", requester_identifier: @requester, agreement_reference: @agreement)
+        service.inquire(person_identifier: "pt_blocked", requester_identifier: @requester, agreement_reference: @agreement)
       end
+      assert_equal limit, counting.calls
 
       inquiry = Corvid::IndianHealthEligibilityInquiry.last
       assert_equal "refused", inquiry.answer
@@ -555,8 +566,41 @@ class Corvid::IndianHealthEligibilityServiceTest < ActiveSupport::TestCase
     assert_equal "pt_001", inquiry.person_identifier
     assert_equal "eligible", inquiry.answer
     assert_equal "fac_demo", inquiry.data_source
-    assert_equal determined_at.to_i, inquiry.asserted_at.to_i
+    assert_equal determined_at.round(6), inquiry.asserted_at
     assert_equal result.message_id, inquiry.message_id
     assert_equal false, inquiry.replayed
+  end
+
+  test "source unavailable: an unrecognised determination or a non-Hash response" do
+    [ { determination: :maybe, asserted_by: "fac_demo", determined_at: Time.current, confidence: :verified },
+      nil,
+      "eligible" ].each_with_index do |response, i|
+      adapter = Object.new
+      adapter.define_singleton_method(:indian_health_service_eligibility) { |_| response }
+      service = Corvid::IndianHealthEligibilityService.new(adapter: adapter)
+
+      with_tenant(@tenant) do
+        assert_raises(Corvid::IndianHealthEligibilityService::SourceUnavailable) do
+          service.inquire(person_identifier: "pt_shape_#{i}", requester_identifier: @requester, agreement_reference: @agreement)
+        end
+        assert_equal "unavailable", Corvid::IndianHealthEligibilityInquiry.where(person_identifier: "pt_shape_#{i}").last.answer
+      end
+    end
+  end
+
+  test "source unavailable: a database-backed adapter whose query fails still logs unavailable" do
+    adapter = Object.new
+    adapter.define_singleton_method(:indian_health_service_eligibility) do |_|
+      ActiveRecord::Base.connection.select_value("SELECT * FROM corvid_no_such_table")
+    end
+    service = Corvid::IndianHealthEligibilityService.new(adapter: adapter)
+
+    with_tenant(@tenant) do
+      error = assert_raises(Corvid::IndianHealthEligibilityService::SourceUnavailable) do
+        service.inquire(person_identifier: "pt_db", requester_identifier: @requester, agreement_reference: @agreement)
+      end
+      row = Corvid::IndianHealthEligibilityInquiry.find_by(message_id: error.message_id)
+      assert_equal "unavailable", row.answer
+    end
   end
 end

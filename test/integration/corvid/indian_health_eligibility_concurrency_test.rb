@@ -63,7 +63,8 @@ class Corvid::IndianHealthEligibilityConcurrencyTest < ActiveSupport::TestCase
       end
     end
 
-    # Wait for threads to hit the latch inside the adapter
+    # Not needed for correct code: it lets the losing threads queue behind the
+    # winner, so an implementation without the lock fails deterministically.
     sleep 0.1
     latch.set
 
@@ -121,6 +122,36 @@ class Corvid::IndianHealthEligibilityConcurrencyTest < ActiveSupport::TestCase
 
     # Exactly one non-replayed decisive row exists
     inquiries = with_tenant(@tenant) { Corvid::IndianHealthEligibilityInquiry.where(person_identifier: "pt_001").to_a }
+    assert_equal 2, inquiries.size
     assert_equal 1, inquiries.count { |i| !i.replayed }
+    assert_equal 1, inquiries.count(&:replayed)
+  end
+
+  test "an inquiry gives up with Busy, logging nothing, when the tenant lock is held too long" do
+    Corvid.configuration.indian_health_eligibility_ceiling = { limit: 10, period: 1.hour }
+    held = Concurrent::Event.new
+    release = Concurrent::Event.new
+
+    holder = Thread.new do
+      ActiveRecord::Base.connection_pool.with_connection do |connection|
+        connection.transaction do
+          connection.execute("SELECT pg_advisory_xact_lock(hashtext('corvid_indian_health_eligibility:#{@tenant}'))")
+          held.set
+          release.wait(30)
+        end
+      end
+    end
+    held.wait(10)
+
+    service = Corvid::IndianHealthEligibilityService.new(adapter: Corvid::Adapters::MockAdapter.new)
+    with_tenant(@tenant) do
+      assert_raises(Corvid::IndianHealthEligibilityService::Busy) do
+        service.inquire(person_identifier: "pt_001", requester_identifier: @requester, agreement_reference: @agreement)
+      end
+      assert_equal 0, Corvid::IndianHealthEligibilityInquiry.count
+    end
+  ensure
+    release&.set
+    holder&.join
   end
 end

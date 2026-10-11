@@ -239,4 +239,25 @@ class Corvid::Api::V1::IndianHealthEligibilityControllerTest < ActionDispatch::I
     post "/corvid/api/v1/indian_health_eligibility/batch", params: { person_identifiers: [ "pt_001" ] }.to_json, headers: @headers
     assert_response :not_found
   end
+
+  test "a replay renders asserted_at exactly as the first answer did" do
+    asserted_time = Time.new(2026, 10, 11, 10, 0, 0, "-06:00")
+    @adapter.add_service_eligibility("pt_001", {
+      determination: :eligible, asserted_by: "fac_demo",
+      determined_at: asserted_time, confidence: :verified
+    })
+
+    post "/corvid/api/v1/indian_health_eligibility/inquire",
+         params: { person_identifier: "pt_001" }.to_json, headers: @headers
+    first = JSON.parse(response.body)
+
+    post "/corvid/api/v1/indian_health_eligibility/inquire",
+         params: { person_identifier: "pt_001" }.to_json,
+         headers: @headers.merge("X-Requester-Identifier" => "req_002")
+    replay = JSON.parse(response.body)
+
+    assert_equal first["asserted_at"], replay["asserted_at"]
+    assert_equal first.dig("verification_result", "statusDate"), replay.dig("verification_result", "statusDate")
+    assert_equal asserted_time.to_i, Time.iso8601(replay["asserted_at"]).to_i
+  end
 end
