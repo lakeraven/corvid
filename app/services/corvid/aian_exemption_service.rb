@@ -63,9 +63,20 @@ module Corvid
 
     # itu_lookback_days is a state policy choice: how recent an I/T/U service
     # must be to count. nil means any service on or before as_of_date.
+    #
+    # An explicit tenant_identifier scopes the whole call (sources and the
+    # audit row), so evidence is never read under one tenant and recorded
+    # under another.
     def determine(person_identifier:, as_of_date: Date.current, itu_lookback_days: nil,
                   decided_by_identifier: nil, tenant_identifier: nil)
-      tenant_identifier ||= Corvid::TenantContext.current_tenant_identifier
+      if tenant_identifier
+        return Corvid::TenantContext.with_tenant(tenant_identifier) do
+          determine(person_identifier: person_identifier, as_of_date: as_of_date,
+                    itu_lookback_days: itu_lookback_days, decided_by_identifier: decided_by_identifier)
+        end
+      end
+
+      tenant_identifier = Corvid::TenantContext.current_tenant_identifier
       since = itu_lookback_days && (as_of_date - itu_lookback_days)
 
       evidence = []

@@ -168,6 +168,24 @@ class Corvid::AianExemptionServiceTest < ActiveSupport::TestCase
     assert_match(/\A\h{64}\z/, row.verification_snapshot_hash)
   end
 
+  test "an explicit tenant_identifier scopes the whole determination, not just the row" do
+    seen = nil
+    probe = Object.new
+    probe.define_singleton_method(:verify_tribal_enrollment) do |_|
+      seen = Corvid::TenantContext.current_tenant_identifier
+      { enrolled: true, confidence: :verified }
+    end
+
+    result = with_tenant(TENANT) do
+      Corvid::AianExemptionService.new(sources: [ probe ])
+        .determine(person_identifier: "pt_other", as_of_date: AS_OF, tenant_identifier: "tenant_other")
+    end
+
+    assert_equal "tenant_other", seen
+    row = with_tenant("tenant_other") { Corvid::AianExemptionDetermination.find(result.determination_id) }
+    assert_equal "tenant_other", row.tenant_identifier
+  end
+
   test "class-method shim routes through the global adapter" do
     @adapter.add_enrollment("pt_shim", enrolled: true, tribe_code: "DEMO", confidence: :verified)
 

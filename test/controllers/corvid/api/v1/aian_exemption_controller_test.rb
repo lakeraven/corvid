@@ -50,6 +50,24 @@ class Corvid::Api::V1::AianExemptionControllerTest < ActionDispatch::Integration
     assert_response :bad_request
   end
 
+  test "determine rejects a malformed as_of_date" do
+    post "/corvid/api/v1/aian_exemption/determine",
+         params: { person_identifier: "pt_api", as_of_date: "not-a-date" }.to_json,
+         headers: headers
+
+    assert_response :bad_request
+  end
+
+  test "determine rejects a lookback that is not a non-negative integer" do
+    [ "abc", "-30", "1.5" ].each do |value|
+      post "/corvid/api/v1/aian_exemption/determine",
+           params: { person_identifier: "pt_api", itu_lookback_days: value }.to_json,
+           headers: headers
+
+      assert_response :bad_request, "expected 400 for itu_lookback_days=#{value.inspect}"
+    end
+  end
+
   test "determine requires the tenant header" do
     post "/corvid/api/v1/aian_exemption/determine",
          params: { person_identifier: "pt_api" }.to_json,

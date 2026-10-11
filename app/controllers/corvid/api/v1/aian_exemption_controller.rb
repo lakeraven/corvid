@@ -20,10 +20,16 @@ module Corvid
           person_identifier = determine_params[:person_identifier].presence
           return render(json: { error: "person_identifier is required" }, status: :bad_request) unless person_identifier
 
+          as_of_date = parse_as_of_date
+          return render(json: { error: "as_of_date must be an ISO 8601 date" }, status: :bad_request) unless as_of_date
+
+          itu_lookback_days = parse_lookback
+          return render(json: { error: "itu_lookback_days must be a non-negative integer" }, status: :bad_request) if itu_lookback_days == :invalid
+
           result = Corvid::AianExemptionService.determine(
             person_identifier: person_identifier,
-            as_of_date: determine_params[:as_of_date].presence ? Date.parse(determine_params[:as_of_date]) : Date.current,
-            itu_lookback_days: determine_params[:itu_lookback_days].presence&.to_i,
+            as_of_date: as_of_date,
+            itu_lookback_days: itu_lookback_days,
             decided_by_identifier: determine_params[:decided_by_identifier]
           )
           row = Corvid::AianExemptionDetermination.find(result.determination_id)
@@ -38,6 +44,26 @@ module Corvid
         end
 
         private
+
+        def parse_as_of_date
+          raw = determine_params[:as_of_date].presence
+          return Date.current unless raw
+
+          Date.iso8601(raw.to_s)
+        rescue Date::Error
+          nil
+        end
+
+        # nil when absent; :invalid unless a non-negative integer.
+        def parse_lookback
+          raw = determine_params[:itu_lookback_days].presence
+          return nil unless raw
+
+          days = Integer(raw.to_s, 10)
+          days.negative? ? :invalid : days
+        rescue ArgumentError
+          :invalid
+        end
 
         def determine_params
           params.permit(:person_identifier, :as_of_date, :itu_lookback_days, :decided_by_identifier)
