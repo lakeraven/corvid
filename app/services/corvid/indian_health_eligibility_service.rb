@@ -85,6 +85,7 @@ module Corvid
       connection = IndianHealthEligibilityInquiry.connection
       connection.execute("SET LOCAL lock_timeout = '#{LOCK_TIMEOUT}'")
       connection.execute(IndianHealthEligibilityInquiry.sanitize_sql_array([ LOCK_SQL, key ]))
+      connection.execute("SET LOCAL lock_timeout TO DEFAULT")
     end
 
     def resolve(person, requester, agreement)
