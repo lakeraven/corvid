@@ -7,7 +7,7 @@ class Corvid::IndianHealthEligibilityServiceTest < ActiveSupport::TestCase
     @service = Corvid::IndianHealthEligibilityService.new(adapter: @adapter)
     @requester = "req_001"
     @agreement = "agr_001"
-    
+
     # Reset ceiling configuration
     Corvid.configuration.indian_health_eligibility_ceiling = { limit: 10, period: 1.hour }
   end
@@ -43,7 +43,7 @@ class Corvid::IndianHealthEligibilityServiceTest < ActiveSupport::TestCase
     assert_not @adapter.respond_to?(:verify_tribal_descent)
     assert_not @adapter.respond_to?(:verify_alaska_native_corporation_shareholder)
     assert_not @adapter.respond_to?(:list_itu_encounters)
-    
+
     base_adapter = Corvid::Adapters::Base.new
     assert_not base_adapter.respond_to?(:verify_tribal_descent)
     assert_not base_adapter.respond_to?(:verify_alaska_native_corporation_shareholder)
@@ -275,7 +275,7 @@ class Corvid::IndianHealthEligibilityServiceTest < ActiveSupport::TestCase
       assert_raises(Corvid::IndianHealthEligibilityService::CeilingExceeded) do
         @service.inquire(person_identifier: "pt_blocked", requester_identifier: @requester, agreement_reference: @agreement)
       end
-      
+
       inquiry = Corvid::IndianHealthEligibilityInquiry.last
       assert_equal "refused", inquiry.answer
       assert_equal "pt_blocked", inquiry.person_identifier
@@ -288,7 +288,7 @@ class Corvid::IndianHealthEligibilityServiceTest < ActiveSupport::TestCase
 
     with_tenant(@tenant) do
       @service.inquire(person_identifier: "pt_001", requester_identifier: "req_001", agreement_reference: @agreement)
-      
+
       assert_raises(Corvid::IndianHealthEligibilityService::CeilingExceeded) do
         @service.inquire(person_identifier: "pt_002", requester_identifier: "req_001", agreement_reference: @agreement)
       end

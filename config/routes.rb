@@ -4,7 +4,7 @@ Corvid::Engine.routes.draw do
   namespace :api do
     namespace :v1 do
       post "eligibility/check", to: "eligibility#check"
-      post "aian_exemption/determine", to: "aian_exemption#determine"
+      post "indian_health_eligibility/inquire", to: "indian_health_eligibility#inquire"
       resources :decisions, only: [ :index, :show ]
     end
   end

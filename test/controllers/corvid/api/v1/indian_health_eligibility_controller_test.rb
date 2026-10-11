@@ -17,7 +17,7 @@ class Corvid::Api::V1::IndianHealthEligibilityControllerTest < ActionDispatch::I
 
     Corvid.configure { |c| c.adapter = Corvid::Adapters::MockAdapter.new }
     @adapter = Corvid.adapter
-    
+
     Corvid.configuration.indian_health_eligibility_ceiling = { limit: 10, period: 1.hour }
   end
 
@@ -35,19 +35,19 @@ class Corvid::Api::V1::IndianHealthEligibilityControllerTest < ActionDispatch::I
       confidence: :verified
     })
 
-    post "/corvid/api/v1/indian_health_eligibility/inquire", 
-         params: { person_identifier: "pt_001" }.to_json, 
+    post "/corvid/api/v1/indian_health_eligibility/inquire",
+         params: { person_identifier: "pt_001" }.to_json,
          headers: @headers
 
     assert_response :success
-    
+
     json = JSON.parse(response.body)
     assert_equal %w[message_id answer data_source asserted_at verification_result].sort, json.keys.sort
 
     assert_equal "eligible", json["answer"]
     assert_equal "fac_demo", json["data_source"]
     assert_equal asserted_time.iso8601, json["asserted_at"]
-    
+
     assert response.headers["X-Message-Id"].present?
     assert_equal response.headers["X-Message-Id"], json["message_id"]
   end
@@ -63,8 +63,8 @@ class Corvid::Api::V1::IndianHealthEligibilityControllerTest < ActionDispatch::I
       basis: "descendant"
     })
 
-    post "/corvid/api/v1/indian_health_eligibility/inquire", 
-         params: { person_identifier: "pt_001" }.to_json, 
+    post "/corvid/api/v1/indian_health_eligibility/inquire",
+         params: { person_identifier: "pt_001" }.to_json,
          headers: @headers
 
     assert_response :success
@@ -92,8 +92,8 @@ class Corvid::Api::V1::IndianHealthEligibilityControllerTest < ActionDispatch::I
       confidence: :verified
     })
 
-    post "/corvid/api/v1/indian_health_eligibility/inquire", 
-         params: { person_identifier: "pt_001" }.to_json, 
+    post "/corvid/api/v1/indian_health_eligibility/inquire",
+         params: { person_identifier: "pt_001" }.to_json,
          headers: @headers
 
     assert_response :success
@@ -111,8 +111,8 @@ class Corvid::Api::V1::IndianHealthEligibilityControllerTest < ActionDispatch::I
       confidence: :verified
     })
 
-    post "/corvid/api/v1/indian_health_eligibility/inquire", 
-         params: { person_identifier: "pt_001" }.to_json, 
+    post "/corvid/api/v1/indian_health_eligibility/inquire",
+         params: { person_identifier: "pt_001" }.to_json,
          headers: @headers
 
     assert_response :success
@@ -132,8 +132,8 @@ class Corvid::Api::V1::IndianHealthEligibilityControllerTest < ActionDispatch::I
       confidence: :unavailable
     })
 
-    post "/corvid/api/v1/indian_health_eligibility/inquire", 
-         params: { person_identifier: "pt_001" }.to_json, 
+    post "/corvid/api/v1/indian_health_eligibility/inquire",
+         params: { person_identifier: "pt_001" }.to_json,
          headers: @headers
 
     assert_response :success
@@ -145,32 +145,32 @@ class Corvid::Api::V1::IndianHealthEligibilityControllerTest < ActionDispatch::I
 
   test "400 when person_identifier missing, blank, or not a string" do
     # Missing
-    post "/corvid/api/v1/indian_health_eligibility/inquire", 
-         params: {}.to_json, 
+    post "/corvid/api/v1/indian_health_eligibility/inquire",
+         params: {}.to_json,
          headers: @headers
     assert_response :bad_request
 
     # Blank
-    post "/corvid/api/v1/indian_health_eligibility/inquire", 
-         params: { person_identifier: "  " }.to_json, 
+    post "/corvid/api/v1/indian_health_eligibility/inquire",
+         params: { person_identifier: "  " }.to_json,
          headers: @headers
     assert_response :bad_request
 
     # Not a string (array)
-    post "/corvid/api/v1/indian_health_eligibility/inquire", 
-         params: { person_identifier: ["pt_001"] }.to_json, 
+    post "/corvid/api/v1/indian_health_eligibility/inquire",
+         params: { person_identifier: [ "pt_001" ] }.to_json,
          headers: @headers
     assert_response :bad_request
   end
 
   test "400 when requester headers missing" do
-    post "/corvid/api/v1/indian_health_eligibility/inquire", 
-         params: { person_identifier: "pt_001" }.to_json, 
+    post "/corvid/api/v1/indian_health_eligibility/inquire",
+         params: { person_identifier: "pt_001" }.to_json,
          headers: @headers.except("X-Requester-Identifier")
     assert_response :bad_request
 
-    post "/corvid/api/v1/indian_health_eligibility/inquire", 
-         params: { person_identifier: "pt_001" }.to_json, 
+    post "/corvid/api/v1/indian_health_eligibility/inquire",
+         params: { person_identifier: "pt_001" }.to_json,
          headers: @headers.except("X-Agreement-Reference")
     assert_response :bad_request
   end
@@ -178,13 +178,13 @@ class Corvid::Api::V1::IndianHealthEligibilityControllerTest < ActionDispatch::I
   test "429 when ceiling exceeded" do
     Corvid.configuration.indian_health_eligibility_ceiling = { limit: 1, period: 1.hour }
 
-    post "/corvid/api/v1/indian_health_eligibility/inquire", 
-         params: { person_identifier: "pt_001" }.to_json, 
+    post "/corvid/api/v1/indian_health_eligibility/inquire",
+         params: { person_identifier: "pt_001" }.to_json,
          headers: @headers
     assert_response :success
 
-    post "/corvid/api/v1/indian_health_eligibility/inquire", 
-         params: { person_identifier: "pt_002" }.to_json, 
+    post "/corvid/api/v1/indian_health_eligibility/inquire",
+         params: { person_identifier: "pt_002" }.to_json,
          headers: @headers
     assert_response :too_many_requests
   end
@@ -192,8 +192,8 @@ class Corvid::Api::V1::IndianHealthEligibilityControllerTest < ActionDispatch::I
   test "503 when ceiling not configured" do
     Corvid.configuration.indian_health_eligibility_ceiling = nil
 
-    post "/corvid/api/v1/indian_health_eligibility/inquire", 
-         params: { person_identifier: "pt_001" }.to_json, 
+    post "/corvid/api/v1/indian_health_eligibility/inquire",
+         params: { person_identifier: "pt_001" }.to_json,
          headers: @headers
     assert_response :service_unavailable
   end
@@ -214,7 +214,7 @@ class Corvid::Api::V1::IndianHealthEligibilityControllerTest < ActionDispatch::I
     end
 
     assert_raises(ActionController::RoutingError) do
-      post "/corvid/api/v1/indian_health_eligibility/batch", params: { person_identifiers: ["pt_001"] }.to_json, headers: @headers
+      post "/corvid/api/v1/indian_health_eligibility/batch", params: { person_identifiers: [ "pt_001" ] }.to_json, headers: @headers
     end
   end
 end

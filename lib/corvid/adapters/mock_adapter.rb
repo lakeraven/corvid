@@ -302,6 +302,12 @@ module Corvid
         }
       end
 
+      def indian_health_service_eligibility(patient_identifier)
+        @service_eligibilities.fetch(patient_identifier.to_s) do
+          { determination: :unknown, asserted_by: nil, determined_at: nil, confidence: :verified }
+        end
+      end
+
       # ----------------------------------------------------------------------
       # Enrollment verification
       # ----------------------------------------------------------------------
@@ -329,38 +335,6 @@ module Corvid
           confidence: enrollment.fetch(:confidence, :verified),
           verified_at: Time.current
         }
-      end
-
-      def verify_tribal_descent(patient_identifier)
-        descent = @descents[patient_identifier.to_s]
-        return { descendant: false, relationship: nil, tribe_code: nil, confidence: :verified, verified_at: Time.current } unless descent
-
-        {
-          descendant: descent[:descendant],
-          relationship: descent[:relationship],
-          tribe_code: descent[:tribe_code],
-          confidence: descent.fetch(:confidence, :verified),
-          verified_at: Time.current
-        }
-      end
-
-      def verify_alaska_native_corporation_shareholder(patient_identifier)
-        holding = @anc_shareholders[patient_identifier.to_s]
-        return { shareholder: false, corporation_code: nil, confidence: :verified, verified_at: Time.current } unless holding
-
-        {
-          shareholder: holding[:shareholder],
-          corporation_code: holding[:corporation_code],
-          confidence: holding.fetch(:confidence, :verified),
-          verified_at: Time.current
-        }
-      end
-
-      def list_itu_encounters(patient_identifier, since: nil)
-        encounters = @itu_encounters.fetch(patient_identifier.to_s, [])
-        encounters = encounters.select { |e| e[:service_date] >= since } if since
-
-        { encounters: encounters, confidence: :verified }
       end
 
       def verify_identity_documents(patient_identifier)
@@ -461,20 +435,12 @@ module Corvid
         @enrollments[patient_identifier.to_s] = attrs
       end
 
+      def add_service_eligibility(patient_identifier, attrs)
+        @service_eligibilities[patient_identifier.to_s] = attrs
+      end
+
       def add_residency(patient_identifier, attrs)
         @residencies[patient_identifier.to_s] = attrs
-      end
-
-      def add_tribal_descent(patient_identifier, attrs)
-        @descents[patient_identifier.to_s] = attrs
-      end
-
-      def add_anc_shareholder(patient_identifier, attrs)
-        @anc_shareholders[patient_identifier.to_s] = attrs
-      end
-
-      def add_itu_encounter(patient_identifier, attrs)
-        (@itu_encounters[patient_identifier.to_s] ||= []) << attrs
       end
 
       def add_claim(reference, attrs)
@@ -502,9 +468,7 @@ module Corvid
         @text_store = {}
         @enrollments = {}
         @residencies = {}
-        @descents = {}
-        @anc_shareholders = {}
-        @itu_encounters = {}
+        @service_eligibilities = {}
         @coverages = {}
         @claims = {}
         @remittances = {}

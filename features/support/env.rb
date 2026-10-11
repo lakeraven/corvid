@@ -30,6 +30,7 @@ def clean_corvid_tables!
   Corvid::ZipLocality.unscoped.delete_all
   Corvid::LocalityLookup.clear_cache!
   Corvid::ApiCallLog.unscoped.delete_all
+  Corvid::IndianHealthEligibilityInquiry.unscoped.delete_all
   Corvid::Payment.unscoped.delete_all
   Corvid::ClaimSubmission.unscoped.delete_all
   Corvid::BillingTransaction.unscoped.delete_all
