@@ -18,6 +18,7 @@ module Corvid
   #   :enrolled_tribal_member                 — enrolled in a federally recognized tribe
   #   :descendant_of_enrolled_member          — child or grandchild of an enrolled member
   #   :alaska_native_corporation_shareholder  — shareholder in an Alaska Native Corporation
+  #   :california_indian                      — California Indian under IHCIA 809(a), not enrolled
   #   :received_itu_services                  — received care at an IHS, tribal or urban Indian site
   #
   # Outcomes:
@@ -27,11 +28,16 @@ module Corvid
   #                      finding that the person is not AI/AN; the caller
   #                      falls back to attestation or documents.
   #   :unavailable     — no source could be reached; retry later.
+  #
+  # Once a person is found exempt in a tenant, later calls return that
+  # determination with a :previously_established warning and query no
+  # sources: CMS guidance bars states from reverifying AI/AN status.
   class AianExemptionService
     BASES = %i[
       enrolled_tribal_member
       descendant_of_enrolled_member
       alaska_native_corporation_shareholder
+      california_indian
       received_itu_services
     ].freeze
 
@@ -42,6 +48,7 @@ module Corvid
       enrolled_tribal_member: :verify_tribal_enrollment,
       descendant_of_enrolled_member: :verify_tribal_descent,
       alaska_native_corporation_shareholder: :verify_alaska_native_corporation_shareholder,
+      california_indian: :verify_california_indian,
       received_itu_services: :list_itu_encounters
     }.freeze
 
@@ -66,6 +73,9 @@ module Corvid
     def determine(person_identifier:, as_of_date: Date.current, itu_lookback_days: nil,
                   decided_by_identifier: nil, tenant_identifier: nil)
       tenant_identifier ||= Corvid::TenantContext.current_tenant_identifier
+      prior = prior_exemption(person_identifier)
+      return prior if prior
+
       since = itu_lookback_days && (as_of_date - itu_lookback_days)
 
       evidence = []
@@ -112,6 +122,14 @@ module Corvid
 
     private
 
+    def prior_exemption(person_identifier)
+      row = AianExemptionDetermination.for_person(person_identifier).where(status: "exempt").recent.first
+      return nil unless row
+
+      Determination.new(status: :exempt, bases: row.bases.map(&:to_sym), warnings: [ :previously_established ],
+                        determination_id: row.id)
+    end
+
     def call_check(source, check, person_identifier, since)
       return nil unless source.respond_to?(check)
 
@@ -129,6 +147,7 @@ module Corvid
       when :enrolled_tribal_member then response[:enrolled] == true
       when :descendant_of_enrolled_member then response[:descendant] == true
       when :alaska_native_corporation_shareholder then response[:shareholder] == true
+      when :california_indian then response[:california_indian] == true
       when :received_itu_services
         Array(response[:encounters]).any? do |e|
           date = e[:service_date]

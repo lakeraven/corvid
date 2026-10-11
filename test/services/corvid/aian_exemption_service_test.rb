@@ -61,6 +61,16 @@ class Corvid::AianExemptionServiceTest < ActiveSupport::TestCase
     assert_equal [ :alaska_native_corporation_shareholder ], result.bases
   end
 
+  test "a California Indian under IHCIA section 809(a) is exempt without tribal enrollment" do
+    @adapter.add_california_indian("pt_ca", california_indian: true, path: :rancheria_distribution,
+                                            confidence: :verified)
+
+    result = determine("pt_ca")
+
+    assert_equal :exempt, result.status
+    assert_equal [ :california_indian ], result.bases
+  end
+
   test "a person who received care at an IHS, tribal or urban Indian site is exempt" do
     @adapter.add_itu_encounter("pt_itu", service_date: Date.new(2026, 11, 4), facility_kind: :tribal)
 
@@ -97,9 +107,10 @@ class Corvid::AianExemptionServiceTest < ActiveSupport::TestCase
 
   test "an encounter older than a state's lookback window does not count" do
     @adapter.add_itu_encounter("pt_old", service_date: AS_OF - 400, facility_kind: :ihs)
+    @adapter.add_itu_encounter("pt_old_unlimited", service_date: AS_OF - 400, facility_kind: :ihs)
 
-    assert_equal :exempt, determine("pt_old").status
     assert_equal :not_established, determine("pt_old", itu_lookback_days: 365).status
+    assert_equal :exempt, determine("pt_old_unlimited").status
   end
 
   # ---- Source availability ------------------------------------------------------
@@ -108,6 +119,7 @@ class Corvid::AianExemptionServiceTest < ActiveSupport::TestCase
     @adapter.define_singleton_method(:verify_tribal_enrollment) { |_| { enrolled: false, confidence: :unavailable } }
     @adapter.define_singleton_method(:verify_tribal_descent) { |_| { descendant: false, confidence: :unavailable } }
     @adapter.define_singleton_method(:verify_alaska_native_corporation_shareholder) { |_| { shareholder: false, confidence: :unavailable } }
+    @adapter.define_singleton_method(:verify_california_indian) { |_| { california_indian: false, confidence: :unavailable } }
     @adapter.define_singleton_method(:list_itu_encounters) { |_, **| { encounters: [], confidence: :unavailable } }
 
     assert_equal :unavailable, determine("pt_down").status
@@ -161,6 +173,43 @@ class Corvid::AianExemptionServiceTest < ActiveSupport::TestCase
     assert_equal [ "Corvid::Adapters::MockAdapter" ], row.evidence.map { |e| e["source"] }.uniq
     refute_includes row.evidence.to_json, "MOCK-0001"
     assert_match(/\A\h{64}\z/, row.verification_snapshot_hash)
+  end
+
+  # ---- Established status is not reverified (CMS guidance) -------------------
+
+  test "a person already found exempt stays exempt without querying sources again" do
+    @adapter.add_enrollment("pt_prior", enrolled: true, tribe_code: "DEMO", confidence: :verified)
+    first = determine("pt_prior")
+    @adapter.reset!
+
+    second = determine("pt_prior")
+
+    assert_equal :exempt, second.status
+    assert_equal [ :enrolled_tribal_member ], second.bases
+    assert_equal [ :previously_established ], second.warnings
+    assert_equal first.determination_id, second.determination_id
+    assert_equal 1, Corvid::AianExemptionDetermination.for_person("pt_prior").count
+  end
+
+  test "a prior not_established result does not stop a new check" do
+    determine("pt_later")
+    @adapter.add_enrollment("pt_later", enrolled: true, tribe_code: "DEMO", confidence: :verified)
+
+    result = determine("pt_later")
+
+    assert_equal :exempt, result.status
+    assert_empty result.warnings
+  end
+
+  test "an exemption established for one tenant does not carry over to another" do
+    @adapter.add_enrollment("pt_tenant", enrolled: true, tribe_code: "DEMO", confidence: :verified)
+    determine("pt_tenant")
+    @adapter.reset!
+
+    Corvid::TenantContext.current_tenant_identifier = "tenant_other"
+    result = determine("pt_tenant")
+
+    assert_equal :not_established, result.status
   end
 
   test "class-method shim routes through the global adapter" do

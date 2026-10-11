@@ -247,6 +247,18 @@ module Corvid
         raise NotImplementedError, "#{self.class}#verify_alaska_native_corporation_shareholder not implemented"
       end
 
+      # Whether the person is a California Indian under IHCIA section 809(a)
+      # (25 U.S.C. 1679(a)) on a path other than tribal membership, which
+      # verify_tribal_enrollment answers. Records for these paths are held
+      # mainly by the BIA Pacific Region, so one source serves every state.
+      # Returns { california_indian: bool,
+      #           path: :descendant_1852|:trust_allotment|:rancheria_distribution|nil,
+      #           confidence: :verified|:stale|:unavailable,
+      #           verified_at: datetime }
+      def verify_california_indian(patient_identifier)
+        raise NotImplementedError, "#{self.class}#verify_california_indian not implemented"
+      end
+
       # Services the person received at an IHS, tribal, or urban Indian (I/T/U)
       # site, from clinic records or from state claims billed by I/T/U providers.
       # Returns { encounters: [ { service_date: Date,

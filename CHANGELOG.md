@@ -14,9 +14,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   enrollment, clinic records). Outcomes are `exempt`, `not_established` and
   `unavailable`; there is deliberately no "not AI/AN" outcome. Each call writes
   a PHI-free `corvid_aian_exemption_determinations` row and renders as a FHIR R4
-  `VerificationResult`. See ADR 0007.
+  `VerificationResult`. California Indians (IHCIA 809(a)) are their own basis,
+  and a person once found exempt is not reverified. See ADR 0007.
 - Adapter contract: `verify_tribal_descent`,
-  `verify_alaska_native_corporation_shareholder` and `list_itu_encounters`
+  `verify_alaska_native_corporation_shareholder`, `verify_california_indian`
+  and `list_itu_encounters`
   (optional; sources implement whichever they can answer).
 
 ### Removed
