@@ -72,7 +72,7 @@ class Corvid::IndianHealthEligibilityConcurrencyTest < ActiveSupport::TestCase
     assert_equal 1, results.count(:success)
     assert_equal 4, results.count(:exceeded)
 
-    inquiries = Corvid::IndianHealthEligibilityInquiry.where(requester_identifier: @requester).to_a
+    inquiries = with_tenant(@tenant) { Corvid::IndianHealthEligibilityInquiry.where(requester_identifier: @requester).to_a }
     assert_equal 5, inquiries.size
     assert_equal 1, inquiries.count { |i| i.answer != "refused" }
     assert_equal 4, inquiries.count { |i| i.answer == "refused" }
@@ -117,10 +117,10 @@ class Corvid::IndianHealthEligibilityConcurrencyTest < ActiveSupport::TestCase
     # Both should get the exact same answer (either :eligible or :not_eligible, depending on which thread won the race)
     assert_equal 2, results.size
     assert_equal results[0], results[1]
-    assert_includes [:eligible, :not_eligible], results[0]
+    assert_includes [ :eligible, :not_eligible ], results[0]
 
     # Exactly one non-replayed decisive row exists
-    inquiries = Corvid::IndianHealthEligibilityInquiry.where(person_identifier: "pt_001").to_a
+    inquiries = with_tenant(@tenant) { Corvid::IndianHealthEligibilityInquiry.where(person_identifier: "pt_001").to_a }
     assert_equal 1, inquiries.count { |i| !i.replayed }
   end
 end

@@ -21,7 +21,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_11_000002) do
     t.string "person_identifier", null: false
     t.string "answer", null: false
     t.string "data_source"
-    t.string "asserted_at"
+    t.datetime "asserted_at", precision: 6
     t.string "message_id", null: false
     t.boolean "replayed", default: false, null: false
     t.datetime "created_at", null: false

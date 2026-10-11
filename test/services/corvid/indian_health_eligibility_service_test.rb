@@ -7,7 +7,7 @@ class Corvid::IndianHealthEligibilityServiceTest < ActiveSupport::TestCase
     @service = Corvid::IndianHealthEligibilityService.new(adapter: @adapter)
     @requester = "req_001"
     @agreement = "agr_001"
-    
+
     # Reset ceiling configuration
     Corvid.configuration.indian_health_eligibility_ceiling = { limit: 10, period: 1.hour }
   end
@@ -335,7 +335,7 @@ class Corvid::IndianHealthEligibilityServiceTest < ActiveSupport::TestCase
 
   test "asymmetric immutability: refused is NOT frozen and adapter is called again" do
     Corvid.configuration.indian_health_eligibility_ceiling = { limit: 1, period: 1.hour }
-    
+
     counting = CountingAdapter.new(@adapter)
     service = Corvid::IndianHealthEligibilityService.new(adapter: counting)
 
@@ -344,7 +344,7 @@ class Corvid::IndianHealthEligibilityServiceTest < ActiveSupport::TestCase
       assert_raises(Corvid::IndianHealthEligibilityService::CeilingExceeded) do
         service.inquire(person_identifier: "pt_002", requester_identifier: @requester, agreement_reference: @agreement)
       end
-      
+
       # Now pt_002 has a refused row. Let's query it with a different requester.
       result = service.inquire(person_identifier: "pt_002", requester_identifier: "req_002", agreement_reference: @agreement)
       assert_equal :unknown, result.answer
@@ -399,7 +399,7 @@ class Corvid::IndianHealthEligibilityServiceTest < ActiveSupport::TestCase
       assert_raises(Corvid::IndianHealthEligibilityService::CeilingExceeded) do
         @service.inquire(person_identifier: "pt_001", requester_identifier: "req_A", agreement_reference: @agreement)
       end
-      
+
       inquiry = Corvid::IndianHealthEligibilityInquiry.where(requester_identifier: "req_A").last
       assert_equal "refused", inquiry.answer
 
