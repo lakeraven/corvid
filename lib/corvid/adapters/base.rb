@@ -223,6 +223,40 @@ module Corvid
       end
 
       # ----------------------------------------------------------------------
+      # AI/AN status evidence (for the H.R. 1 community-engagement exemption)
+      #
+      # Each source implements whichever of these it can answer: a state
+      # claims adapter typically answers only list_itu_encounters, a tribal
+      # enrollment office only the enrollment and descent checks.
+      # AianExemptionService skips methods a source does not implement.
+      # ----------------------------------------------------------------------
+
+      # Whether the person is the child or grandchild of an enrolled member.
+      # Returns { descendant: bool, relationship: :parent|:grandparent|nil,
+      #           tribe_code: str|nil,
+      #           confidence: :verified|:stale|:unavailable,
+      #           verified_at: datetime }
+      def verify_tribal_descent(patient_identifier)
+        raise NotImplementedError, "#{self.class}#verify_tribal_descent not implemented"
+      end
+
+      # Returns { shareholder: bool, corporation_code: str|nil,
+      #           confidence: :verified|:stale|:unavailable,
+      #           verified_at: datetime }
+      def verify_alaska_native_corporation_shareholder(patient_identifier)
+        raise NotImplementedError, "#{self.class}#verify_alaska_native_corporation_shareholder not implemented"
+      end
+
+      # Services the person received at an IHS, tribal, or urban Indian (I/T/U)
+      # site, from clinic records or from state claims billed by I/T/U providers.
+      # Returns { encounters: [ { service_date: Date,
+      #                           facility_kind: :ihs|:tribal|:urban } ],
+      #           confidence: :verified|:stale|:unavailable }
+      def list_itu_encounters(patient_identifier, since: nil)
+        raise NotImplementedError, "#{self.class}#list_itu_encounters not implemented"
+      end
+
+      # ----------------------------------------------------------------------
       # Billing / EDI (clearinghouse adapter contract)
       # ----------------------------------------------------------------------
 

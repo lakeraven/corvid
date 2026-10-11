@@ -331,6 +331,38 @@ module Corvid
         }
       end
 
+      def verify_tribal_descent(patient_identifier)
+        descent = @descents[patient_identifier.to_s]
+        return { descendant: false, relationship: nil, tribe_code: nil, confidence: :verified, verified_at: Time.current } unless descent
+
+        {
+          descendant: descent[:descendant],
+          relationship: descent[:relationship],
+          tribe_code: descent[:tribe_code],
+          confidence: descent.fetch(:confidence, :verified),
+          verified_at: Time.current
+        }
+      end
+
+      def verify_alaska_native_corporation_shareholder(patient_identifier)
+        holding = @anc_shareholders[patient_identifier.to_s]
+        return { shareholder: false, corporation_code: nil, confidence: :verified, verified_at: Time.current } unless holding
+
+        {
+          shareholder: holding[:shareholder],
+          corporation_code: holding[:corporation_code],
+          confidence: holding.fetch(:confidence, :verified),
+          verified_at: Time.current
+        }
+      end
+
+      def list_itu_encounters(patient_identifier, since: nil)
+        encounters = @itu_encounters.fetch(patient_identifier.to_s, [])
+        encounters = encounters.select { |e| e[:service_date] >= since } if since
+
+        { encounters: encounters, confidence: :verified }
+      end
+
       def verify_identity_documents(patient_identifier)
         patient = @patients[patient_identifier.to_s]
         return { ssn_present: false, dob_present: false, birthplace_present: false, verified_at: Time.current } unless patient
@@ -433,6 +465,18 @@ module Corvid
         @residencies[patient_identifier.to_s] = attrs
       end
 
+      def add_tribal_descent(patient_identifier, attrs)
+        @descents[patient_identifier.to_s] = attrs
+      end
+
+      def add_anc_shareholder(patient_identifier, attrs)
+        @anc_shareholders[patient_identifier.to_s] = attrs
+      end
+
+      def add_itu_encounter(patient_identifier, attrs)
+        (@itu_encounters[patient_identifier.to_s] ||= []) << attrs
+      end
+
       def add_claim(reference, attrs)
         @claims[reference] = attrs
       end
@@ -458,6 +502,9 @@ module Corvid
         @text_store = {}
         @enrollments = {}
         @residencies = {}
+        @descents = {}
+        @anc_shareholders = {}
+        @itu_encounters = {}
         @coverages = {}
         @claims = {}
         @remittances = {}

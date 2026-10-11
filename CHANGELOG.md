@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- `Corvid::AianExemptionService` and `POST /corvid/api/v1/aian_exemption/determine`:
+  establish the H.R. 1 community-engagement exemption for American Indians and
+  Alaska Natives from one or more evidence sources (state claims, tribal
+  enrollment, clinic records). Outcomes are `exempt`, `not_established` and
+  `unavailable`; there is deliberately no "not AI/AN" outcome. Each call writes
+  a PHI-free `corvid_aian_exemption_determinations` row and renders as a FHIR R4
+  `VerificationResult`. See ADR 0007.
+- Adapter contract: `verify_tribal_descent`,
+  `verify_alaska_native_corporation_shareholder` and `list_itu_encounters`
+  (optional; sources implement whichever they can answer).
+
 ### Removed
 - `corvid_cases.patient_name_cached` and `corvid_cases.patient_dob_cached`,
   and `Corvid::Case#cache_patient_data!` which was their only writer. ADR 0003

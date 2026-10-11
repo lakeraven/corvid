@@ -10,9 +10,27 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_10_06_000003) do
+ActiveRecord::Schema[8.1].define(version: 2026_10_11_000001) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
+
+  create_table "corvid_aian_exemption_determinations", force: :cascade do |t|
+    t.string "tenant_identifier", null: false
+    t.string "facility_identifier"
+    t.string "person_identifier", null: false
+    t.string "decided_by_identifier"
+    t.datetime "decided_at", null: false
+    t.date "as_of_date", null: false
+    t.string "status", null: false
+    t.jsonb "bases", default: [], null: false
+    t.jsonb "warnings", default: [], null: false
+    t.jsonb "evidence", default: [], null: false
+    t.string "verification_snapshot_hash"
+    t.datetime "created_at", null: false
+    t.datetime "updated_at", null: false
+    t.index ["tenant_identifier", "person_identifier", "decided_at"], name: "idx_corvid_aian_determinations_tenant_person_decided"
+    t.check_constraint "status::text = ANY (ARRAY['exempt'::character varying, 'not_established'::character varying, 'unavailable'::character varying]::text[])", name: "corvid_aian_determinations_status_check"
+  end
 
   create_table "corvid_alternate_resource_checks", force: :cascade do |t|
     t.bigint "prc_referral_id", null: false
