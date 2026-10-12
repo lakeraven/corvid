@@ -12,12 +12,17 @@ class Corvid::OppsRateProviderTest < ActiveSupport::TestCase
       calendar_year: @cy, apc_code: "5071", relative_weight: 25.4378
     )
     Corvid::OppsConversionFactor.create!(
-      calendar_year: @cy, locality: "NATIONAL",
-      conversion_factor: 89.169, wage_index: 1.0
+      calendar_year: @cy, locality: "NATIONAL", conversion_factor: 89.169
     )
-    Corvid::OppsConversionFactor.create!(
-      calendar_year: @cy, locality: "01",
-      conversion_factor: 89.169, wage_index: 1.085
+    # Wage index is sourced from IppsHospitalRate, not from the CF row
+    # itself (#369) — the CF row's wage_index column is unread by the
+    # rate provider (still present in schema; dropped in the #370
+    # follow-up migration).
+    Corvid::IppsHospitalRate.create!(
+      fiscal_year: @cy, locality: "NATIONAL", base_rate: 6_752.61, wage_index: 1.0
+    )
+    Corvid::IppsHospitalRate.create!(
+      fiscal_year: @cy, locality: "01", base_rate: 6_752.61, wage_index: 1.085
     )
   end
 
@@ -99,5 +104,44 @@ class Corvid::OppsRateProviderTest < ActiveSupport::TestCase
     )
     assert_equal "stub_v1", lookup.release_label,
                  "if either row is stub-labeled, the lookup propagates it"
+  end
+
+  test "lookup_for propagates a stub label carried only by the IPPS wage index row" do
+    Corvid::IppsHospitalRate.unscoped.delete_all
+    Corvid::IppsHospitalRate.create!(
+      fiscal_year: @cy, locality: "NATIONAL", base_rate: 6_752.61,
+      wage_index: 1.0, release_label: "stub_v1"
+    )
+    lookup = Corvid::OppsRateProvider.lookup_for(
+      apc_code: "5071", locality: "NATIONAL", date: Date.new(2026, 6, 15)
+    )
+    assert_equal "stub_v1", lookup.release_label,
+                 "a stub-derived wage index row downgrades the combined result too"
+  end
+
+  test "changing the IPPS wage index for a CBSA changes the OPPS rate for that CBSA (#369)" do
+    Corvid::IppsHospitalRate.create!(
+      fiscal_year: @cy, locality: "31084", base_rate: 6_752.61, wage_index: 1.2463
+    )
+    low = Corvid::OppsRateProvider.rate_for(
+      apc_code: "5071", locality: "31084", date: Date.new(2026, 6, 15)
+    )
+
+    Corvid::IppsHospitalRate.find_by(fiscal_year: @cy, locality: "31084").update!(wage_index: 1.5)
+    high = Corvid::OppsRateProvider.rate_for(
+      apc_code: "5071", locality: "31084", date: Date.new(2026, 6, 15)
+    )
+
+    refute_in_delta low, high, 0.01,
+                    "updating the shared IPPS wage index for a CBSA should move the OPPS rate for that CBSA"
+  end
+
+  test "rate_for falls back to wage_index 1.0 when no IPPS hospital rate is loaded at all" do
+    Corvid::IppsHospitalRate.unscoped.delete_all
+    rate = Corvid::OppsRateProvider.rate_for(
+      apc_code: "5071", locality: "NATIONAL", date: Date.new(2026, 6, 15)
+    )
+    # 25.4378 × 89.169 × 1.0 = 2268.26
+    assert_in_delta 2_268.26, rate, 0.01
   end
 end
