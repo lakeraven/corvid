@@ -1,0 +1,369 @@
+# Plaintext columns in corvid tables that the PHI schema guard permits, with
+# the reason each one is permitted.
+#
+# WHY THIS FILE EXISTS. ADR 0003 states that no corvid table holds PHI and gives
+# a testable criterion: a corvid database dump must reveal no PHI.
+# test/corvid/phi_schema_guard_test.rb enforces that by DEFAULT-DENY — every
+# string/text/jsonb/binary/date column is a violation unless permitted by type,
+# permitted by an explicit convention in the guard, or listed here. So this file
+# is the disclosed surface, and anything NEW fails CI.
+#
+# classification (the guard validates these and reads some of them):
+#
+#   accepted_workflow_date - stored by DESIGN per ADR 0003 section 3, which
+#                            lists workflow dates as "stored as date,
+#                            workflow-essential, documented combination risk".
+#                            No remediate_by: nothing is being remediated.
+#   patient_phi            - patient-linked and not intended to stay. Carries a
+#                            real remediate_by; the guard FAILS once it passes.
+#   needs_decision         - genuinely ambiguous; a legal call, not an
+#                            engineering one. No date until the call is made.
+#   unclassified           - surfaced by the guard, not yet triaged.
+#
+# There is deliberately no `false_positive` value. A column that is not patient
+# data is a gap in the guard's allowlist, not a disclosed exception, and it
+# belongs in ENUM_COLUMNS / PROVENANCE_COLUMNS / permitted_by_convention? where
+# widening the net is reviewed as code. Listing non-issues here would inflate
+# the count in the one document whose purpose is credibility.
+#
+# Entries are NOT ranked by severity. corvid_prc_obligations.patient_dfn is a
+# plaintext medical record number and is the one to fix first.
+
+# --- ADR 0003 section 3: internal workflow dates ---------------------------
+
+- table: corvid_committee_reviews
+  column: committee_date
+  classification: accepted_workflow_date
+  adr: "0003 section 3"
+  why: "Date the review committee met. Named in ADR 0003 section 3 as the example of a workflow-essential stored date."
+  safe_harbor_note: "Would be a (C) identifier if linked to an identity; here the row is linked to an opaque token, not to a name or DOB."
+
+- table: corvid_committee_reviews
+  column: appeal_deadline
+  classification: accepted_workflow_date
+  adr: "0003 section 3"
+  why: "Deadline derived from the review date. Workflow scheduling."
+  safe_harbor_note: "Would be a (C) identifier if linked to an identity; here the row is linked to an opaque token, not to a name or DOB."
+
+- table: corvid_prc_referrals
+  column: notification_date
+  classification: accepted_workflow_date
+  adr: "0003 section 3"
+  why: "Date the programme was notified of the referral — drives the 72-hour and late-notification rules."
+  safe_harbor_note: "Would be a (C) identifier if linked to an identity; here the row is linked to an opaque token, not to a name or DOB."
+
+- table: corvid_prc_eligibility_decisions
+  column: as_of_date
+  classification: accepted_workflow_date
+  adr: "0003 section 3"
+  why: "The date the eligibility rules were applied as of. Retrospective determinations depend on it."
+  safe_harbor_note: "Would be a (C) identifier if linked to an identity; here the row is linked to an opaque token, not to a name or DOB."
+
+- table: corvid_prc_obligations
+  column: service_date
+  classification: accepted_workflow_date
+  adr: "0003 section 3"
+  why: "Date of service on an imported CHS/TRD obligation. The overpayment analyzer reprices by date; a token cannot be compared."
+  safe_harbor_note: "Would be a (C) identifier if linked to an identity; here the row is linked to an opaque token, not to a name or DOB."
+
+- table: corvid_claim_submissions
+  column: service_date
+  classification: accepted_workflow_date
+  adr: "0003 section 3"
+  why: "Date of service on the claim. Required on the 837 and in timely-filing arithmetic."
+  safe_harbor_note: "Would be a (C) identifier if linked to an identity; here the row is linked to an opaque token, not to a name or DOB."
+
+- table: corvid_claim_submissions
+  column: paid_date
+  classification: accepted_workflow_date
+  adr: "0003 section 3"
+  why: "Remittance date. Article 6 quarterly reporting filters on it by quarter."
+  safe_harbor_note: "Would be a (C) identifier if linked to an identity; here the row is linked to an opaque token, not to a name or DOB."
+
+- table: corvid_prc_payments
+  column: paid_date
+  classification: accepted_workflow_date
+  adr: "0003 section 3"
+  why: "Date the vendor payment cleared. Same quarterly reporting path."
+  safe_harbor_note: "Would be a (C) identifier if linked to an identity; here the row is linked to an opaque token, not to a name or DOB."
+
+# --- Same decision, but these sit at the EDGE of the ADR's language --------
+# ADR 0003 section 3's examples are committee_date, due_at and completed_at —
+# dates belonging to OUR workflow. The four below are dates belonging to the
+# PATIENT's coverage and programme participation, which is a different kind of
+# fact even though the storage argument (range queries, eligibility arithmetic)
+# is the same. Classified here under the same decision; flagged so the choice is
+# visible in the artifact rather than only in a chat log. Narrow the ADR's
+# wording or move these to patient_phi if the distinction should bite.
+
+- table: corvid_alternate_resource_checks
+  column: coverage_start
+  classification: accepted_workflow_date
+  adr: "0003 section 3 (applied by extension — see note above)"
+  why: "Start of an alternate resource's coverage period."
+  safe_harbor_note: "Patient-attribute date rather than an internal workflow date. Confirm the extension is intended."
+
+- table: corvid_alternate_resource_checks
+  column: coverage_end
+  classification: accepted_workflow_date
+  adr: "0003 section 3 (applied by extension — see note above)"
+  why: "End of an alternate resource's coverage period."
+  safe_harbor_note: "Patient-attribute date rather than an internal workflow date. Confirm the extension is intended."
+
+- table: corvid_case_programs
+  column: enrollment_date
+  classification: accepted_workflow_date
+  adr: "0003 section 3 (applied by extension — see note above)"
+  why: "Date the patient enrolled in the programme."
+  safe_harbor_note: "Patient-attribute date rather than an internal workflow date. Confirm the extension is intended."
+
+- table: corvid_case_programs
+  column: disenrollment_date
+  classification: accepted_workflow_date
+  adr: "0003 section 3 (applied by extension — see note above)"
+  why: "Date the patient left the programme."
+  safe_harbor_note: "Patient-attribute date rather than an internal workflow date. Confirm the extension is intended."
+
+# --- patient_phi: real, dated, not in dispute ------------------------------
+
+- table: corvid_prc_obligations
+  column: patient_dfn
+  classification: patient_phi
+  hipaa: "(H) Medical record numbers"
+  why: >
+    Plaintext RPMS medical record number. A DIRECT patient identifier,
+    unconditional, not host-optional. The same row carries procedure_code,
+    service_date and vendor_id, so this table is an identified
+    clinical-financial record (the CHS/TRD import). Remediation is to tokenize
+    the DFN at import in chs_trd_normalizer, not to drop the column.
+  blocked_on: >
+    #232 (Extract VaultTextGateway for tokenized text handling). Today
+    Corvid::Adapters::FhirAdapter raises NotImplementedError on dereference,
+    dereference_many, store_text and fetch_text, so nothing resolves a token
+    and tokenization cannot be implemented. Decided 2026-10-02: BOTH mechanisms
+    are in scope - vault tokenization via #232, and ActiveRecord encryption
+    where a column must be protected before the vault lands (encryption imposes
+    host key configuration, which is now an accepted trade rather than a
+    blocker).
+
+- table: corvid_prc_referrals
+  column: authorization_number
+  classification: patient_phi
+  hipaa: "(R) Any other unique identifying number - NOT (J); an authorization number is not an account number"
+  why: Unique number assigned in connection with one patient's care.
+  blocked_on: "#232 (VaultTextGateway), as for patient_dfn above."
+
+- table: corvid_alternate_resource_checks
+  column: group_number
+  classification: needs_decision
+  hipaa: "(R) at most, by combination"
+  why: >
+    A group number identifies the EMPLOYER PLAN, not the beneficiary, so (I)
+    health-plan-beneficiary-number is the wrong citation. Combination risk at
+    most. Reclassify as patient_phi under (R) or permit it, but do not cite (I).
+
+# --- unclassified: surfaced by the default-deny net, not yet triaged --------
+# PRE-EXISTING, not new: the previous name-based net could not see them.
+# Disclosed rather than suppressed, so the guard stays useful for anything
+# genuinely new. Each needs a classification.
+
+- table: corvid_prc_overpayment_analyses
+  column: notes
+  classification: unclassified
+  type: text
+  why: >
+    prc_overpayment_analyzer.rb writes clinical codes into free text - no PFS
+    rate found for CPT <hcpcs>, inpatient hospital claim DRG <n> - on a row
+    joined by prc_obligation_id to a plaintext DFN. Strongest candidate for
+    tokenization in this list.
+
+- table: corvid_prc_obligations
+  column: procedure_code
+  classification: unclassified
+  type: string
+  why: >
+    CPT/HCPCS on the same row as patient_dfn. A clinical fact about an
+    identified person; ADR 0003 section 1 lists diagnoses and clinical
+    observations as never-stored.
+
+- table: corvid_billing_transactions
+  column: error_message
+  classification: unclassified
+  type: string
+  why: >
+    billing_transaction.rb stores adapter and clearinghouse error text
+    verbatim. 999 and 277 rejections routinely echo subscriber names and member
+    IDs. ADR sections 10-11 sanitize exceptions in memory; this persists them.
+
+- table: corvid_prc_eligibility_decisions
+  column: reason_codes
+  classification: unclassified
+  type: jsonb
+  why: Free-form jsonb on a patient-linked row. Can hold anything.
+
+- table: corvid_prc_eligibility_decisions
+  column: provider_source
+  classification: unclassified
+  type: string
+
+- table: corvid_prc_obligations
+  column: source_file
+  classification: unclassified
+  type: string
+  why: Import filename. Vendor file names sometimes carry a patient or batch identifier.
+
+- table: corvid_eligibility_checklists
+  column: application_completed_by
+  classification: unclassified
+  type: string
+  why: >
+    Holds a practitioner token in tests (pr_mgr_001). If it can only ever hold
+    a token it belongs in the guard allowlist; confirm it cannot hold a
+    typed-in name.
+
+- table: corvid_eligibility_checklists
+  column: management_approved_by
+  classification: unclassified
+  type: string
+  why: As application_completed_by.
+
+- table: corvid_eligibility_checklists
+  column: identity_verification_source
+  classification: unclassified
+  type: string
+  why: One of four verification_source columns; same question as above.
+
+- table: corvid_eligibility_checklists
+  column: insurance_verification_source
+  classification: unclassified
+  type: string
+
+- table: corvid_eligibility_checklists
+  column: residency_verification_source
+  classification: unclassified
+  type: string
+
+- table: corvid_eligibility_checklists
+  column: enrollment_verification_source
+  classification: unclassified
+  type: string
+
+- table: corvid_eligibility_checklists
+  column: clinical_necessity_documentation_source
+  classification: unclassified
+  type: string
+
+- table: corvid_tasks
+  column: description
+  classification: unclassified
+  type: string
+  why: >
+    Free text on a patient-linked task. ADR section 1 forbids clinical free
+    text, and notes_token already exists on this table - so description may be
+    a second path around it.
+
+- table: corvid_care_teams
+  column: description
+  classification: unclassified
+  type: text
+  why: Free text on a care team.
+
+- table: corvid_payments
+  column: description
+  classification: unclassified
+  type: string
+  why: Free text on a payment.
+
+- table: corvid_payments
+  column: receipt_url
+  classification: unclassified
+  type: string
+  why: "(M) URLs. A receipt URL can embed an identifier."
+
+- table: corvid_api_call_logs
+  column: endpoint
+  classification: unclassified
+  type: string
+  why: Request path. A path with a patient id in it would persist it.
+
+- table: corvid_case_programs
+  column: program_code
+  classification: unclassified
+  type: string
+  why: >
+    Programme code on a case-linked row. See program_name - for a SUD programme
+    this is 42 CFR Part 2 data in itself.
+
+# --- call 2, decided 2026-10-02: conservative -------------------------------
+
+- table: corvid_prc_payments
+  column: vendor_name
+  classification: patient_phi
+  hipaa: "(A) Names"
+  why: >
+    A PRC vendor is a provider ORGANISATION paid for one patient's referred
+    care, so on a patient-linked payment row it reveals where that patient was
+    sent - the same class of fact as who treated them. ADR 0003 section 3
+    already tokenizes payer names and never stores practitioner names; there is
+    no principled reason this differs.
+    NOT droppable: chs_trd_normalizer lists vendor_name in
+    REQUIRED_STRING_FIELDS, and the Revenue Integrity Assessment deliverable is
+    a table of who was overpaid. Remove the vendor and the findings packet
+    loses its actionable column.
+  blocked_on: "#232 (VaultTextGateway), as for patient_dfn."
+
+- table: corvid_prc_payments
+  column: check_number
+  classification: patient_phi
+  hipaa: "(R) Any other unique identifying number - NOT (J); a cheque is not an account"
+  why: >
+    A cheque number identifies a disbursement rather than a person, and one
+    cheque can cover many obligations - so it is softer than the rest of this
+    list. Classified conservatively anyway: for a single-obligation cheque the
+    number is effectively a unique handle on one patient's episode of care.
+  remediation: >
+    Stop PERSISTING it. prc_report_parser reads it from the PRC file and
+    prc_importer passes it to Corvid.adapter.record_payment, which is the host's
+    own payment record - so it can flow through without being stored here.
+    Needs no vault and costs nothing the product uses.
+  remediate_by: "2026-10-20"
+
+# --- call 4, decided 2026-10-02 ---------------------------------------------
+
+- table: corvid_care_teams
+  column: name
+  classification: patient_phi
+  hipaa: "(A) Names"
+  why: >
+    Not the harmless team label I first classified it as. Care teams are
+    routinely named after the lead clinician or the clinic, and ADR 0003
+    section 3 says practitioner names are NEVER stored. The problem is the
+    column's capacity, not its intent, so a naming convention is not
+    protection.
+  remediation: >
+    ENCRYPT, do not tokenize. The column is validates-presence and is
+    serialized into to_fhir as CareTeam.name for dashboard previews, so a token
+    would render as nothing until a vault exists. ActiveRecord encryption makes
+    a dump useless while keeping the value readable in process, which is what
+    the dashboard needs. Cost: the host must configure encryption keys, which
+    corvid does not require today - a deliberate new requirement, decided
+    2026-10-02.
+  remediate_by: "2026-11-14"
+
+- table: corvid_case_programs
+  column: program_name
+  classification: patient_phi
+  hipaa: "(A) Names - and more than PHI"
+  why: >
+    A programme label on a case-linked row is a fact about that patient's
+    enrolment. For a SUD programme that is 42 CFR Part 2 data in its own right,
+    not merely PHI - see ADR 0005 and the Part 2 segmentation work. This is the
+    entry I would least want published as a false positive.
+  remediation: >
+    DROP the column. Verified redundant: Corvid::ProgramRegistry holds a
+    display_name for every code, program_code is validated against that
+    registry (program_code_in_registry), is unique per case, and every query
+    uses the code - Case.joins(:case_programs).where(program_code:) and
+    scope :for_program. So the name is a denormalized label that can be
+    resolved from the registry on read. Needs no vault and no encryption keys.
+  remediate_by: "2026-10-20"
