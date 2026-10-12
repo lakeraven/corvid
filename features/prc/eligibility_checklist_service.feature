@@ -133,13 +133,48 @@ Feature: Eligibility checklist auto-population from enrollment adapter
     Then "insurance_verified" should be true
     And the insurance verification source should be "eligibility_check"
 
-  Scenario: Staff payer eligibility check finds no coverage
+  Scenario: Payer eligibility check confirms payer of last resort when no coverage exists
     Given the adapter has enrollment data for patient "pt_nocov2":
       | enrolled | membership_number | tribe_name  | on_reservation | address                           | ssn_last4 | dob        |
       | true     | BR-66666          | Broken Rock | true           | 500 Pine St, Broken Rock City, WA | 7890      | 1982-12-01 |
     And a patient "pt_nocov2" with a PRC case
     And a PRC referral "rf_nocov2" for that case
     And the referral transitions through submit and begin_eligibility_review
+    And every alternate resource for the referral is documented unavailable
+    When staff runs a payer eligibility check for the referral and finds no coverage
+    Then "insurance_verified" should be true
+    And the insurance verification source should be "payer_of_last_resort"
+
+  Scenario: Payer eligibility check leaves insurance for staff when alternate resources were never checked
+    Given the adapter has enrollment data for patient "pt_undocumented":
+      | enrolled | membership_number | tribe_name  | on_reservation | address                            | ssn_last4 | dob        |
+      | true     | BR-77777          | Broken Rock | true           | 700 Elm St, Broken Rock City, WA   | 1357      | 1990-02-14 |
+    And a patient "pt_undocumented" with a PRC case
+    And a PRC referral "rf_undocumented" for that case
+    And the referral transitions through submit and begin_eligibility_review
+    When staff runs a payer eligibility check for the referral and finds no coverage
+    Then "insurance_verified" should be false
+
+  Scenario: Payer eligibility check leaves insurance for staff when an alternate resource is still pending
+    Given the adapter has enrollment data for patient "pt_pendingalt":
+      | enrolled | membership_number | tribe_name  | on_reservation | address                            | ssn_last4 | dob        |
+      | true     | BR-88888          | Broken Rock | true           | 800 Fir St, Broken Rock City, WA   | 2468      | 1975-06-30 |
+    And a patient "pt_pendingalt" with a PRC case
+    And a PRC referral "rf_pendingalt" for that case
+    And the referral transitions through submit and begin_eligibility_review
+    And every alternate resource for the referral is documented unavailable
+    And the "medicaid" alternate resource check is still pending
+    When staff runs a payer eligibility check for the referral and finds no coverage
+    Then "insurance_verified" should be false
+
+  Scenario: Payer eligibility check leaves insurance for staff when the adapter cannot check
+    Given the adapter has enrollment data for patient "pt_nocheck":
+      | enrolled | membership_number | tribe_name  | on_reservation | address                           | ssn_last4 | dob        |
+      | true     | BR-33333          | Broken Rock | true           | 600 Ash St, Broken Rock City, WA  | 2468      | 1978-07-07 |
+    And a patient "pt_nocheck" with a PRC case
+    And a PRC referral "rf_nocheck" for that case
+    And the referral transitions through submit and begin_eligibility_review
+    And the coverage adapter cannot perform the check
     When staff runs a payer eligibility check for the referral and finds no coverage
     Then "insurance_verified" should be false
 
