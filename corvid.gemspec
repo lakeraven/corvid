@@ -34,7 +34,7 @@ Gem::Specification.new do |spec|
   # calls ::JSON.parse(json, options), so json >= 3 raises ArgumentError on every
   # jsonb read and on schema dumps of jsonb columns with defaults. Lift this cap
   # once a Rails release passes the options as keywords.
-  spec.add_dependency "json", ">= 2.7", "< 3.0"
+  spec.add_dependency "json", ">= 2.7", "< 4.0"
   spec.add_dependency "money-rails", "~> 3.0"
   spec.add_dependency "ostruct", "~> 0.6"
   spec.add_dependency "pg", "~> 1.5"
