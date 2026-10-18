@@ -22,6 +22,9 @@ module Corvid
 
     PRIVATE_INSURANCE_FIELDS = %i[payer_name policy_number group_number coverage_start coverage_end].freeze
 
+    # Prefix only: the warning names a count of resource types, never a patient (ADR 0003).
+    UNDETERMINED_ELIGIBILITY_WARNING_PREFIX = "Eligibility could not be determined"
+
     attr_reader :tenant_identifier, :facility_identifier,
                 :current_step, :data, :errors, :warnings, :messages,
                 :field_errors, :prc_referral, :alternate_resources
@@ -213,7 +216,8 @@ module Corvid
     # A failed or malformed lookup is not a determination of no coverage
     # (42 CFR 136.61). Only an explicit boolean :eligible enrolls or
     # refuses; anything else stays :not_checked so an unanswered payer
-    # lookup cannot be treated as a refusal.
+    # lookup cannot be treated as a refusal. Each run replaces the
+    # undetermined warning so the count matches resources still unverified.
     def verify_all_enrollment!
       @enrollment_verification_run = true
       undetermined = 0
@@ -228,9 +232,11 @@ module Corvid
           undetermined += 1
         end
       end
+
+      @warnings.delete_if { |warning| warning.start_with?(UNDETERMINED_ELIGIBILITY_WARNING_PREFIX) }
       return if undetermined.zero?
 
-      @warnings << "Eligibility could not be determined for #{undetermined} alternate resource(s); they remain unverified"
+      @warnings << "#{UNDETERMINED_ELIGIBILITY_WARNING_PREFIX} for #{undetermined} alternate resource(s); they remain unverified"
     end
 
     def enrollment_verification_run?
