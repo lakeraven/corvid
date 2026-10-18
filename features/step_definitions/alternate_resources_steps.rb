@@ -98,6 +98,17 @@ When("I verify all enrollment statuses for the referral") do
   @referral.alternate_resource_checks.reload
 end
 
+Given("every eligibility lookup returns an error payload") do
+  Corvid.adapter.define_singleton_method(:verify_eligibility) do |_patient_identifier, _resource_type|
+    { error: "unreachable" }
+  end
+end
+
+When("I verify all enrollment statuses through the alternate resource service") do
+  Corvid::AlternateResourceService.verify_all(@referral)
+  @referral.alternate_resource_checks.reload
+end
+
 When("I create all resource checks for the referral") do
   Corvid::AlternateResourceCheck.create_all_for_referral(@referral)
 end

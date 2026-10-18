@@ -64,6 +64,23 @@ class Corvid::AlternateResourceServiceTest < ActiveSupport::TestCase
     end
   end
 
+  test "verify_all with unreachable adapter leaves all checks not_checked" do
+    with_tenant(TENANT) do
+      referral = create_referral
+      Corvid.adapter.define_singleton_method(:verify_eligibility) do |_patient_identifier, _resource_type|
+        { error: "unreachable" }
+      end
+
+      Corvid::AlternateResourceService.verify_all(referral)
+      checks = referral.alternate_resource_checks.reload
+
+      assert_equal Corvid::AlternateResourceCheck::RESOURCE_TYPES.size, checks.count
+      assert_equal checks.count, checks.where(status: "not_checked").count
+      assert_equal 0, checks.where(status: "not_enrolled").count
+      refute Corvid::AlternateResourceCheck.all_exhausted?(referral)
+    end
+  end
+
   private
 
   def create_referral
