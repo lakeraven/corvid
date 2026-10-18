@@ -18,7 +18,9 @@ class Corvid::AuthorizationWizardEligibilityTest < ActiveSupport::TestCase
     end
 
     def verify_eligibility(_patient_identifier, resource_type)
-      @eligibility_by_type.fetch(resource_type, @default)
+      value = @eligibility_by_type.fetch(resource_type, @default)
+      value = value.call if value.is_a?(Proc)
+      value
     end
   end
 
@@ -201,6 +203,49 @@ class Corvid::AuthorizationWizardEligibilityTest < ActiveSupport::TestCase
       wizard.verify_all_enrollment!
 
       assert_single_undetermined_warning!(wizard)
+    end
+  end
+
+  test "an adapter error mid-run does not leave a stale undetermined warning" do
+    types = Corvid::AlternateResourceCheck::RESOURCE_TYPES
+    adapter = EligibilityControllingAdapter.new(default: nil)
+    Corvid.configure { |c| c.adapter = adapter }
+
+    with_tenant(TENANT) do
+      wizard = build_wizard
+      wizard.verify_all_enrollment!
+      assert_single_undetermined_warning!(wizard)
+
+      by_type = types.each_with_index.to_h do |type, i|
+        if i < 5
+          [ type, { eligible: false } ]
+        elsif i == 5
+          [ type, -> { raise Timeout::Error, "TEST TIMEOUT" } ]
+        else
+          [ type, nil ]
+        end
+      end
+      adapter.instance_variable_set(:@eligibility_by_type, by_type)
+      adapter.instance_variable_set(:@default, nil)
+
+      assert_raises(Timeout::Error) do
+        wizard.verify_all_enrollment!
+      end
+
+      types.each_with_index do |type, i|
+        resource = wizard.alternate_resources[type]
+        if i < 5
+          assert_equal :not_enrolled, resource[:status], type
+          refute_nil resource[:checked_at]
+        else
+          assert_equal :not_checked, resource[:status], type
+          assert_nil resource[:checked_at]
+        end
+      end
+
+      eligibility_undetermined_warnings(wizard).each do |warning|
+        refute_includes warning, "12"
+      end
     end
   end
 
