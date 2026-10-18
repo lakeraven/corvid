@@ -119,6 +119,25 @@ class Corvid::AuthorizationWizardEligibilityTest < ActiveSupport::TestCase
     end
   end
 
+  test "non-boolean eligible values are not treated as determinations" do
+    [
+      { eligible: "false" },
+      { eligible: "yes" },
+      { eligible: 0 },
+      { eligible: 1 }
+    ].each do |lookup_result|
+      Corvid.configure { |c| c.adapter = EligibilityControllingAdapter.new(default: lookup_result) }
+
+      with_tenant(TENANT) do
+        wizard = build_wizard
+        wizard.verify_all_enrollment!
+
+        assert_all_resources_undetermined!(wizard)
+        assert_single_undetermined_warning!(wizard)
+      end
+    end
+  end
+
   test "non-hash lookup result leaves resource not_checked" do
     Corvid.configure { |c| c.adapter = EligibilityControllingAdapter.new(default: "unavailable") }
 
@@ -169,6 +188,53 @@ class Corvid::AuthorizationWizardEligibilityTest < ActiveSupport::TestCase
         assert_equal :not_enrolled, resource[:status], type
         refute_nil resource[:checked_at]
       end
+      assert_empty eligibility_undetermined_warnings(wizard)
+    end
+  end
+
+  test "repeated runs during an outage keep a single undetermined warning" do
+    Corvid.configure { |c| c.adapter = EligibilityControllingAdapter.new(default: nil) }
+
+    with_tenant(TENANT) do
+      wizard = build_wizard
+      wizard.verify_all_enrollment!
+      wizard.verify_all_enrollment!
+
+      assert_single_undetermined_warning!(wizard)
+    end
+  end
+
+  test "partial recovery updates undetermined warning count" do
+    types = Corvid::AlternateResourceCheck::RESOURCE_TYPES
+    adapter = EligibilityControllingAdapter.new(default: nil)
+    Corvid.configure { |c| c.adapter = adapter }
+
+    with_tenant(TENANT) do
+      wizard = build_wizard
+      wizard.verify_all_enrollment!
+
+      assert_single_undetermined_warning!(wizard)
+      assert_undetermined_warning_count!(wizard, types.size)
+
+      by_type = types.each_with_index.to_h { |type, i| [ type, i.even? ? { eligible: false } : nil ] }
+      adapter.instance_variable_set(:@eligibility_by_type, by_type)
+      adapter.instance_variable_set(:@default, nil)
+      wizard.verify_all_enrollment!
+
+      types.each_with_index do |type, i|
+        resource = wizard.alternate_resources[type]
+        if i.even?
+          assert_equal :not_enrolled, resource[:status], type
+          refute_nil resource[:checked_at]
+        else
+          assert_equal :not_checked, resource[:status], type
+          assert_nil resource[:checked_at]
+        end
+      end
+      assert_single_undetermined_warning!(wizard)
+      warning = eligibility_undetermined_warnings(wizard).first
+      assert_includes warning, "#{types.size / 2} alternate resource"
+      refute_includes warning, "#{types.size} alternate resource"
     end
   end
 
@@ -237,6 +303,11 @@ class Corvid::AuthorizationWizardEligibilityTest < ActiveSupport::TestCase
     matching = eligibility_undetermined_warnings(wizard)
     assert_equal 1, matching.size, "expected one undetermined warning, got: #{wizard.warnings.inspect}"
     refute_includes matching.first, PATIENT
+  end
+
+  def assert_undetermined_warning_count!(wizard, count)
+    matching = eligibility_undetermined_warnings(wizard)
+    assert_includes matching.first, "#{count} alternate resource"
   end
 
   def assert_all_resources_undetermined!(wizard)
