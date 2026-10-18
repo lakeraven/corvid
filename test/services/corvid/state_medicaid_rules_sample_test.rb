@@ -39,12 +39,12 @@ class Corvid::StateMedicaidRulesSampleTest < ActiveSupport::TestCase
 
     program = entry.work_requirement_programs.first
     refute_nil program
-    assert_equal "xb_pathways", program.code
-    assert_equal(/\bTEST PATHWAYS\b/i, program.description_pattern)
+    assert_equal "xb_synthetic_waiver", program.code
+    assert_equal(/\bTEST SYNTHETIC WAIVER\b/i, program.description_pattern)
 
-    matched = entry.waiver_program_for("Plan includes TEST PATHWAYS option")
+    matched = entry.waiver_program_for("Plan includes TEST SYNTHETIC WAIVER option")
     refute_nil matched
-    assert_equal "xb_pathways", matched.code
+    assert_equal "xb_synthetic_waiver", matched.code
   end
 
   test "unregistered real-looking state code returns NotConfigured" do

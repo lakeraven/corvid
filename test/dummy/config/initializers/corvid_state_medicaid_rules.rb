@@ -25,8 +25,8 @@ Corvid::StateMedicaidRules.register(
   expanded: false,
   work_requirement_programs: [
     {
-      code: "xb_pathways",
-      description_pattern: /\bTEST PATHWAYS\b/i
+      code: "xb_synthetic_waiver",
+      description_pattern: /\bTEST SYNTHETIC WAIVER\b/i
     }
   ],
   groups: {

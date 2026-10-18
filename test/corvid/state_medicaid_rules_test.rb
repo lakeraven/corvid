@@ -128,6 +128,23 @@ class Corvid::StateMedicaidRulesTest < Minitest::Test
     assert_raises(ArgumentError) { register_sample_state("") }
   end
 
+  def test_register_raises_for_non_ascii_state_code
+    %w[ß ﬀ ſc].each do |code|
+      assert_raises(ArgumentError) { register_sample_state(code) }
+    end
+  end
+
+  def test_lookup_unicode_homoglyphs_do_not_match_ascii_registered_states
+    Corvid::StateMedicaidRules.register("SS", expanded: true, groups: minimal_groups)
+    Corvid::StateMedicaidRules.register("FF", expanded: true, groups: minimal_groups)
+
+    %w[ß ſs ﬀ].each do |code|
+      result = Corvid::StateMedicaidRules.lookup(code)
+      assert_kind_of Corvid::StateMedicaidRules::NotConfigured, result
+      refute result.configured?
+    end
+  end
+
   # -- expanded validation -----------------------------------------------------
 
   def test_register_raises_when_expanded_is_nil
@@ -246,6 +263,68 @@ class Corvid::StateMedicaidRulesTest < Minitest::Test
     assert_raises(ArgumentError) { register_with_group(work_requirement: "yes") }
   end
 
+  def test_register_raises_for_duplicate_group_name_symbol_and_string_keys
+    assert_raises(ArgumentError) do
+      Corvid::StateMedicaidRules.register(
+        "DG",
+        expanded: true,
+        groups: {
+          other: {
+            renewal_months: 12,
+            retro_coverage_months: 3,
+            work_requirement: false
+          },
+          "other" => {
+            renewal_months: 6,
+            retro_coverage_months: 1,
+            work_requirement: true
+          }
+        }
+      )
+    end
+  end
+
+  def test_register_raises_for_duplicate_group_field_symbol_and_string_keys
+    assert_raises(ArgumentError) do
+      Corvid::StateMedicaidRules.register(
+        "DF",
+        expanded: true,
+        groups: {
+          other: {
+            renewal_months: 12,
+            "renewal_months" => 6,
+            retro_coverage_months: 3,
+            work_requirement: false
+          }
+        }
+      )
+    end
+  end
+
+  def test_register_raises_for_unknown_group_field
+    error = assert_raises(ArgumentError) do
+      register_with_group(renewal_month: 6)
+    end
+    assert_match(/renewal_month/, error.message)
+  end
+
+  def test_register_raises_for_non_string_symbol_group_attribute_key
+    assert_raises(ArgumentError) do
+      Corvid::StateMedicaidRules.register(
+        "GK",
+        expanded: true,
+        groups: { other: { nil => 1 } }
+      )
+    end
+    assert_raises(ArgumentError) do
+      Corvid::StateMedicaidRules.register(
+        "GK",
+        expanded: true,
+        groups: { other: { 1 => 2 } }
+      )
+    end
+  end
+
   # -- work_requirement_programs validation ------------------------------------
 
   def test_register_raises_when_program_code_is_empty
@@ -281,6 +360,56 @@ class Corvid::StateMedicaidRulesTest < Minitest::Test
     end
   end
 
+  def test_register_raises_for_duplicate_program_field_symbol_and_string_keys
+    assert_raises(ArgumentError) do
+      Corvid::StateMedicaidRules.register(
+        "DP",
+        expanded: false,
+        work_requirement_programs: [
+          {
+            code: "first",
+            "code" => "second",
+            description_pattern: /\bDUP\b/
+          }
+        ],
+        groups: minimal_groups
+      )
+    end
+  end
+
+  def test_register_raises_for_unknown_program_field
+    error = assert_raises(ArgumentError) do
+      Corvid::StateMedicaidRules.register(
+        "UP",
+        expanded: false,
+        work_requirement_programs: [
+          { code: "demo", description_pattern: /\bx\b/, typo_code: "x" }
+        ],
+        groups: minimal_groups
+      )
+    end
+    assert_match(/typo_code/, error.message)
+  end
+
+  def test_register_raises_for_non_string_symbol_program_attribute_key
+    assert_raises(ArgumentError) do
+      Corvid::StateMedicaidRules.register(
+        "PK",
+        expanded: false,
+        work_requirement_programs: [ { nil => 1 } ],
+        groups: minimal_groups
+      )
+    end
+    assert_raises(ArgumentError) do
+      Corvid::StateMedicaidRules.register(
+        "PK",
+        expanded: false,
+        work_requirement_programs: [ { 1 => 2 } ],
+        groups: minimal_groups
+      )
+    end
+  end
+
   # -- lookup: NotConfigured ---------------------------------------------------
 
   def test_lookup_unregistered_two_letter_code_returns_not_configured
@@ -295,6 +424,39 @@ class Corvid::StateMedicaidRulesTest < Minitest::Test
     result = Corvid::StateMedicaidRules.lookup(nil)
     assert_kind_of Corvid::StateMedicaidRules::NotConfigured, result
     refute result.configured?
+    assert_nil result.state_code
+  end
+
+  def test_lookup_non_string_symbol_returns_not_configured_with_nil_state_code
+    [ 42, [ 1 ], { code: "TS" } ].each do |code|
+      result = Corvid::StateMedicaidRules.lookup(code)
+      assert_kind_of Corvid::StateMedicaidRules::NotConfigured, result
+      refute result.configured?
+      assert_nil result.state_code
+    end
+  end
+
+  def test_lookup_non_string_symbol_state_code_not_mutated_by_caller
+    code = [ 1 ]
+    result = Corvid::StateMedicaidRules.lookup(code)
+    code << 2
+    assert_nil result.state_code
+  end
+
+  def test_lookup_malformed_string_state_code_is_frozen_copy
+    code = +"1A"
+    result = Corvid::StateMedicaidRules.lookup(code)
+    assert_kind_of Corvid::StateMedicaidRules::NotConfigured, result
+    assert_equal "1A", result.state_code
+    assert result.state_code.frozen?
+    code.replace("XX")
+    assert_equal "1A", result.state_code
+  end
+
+  def test_lookup_symbol_matches_string_registration
+    register_sample_state("TS")
+    assert Corvid::StateMedicaidRules.lookup(:TS).configured?
+    assert_equal "TS", Corvid::StateMedicaidRules.lookup(:ts).state_code
   end
 
   def test_lookup_empty_string_returns_not_configured
@@ -404,6 +566,20 @@ class Corvid::StateMedicaidRulesTest < Minitest::Test
     entry = Corvid::StateMedicaidRules.lookup("MP")
     assert_equal "mut", entry.work_requirement_programs.first.code
     assert_equal 1, entry.work_requirement_programs.size
+  end
+
+  def test_entry_groups_hash_is_frozen
+    entry = register_sample_state("GF")
+    assert entry.groups.frozen?
+    assert_raises(FrozenError) { entry.groups["other"] = nil }
+  end
+
+  def test_mutating_returned_group_does_not_change_subsequent_lookup
+    register_sample_state("GR")
+    group = Corvid::StateMedicaidRules.lookup("GR").group("expansion_adult")
+    assert_raises(FrozenError) { group.renewal_months = 99 }
+    again = Corvid::StateMedicaidRules.lookup("GR").group("expansion_adult")
+    assert_equal 12, again.renewal_months
   end
 
   def test_groups_constant_lists_eligibility_groups
