@@ -2,9 +2,44 @@
 
 # Article 6 reimbursement step definitions (ported from the predecessor app)
 
+module Article6SeedHelpers
+  module_function
+
+  def quarter_key(date)
+    "#{date.year}-Q#{((date.month - 1) / 3) + 1}"
+  end
+
+  def record_in_window_paid_claim!(expected, billed:, paid:, state:, county:, provider:)
+    expected[:total_claims] += 1
+    expected[:total_billed] += billed
+    expected[:total_paid] += paid
+    expected[:total_state_share] += state
+    expected[:total_county_share] += county
+    bucket = expected[:by_provider][provider] ||= { billed: 0.0, paid: 0.0, state: 0.0, county: 0.0 }
+    bucket[:billed] += billed
+    bucket[:paid] += paid
+    bucket[:state] += state
+    bucket[:county] += county
+  end
+end
+
 Given("there are paid claim submissions in the system") do
+  @article6_expected = {
+    total_claims: 0,
+    total_billed: 0.0,
+    total_paid: 0.0,
+    total_state_share: 0.0,
+    total_county_share: 0.0,
+    by_provider: {}
+  }
+
   3.times do |i|
     service_date = [ Date.current - (i + 5).days, Date.current.beginning_of_quarter ].max
+    billed = 500.00 + (i * 100)
+    paid = 400.00 + (i * 80)
+    state = paid * 0.5
+    county = paid * 0.5
+    provider = "pr_art6_#{i % 2}"
     Corvid::ClaimSubmission.create!(
       tenant_identifier: @tenant,
       facility_identifier: @facility,
@@ -12,8 +47,8 @@ Given("there are paid claim submissions in the system") do
       claim_identifier: "CLM_ART6_#{i}",
       claim_type: "professional",
       status: "paid",
-      billed_amount: 500.00 + (i * 100),
-      paid_amount: 400.00 + (i * 80),
+      billed_amount: billed,
+      paid_amount: paid,
       # Both dates are clamped into the current quarter, and paid_date is never
       # before service_date.
       #
@@ -26,10 +61,13 @@ Given("there are paid claim submissions in the system") do
       # itself under test.
       service_date: service_date,
       paid_date: [ Date.current - i.days, service_date ].max,
-      provider_identifier: "pr_art6_#{i % 2}",
-      state_share: (400.00 + (i * 80)) * 0.5,
-      county_share: (400.00 + (i * 80)) * 0.5,
+      provider_identifier: provider,
+      state_share: state,
+      county_share: county,
       submitted_at: (i + 10).days.ago
+    )
+    Article6SeedHelpers.record_in_window_paid_claim!(
+      @article6_expected, billed: billed, paid: paid, state: state, county: county, provider: provider
     )
   end
 
@@ -50,6 +88,7 @@ Given("there are paid claim submissions in the system") do
     { suffix: "unpaid", service_date: Date.current.beginning_of_quarter + 1.day,
       status: "submitted", billed: 555.00, paid: 0.00 }
   ].each do |edge|
+    provider = "pr_art6_edge_#{edge[:suffix]}"
     Corvid::ClaimSubmission.create!(
       tenant_identifier: @tenant,
       facility_identifier: @facility,
@@ -61,12 +100,44 @@ Given("there are paid claim submissions in the system") do
       paid_amount: edge[:paid],
       paid_date: edge[:status] == "paid" ? edge[:service_date] : nil,
       service_date: edge[:service_date],
-      provider_identifier: "pr_art6_edge_#{edge[:suffix]}",
+      provider_identifier: provider,
       state_share: edge[:paid] / 2,
       county_share: edge[:paid] / 2,
       submitted_at: 40.days.ago
     )
+    if edge[:status] == "paid"
+      Article6SeedHelpers.record_in_window_paid_claim!(
+        @article6_expected,
+        billed: edge[:billed],
+        paid: edge[:paid],
+        state: edge[:paid] / 2,
+        county: edge[:paid] / 2,
+        provider: provider
+      )
+    end
   end
+
+  # Status is NOT "paid" but paid_date and paid_amount are set in-quarter.
+  # Excluded from @article6_expected: `.where.not(paid_date: nil)` or
+  # `paid_amount_cents > 0` instead of `.paid` would include this row and
+  # break the summary/CSV totals.
+  pseudo_paid_service = Date.current.beginning_of_quarter + 2.days
+  Corvid::ClaimSubmission.create!(
+    tenant_identifier: @tenant,
+    facility_identifier: @facility,
+    patient_identifier: "pt_art6_pseudo_paid",
+    claim_identifier: "CLM_ART6_PSEUDO_PAID",
+    claim_type: "professional",
+    status: "denied",
+    billed_amount: 444.00,
+    paid_amount: 333.00,
+    service_date: pseudo_paid_service,
+    paid_date: pseudo_paid_service + 1.day,
+    provider_identifier: "pr_art6_pseudo_paid",
+    state_share: 166.50,
+    county_share: 166.50,
+    submitted_at: 40.days.ago
+  )
 
   # Two decoys OUTSIDE the current quarter, so the report's service_date window
   # is observable in BOTH directions. Without them every seeded claim is
@@ -121,38 +192,4 @@ When("I generate an Article 6 summary report for the current quarter") do
                        .sum(:paid_amount_cents)
                        .transform_values(&to_dollars)
   }
-end
-
-When("I export the report as CSV") do
-  @csv_lines = []
-  @csv_lines << "Provider,Paid Amount,State Share,County Share"
-  claims = Corvid::ClaimSubmission.paid
-  claims.group(:provider_identifier).each do |provider, _|
-    provider_claims = claims.where(provider_identifier: provider)
-    paid = provider_claims.sum(:paid_amount_cents) / 100.0
-    state = provider_claims.sum(:state_share_cents) / 100.0
-    county = provider_claims.sum(:county_share_cents) / 100.0
-    @csv_lines << "#{provider},#{paid},#{state},#{county}"
-  end
-end
-
-Then("I should see the total reimbursement amount") do
-  assert @report[:total_paid] > 0
-end
-
-Then("I should see claims grouped by provider") do
-  assert @report[:by_provider].keys.length > 0
-end
-
-Then("I should see claims grouped by quarter") do
-  refute_nil @report[:period]
-end
-
-Then("I should see the state and county share breakdown") do
-  assert @report[:total_state_share] > 0 || @report[:total_county_share] > 0
-end
-
-Then("the CSV should contain the report data") do
-  assert @csv_lines.length > 1
-  assert @csv_lines.first.include?("Provider")
 end

@@ -9,39 +9,61 @@
 # =========================================================================
 
 Given("there are paid claim submissions from multiple providers") do
+  @article6_provider_expected = []
   3.times do |i|
+    billed = 500.00 + (i * 100)
+    paid = 400.00 + (i * 80)
+    provider = "pr_mp_#{i}"
     Corvid::ClaimSubmission.create!(
       tenant_identifier: @tenant, facility_identifier: @facility,
       patient_identifier: "pt_art6_mp_#{i}",
       claim_identifier: "CLM_MP_#{i}",
       claim_type: "professional", status: "paid",
-      billed_amount: 500.00 + (i * 100),
-      paid_amount: 400.00 + (i * 80),
+      billed_amount: billed,
+      paid_amount: paid,
       paid_date: Date.current - i.days,
       # Clamped for the same reason as the Article 6 seed: a bare lookback
       # straddles the quarter start, and this Given is one wiring change away
       # from being read by a service_date-filtered report.
       service_date: [ Date.current - (i + 3).days, Date.current.beginning_of_quarter ].max,
-      provider_identifier: "pr_mp_#{i}",
-      state_share: (400.00 + (i * 80)) * 0.5,
-      county_share: (400.00 + (i * 80)) * 0.5
+      provider_identifier: provider,
+      state_share: paid * 0.5,
+      county_share: paid * 0.5
     )
+    @article6_provider_expected << { provider: provider, billed: billed, paid: paid }
   end
 end
 
 Given("there are paid claim submissions across multiple quarters") do
-  [ 0, 3, 6, 9 ].each_with_index do |month_offset, i|
+  @article6_quarter_expected = {}
+  [ 9, 6, 3, 0 ].each_with_index do |months_ago, i|
+    billed = 500.00 + (i * 50)
+    paid = 400.00 + (i * 40)
+    anchor = Date.current - months_ago.months
+    # Service late in the quarter; paid 45 days later lands in the NEXT quarter
+    # so grouping by paid_date disagrees with grouping by service_date.
+    service_date = anchor.end_of_quarter - 5.days
+    paid_date = service_date + 45.days
+    service_quarter = Article6SeedHelpers.quarter_key(service_date)
+    paid_quarter = Article6SeedHelpers.quarter_key(paid_date)
+    raise "seed quarter overlap for claim #{i}" if service_quarter == paid_quarter
+
     Corvid::ClaimSubmission.create!(
       tenant_identifier: @tenant, facility_identifier: @facility,
       patient_identifier: "pt_art6_q#{i}",
       claim_identifier: "CLM_Q_#{i}",
       claim_type: "professional", status: "paid",
-      billed_amount: 500.00, paid_amount: 400.00,
-      paid_date: Date.current - month_offset.months,
-      service_date: Date.current - month_offset.months - 5.days,
+      billed_amount: billed,
+      paid_amount: paid,
+      paid_date: paid_date,
+      service_date: service_date,
       provider_identifier: "pr_q_001",
-      state_share: 200.00, county_share: 200.00
+      state_share: paid * 0.5,
+      county_share: paid * 0.5
     )
+    bucket = @article6_quarter_expected[service_quarter] ||= { billed: 0.0, paid: 0.0 }
+    bucket[:billed] += billed
+    bucket[:paid] += paid
   end
 end
 
@@ -55,18 +77,21 @@ end
 
 When("I generate an Article {int} report grouped by quarter") do |_article|
   claims = Corvid::ClaimSubmission.paid.to_a
-  @report = claims.group_by { |c| "#{c.paid_date.year}-Q#{((c.paid_date.month - 1) / 3) + 1}" }
+  @report = claims.group_by { |c| Article6SeedHelpers.quarter_key(c.service_date) }
     .map { |quarter, group|
       billed = group.sum { |c| c.billed_amount_cents || 0 } / 100.0
       paid = group.sum { |c| c.paid_amount_cents || 0 } / 100.0
       { quarter: quarter, billed: billed, paid: paid }
     }
+    .sort_by { |row| row[:quarter] }
 end
 
 When("I export an Article {int} report as CSV") do |_article|
-  claims = Corvid::ClaimSubmission.paid
+  quarter_start = Date.current.beginning_of_quarter
+  quarter_end = Date.current.end_of_quarter
+  claims = Corvid::ClaimSubmission.paid.in_date_range(quarter_start..quarter_end)
   @csv_string = "Provider,Billed,Paid,State Share,County Share\n"
-  claims.group_by(&:provider_identifier).each do |prov, group|
+  claims.group_by(&:provider_identifier).sort.each do |prov, group|
     cents_to_dollars = ->(field) { group.sum { |c| c.send(field) || 0 } / 100.0 }
     @csv_string += "#{prov},#{cents_to_dollars[:billed_amount_cents]},#{cents_to_dollars[:paid_amount_cents]},"
     @csv_string += "#{cents_to_dollars[:state_share_cents]},#{cents_to_dollars[:county_share_cents]}\n"
@@ -74,34 +99,36 @@ When("I export an Article {int} report as CSV") do |_article|
 end
 
 Then("I should receive a report with total billed and paid amounts") do
-  # The article6 steps store different report shapes depending on how it was generated.
-  # Accept either the Article6 hash format or an array of rows.
-  report = @report
-  if report.is_a?(Hash)
-    assert report[:total_paid].to_f >= 0
-    assert report[:total_billed].to_f >= 0
-  else
-    assert report.is_a?(Array) && report.any?
-  end
+  assert_equal @article6_expected[:total_claims], @report[:total_claims]
+  assert_in_delta @article6_expected[:total_billed], @report[:total_billed].to_f, 0.01
+  assert_in_delta @article6_expected[:total_paid], @report[:total_paid].to_f, 0.01
 end
 
 Then("the report should include state and county share splits") do
-  state_total = Corvid::ClaimSubmission.paid.sum(:state_share_cents)
-  county_total = Corvid::ClaimSubmission.paid.sum(:county_share_cents)
-  assert state_total > 0 || county_total > 0
+  assert_operator @article6_expected[:total_state_share], :>, 0
+  assert_operator @article6_expected[:total_county_share], :>, 0
+  assert_in_delta @article6_expected[:total_state_share], @report[:total_state_share].to_f, 0.01
+  assert_in_delta @article6_expected[:total_county_share], @report[:total_county_share].to_f, 0.01
 end
 
 Then("each provider should have billed and paid totals") do
-  @report.each do |row|
-    refute_nil row[:billed]
-    refute_nil row[:paid]
+  expected = @article6_provider_expected.sort_by { |row| row[:provider] }
+  actual = @report.sort_by { |row| row[:provider] }
+  assert_equal expected.map { |row| row[:provider] }, actual.map { |row| row[:provider] }
+  expected.zip(actual).each do |exp, act|
+    assert_in_delta exp[:billed], act[:billed], 0.01
+    assert_in_delta exp[:paid], act[:paid], 0.01
   end
 end
 
 Then("each quarter should have aggregated totals") do
+  expected_keys = @article6_quarter_expected.keys.sort
+  actual_keys = @report.map { |row| row[:quarter] }.sort
+  assert_equal expected_keys, actual_keys
   @report.each do |row|
-    refute_nil row[:billed]
-    refute_nil row[:paid]
+    exp = @article6_quarter_expected.fetch(row[:quarter])
+    assert_in_delta exp[:billed], row[:billed], 0.01
+    assert_in_delta exp[:paid], row[:paid], 0.01
   end
 end
 
@@ -134,8 +161,24 @@ Then("the paid amounts should match the sum of ClaimSubmission paid amounts") do
 end
 
 Then("I should receive a CSV string with reimbursement headers") do
-  assert @csv_string.start_with?("Provider,")
-  assert @csv_string.include?("Paid")
+  assert_equal "Provider,Billed,Paid,State Share,County Share", @csv_string.lines.first.chomp
+
+  rows = @csv_string.lines.drop(1).map { |line| line.chomp.split(",") }
+  providers = rows.to_h { |cols| [ cols[0], cols ] }
+
+  @article6_expected[:by_provider].each do |provider, amounts|
+    cols = providers.fetch(provider)
+    assert_in_delta amounts[:billed], cols[1].to_f, 0.01
+    assert_in_delta amounts[:paid], cols[2].to_f, 0.01
+    assert_in_delta amounts[:state], cols[3].to_f, 0.01
+    assert_in_delta amounts[:county], cols[4].to_f, 0.01
+  end
+
+  refute providers.key?("pr_art6_decoy_early")
+  refute providers.key?("pr_art6_decoy_late")
+  refute providers.key?("pr_art6_pseudo_paid")
+  refute providers.key?("pr_art6_edge_unpaid")
+  assert_equal @article6_expected[:by_provider].keys.sort, providers.keys.sort
 end
 
 # =========================================================================
