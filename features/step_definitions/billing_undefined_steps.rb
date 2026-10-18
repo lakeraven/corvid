@@ -15,6 +15,10 @@ Given("there are paid claim submissions from multiple providers") do
     paid_cents = 40_029 + (i * 8_000)
     state_cents, county_cents = Article6SeedHelpers.state_county_cents_for_paid(paid_cents)
     provider = "pr_mp_#{i}"
+    # Clamped for the same reason as the Article 6 seed: a bare lookback
+    # straddles the quarter start, and this Given is one wiring change away
+    # from being read by a service_date-filtered report.
+    service_date = [ Date.current - (i + 3).days, Date.current.beginning_of_quarter ].max
     Corvid::ClaimSubmission.create!(
       tenant_identifier: @tenant, facility_identifier: @facility,
       patient_identifier: "pt_art6_mp_#{i}",
@@ -22,21 +26,44 @@ Given("there are paid claim submissions from multiple providers") do
       claim_type: "professional", status: "paid",
       billed_amount_cents: billed_cents,
       paid_amount_cents: paid_cents,
-      paid_date: Date.current - i.days,
-      # Clamped for the same reason as the Article 6 seed: a bare lookback
-      # straddles the quarter start, and this Given is one wiring change away
-      # from being read by a service_date-filtered report.
-      service_date: [ Date.current - (i + 3).days, Date.current.beginning_of_quarter ].max,
+      paid_date: [ Date.current - i.days, service_date ].max,
+      service_date: service_date,
       provider_identifier: provider,
       state_share_cents: state_cents,
       county_share_cents: county_cents
     )
     @article6_provider_expected << {
       provider: provider,
+      currency_iso: "USD",
       billed_cents: billed_cents,
       paid_cents: paid_cents
     }
   end
+
+  mp_jod_billed_cents = 15_678
+  mp_jod_paid_cents = 12_345
+  mp_jod_state_cents, mp_jod_county_cents = Article6SeedHelpers.state_county_cents_for_paid(mp_jod_paid_cents)
+  mp_jod_service = Date.current.beginning_of_quarter + 9.days
+  Corvid::ClaimSubmission.create!(
+    tenant_identifier: @tenant, facility_identifier: @facility,
+    patient_identifier: "pt_art6_mp_jod",
+    claim_identifier: "CLM_MP_JOD",
+    claim_type: "professional", status: "paid",
+    currency_iso: "JOD",
+    billed_amount_cents: mp_jod_billed_cents,
+    paid_amount_cents: mp_jod_paid_cents,
+    paid_date: mp_jod_service,
+    service_date: mp_jod_service,
+    provider_identifier: "pr_mp_1",
+    state_share_cents: mp_jod_state_cents,
+    county_share_cents: mp_jod_county_cents
+  )
+  @article6_provider_expected << {
+    provider: "pr_mp_1",
+    currency_iso: "JOD",
+    billed_cents: mp_jod_billed_cents,
+    paid_cents: mp_jod_paid_cents
+  }
 
   # Denied with paid_date and paid_amount on pr_mp_0: excluded from expectations;
   # dropping `.paid` would inflate that provider's bucket.
@@ -97,11 +124,36 @@ Given("there are paid claim submissions across multiple quarters") do
         state_share_cents: state_cents,
         county_share_cents: county_cents
       )
-      bucket = @article6_quarter_expected[service_quarter] ||= { billed_cents: 0, paid_cents: 0 }
+      pair = [ service_quarter, "USD" ]
+      bucket = @article6_quarter_expected[pair] ||= { billed_cents: 0, paid_cents: 0 }
       bucket[:billed_cents] += billed_cents
       bucket[:paid_cents] += paid_cents
     end
   end
+
+  q_jod_billed_cents = 18_901
+  q_jod_paid_cents = 14_567
+  q_jod_state_cents, q_jod_county_cents = Article6SeedHelpers.state_county_cents_for_paid(q_jod_paid_cents)
+  q_jod_service = Date.current.beginning_of_quarter + 11.days
+  q_jod_quarter = Article6SeedHelpers.quarter_key(q_jod_service)
+  Corvid::ClaimSubmission.create!(
+    tenant_identifier: @tenant, facility_identifier: @facility,
+    patient_identifier: "pt_art6_q_jod",
+    claim_identifier: "CLM_Q_JOD",
+    claim_type: "professional", status: "paid",
+    currency_iso: "JOD",
+    billed_amount_cents: q_jod_billed_cents,
+    paid_amount_cents: q_jod_paid_cents,
+    paid_date: Date.current.end_of_quarter + 12.days,
+    service_date: q_jod_service,
+    provider_identifier: "pr_q_jod",
+    state_share_cents: q_jod_state_cents,
+    county_share_cents: q_jod_county_cents
+  )
+  q_jod_pair = [ q_jod_quarter, "JOD" ]
+  bucket = @article6_quarter_expected[q_jod_pair] ||= { billed_cents: 0, paid_cents: 0 }
+  bucket[:billed_cents] += q_jod_billed_cents
+  bucket[:paid_cents] += q_jod_paid_cents
 
   denied_service = Date.current.beginning_of_quarter + 2.days
   denied_paid_cents = 31_007
@@ -130,13 +182,18 @@ Given("there are paid claim submissions across multiple quarters") do
 end
 
 When("I generate an Article {int} report grouped by provider") do |_article|
-  @report = Corvid::ClaimSubmission.paid.group(:provider_identifier)
-    .pluck(:provider_identifier, Arel.sql("SUM(billed_amount_cents)"), Arel.sql("SUM(paid_amount_cents)"))
-    .map { |prov, billed_cents, paid_cents|
+  @report = Corvid::ClaimSubmission.paid
+    .group(:provider_identifier, :currency_iso)
+    .pluck(
+      :provider_identifier, :currency_iso,
+      Arel.sql("SUM(billed_amount_cents)"), Arel.sql("SUM(paid_amount_cents)")
+    )
+    .map { |prov, currency_iso, billed_cents, paid_cents|
       billed_cents = billed_cents || 0
       paid_cents = paid_cents || 0
       {
         provider: prov,
+        currency_iso: currency_iso,
         billed_cents: billed_cents,
         paid_cents: paid_cents
       }
@@ -145,17 +202,18 @@ end
 
 When("I generate an Article {int} report grouped by quarter") do |_article|
   claims = Corvid::ClaimSubmission.paid.to_a
-  @report = claims.group_by { |c| Article6SeedHelpers.quarter_key(c.service_date) }
-    .map { |quarter, group|
+  @report = claims.group_by { |c| [ Article6SeedHelpers.quarter_key(c.service_date), c.currency_iso ] }
+    .map { |(quarter, currency_iso), group|
       billed_cents = group.sum { |c| c.billed_amount_cents || 0 }
       paid_cents = group.sum { |c| c.paid_amount_cents || 0 }
       {
         quarter: quarter,
+        currency_iso: currency_iso,
         billed_cents: billed_cents,
         paid_cents: paid_cents
       }
     }
-    .sort_by { |row| row[:quarter] }
+    .sort_by { |row| [ row[:quarter], row[:currency_iso] ] }
 end
 
 When("I export an Article {int} report as CSV") do |_article|
@@ -163,8 +221,7 @@ When("I export an Article {int} report as CSV") do |_article|
   quarter_end = Date.current.end_of_quarter
   claims = Corvid::ClaimSubmission.paid.in_date_range(quarter_start..quarter_end)
   @csv_string = "Provider,Billed,Paid,State Share,County Share,Currency\n"
-  claims.group_by(&:provider_identifier).sort.each do |prov, group|
-    currency = group.first.currency_iso
+  claims.group_by { |c| [ c.provider_identifier, c.currency_iso ] }.sort.each do |(prov, currency), group|
     sum_cents = ->(field) { group.sum { |c| c.send(field) || 0 } }
     billed_cents = sum_cents[:billed_amount_cents]
     paid_cents = sum_cents[:paid_amount_cents]
@@ -180,25 +237,28 @@ end
 
 Then("I should receive a report with total billed and paid amounts") do
   assert_equal @article6_expected[:total_claims], @report[:total_claims]
-  assert_equal @article6_expected[:total_billed_cents], @report[:total_billed_cents]
-  assert_equal @article6_expected[:total_paid_cents], @report[:total_paid_cents]
+  assert_equal @article6_expected[:total_billed_cents_by_currency], @report[:total_billed_cents_by_currency]
+  assert_equal @article6_expected[:total_paid_cents_by_currency], @report[:total_paid_cents_by_currency]
 end
 
 Then("the report should include state and county share splits") do
-  assert_operator @article6_expected[:total_state_share_cents], :>, 0
-  assert_operator @article6_expected[:total_county_share_cents], :>, 0
-  assert_equal @article6_expected[:total_state_share_cents], @report[:total_state_share_cents]
-  assert_equal @article6_expected[:total_county_share_cents], @report[:total_county_share_cents]
+  assert_operator @article6_expected[:total_state_share_cents_by_currency].values.sum, :>, 0
+  assert_operator @article6_expected[:total_county_share_cents_by_currency].values.sum, :>, 0
+  assert_equal @article6_expected[:total_state_share_cents_by_currency],
+               @report[:total_state_share_cents_by_currency]
+  assert_equal @article6_expected[:total_county_share_cents_by_currency],
+               @report[:total_county_share_cents_by_currency]
   assert_equal @article6_expected[:by_provider].keys.sort, @report[:by_provider_paid_cents].keys.sort
-  @article6_expected[:by_provider].each do |provider, amounts|
-    assert_equal amounts[:paid_cents], @report[:by_provider_paid_cents].fetch(provider)
+  @article6_expected[:by_provider].each do |pair, amounts|
+    assert_equal amounts[:paid_cents], @report[:by_provider_paid_cents].fetch(pair)
   end
 end
 
 Then("each provider should have billed and paid totals") do
-  expected = @article6_provider_expected.sort_by { |row| row[:provider] }
-  actual = @report.sort_by { |row| row[:provider] }
-  assert_equal expected.map { |row| row[:provider] }, actual.map { |row| row[:provider] }
+  sort_key = ->(row) { [ row[:provider], row[:currency_iso] ] }
+  expected = @article6_provider_expected.sort_by { |row| sort_key[row] }
+  actual = @report.sort_by { |row| sort_key[row] }
+  assert_equal expected.map { |row| sort_key[row] }, actual.map { |row| sort_key[row] }
   expected.zip(actual).each do |exp, act|
     assert_equal exp[:billed_cents], act[:billed_cents]
     assert_equal exp[:paid_cents], act[:paid_cents]
@@ -207,10 +267,10 @@ end
 
 Then("each quarter should have aggregated totals") do
   expected_keys = @article6_quarter_expected.keys.sort
-  actual_keys = @report.map { |row| row[:quarter] }.sort
+  actual_keys = @report.map { |row| [ row[:quarter], row[:currency_iso] ] }.sort
   assert_equal expected_keys, actual_keys
   @report.each do |row|
-    exp = @article6_quarter_expected.fetch(row[:quarter])
+    exp = @article6_quarter_expected.fetch([ row[:quarter], row[:currency_iso] ])
     assert_equal exp[:billed_cents], row[:billed_cents]
     assert_equal exp[:paid_cents], row[:paid_cents]
   end
@@ -218,64 +278,81 @@ end
 
 Then("the billed amounts should match the sum of ClaimSubmission billed amounts") do
   quarter = Date.current.beginning_of_quarter..Date.current.end_of_quarter
-  expected = Corvid::ClaimSubmission.paid.in_date_range(quarter).sum(:billed_amount_cents)
-  all_paid = Corvid::ClaimSubmission.paid.sum(:billed_amount_cents)
-  report_total_cents =
-    @report.is_a?(Hash) ? @report[:total_billed_cents] : @report.sum { |r| r[:billed_cents] || 0 }
+  expected_by_currency = Corvid::ClaimSubmission.paid.in_date_range(quarter)
+    .group(:currency_iso).sum(:billed_amount_cents)
+  all_paid_by_currency = Corvid::ClaimSubmission.paid.group(:currency_iso).sum(:billed_amount_cents)
+  report_by_currency =
+    if @report.is_a?(Hash)
+      @report[:total_billed_cents_by_currency]
+    else
+      @report.group_by { |r| r[:currency_iso] }
+        .transform_values { |rows| rows.sum { |r| r[:billed_cents] || 0 } }
+    end
   # Two guards that can actually fail, unlike comparing an UNFILTERED sum:
   #   - in-window data exists, so the match below is not 0 == 0
   #   - an out-of-quarter claim exists, so a report that ignored service_date
   #     would total all_paid and fail the match (the seed plants a decoy)
-  assert_operator expected, :>, 0, "no in-quarter claims seeded; the billed comparison would be vacuous"
-  assert_operator all_paid, :>, expected, "no out-of-quarter claim seeded; a report ignoring service_date would still pass"
-  assert_equal expected, report_total_cents
+  assert_operator expected_by_currency.fetch("USD", 0), :>, 0,
+                  "no in-quarter USD claims seeded; the billed comparison would be vacuous"
+  assert_operator all_paid_by_currency.fetch("USD", 0), :>, expected_by_currency.fetch("USD", 0),
+                  "no out-of-quarter USD claim seeded; a report ignoring service_date would still pass"
+  assert_equal expected_by_currency, report_by_currency
 end
 
 Then("the paid amounts should match the sum of ClaimSubmission paid amounts") do
   quarter = Date.current.beginning_of_quarter..Date.current.end_of_quarter
-  expected = Corvid::ClaimSubmission.paid.in_date_range(quarter).sum(:paid_amount_cents)
-  all_paid = Corvid::ClaimSubmission.paid.sum(:paid_amount_cents)
-  report_total_cents =
-    @report.is_a?(Hash) ? @report[:total_paid_cents] : @report.sum { |r| r[:paid_cents] || 0 }
+  expected_by_currency = Corvid::ClaimSubmission.paid.in_date_range(quarter)
+    .group(:currency_iso).sum(:paid_amount_cents)
+  all_paid_by_currency = Corvid::ClaimSubmission.paid.group(:currency_iso).sum(:paid_amount_cents)
+  report_by_currency =
+    if @report.is_a?(Hash)
+      @report[:total_paid_cents_by_currency]
+    else
+      @report.group_by { |r| r[:currency_iso] }
+        .transform_values { |rows| rows.sum { |r| r[:paid_cents] || 0 } }
+    end
   # Two guards that can actually fail, unlike comparing an UNFILTERED sum:
   #   - in-window data exists, so the match below is not 0 == 0
   #   - an out-of-quarter claim exists, so a report that ignored service_date
   #     would total all_paid and fail the match (the seed plants a decoy)
-  assert_operator expected, :>, 0, "no in-quarter claims seeded; the paid comparison would be vacuous"
-  assert_operator all_paid, :>, expected, "no out-of-quarter claim seeded; a report ignoring service_date would still pass"
-  assert_equal expected, report_total_cents
+  assert_operator expected_by_currency.fetch("USD", 0), :>, 0,
+                  "no in-quarter USD claims seeded; the paid comparison would be vacuous"
+  assert_operator all_paid_by_currency.fetch("USD", 0), :>, expected_by_currency.fetch("USD", 0),
+                  "no out-of-quarter USD claim seeded; a report ignoring service_date would still pass"
+  assert_equal expected_by_currency, report_by_currency
 end
 
 Then("I should receive a CSV string with reimbursement headers") do
   assert_equal "Provider,Billed,Paid,State Share,County Share,Currency", @csv_string.lines.first.chomp
 
   rows = @csv_string.lines.drop(1).map { |line| line.chomp.split(",") }
-  expected_provider_count = @article6_expected[:by_provider].keys.size
-  assert_equal expected_provider_count, rows.size,
-    "CSV data row count must match distinct in-window paid providers"
-  assert_equal rows.map { |cols| cols[0] }.uniq.size, rows.size,
-    "CSV must not contain duplicate provider rows"
+  expected_pair_count = @article6_expected[:by_provider].keys.size
+  assert_equal expected_pair_count, rows.size,
+    "CSV data row count must match distinct in-window paid (provider, currency) pairs"
+  pair_keys = rows.map { |cols| [ cols[0], cols[5] ] }
+  assert_equal pair_keys.uniq.size, rows.size,
+    "CSV must not contain duplicate (provider, currency) rows"
 
-  providers = rows.to_h { |cols| [ cols[0], cols ] }
-  money_cell = ->(cents) { Money.new(cents, "USD").to_s }
+  rows_by_pair = rows.to_h { |cols| [ [ cols[0], cols[5] ], cols ] }
 
-  @article6_expected[:by_provider].each do |provider, amounts|
-    cols = providers.fetch(provider)
+  @article6_expected[:by_provider].each do |(provider, currency_iso), amounts|
+    cols = rows_by_pair.fetch([ provider, currency_iso ])
+    money_cell = ->(cents) { Money.new(cents, currency_iso).to_s }
     assert_equal money_cell[amounts[:billed_cents]], cols[1]
     assert_equal money_cell[amounts[:paid_cents]], cols[2]
     assert_equal money_cell[amounts[:state_cents]], cols[3]
     assert_equal money_cell[amounts[:county_cents]], cols[4]
-    assert_equal "USD", cols[5]
+    assert_equal currency_iso, cols[5]
   end
 
-  refute providers.key?("pr_art6_decoy_early")
-  refute providers.key?("pr_art6_decoy_late")
+  refute rows_by_pair.key?([ "pr_art6_decoy_early", "USD" ])
+  refute rows_by_pair.key?([ "pr_art6_decoy_late", "USD" ])
   (Corvid::ClaimSubmission::STATUSES - [ "paid" ]).each do |status|
-    refute providers.key?("pr_art6_np_#{status}")
+    refute rows_by_pair.key?([ "pr_art6_np_#{status}", "USD" ])
   end
-  refute providers.key?("pr_art6_edge_unpaid")
-  refute providers.key?("pr_art6_other_tenant")
-  assert_equal @article6_expected[:by_provider].keys.sort, providers.keys.sort
+  refute rows_by_pair.key?([ "pr_art6_edge_unpaid", "USD" ])
+  refute rows_by_pair.key?([ "pr_art6_other_tenant", "USD" ])
+  assert_equal @article6_expected[:by_provider].keys.sort, rows_by_pair.keys.sort
 end
 
 # =========================================================================

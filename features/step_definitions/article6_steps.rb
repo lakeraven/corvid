@@ -16,15 +16,20 @@ module Article6SeedHelpers
     [ state_cents, county_cents ]
   end
 
-  def record_in_window_paid_claim!(expected, billed_cents:, paid_cents:, provider:)
+  def record_in_window_paid_claim!(expected, billed_cents:, paid_cents:, provider:, currency_iso: "USD")
     state_cents, county_cents = state_county_cents_for_paid(paid_cents)
     expected[:total_claims] += 1
-    expected[:total_billed_cents] += billed_cents
-    expected[:total_paid_cents] += paid_cents
-    expected[:total_state_share_cents] += state_cents
-    expected[:total_county_share_cents] += county_cents
-    bucket = expected[:by_provider][provider] ||= {
-      billed_cents: 0, paid_cents: 0, state_cents: 0, county_cents: 0
+    expected[:total_billed_cents_by_currency][currency_iso] ||= 0
+    expected[:total_billed_cents_by_currency][currency_iso] += billed_cents
+    expected[:total_paid_cents_by_currency][currency_iso] ||= 0
+    expected[:total_paid_cents_by_currency][currency_iso] += paid_cents
+    expected[:total_state_share_cents_by_currency][currency_iso] ||= 0
+    expected[:total_state_share_cents_by_currency][currency_iso] += state_cents
+    expected[:total_county_share_cents_by_currency][currency_iso] ||= 0
+    expected[:total_county_share_cents_by_currency][currency_iso] += county_cents
+    pair = [ provider, currency_iso ]
+    bucket = expected[:by_provider][pair] ||= {
+      billed_cents: 0, paid_cents: 0, state_cents: 0, county_cents: 0, currency_iso: currency_iso
     }
     bucket[:billed_cents] += billed_cents
     bucket[:paid_cents] += paid_cents
@@ -58,10 +63,10 @@ end
 Given("there are paid claim submissions in the system") do
   @article6_expected = {
     total_claims: 0,
-    total_billed_cents: 0,
-    total_paid_cents: 0,
-    total_state_share_cents: 0,
-    total_county_share_cents: 0,
+    total_billed_cents_by_currency: {},
+    total_paid_cents_by_currency: {},
+    total_state_share_cents_by_currency: {},
+    total_county_share_cents_by_currency: {},
     by_provider: {}
   }
 
@@ -216,6 +221,66 @@ Given("there are paid claim submissions in the system") do
     paid_cents: 32_100,
     provider: "pr_art6_other_tenant"
   )
+
+  # In-window paid claim in a non-USD currency (ADR 0004: never sum across currencies).
+  jod_service = Date.current.beginning_of_quarter + 7.days
+  jod_billed_cents = 12_345
+  jod_paid_cents = 9_876
+  jod_state_cents, jod_county_cents = Article6SeedHelpers.state_county_cents_for_paid(jod_paid_cents)
+  Corvid::ClaimSubmission.create!(
+    tenant_identifier: @tenant,
+    facility_identifier: @facility,
+    patient_identifier: "pt_art6_jod",
+    claim_identifier: "CLM_ART6_JOD",
+    claim_type: "professional",
+    status: "paid",
+    currency_iso: "JOD",
+    billed_amount_cents: jod_billed_cents,
+    paid_amount_cents: jod_paid_cents,
+    service_date: jod_service,
+    paid_date: jod_service,
+    provider_identifier: "pr_art6_jod",
+    state_share_cents: jod_state_cents,
+    county_share_cents: jod_county_cents,
+    submitted_at: 40.days.ago
+  )
+  Article6SeedHelpers.record_in_window_paid_claim!(
+    @article6_expected,
+    billed_cents: jod_billed_cents,
+    paid_cents: jod_paid_cents,
+    provider: "pr_art6_jod",
+    currency_iso: "JOD"
+  )
+
+  # Same provider as an existing USD row, second currency — CSV must emit two rows.
+  dual_billed_cents = 6_543
+  dual_paid_cents = 5_432
+  dual_state_cents, dual_county_cents = Article6SeedHelpers.state_county_cents_for_paid(dual_paid_cents)
+  dual_service = Date.current.beginning_of_quarter + 8.days
+  Corvid::ClaimSubmission.create!(
+    tenant_identifier: @tenant,
+    facility_identifier: @facility,
+    patient_identifier: "pt_art6_0_jod",
+    claim_identifier: "CLM_ART6_0_JOD",
+    claim_type: "professional",
+    status: "paid",
+    currency_iso: "JOD",
+    billed_amount_cents: dual_billed_cents,
+    paid_amount_cents: dual_paid_cents,
+    service_date: dual_service,
+    paid_date: dual_service,
+    provider_identifier: "pr_art6_0",
+    state_share_cents: dual_state_cents,
+    county_share_cents: dual_county_cents,
+    submitted_at: 40.days.ago
+  )
+  Article6SeedHelpers.record_in_window_paid_claim!(
+    @article6_expected,
+    billed_cents: dual_billed_cents,
+    paid_cents: dual_paid_cents,
+    provider: "pr_art6_0",
+    currency_iso: "JOD"
+  )
 end
 
 When("I generate an Article 6 summary report for the current quarter") do
@@ -225,10 +290,10 @@ When("I generate an Article 6 summary report for the current quarter") do
   @report = {
     period: "#{quarter_start} to #{quarter_end}",
     total_claims: claims.count,
-    total_billed_cents: claims.sum(:billed_amount_cents),
-    total_paid_cents: claims.sum(:paid_amount_cents),
-    total_state_share_cents: claims.sum(:state_share_cents),
-    total_county_share_cents: claims.sum(:county_share_cents),
-    by_provider_paid_cents: claims.group(:provider_identifier).sum(:paid_amount_cents)
+    total_billed_cents_by_currency: claims.group(:currency_iso).sum(:billed_amount_cents),
+    total_paid_cents_by_currency: claims.group(:currency_iso).sum(:paid_amount_cents),
+    total_state_share_cents_by_currency: claims.group(:currency_iso).sum(:state_share_cents),
+    total_county_share_cents_by_currency: claims.group(:currency_iso).sum(:county_share_cents),
+    by_provider_paid_cents: claims.group(:provider_identifier, :currency_iso).sum(:paid_amount_cents)
   }
 end
