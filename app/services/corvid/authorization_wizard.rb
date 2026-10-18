@@ -210,14 +210,27 @@ module Corvid
       "Bill primary payer first. IHS is payer of last resort per 42 CFR 136.61."
     end
 
+    # A failed or malformed lookup is not a determination of no coverage
+    # (42 CFR 136.61). Only an explicit boolean :eligible enrolls or
+    # refuses; anything else stays :not_checked so an unanswered payer
+    # lookup cannot be treated as a refusal.
     def verify_all_enrollment!
       @enrollment_verification_run = true
+      undetermined = 0
       @alternate_resources.each do |type, resource|
         next unless resource[:status] == :not_checked
-        result = Corvid.adapter.verify_eligibility(patient_identifier, type)
-        @alternate_resources[type][:status] = result&.dig(:eligible) ? :enrolled : :not_enrolled
-        @alternate_resources[type][:checked_at] = Time.current
+
+        status = enrollment_status_from(Corvid.adapter.verify_eligibility(patient_identifier, type))
+        if status
+          resource[:status] = status
+          resource[:checked_at] = Time.current
+        else
+          undetermined += 1
+        end
       end
+      return if undetermined.zero?
+
+      @warnings << "Eligibility could not be determined for #{undetermined} alternate resource(s); they remain unverified"
     end
 
     def enrollment_verification_run?
@@ -398,6 +411,16 @@ module Corvid
     def initialize_alternate_resources
       Corvid::AlternateResourceCheck::RESOURCE_TYPES.each_with_object({}) do |type, hash|
         hash[type] = { status: :not_checked, requires_coordination: false, checked_at: nil }
+      end
+    end
+
+    # Symbol key only: a string-keyed or error hash is an unanswered lookup.
+    def enrollment_status_from(result)
+      return unless result.is_a?(Hash)
+
+      case result[:eligible]
+      when true then :enrolled
+      when false then :not_enrolled
       end
     end
 
