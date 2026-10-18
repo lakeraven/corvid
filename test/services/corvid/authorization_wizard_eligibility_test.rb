@@ -243,9 +243,54 @@ class Corvid::AuthorizationWizardEligibilityTest < ActiveSupport::TestCase
         end
       end
 
-      eligibility_undetermined_warnings(wizard).each do |warning|
-        refute_includes warning, "12"
+      assert_empty eligibility_undetermined_warnings(wizard)
+    end
+  end
+
+  test "manually recording every undetermined resource clears the undetermined warning" do
+    Corvid.configure { |c| c.adapter = EligibilityControllingAdapter.new(default: nil) }
+
+    with_tenant(TENANT) do
+      wizard = build_wizard
+      wizard.verify_all_enrollment!
+      assert_single_undetermined_warning!(wizard)
+
+      Corvid::AlternateResourceCheck::RESOURCE_TYPES.each do |type|
+        wizard.set_resource_status(type, "not_enrolled")
       end
+
+      assert_empty eligibility_undetermined_warnings(wizard)
+      assert wizard.alternate_resources_exhausted?
+    end
+  end
+
+  test "manually recording some undetermined resources updates the count" do
+    types = Corvid::AlternateResourceCheck::RESOURCE_TYPES
+    Corvid.configure { |c| c.adapter = EligibilityControllingAdapter.new(default: nil) }
+
+    with_tenant(TENANT) do
+      wizard = build_wizard
+      wizard.verify_all_enrollment!
+      assert_single_undetermined_warning!(wizard)
+
+      types.first(4).each do |type|
+        wizard.set_resource_status(type, "denied")
+      end
+
+      assert_single_undetermined_warning!(wizard)
+      warning = eligibility_undetermined_warnings(wizard).first
+      assert_includes warning, "#{types.size - 4} alternate resource"
+      refute_includes warning, "#{types.size} alternate resource"
+    end
+  end
+
+  test "set_resource_status with no prior outage adds no undetermined warning" do
+    with_tenant(TENANT) do
+      wizard = build_wizard
+      type = Corvid::AlternateResourceCheck::RESOURCE_TYPES.first
+      wizard.set_resource_status(type, "not_enrolled")
+
+      assert_empty eligibility_undetermined_warnings(wizard)
     end
   end
 
