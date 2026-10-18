@@ -125,6 +125,16 @@ class Corvid::AlternateResourceCheckTest < ActiveSupport::TestCase
     end
   end
 
+  test "all_exhausted? false when all twelve rows exist but one is checking" do
+    with_tenant(TENANT) do
+      referral = create_referral
+      create_all_twelve_unavailable_checks(referral, "workers_comp" => "checking")
+
+      refute Corvid::AlternateResourceCheck.all_exhausted?(referral)
+      assert_exhaustion_agreement(referral)
+    end
+  end
+
   test "all_exhausted? false when all twelve rows exist but one is pending_enrollment" do
     with_tenant(TENANT) do
       referral = create_referral
