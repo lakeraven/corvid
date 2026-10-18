@@ -11,49 +11,57 @@
 Given("there are paid claim submissions from multiple providers") do
   @article6_provider_expected = []
   3.times do |i|
-    billed = 500.00 + (i * 100)
-    paid = 400.00 + (i * 80)
-    state_cents, county_cents = Article6SeedHelpers.state_county_cents_for_paid(paid)
+    billed_cents = 50_037 + (i * 10_000)
+    paid_cents = 40_029 + (i * 8_000)
+    state_cents, county_cents = Article6SeedHelpers.state_county_cents_for_paid(paid_cents)
     provider = "pr_mp_#{i}"
     Corvid::ClaimSubmission.create!(
       tenant_identifier: @tenant, facility_identifier: @facility,
       patient_identifier: "pt_art6_mp_#{i}",
       claim_identifier: "CLM_MP_#{i}",
       claim_type: "professional", status: "paid",
-      billed_amount: billed,
-      paid_amount: paid,
+      billed_amount_cents: billed_cents,
+      paid_amount_cents: paid_cents,
       paid_date: Date.current - i.days,
       # Clamped for the same reason as the Article 6 seed: a bare lookback
       # straddles the quarter start, and this Given is one wiring change away
       # from being read by a service_date-filtered report.
       service_date: [ Date.current - (i + 3).days, Date.current.beginning_of_quarter ].max,
       provider_identifier: provider,
-      state_share: state_cents / 100.0,
-      county_share: county_cents / 100.0
+      state_share_cents: state_cents,
+      county_share_cents: county_cents
     )
     @article6_provider_expected << {
       provider: provider,
-      billed_cents: Article6SeedHelpers.dollars_to_cents(billed),
-      paid_cents: Article6SeedHelpers.dollars_to_cents(paid)
+      billed_cents: billed_cents,
+      paid_cents: paid_cents
     }
   end
 
   # Denied with paid_date and paid_amount on pr_mp_0: excluded from expectations;
   # dropping `.paid` would inflate that provider's bucket.
-  denied_paid = 275.00
-  denied_state_cents, denied_county_cents = Article6SeedHelpers.state_county_cents_for_paid(denied_paid)
+  denied_paid_cents = 27_503
+  denied_state_cents, denied_county_cents = Article6SeedHelpers.state_county_cents_for_paid(denied_paid_cents)
   Corvid::ClaimSubmission.create!(
     tenant_identifier: @tenant, facility_identifier: @facility,
     patient_identifier: "pt_art6_mp_denied",
     claim_identifier: "CLM_MP_DENIED",
     claim_type: "professional", status: "denied",
-    billed_amount: 900.00,
-    paid_amount: denied_paid,
+    billed_amount_cents: 90_000,
+    paid_amount_cents: denied_paid_cents,
     paid_date: Date.current,
     service_date: Date.current.beginning_of_quarter + 3.days,
     provider_identifier: "pr_mp_0",
-    state_share: denied_state_cents / 100.0,
-    county_share: denied_county_cents / 100.0
+    state_share_cents: denied_state_cents,
+    county_share_cents: denied_county_cents
+  )
+
+  other_service = Date.current.beginning_of_quarter + 5.days
+  Article6SeedHelpers.seed_other_tenant_paid_claim!(
+    service_date: other_service,
+    billed_cents: 43_200,
+    paid_cents: 32_100,
+    provider: "pr_art6_other_tenant"
   )
 end
 
@@ -69,50 +77,55 @@ Given("there are paid claim submissions across multiple quarters") do
       [ quarter_start + 2.days, 0 ],
       [ quarter_end - 5.days, 1 ]
     ].each do |service_date, slot|
-      billed = 500.00 + (i * 50) + (slot * 25)
-      paid = 400.00 + (i * 40) + (slot * 20)
+      billed_cents = 50_037 + (i * 5_000) + (slot * 2_503)
+      paid_cents = 40_029 + (i * 4_000) + (slot * 2_001)
       paid_date = quarter_end + 10.days
       service_q_num = ((service_date.beginning_of_quarter.month - 1) / 3) + 1
       service_quarter = "#{service_date.year}-Q#{service_q_num}"
-      paid_q_num = ((paid_date.beginning_of_quarter.month - 1) / 3) + 1
-      paid_quarter = "#{paid_date.year}-Q#{paid_q_num}"
-      raise "seed quarter overlap for claim #{i}-#{slot}" if service_quarter == paid_quarter
 
-      state_cents, county_cents = Article6SeedHelpers.state_county_cents_for_paid(paid)
+      state_cents, county_cents = Article6SeedHelpers.state_county_cents_for_paid(paid_cents)
       Corvid::ClaimSubmission.create!(
         tenant_identifier: @tenant, facility_identifier: @facility,
         patient_identifier: "pt_art6_q#{i}_#{slot}",
         claim_identifier: "CLM_Q_#{i}_#{slot}",
         claim_type: "professional", status: "paid",
-        billed_amount: billed,
-        paid_amount: paid,
+        billed_amount_cents: billed_cents,
+        paid_amount_cents: paid_cents,
         paid_date: paid_date,
         service_date: service_date,
         provider_identifier: "pr_q_001",
-        state_share: state_cents / 100.0,
-        county_share: county_cents / 100.0
+        state_share_cents: state_cents,
+        county_share_cents: county_cents
       )
       bucket = @article6_quarter_expected[service_quarter] ||= { billed_cents: 0, paid_cents: 0 }
-      bucket[:billed_cents] += Article6SeedHelpers.dollars_to_cents(billed)
-      bucket[:paid_cents] += Article6SeedHelpers.dollars_to_cents(paid)
+      bucket[:billed_cents] += billed_cents
+      bucket[:paid_cents] += paid_cents
     end
   end
 
   denied_service = Date.current.beginning_of_quarter + 2.days
-  denied_paid = 310.00
-  denied_state_cents, denied_county_cents = Article6SeedHelpers.state_county_cents_for_paid(denied_paid)
+  denied_paid_cents = 31_007
+  denied_state_cents, denied_county_cents = Article6SeedHelpers.state_county_cents_for_paid(denied_paid_cents)
   Corvid::ClaimSubmission.create!(
     tenant_identifier: @tenant, facility_identifier: @facility,
     patient_identifier: "pt_art6_q_denied",
     claim_identifier: "CLM_Q_DENIED",
     claim_type: "professional", status: "denied",
-    billed_amount: 700.00,
-    paid_amount: denied_paid,
+    billed_amount_cents: 70_000,
+    paid_amount_cents: denied_paid_cents,
     paid_date: Date.current.end_of_quarter + 10.days,
     service_date: denied_service,
     provider_identifier: "pr_q_001",
-    state_share: denied_state_cents / 100.0,
-    county_share: denied_county_cents / 100.0
+    state_share_cents: denied_state_cents,
+    county_share_cents: denied_county_cents
+  )
+
+  other_service = Date.current.beginning_of_quarter + 6.days
+  Article6SeedHelpers.seed_other_tenant_paid_claim!(
+    service_date: other_service,
+    billed_cents: 43_200,
+    paid_cents: 32_100,
+    provider: "pr_art6_other_tenant"
   )
 end
 
@@ -149,11 +162,19 @@ When("I export an Article {int} report as CSV") do |_article|
   quarter_start = Date.current.beginning_of_quarter
   quarter_end = Date.current.end_of_quarter
   claims = Corvid::ClaimSubmission.paid.in_date_range(quarter_start..quarter_end)
-  @csv_string = "Provider,Billed,Paid,State Share,County Share\n"
+  @csv_string = "Provider,Billed,Paid,State Share,County Share,Currency\n"
   claims.group_by(&:provider_identifier).sort.each do |prov, group|
-    cents_to_dollars = ->(field) { group.sum { |c| c.send(field) || 0 } / 100.0 }
-    @csv_string += "#{prov},#{cents_to_dollars[:billed_amount_cents]},#{cents_to_dollars[:paid_amount_cents]},"
-    @csv_string += "#{cents_to_dollars[:state_share_cents]},#{cents_to_dollars[:county_share_cents]}\n"
+    currency = group.first.currency_iso
+    sum_cents = ->(field) { group.sum { |c| c.send(field) || 0 } }
+    billed_cents = sum_cents[:billed_amount_cents]
+    paid_cents = sum_cents[:paid_amount_cents]
+    state_cents = sum_cents[:state_share_cents]
+    county_cents = sum_cents[:county_share_cents]
+    billed_fmt = Money.new(billed_cents, currency).to_s
+    paid_fmt = Money.new(paid_cents, currency).to_s
+    state_fmt = Money.new(state_cents, currency).to_s
+    county_fmt = Money.new(county_cents, currency).to_s
+    @csv_string += "#{prov},#{billed_fmt},#{paid_fmt},#{state_fmt},#{county_fmt},#{currency}\n"
   end
 end
 
@@ -226,23 +247,32 @@ Then("the paid amounts should match the sum of ClaimSubmission paid amounts") do
 end
 
 Then("I should receive a CSV string with reimbursement headers") do
-  assert_equal "Provider,Billed,Paid,State Share,County Share", @csv_string.lines.first.chomp
+  assert_equal "Provider,Billed,Paid,State Share,County Share,Currency", @csv_string.lines.first.chomp
 
   rows = @csv_string.lines.drop(1).map { |line| line.chomp.split(",") }
+  expected_provider_count = @article6_expected[:by_provider].keys.size
+  assert_equal expected_provider_count, rows.size,
+    "CSV data row count must match distinct in-window paid providers"
+  assert_equal rows.map { |cols| cols[0] }.uniq.size, rows.size,
+    "CSV must not contain duplicate provider rows"
+
   providers = rows.to_h { |cols| [ cols[0], cols ] }
-  csv_cents = ->(col) { (BigDecimal(col) * 100).to_i }
+  money_cell = ->(cents) { Money.new(cents, "USD").to_s }
 
   @article6_expected[:by_provider].each do |provider, amounts|
     cols = providers.fetch(provider)
-    assert_equal amounts[:billed_cents], csv_cents[cols[1]]
-    assert_equal amounts[:paid_cents], csv_cents[cols[2]]
-    assert_equal amounts[:state_cents], csv_cents[cols[3]]
-    assert_equal amounts[:county_cents], csv_cents[cols[4]]
+    assert_equal money_cell[amounts[:billed_cents]], cols[1]
+    assert_equal money_cell[amounts[:paid_cents]], cols[2]
+    assert_equal money_cell[amounts[:state_cents]], cols[3]
+    assert_equal money_cell[amounts[:county_cents]], cols[4]
+    assert_equal "USD", cols[5]
   end
 
   refute providers.key?("pr_art6_decoy_early")
   refute providers.key?("pr_art6_decoy_late")
-  refute providers.key?("pr_art6_pseudo_paid")
+  (Corvid::ClaimSubmission::STATUSES - [ "paid" ]).each do |status|
+    refute providers.key?("pr_art6_np_#{status}")
+  end
   refute providers.key?("pr_art6_edge_unpaid")
   refute providers.key?("pr_art6_other_tenant")
   assert_equal @article6_expected[:by_provider].keys.sort, providers.keys.sort
