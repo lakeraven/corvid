@@ -185,7 +185,12 @@ module Corvid
       # ----------------------------------------------------------------------
 
       # Verify enrollment for a patient against a coverage type.
-      # Returns a hash of eligibility info or nil.
+      #
+      # Returns a Hash with symbol key :eligible set to exactly true or
+      # false when the payer answered. Returns nil, or a Hash without a
+      # boolean :eligible, when the answer could not be determined.
+      # Callers treat anything else as undetermined, never as no coverage
+      # (42 CFR 136.61).
       def verify_eligibility(patient_identifier, resource_type)
         raise NotImplementedError, "#{self.class}#verify_eligibility not implemented"
       end

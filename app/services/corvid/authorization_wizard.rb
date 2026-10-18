@@ -54,6 +54,7 @@ module Corvid
       @data = { patient_identifier: patient_identifier }
       @errors = []
       @warnings = []
+      @undetermined_resource_types = Set.new
       @messages = []
       @field_errors = {}
       @alternate_resources = initialize_alternate_resources
@@ -200,6 +201,8 @@ module Corvid
         checked_at: Time.current
       }
       @warnings << "Active coverage found - coordination of benefits required" if status_sym == :enrolled
+      @undetermined_resource_types.delete(resource_type)
+      refresh_undetermined_warning
     end
 
     def alternate_resources_exhausted?
@@ -216,11 +219,11 @@ module Corvid
     # A failed or malformed lookup is not a determination of no coverage
     # (42 CFR 136.61). Only an explicit boolean :eligible enrolls or
     # refuses; anything else stays :not_checked so an unanswered payer
-    # lookup cannot be treated as a refusal. Each run replaces the
-    # undetermined warning so the count matches resources still unverified.
+    # lookup cannot be treated as a refusal. The warning count is the
+    # number of resource types whose latest lookup was undetermined.
     def verify_all_enrollment!
       @enrollment_verification_run = true
-      undetermined = 0
+      # Clear before lookups so a raise cannot leave the previous count.
       @warnings.delete_if { |warning| warning.start_with?(UNDETERMINED_ELIGIBILITY_WARNING_PREFIX) }
       @alternate_resources.each do |type, resource|
         next unless resource[:status] == :not_checked
@@ -229,14 +232,13 @@ module Corvid
         if status
           resource[:status] = status
           resource[:checked_at] = Time.current
+          @undetermined_resource_types.delete(type)
         else
-          undetermined += 1
+          @undetermined_resource_types.add(type)
         end
       end
 
-      return if undetermined.zero?
-
-      @warnings << "#{UNDETERMINED_ELIGIBILITY_WARNING_PREFIX} for #{undetermined} alternate resource(s); they remain unverified"
+      refresh_undetermined_warning
     end
 
     def enrollment_verification_run?
@@ -418,6 +420,15 @@ module Corvid
       Corvid::AlternateResourceCheck::RESOURCE_TYPES.each_with_object({}) do |type, hash|
         hash[type] = { status: :not_checked, requires_coordination: false, checked_at: nil }
       end
+    end
+
+    # Count only, never a patient identifier (ADR 0003).
+    def refresh_undetermined_warning
+      @warnings.delete_if { |warning| warning.start_with?(UNDETERMINED_ELIGIBILITY_WARNING_PREFIX) }
+      return if @undetermined_resource_types.empty?
+
+      count = @undetermined_resource_types.size
+      @warnings << "#{UNDETERMINED_ELIGIBILITY_WARNING_PREFIX} for #{count} alternate resource(s); they remain unverified"
     end
 
     # Symbol key only: a string-keyed or error hash is an unanswered lookup.
