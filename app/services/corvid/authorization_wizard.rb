@@ -221,6 +221,7 @@ module Corvid
     def verify_all_enrollment!
       @enrollment_verification_run = true
       undetermined = 0
+      @warnings.delete_if { |warning| warning.start_with?(UNDETERMINED_ELIGIBILITY_WARNING_PREFIX) }
       @alternate_resources.each do |type, resource|
         next unless resource[:status] == :not_checked
 
@@ -233,7 +234,6 @@ module Corvid
         end
       end
 
-      @warnings.delete_if { |warning| warning.start_with?(UNDETERMINED_ELIGIBILITY_WARNING_PREFIX) }
       return if undetermined.zero?
 
       @warnings << "#{UNDETERMINED_ELIGIBILITY_WARNING_PREFIX} for #{undetermined} alternate resource(s); they remain unverified"
