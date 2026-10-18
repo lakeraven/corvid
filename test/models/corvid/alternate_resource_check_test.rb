@@ -86,14 +86,52 @@ class Corvid::AlternateResourceCheckTest < ActiveSupport::TestCase
   test "all_exhausted? when all checks are unavailable" do
     with_tenant(TENANT) do
       referral = create_referral
-      Corvid::AlternateResourceCheck.create!(
-        prc_referral: referral, resource_type: "medicare_a", status: "not_enrolled"
-      )
-      Corvid::AlternateResourceCheck.create!(
-        prc_referral: referral, resource_type: "medicaid", status: "denied"
-      )
+      create_all_twelve_unavailable_checks(referral)
 
       assert Corvid::AlternateResourceCheck.all_exhausted?(referral)
+    end
+  end
+
+  test "all_exhausted? false when referral has no alternate resource checks" do
+    with_tenant(TENANT) do
+      referral = create_referral
+
+      refute Corvid::AlternateResourceCheck.all_exhausted?(referral)
+      assert_exhaustion_agreement(referral)
+    end
+  end
+
+  test "all_exhausted? false when only a partial set of resource types is unavailable" do
+    with_tenant(TENANT) do
+      referral = create_referral
+      %w[medicare_a medicaid private_insurance charity_care].each do |type|
+        Corvid::AlternateResourceCheck.create!(
+          prc_referral: referral, resource_type: type, status: "not_enrolled"
+        )
+      end
+
+      refute Corvid::AlternateResourceCheck.all_exhausted?(referral)
+      assert_exhaustion_agreement(referral)
+    end
+  end
+
+  test "all_exhausted? false when all twelve rows exist but one is not_checked" do
+    with_tenant(TENANT) do
+      referral = create_referral
+      create_all_twelve_unavailable_checks(referral, "tribal_program" => "not_checked")
+
+      refute Corvid::AlternateResourceCheck.all_exhausted?(referral)
+      assert_exhaustion_agreement(referral)
+    end
+  end
+
+  test "all_exhausted? false when all twelve rows exist but one is pending_enrollment" do
+    with_tenant(TENANT) do
+      referral = create_referral
+      create_all_twelve_unavailable_checks(referral, "state_program" => "pending_enrollment")
+
+      refute Corvid::AlternateResourceCheck.all_exhausted?(referral)
+      assert_exhaustion_agreement(referral)
     end
   end
 
@@ -258,16 +296,15 @@ class Corvid::AlternateResourceCheckTest < ActiveSupport::TestCase
   test "all_exhausted? returns true with mixed exhausted/denied/not_enrolled" do
     with_tenant(TENANT) do
       referral = create_referral
-      Corvid::AlternateResourceCheck.create!(
-        prc_referral: referral, resource_type: "medicare_a", status: "not_enrolled"
+      create_all_twelve_unavailable_checks(
+        referral,
+        "medicare_a" => "not_enrolled",
+        "medicaid" => "denied",
+        "private_insurance" => "exhausted"
       )
-      Corvid::AlternateResourceCheck.create!(
-        prc_referral: referral, resource_type: "medicaid", status: "denied"
-      )
-      Corvid::AlternateResourceCheck.create!(
-        prc_referral: referral, resource_type: "private_insurance", status: "exhausted"
-      )
+
       assert Corvid::AlternateResourceCheck.all_exhausted?(referral)
+      assert_exhaustion_agreement(referral)
     end
   end
 
@@ -469,5 +506,21 @@ class Corvid::AlternateResourceCheckTest < ActiveSupport::TestCase
       prc_referral: create_referral,
       resource_type: resource_type
     )
+  end
+
+  def create_all_twelve_unavailable_checks(referral, status_overrides = {})
+    Corvid::AlternateResourceCheck::RESOURCE_TYPES.each do |type|
+      Corvid::AlternateResourceCheck.create!(
+        prc_referral: referral,
+        resource_type: type,
+        status: status_overrides.fetch(type, "not_enrolled")
+      )
+    end
+  end
+
+  def assert_exhaustion_agreement(referral)
+    service = Corvid::AlternateResourceService.all_exhausted?(referral)
+    model = Corvid::AlternateResourceCheck.all_exhausted?(referral)
+    assert_equal service, model, "AlternateResourceService and AlternateResourceCheck must agree"
   end
 end
