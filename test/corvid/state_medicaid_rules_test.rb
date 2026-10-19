@@ -39,6 +39,16 @@ class Corvid::StateMedicaidRulesTest < Minitest::Test
     assert_equal "TS", Corvid::StateMedicaidRules.lookup("ts").state_code
   end
 
+  def test_register_normalizes_stored_state_code_encoding_to_utf8
+    entry = Corvid::StateMedicaidRules.register("xu".b, expanded: true, groups: minimal_groups)
+    assert_equal "XU", entry.state_code
+    assert_equal Encoding::UTF_8, entry.state_code.encoding
+
+    stored = Corvid::StateMedicaidRules.state_codes.find { |code| code == "XU" }
+    refute_nil stored
+    assert_equal Encoding::UTF_8, stored.encoding
+  end
+
   def test_register_accepts_string_keyed_group_fields
     Corvid::StateMedicaidRules.register(
       "TK",
@@ -76,9 +86,9 @@ class Corvid::StateMedicaidRulesTest < Minitest::Test
   end
 
   def test_state_codes_returns_sorted_registered_codes
-    register_sample_state("BB")
-    register_sample_state("AA")
-    assert_equal %w[AA BB], Corvid::StateMedicaidRules.state_codes
+    register_sample_state("QB")
+    register_sample_state("QA")
+    assert_equal %w[QA QB], Corvid::StateMedicaidRules.state_codes
   end
 
   def test_reregister_replaces_existing_entry
@@ -382,6 +392,44 @@ class Corvid::StateMedicaidRulesTest < Minitest::Test
     end
   end
 
+  def test_register_raises_when_program_code_is_whitespace_only
+    assert_raises(ArgumentError) do
+      Corvid::StateMedicaidRules.register(
+        "XC",
+        expanded: false,
+        work_requirement_programs: [ { code: " ", description_pattern: /x/ } ],
+        groups: minimal_groups
+      )
+    end
+  end
+
+  def test_register_raises_for_duplicate_work_requirement_program_codes
+    assert_raises(ArgumentError) do
+      Corvid::StateMedicaidRules.register(
+        "ZD",
+        expanded: false,
+        work_requirement_programs: [
+          { code: "w", description_pattern: /\bA\b/ },
+          { code: "w", description_pattern: /\bB\b/ }
+        ],
+        groups: minimal_groups
+      )
+    end
+  end
+
+  def test_register_raises_when_description_pattern_matches_empty_string
+    [ //, /.*/, /x*/ ].each do |pattern|
+      assert_raises(ArgumentError) do
+        Corvid::StateMedicaidRules.register(
+          "ZP",
+          expanded: false,
+          work_requirement_programs: [ { code: "empty_match", description_pattern: pattern } ],
+          groups: minimal_groups
+        )
+      end
+    end
+  end
+
   def test_register_raises_when_description_pattern_is_string
     assert_raises(ArgumentError) do
       Corvid::StateMedicaidRules.register(
@@ -626,8 +674,33 @@ class Corvid::StateMedicaidRulesTest < Minitest::Test
   end
 
   def test_group_raises_for_unknown_group_name
-    entry = register_sample_state("GU")
+    entry = register_sample_state("XG")
     assert_raises(ArgumentError) { entry.group("invalid_group") }
+  end
+
+  def test_group_uses_string_own_characters_not_subclass_to_s
+    Corvid::StateMedicaidRules.register(
+      "XY",
+      expanded: false,
+      groups: {
+        waiver_adult: {
+          renewal_months: 12,
+          retro_coverage_months: 2,
+          work_requirement: true
+        },
+        other: {
+          renewal_months: 6,
+          retro_coverage_months: 1,
+          work_requirement: false
+        }
+      }
+    )
+    entry = Corvid::StateMedicaidRules.lookup("XY")
+    spoof_group_name = Class.new(String) { def to_s = "other" }
+    group = entry.group(spoof_group_name.new("waiver_adult"))
+    refute_nil group
+    assert group.work_requirement?
+    assert_equal 12, group.renewal_months
   end
 
   # -- Entry#waiver_program_for ------------------------------------------------
@@ -649,17 +722,17 @@ class Corvid::StateMedicaidRulesTest < Minitest::Test
 
   def test_waiver_program_for_returns_nil_when_no_match
     Corvid::StateMedicaidRules.register(
-      "NM",
+      "XN",
       expanded: false,
       work_requirement_programs: [ { code: "solo", description_pattern: /\bNOPE\b/ } ],
       groups: minimal_groups
     )
-    entry = Corvid::StateMedicaidRules.lookup("NM")
+    entry = Corvid::StateMedicaidRules.lookup("XN")
     assert_nil entry.waiver_program_for("unrelated description")
   end
 
   def test_waiver_program_for_raises_argument_error_when_description_is_undetermined_nil
-    entry = register_sample_state("ND")
+    entry = register_sample_state("XD")
     assert_raises(ArgumentError) { entry.waiver_program_for(nil) }
   end
 
@@ -671,6 +744,19 @@ class Corvid::StateMedicaidRulesTest < Minitest::Test
   def test_waiver_program_for_raises_argument_error_when_description_is_undetermined_whitespace_only
     entry = register_sample_state("BW")
     assert_raises(ArgumentError) { entry.waiver_program_for("   ") }
+  end
+
+  def test_waiver_program_for_raises_argument_error_for_unicode_whitespace_and_invisible_characters
+    entry = register_sample_state("XW")
+    [
+      "\u00A0",
+      "\u3000",
+      "\u200B",
+      "\uFEFF",
+      " \u00A0\t"
+    ].each do |description|
+      assert_raises(ArgumentError) { entry.waiver_program_for(description) }
+    end
   end
 
   def test_waiver_program_for_raises_argument_error_for_non_string_description
@@ -723,7 +809,7 @@ class Corvid::StateMedicaidRulesTest < Minitest::Test
   def test_mutating_work_requirement_programs_after_register_does_not_change_entry
     programs = [ { code: "mut", description_pattern: /\bMUT\b/ } ]
     Corvid::StateMedicaidRules.register(
-      "MP",
+      "XP",
       expanded: false,
       work_requirement_programs: programs,
       groups: minimal_groups
@@ -731,7 +817,7 @@ class Corvid::StateMedicaidRulesTest < Minitest::Test
     programs.first[:code] = "changed"
     programs << { code: "extra", description_pattern: /x/ }
 
-    entry = Corvid::StateMedicaidRules.lookup("MP")
+    entry = Corvid::StateMedicaidRules.lookup("XP")
     assert_equal "mut", entry.work_requirement_programs.first.code
     assert_equal 1, entry.work_requirement_programs.size
   end
