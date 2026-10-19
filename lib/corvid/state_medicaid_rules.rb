@@ -31,23 +31,33 @@ module Corvid
     # Two ASCII letters, checked before ASCII-upcasing. Stored codes are uppercase UTF-8.
     STATE_CODE = /\A[A-Za-z]{2}\z/
 
-    # Shared by plan descriptions and program codes. String#strip is ASCII-only,
-    # so Unicode spaces and zero-width/BOM characters would otherwise count as
-    # text. NUL stays blank because strip removes it.
-    module BlankText
-      BLANK_TEXT = /\A[\0[:space:]\u200B-\u200D\u2060\uFEFF]*\z/
+    # Shared by plan descriptions and program codes. Text is read as UTF-8;
+    # text that cannot be (binary with high bytes, an invalid or
+    # ASCII-incompatible encoding) is unreadable. Text with no letter or
+    # digit is blank, which covers Unicode spaces, controls, format
+    # characters and soft hyphens. Hangul fillers are letters by category
+    # but render as nothing, so they do not count.
+    module ReadableText
+      VISIBLE = /[\p{L}\p{N}&&[^\u115F\u1160\u3164\uFFA0]]/
 
       module_function
 
-      def blank?(text)
-        return false unless text.encoding.ascii_compatible? && text.valid_encoding?
-        return false if text.encoding == Encoding::ASCII_8BIT && !text.ascii_only?
+      # The text as UTF-8, or nil when it cannot be read.
+      def utf8_text(text)
+        return unless text.encoding.ascii_compatible? && text.valid_encoding?
+        return if text.encoding == Encoding::ASCII_8BIT && !text.ascii_only?
 
-        BLANK_TEXT.match?(text)
+        text.encode(Encoding::UTF_8)
+      rescue EncodingError
+        nil
+      end
+
+      def blank?(text)
+        !VISIBLE.match?(text)
       end
     end
-    private_constant :BlankText
-    extend BlankText
+    private_constant :ReadableText
+    extend ReadableText
 
     Group = Struct.new(
       :renewal_months,
@@ -67,7 +77,7 @@ module Corvid
       :work_requirement_programs,
       keyword_init: true
     ) do
-      include BlankText
+      include ReadableText
 
       def configured? = true
 
@@ -108,10 +118,8 @@ module Corvid
           raise ArgumentError, "description must be a String"
         end
 
-        text = String.new(description)
-        unless text.valid_encoding? && text.encoding.ascii_compatible?
-          raise ArgumentError, "description encoding is incompatible"
-        end
+        text = utf8_text(String.new(description))
+        raise ArgumentError, "description encoding is incompatible" unless text
         raise ArgumentError, "description is blank" if blank?(text)
 
         text
@@ -302,11 +310,12 @@ module Corvid
       end
 
       def program_code(code)
-        unless code.is_a?(String) && !blank?(code)
+        text = utf8_text(String.new(code)) if code.is_a?(String)
+        unless text && !blank?(text)
           raise ArgumentError, "work requirement program :code must be a non-empty String, got #{code.inspect}"
         end
 
-        code.dup.freeze
+        text.freeze
       end
 
       def description_pattern(pattern)
