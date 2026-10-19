@@ -325,6 +325,50 @@ class Corvid::StateMedicaidRulesTest < Minitest::Test
     end
   end
 
+  def test_register_raises_for_integer_group_key_zero
+    assert_raises(ArgumentError) do
+      Corvid::StateMedicaidRules.register(
+        "G0",
+        expanded: true,
+        groups: {
+          0 => {
+            renewal_months: 12,
+            retro_coverage_months: 3,
+            work_requirement: false
+          }
+        }
+      )
+    end
+  end
+
+  def test_register_raises_for_nil_group_key
+    assert_raises(ArgumentError) do
+      Corvid::StateMedicaidRules.register(
+        "GN",
+        expanded: true,
+        groups: {
+          nil => {
+            renewal_months: 12,
+            retro_coverage_months: 3,
+            work_requirement: false
+          }
+        }
+      )
+    end
+  end
+
+  def test_register_raises_for_integer_state_code
+    assert_raises(ArgumentError) do
+      Corvid::StateMedicaidRules.register(42, expanded: true, groups: minimal_groups)
+    end
+  end
+
+  def test_register_raises_for_nil_state_code
+    assert_raises(ArgumentError) do
+      Corvid::StateMedicaidRules.register(nil, expanded: true, groups: minimal_groups)
+    end
+  end
+
   # -- work_requirement_programs validation ------------------------------------
 
   def test_register_raises_when_program_code_is_empty
@@ -484,6 +528,96 @@ class Corvid::StateMedicaidRulesTest < Minitest::Test
     refute result.configured?
   end
 
+  def test_lookup_with_leading_space_returns_not_configured_when_state_registered
+    register_sample_state("XA")
+    result = Corvid::StateMedicaidRules.lookup(" xa")
+    assert_kind_of Corvid::StateMedicaidRules::NotConfigured, result
+    refute result.configured?
+  end
+
+  def test_lookup_with_trailing_space_returns_not_configured_when_state_registered
+    register_sample_state("XA")
+    result = Corvid::StateMedicaidRules.lookup("xa ")
+    assert_kind_of Corvid::StateMedicaidRules::NotConfigured, result
+    refute result.configured?
+  end
+
+  def test_lookup_with_trailing_space_on_registered_code_returns_not_configured
+    register_sample_state("TS")
+    result = Corvid::StateMedicaidRules.lookup("TS ")
+    assert_kind_of Corvid::StateMedicaidRules::NotConfigured, result
+    refute result.configured?
+  end
+
+  def test_lookup_returns_not_configured_for_utf16le_encoded_code_when_xa_registered
+    register_sample_state("XA")
+    code = "XA".encode("UTF-16LE")
+    result = Corvid::StateMedicaidRules.lookup(code)
+    assert_kind_of Corvid::StateMedicaidRules::NotConfigured, result
+    refute result.configured?
+  end
+
+  def test_lookup_returns_not_configured_for_utf32be_encoded_code_when_xa_registered
+    register_sample_state("XA")
+    code = "XA".encode("UTF-32BE")
+    result = Corvid::StateMedicaidRules.lookup(code)
+    assert_kind_of Corvid::StateMedicaidRules::NotConfigured, result
+    refute result.configured?
+  end
+
+  def test_lookup_returns_not_configured_for_invalid_utf8_byte_sequence_when_xa_registered
+    register_sample_state("XA")
+    code = "\xFF\xFE".dup.force_encoding("UTF-8")
+    result = Corvid::StateMedicaidRules.lookup(code)
+    assert_kind_of Corvid::StateMedicaidRules::NotConfigured, result
+    refute result.configured?
+  end
+
+  def test_register_raises_argument_error_for_utf16le_encoded_state_code
+    code = "XA".encode("UTF-16LE")
+    assert_raises(ArgumentError) do
+      Corvid::StateMedicaidRules.register(code, expanded: true, groups: minimal_groups)
+    end
+  end
+
+  def test_register_raises_argument_error_for_utf32be_encoded_state_code
+    code = "XA".encode("UTF-32BE")
+    assert_raises(ArgumentError) do
+      Corvid::StateMedicaidRules.register(code, expanded: true, groups: minimal_groups)
+    end
+  end
+
+  def test_register_raises_argument_error_for_invalid_utf8_state_code_bytes
+    code = "\xFF\xFE".dup.force_encoding("UTF-8")
+    assert_raises(ArgumentError) do
+      Corvid::StateMedicaidRules.register(code, expanded: true, groups: minimal_groups)
+    end
+  end
+
+  def test_lookup_does_not_resolve_state_code_via_string_subclass_to_s_alias
+    register_sample_state("XA")
+    spoof_state_code = Class.new(String) { def to_s = "XA" }
+    result = Corvid::StateMedicaidRules.lookup(spoof_state_code.new("QQ"))
+    refute result.configured?
+    refute_equal "XA", result.state_code if result.state_code
+    assert Corvid::StateMedicaidRules.lookup("XA").configured?
+  end
+
+  def test_register_does_not_overwrite_state_via_string_subclass_to_s_alias
+    register_sample_state("XA")
+    xa_entry = Corvid::StateMedicaidRules.lookup("XA")
+    spoof_state_code = Class.new(String) { def to_s = "XA" }
+    Corvid::StateMedicaidRules.register(
+      spoof_state_code.new("QQ"),
+      expanded: false,
+      groups: minimal_groups
+    )
+    assert xa_entry.equal?(Corvid::StateMedicaidRules.lookup("XA"))
+    qq_entry = Corvid::StateMedicaidRules.lookup("QQ")
+    assert qq_entry.configured?
+    refute qq_entry.expanded?
+  end
+
   # -- Entry#group -------------------------------------------------------------
 
   def test_group_returns_nil_for_known_group_not_configured_on_entry
@@ -524,14 +658,48 @@ class Corvid::StateMedicaidRulesTest < Minitest::Test
     assert_nil entry.waiver_program_for("unrelated description")
   end
 
-  def test_waiver_program_for_returns_nil_for_nil_description
+  def test_waiver_program_for_raises_argument_error_when_description_is_undetermined_nil
     entry = register_sample_state("ND")
-    assert_nil entry.waiver_program_for(nil)
+    assert_raises(ArgumentError) { entry.waiver_program_for(nil) }
   end
 
-  def test_waiver_program_for_returns_nil_for_blank_description
+  def test_waiver_program_for_raises_argument_error_when_description_is_undetermined_empty
     entry = register_sample_state("BD")
-    assert_nil entry.waiver_program_for("   ")
+    assert_raises(ArgumentError) { entry.waiver_program_for("") }
+  end
+
+  def test_waiver_program_for_raises_argument_error_when_description_is_undetermined_whitespace_only
+    entry = register_sample_state("BW")
+    assert_raises(ArgumentError) { entry.waiver_program_for("   ") }
+  end
+
+  def test_waiver_program_for_raises_argument_error_for_non_string_description
+    entry = register_sample_state("NS")
+    assert_raises(ArgumentError) { entry.waiver_program_for(42) }
+  end
+
+  def test_waiver_program_for_raises_argument_error_for_invalid_utf8_bytes_in_description
+    Corvid::StateMedicaidRules.register(
+      "WU",
+      expanded: false,
+      work_requirement_programs: [ { code: "caf", description_pattern: /caf/i } ],
+      groups: minimal_groups
+    )
+    entry = Corvid::StateMedicaidRules.lookup("WU")
+    description = "caf\xFF waiver".dup.force_encoding("UTF-8")
+    assert_raises(ArgumentError) { entry.waiver_program_for(description) }
+  end
+
+  def test_waiver_program_for_raises_argument_error_for_utf16le_description
+    Corvid::StateMedicaidRules.register(
+      "W16",
+      expanded: false,
+      work_requirement_programs: [ { code: "demo", description_pattern: /demo/i } ],
+      groups: minimal_groups
+    )
+    entry = Corvid::StateMedicaidRules.lookup("W16")
+    description = "demo waiver".encode("UTF-16LE")
+    assert_raises(ArgumentError) { entry.waiver_program_for(description) }
   end
 
   # -- Immutability ------------------------------------------------------------
