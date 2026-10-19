@@ -107,6 +107,34 @@ Given("there are paid claim submissions in the system") do
     )
   end
 
+  # Second in-window USD claim for pr_art6_1 (the loop only seeds one for that provider).
+  art6_1_extra_service = Date.current.beginning_of_quarter + 10.days
+  art6_1_extra_billed = 3_333
+  art6_1_extra_paid = 2_777
+  art6_1_extra_state, art6_1_extra_county = Article6SeedHelpers.state_county_cents_for_paid(art6_1_extra_paid)
+  Corvid::ClaimSubmission.create!(
+    tenant_identifier: @tenant,
+    facility_identifier: @facility,
+    patient_identifier: "pt_art6_1_b",
+    claim_identifier: "CLM_ART6_1_B",
+    claim_type: "professional",
+    status: "paid",
+    billed_amount_cents: art6_1_extra_billed,
+    paid_amount_cents: art6_1_extra_paid,
+    service_date: art6_1_extra_service,
+    paid_date: art6_1_extra_service,
+    provider_identifier: "pr_art6_1",
+    state_share_cents: art6_1_extra_state,
+    county_share_cents: art6_1_extra_county,
+    submitted_at: 40.days.ago
+  )
+  Article6SeedHelpers.record_in_window_paid_claim!(
+    @article6_expected,
+    billed_cents: art6_1_extra_billed,
+    paid_cents: art6_1_extra_paid,
+    provider: "pr_art6_1"
+  )
+
   # Two BOUNDARY claims exactly on the window edges, both in-window and both
   # counted in the expected sum. They are what kill an off-by-one on either
   # bound: without a row on quarter_start, `quarter_start.next_day..` passes;
@@ -150,6 +178,39 @@ Given("there are paid claim submissions in the system") do
         provider: provider
       )
     end
+  end
+
+  # Second in-window paid claim per edge provider so CSV/summary by_provider rows require SUM.
+  [
+    { suffix: "start", service_date: Date.current.beginning_of_quarter + 2.days,
+      billed_cents: 1_117, paid_cents: 1_001 },
+    { suffix: "end", service_date: Date.current.end_of_quarter - 2.days,
+      billed_cents: 2_117, paid_cents: 2_001 }
+  ].each do |edge|
+    provider = "pr_art6_edge_#{edge[:suffix]}"
+    state_cents, county_cents = Article6SeedHelpers.state_county_cents_for_paid(edge[:paid_cents])
+    Corvid::ClaimSubmission.create!(
+      tenant_identifier: @tenant,
+      facility_identifier: @facility,
+      patient_identifier: "pt_art6_edge_#{edge[:suffix]}_b",
+      claim_identifier: "CLM_ART6_EDGE_#{edge[:suffix].upcase}_B",
+      claim_type: "professional",
+      status: "paid",
+      billed_amount_cents: edge[:billed_cents],
+      paid_amount_cents: edge[:paid_cents],
+      paid_date: edge[:service_date],
+      service_date: edge[:service_date],
+      provider_identifier: provider,
+      state_share_cents: state_cents,
+      county_share_cents: county_cents,
+      submitted_at: 40.days.ago
+    )
+    Article6SeedHelpers.record_in_window_paid_claim!(
+      @article6_expected,
+      billed_cents: edge[:billed_cents],
+      paid_cents: edge[:paid_cents],
+      provider: provider
+    )
   end
 
   # Status is NOT "paid" but paid_date and paid_amount are set in-quarter.
@@ -252,6 +313,35 @@ Given("there are paid claim submissions in the system") do
     currency_iso: "JOD"
   )
 
+  jod2_service = Date.current.beginning_of_quarter + 13.days
+  jod2_billed_cents = 4_321
+  jod2_paid_cents = 3_210
+  jod2_state_cents, jod2_county_cents = Article6SeedHelpers.state_county_cents_for_paid(jod2_paid_cents)
+  Corvid::ClaimSubmission.create!(
+    tenant_identifier: @tenant,
+    facility_identifier: @facility,
+    patient_identifier: "pt_art6_jod_b",
+    claim_identifier: "CLM_ART6_JOD_B",
+    claim_type: "professional",
+    status: "paid",
+    currency_iso: "JOD",
+    billed_amount_cents: jod2_billed_cents,
+    paid_amount_cents: jod2_paid_cents,
+    service_date: jod2_service,
+    paid_date: jod2_service,
+    provider_identifier: "pr_art6_jod",
+    state_share_cents: jod2_state_cents,
+    county_share_cents: jod2_county_cents,
+    submitted_at: 40.days.ago
+  )
+  Article6SeedHelpers.record_in_window_paid_claim!(
+    @article6_expected,
+    billed_cents: jod2_billed_cents,
+    paid_cents: jod2_paid_cents,
+    provider: "pr_art6_jod",
+    currency_iso: "JOD"
+  )
+
   # Same provider as an existing USD row, second currency — CSV must emit two rows.
   dual_billed_cents = 6_543
   dual_paid_cents = 5_432
@@ -278,6 +368,35 @@ Given("there are paid claim submissions in the system") do
     @article6_expected,
     billed_cents: dual_billed_cents,
     paid_cents: dual_paid_cents,
+    provider: "pr_art6_0",
+    currency_iso: "JOD"
+  )
+
+  dual2_service = Date.current.beginning_of_quarter + 15.days
+  dual2_billed_cents = 1_987
+  dual2_paid_cents = 1_654
+  dual2_state_cents, dual2_county_cents = Article6SeedHelpers.state_county_cents_for_paid(dual2_paid_cents)
+  Corvid::ClaimSubmission.create!(
+    tenant_identifier: @tenant,
+    facility_identifier: @facility,
+    patient_identifier: "pt_art6_0_jod_b",
+    claim_identifier: "CLM_ART6_0_JOD_B",
+    claim_type: "professional",
+    status: "paid",
+    currency_iso: "JOD",
+    billed_amount_cents: dual2_billed_cents,
+    paid_amount_cents: dual2_paid_cents,
+    service_date: dual2_service,
+    paid_date: dual2_service,
+    provider_identifier: "pr_art6_0",
+    state_share_cents: dual2_state_cents,
+    county_share_cents: dual2_county_cents,
+    submitted_at: 40.days.ago
+  )
+  Article6SeedHelpers.record_in_window_paid_claim!(
+    @article6_expected,
+    billed_cents: dual2_billed_cents,
+    paid_cents: dual2_paid_cents,
     provider: "pr_art6_0",
     currency_iso: "JOD"
   )

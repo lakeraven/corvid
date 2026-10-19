@@ -40,6 +40,31 @@ Given("there are paid claim submissions from multiple providers") do
     }
   end
 
+  # Second in-window USD claim per provider so grouped totals require SUM, not MAX.
+  3.times do |i|
+    provider = "pr_mp_#{i}"
+    extra_billed = 3_171 + (i * 503)
+    extra_paid = 2_089 + (i * 401)
+    extra_state_cents, extra_county_cents = Article6SeedHelpers.state_county_cents_for_paid(extra_paid)
+    extra_service = [ Date.current.beginning_of_quarter + (4 + i).days, Date.current.beginning_of_quarter ].max
+    Corvid::ClaimSubmission.create!(
+      tenant_identifier: @tenant, facility_identifier: @facility,
+      patient_identifier: "pt_art6_mp_#{i}_b",
+      claim_identifier: "CLM_MP_#{i}_B",
+      claim_type: "professional", status: "paid",
+      billed_amount_cents: extra_billed,
+      paid_amount_cents: extra_paid,
+      paid_date: [ Date.current - i.days, extra_service ].max,
+      service_date: extra_service,
+      provider_identifier: provider,
+      state_share_cents: extra_state_cents,
+      county_share_cents: extra_county_cents
+    )
+    row = @article6_provider_expected.find { |r| r[:provider] == provider && r[:currency_iso] == "USD" }
+    row[:billed_cents] += extra_billed
+    row[:paid_cents] += extra_paid
+  end
+
   mp_jod_billed_cents = 15_678
   mp_jod_paid_cents = 12_345
   mp_jod_state_cents, mp_jod_county_cents = Article6SeedHelpers.state_county_cents_for_paid(mp_jod_paid_cents)
@@ -64,6 +89,28 @@ Given("there are paid claim submissions from multiple providers") do
     billed_cents: mp_jod_billed_cents,
     paid_cents: mp_jod_paid_cents
   }
+
+  mp_jod2_billed_cents = 8_765
+  mp_jod2_paid_cents = 6_543
+  mp_jod2_state_cents, mp_jod2_county_cents = Article6SeedHelpers.state_county_cents_for_paid(mp_jod2_paid_cents)
+  mp_jod2_service = Date.current.beginning_of_quarter + 12.days
+  Corvid::ClaimSubmission.create!(
+    tenant_identifier: @tenant, facility_identifier: @facility,
+    patient_identifier: "pt_art6_mp_jod_b",
+    claim_identifier: "CLM_MP_JOD_B",
+    claim_type: "professional", status: "paid",
+    currency_iso: "JOD",
+    billed_amount_cents: mp_jod2_billed_cents,
+    paid_amount_cents: mp_jod2_paid_cents,
+    paid_date: mp_jod2_service,
+    service_date: mp_jod2_service,
+    provider_identifier: "pr_mp_1",
+    state_share_cents: mp_jod2_state_cents,
+    county_share_cents: mp_jod2_county_cents
+  )
+  jod_row = @article6_provider_expected.find { |r| r[:provider] == "pr_mp_1" && r[:currency_iso] == "JOD" }
+  jod_row[:billed_cents] += mp_jod2_billed_cents
+  jod_row[:paid_cents] += mp_jod2_paid_cents
 
   # Denied with paid_date and paid_amount on pr_mp_0: excluded from expectations;
   # dropping `.paid` would inflate that provider's bucket.
@@ -154,6 +201,27 @@ Given("there are paid claim submissions across multiple quarters") do
   bucket = @article6_quarter_expected[q_jod_pair] ||= { billed_cents: 0, paid_cents: 0 }
   bucket[:billed_cents] += q_jod_billed_cents
   bucket[:paid_cents] += q_jod_paid_cents
+
+  q_jod2_billed_cents = 9_123
+  q_jod2_paid_cents = 7_891
+  q_jod2_state_cents, q_jod2_county_cents = Article6SeedHelpers.state_county_cents_for_paid(q_jod2_paid_cents)
+  q_jod2_service = Date.current.beginning_of_quarter + 14.days
+  Corvid::ClaimSubmission.create!(
+    tenant_identifier: @tenant, facility_identifier: @facility,
+    patient_identifier: "pt_art6_q_jod_b",
+    claim_identifier: "CLM_Q_JOD_B",
+    claim_type: "professional", status: "paid",
+    currency_iso: "JOD",
+    billed_amount_cents: q_jod2_billed_cents,
+    paid_amount_cents: q_jod2_paid_cents,
+    paid_date: Date.current.end_of_quarter + 12.days,
+    service_date: q_jod2_service,
+    provider_identifier: "pr_q_jod_b",
+    state_share_cents: q_jod2_state_cents,
+    county_share_cents: q_jod2_county_cents
+  )
+  bucket[:billed_cents] += q_jod2_billed_cents
+  bucket[:paid_cents] += q_jod2_paid_cents
 
   denied_service = Date.current.beginning_of_quarter + 2.days
   denied_paid_cents = 31_007
