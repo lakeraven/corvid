@@ -50,7 +50,7 @@ module Corvid
       end
 
       def auto_authorizable?(prc_referral)
-        !required?(prc_referral) && Corvid::AlternateResourceService.all_exhausted?(prc_referral)
+        !required?(prc_referral) && prc_referral.alternate_resources_exhausted?
       end
 
       def check(service_request)

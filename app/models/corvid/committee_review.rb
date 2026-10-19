@@ -107,13 +107,30 @@ module Corvid
       return if pending?
 
       case decision
-      when "approved", "modified" then prc_referral.authorize!
+      when "approved", "modified" then authorize_exhausted_referral!
       when "denied"               then prc_referral.mark_denied!
       when "deferred"             then prc_referral.mark_deferred!
       end
     end
 
     private
+
+    # PRC pays last, and only from a state that can authorize. An
+    # already authorized referral is a no-op. Refuse before authorize!,
+    # and if it returns false raise with the blockers, or the state
+    # name when that list is empty, so neither looks like success.
+    def authorize_exhausted_referral!
+      return if prc_referral.authorized?
+
+      blockers = prc_referral.committee_approval_blockers
+      raise AuthorizationBlockedError.new(blockers) if blockers.any?
+
+      return if prc_referral.authorize!
+
+      blockers = prc_referral.committee_approval_blockers
+      blockers = [ "referral: #{prc_referral.status}" ] if blockers.empty?
+      raise AuthorizationBlockedError.new(blockers)
+    end
 
     def attendees_data
       return [] unless attendees_token.present?

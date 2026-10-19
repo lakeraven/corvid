@@ -287,8 +287,10 @@ class Corvid::ClaimReferralLinkTest < ActiveSupport::TestCase
     referral.pending_approval_by = "usr_other_approver"
     referral.approve_management!
     referral.reload
+    exhaust_alternate_resources!(referral)
     referral.verify_alternate_resources!
     referral.reload
+    exhaust_alternate_resources!(referral)
     referral.complete_priority_assignment!
     referral.reload
     # complete_priority_assignment lands on :authorized directly, or on
