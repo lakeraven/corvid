@@ -116,6 +116,23 @@ Then("the check status should be {string}") do |status|
   assert_equal status, @check.status
 end
 
+Given("the check has policy token {string}") do |token|
+  @check.update!(policy_token: token)
+end
+
+When("the check is re-verified with policy token {string}") do |token|
+  Corvid.adapter.define_singleton_method(:verify_eligibility) do |_pid, _type|
+    { eligible: true, policy_token: token }
+  end
+  @check.verify!
+  @check.reload
+end
+
+Then("the check policy token should be {string}") do |token|
+  @check.reload
+  assert_equal token, @check.policy_token
+end
+
 Then("the check status should not be {string}") do |status|
   @check.reload
   refute_equal status, @check.status

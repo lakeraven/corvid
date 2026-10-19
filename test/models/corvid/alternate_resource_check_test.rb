@@ -553,19 +553,66 @@ class Corvid::AlternateResourceCheckTest < ActiveSupport::TestCase
     end
   end
 
-  test "verify! keeps coordinated when adapter reports eligible coverage" do
+  test "verify! keeps coordinated when adapter reports eligible coverage with same policy_token" do
     with_tenant(TENANT) do
       referral = create_referral
       check = Corvid::AlternateResourceCheck.create!(
         prc_referral: referral,
         resource_type: "medicaid",
         status: "coordinated",
+        policy_token: "TOK-A",
         checked_at: 1.day.ago
       )
+
+      Corvid.adapter.define_singleton_method(:verify_eligibility) do |_pid, _type|
+        { eligible: true, policy_token: "TOK-A" }
+      end
 
       assert check.verify!
       check.reload
       assert check.coordinated?
+      assert_equal "TOK-A", check.policy_token
+    end
+  end
+
+  test "verify! on coordinated moves to enrolled when adapter returns different policy_token" do
+    with_tenant(TENANT) do
+      referral = create_referral
+      check = Corvid::AlternateResourceCheck.create!(
+        prc_referral: referral,
+        resource_type: "medicaid",
+        status: "coordinated",
+        policy_token: "TOK-A"
+      )
+
+      Corvid.adapter.define_singleton_method(:verify_eligibility) do |_pid, _type|
+        { eligible: true, policy_token: "TOK-B" }
+      end
+
+      assert check.verify!
+      check.reload
+      assert check.enrolled?
+      assert_equal "TOK-B", check.policy_token
+    end
+  end
+
+  test "verify! on coordinated moves to enrolled when adapter omits policy_token" do
+    with_tenant(TENANT) do
+      referral = create_referral
+      check = Corvid::AlternateResourceCheck.create!(
+        prc_referral: referral,
+        resource_type: "medicaid",
+        status: "coordinated",
+        policy_token: "TOK-A"
+      )
+
+      Corvid.adapter.define_singleton_method(:verify_eligibility) do |_pid, _type|
+        { eligible: true }
+      end
+
+      assert check.verify!
+      check.reload
+      assert check.enrolled?
     end
   end
 

@@ -422,6 +422,27 @@ class Corvid::CommitteeReviewTest < ActiveSupport::TestCase
     end
   end
 
+  test "apply_to_referral! raises when referral cannot authorize for state" do
+    with_tenant(TENANT) do
+      referral = create_referral
+      referral.update!(status: "committee_review", medical_priority: 3, estimated_cost: 50_000)
+      exhaust_alternate_resources!(referral)
+      review = create_review(
+        prc_referral: referral,
+        decision: :approved,
+        approved_amount: 50_000
+      )
+      referral.return_to_eligibility_review!
+      refute referral.may_authorize?
+
+      error = assert_raises(Corvid::AuthorizationBlockedError) do
+        review.apply_to_referral!
+      end
+      assert_includes error.blockers, "referral: eligibility_review"
+      assert_equal "eligibility_review", referral.reload.status
+    end
+  end
+
   # -- upcoming_reviews excludes decided -------------------------------------
 
   test "upcoming_reviews excludes decided reviews" do

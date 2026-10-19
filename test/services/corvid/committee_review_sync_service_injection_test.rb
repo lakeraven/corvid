@@ -133,6 +133,7 @@ class Corvid::CommitteeReviewSyncServiceInjectionTest < ActiveSupport::TestCase
         # trying to exercise would never run.
         status: "committee_review"
       )
+      exhaust_alternate_resources!(ref)
       Corvid::CommitteeReview.create!(
         prc_referral: ref,
         committee_date: Date.current,

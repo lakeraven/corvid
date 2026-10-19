@@ -59,6 +59,57 @@ Then("the adapter should have the referral updated with approval status") do
   assert_equal "A", ref.chs_approval_status
 end
 
+Given("alternate resource checks are not exhausted for the referral") do
+  Corvid::AlternateResourceCheck.create_all_for_referral(@referral)
+  @referral.alternate_resource_checks.find_by!(resource_type: "medicaid").update!(status: "enrolled")
+  @referral.reload
+end
+
+Given("a finalized committee approval exists for the referral") do
+  @committee_review = Corvid::CommitteeReview.create!(
+    prc_referral: @referral,
+    tenant_identifier: @referral.tenant_identifier,
+    facility_identifier: @referral.facility_identifier,
+    decision: :approved,
+    approved_amount: 75_000,
+    committee_date: Date.current,
+    reviewer_identifier: "pr_sync_test"
+  )
+end
+
+When("committee sync decision is attempted for the approval") do
+  @recording_adapter = Class.new do
+    attr_reader :update_calls
+
+    def initialize
+      @update_calls = []
+    end
+
+    def update_referral(identifier, params)
+      @update_calls << [ identifier, params ]
+      true
+    end
+
+    def fetch_text(_token)
+      ""
+    end
+  end.new
+  @committee_sync_result = Corvid::CommitteeReviewSyncService.sync_decision(
+    @committee_review,
+    adapter: @recording_adapter
+  )
+end
+
+Then("the committee sync should be blocked with alternate resource blockers") do
+  refute @committee_sync_result[:success]
+  assert @committee_sync_result[:blocked]
+  assert_equal @referral.authorization_blockers, @committee_sync_result[:blockers]
+end
+
+Then("the adapter should not receive a committee approval update") do
+  assert_empty @recording_adapter.update_calls
+end
+
 Then("each check should have a status of enrolled or not_enrolled") do
   @referral.alternate_resource_checks.reload.each do |check|
     assert %w[enrolled not_enrolled].include?(check.status),
