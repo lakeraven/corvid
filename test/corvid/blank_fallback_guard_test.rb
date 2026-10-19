@@ -5,6 +5,10 @@ require "prism"
 require "corvid/version"
 
 class Corvid::BlankFallbackGuardTest < Minitest::Test
+  # Scope: heuristic over label/name/display/text-like calls and keys and
+  # *_identifier/*_label locals. Reason text, values, and dates merged with
+  # `||` are covered by behavioural specs, not by this guard.
+  #
   # `||` only skips nil/false; blank strings are truthy and win over fallbacks.
   # User-facing labels should use `presence ||` so nil and blank both defer.
   LABEL_METHOD_NAMES = %i[
