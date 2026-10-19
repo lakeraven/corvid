@@ -443,6 +443,44 @@ class Corvid::CommitteeReviewTest < ActiveSupport::TestCase
     end
   end
 
+  test "apply_to_referral! raises for exhausted draft referral with approved decision" do
+    with_tenant(TENANT) do
+      referral = create_referral
+      exhaust_alternate_resources!(referral)
+      review = create_review(
+        prc_referral: referral,
+        decision: :approved,
+        approved_amount: 50_000
+      )
+
+      error = assert_raises(Corvid::AuthorizationBlockedError) do
+        review.apply_to_referral!
+      end
+      assert_equal [ "referral: draft" ], error.blockers
+      assert_equal "draft", referral.reload.status
+    end
+  end
+
+  test "apply_to_referral! raises when authorize! returns false" do
+    with_tenant(TENANT) do
+      referral = create_referral
+      referral.update!(status: "committee_review", medical_priority: 3, estimated_cost: 50_000)
+      exhaust_alternate_resources!(referral)
+      referral.define_singleton_method(:authorize!) { false }
+      review = create_review(
+        prc_referral: referral,
+        decision: :approved,
+        approved_amount: 50_000
+      )
+
+      error = assert_raises(Corvid::AuthorizationBlockedError) do
+        review.apply_to_referral!
+      end
+      assert error.blockers.present?
+      assert_equal "committee_review", referral.reload.status
+    end
+  end
+
   # -- upcoming_reviews excludes decided -------------------------------------
 
   test "upcoming_reviews excludes decided reviews" do

@@ -76,7 +76,13 @@ class Corvid::ServicesTest < ActiveSupport::TestCase
                                   estimated_cost: 75_000, medical_priority_level: 3,
                                   authorization_number: nil, emergent: false, urgent: false,
                                   chs_approval_status: "P", service_requested: "TEST")
-      pr = Corvid::PrcReferral.create!(case: kase, referral_identifier: "rf_svc_001", estimated_cost: 75_000)
+      pr = Corvid::PrcReferral.create!(
+        case: kase,
+        referral_identifier: "rf_svc_001",
+        status: "committee_review",
+        medical_priority: 3,
+        estimated_cost: 75_000
+      )
       exhaust_alternate_resources!(pr)
       review = Corvid::CommitteeReview.create!(prc_referral: pr, committee_date: Date.current, decision: "approved", approved_amount: 75_000, reviewer_identifier: "pr_svc_001")
 

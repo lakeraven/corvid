@@ -48,10 +48,11 @@ class Corvid::CommitteeReviewSyncServiceTest < ActiveSupport::TestCase
   test "instance sync_decision blocks modified decision when not exhausted" do
     with_tenant(TENANT) do
       referral = create_referral
+      referral.update!(status: "committee_review", medical_priority: 3, estimated_cost: 75_000)
       Corvid.adapter.add_referral(
         referral.referral_identifier,
         patient_identifier: "pt_crs",
-        status: "pending",
+        status: "committee_review",
         estimated_cost: 75_000,
         emergent: false,
         urgent: false,
@@ -172,7 +173,8 @@ class Corvid::CommitteeReviewSyncServiceTest < ActiveSupport::TestCase
   test "sync_decision syncs modified approval" do
     with_tenant(TENANT) do
       referral = create_referral
-      Corvid.adapter.add_referral(referral.referral_identifier, patient_identifier: "pt_crs", status: "pending", estimated_cost: 75_000, emergent: false, urgent: false, chs_approval_status: "P", service_requested: "TEST")
+      referral.update!(status: "committee_review", medical_priority: 3, estimated_cost: 75_000)
+      Corvid.adapter.add_referral(referral.referral_identifier, patient_identifier: "pt_crs", status: "committee_review", estimated_cost: 75_000, emergent: false, urgent: false, chs_approval_status: "P", service_requested: "TEST")
 
       exhaust_alternate_resources!(referral)
 
@@ -315,7 +317,133 @@ class Corvid::CommitteeReviewSyncServiceTest < ActiveSupport::TestCase
       assert result[:blocked]
       assert_includes result[:blockers], "referral: eligibility_review"
       refute result[:success]
+      refute result[:backend_synced]
       refute result[:referral_updated]
+      refute fake.committee_decision_synced?
+    end
+  end
+
+  # -- Draft exemption (#653) -------------------------------------------------
+
+  test "committee_approval_blockers names draft when all alternate resources determined" do
+    with_tenant(TENANT) do
+      referral = create_referral
+      exhaust_alternate_resources!(referral)
+
+      assert_equal [ "referral: draft" ], referral.committee_approval_blockers
+    end
+  end
+
+  test "sync_decision blocks approved sync for exhausted draft referral" do
+    with_tenant(TENANT) do
+      referral = create_referral
+      Corvid.adapter.add_referral(
+        referral.referral_identifier,
+        patient_identifier: "pt_crs",
+        status: "pending",
+        estimated_cost: 50_000,
+        emergent: false,
+        urgent: false,
+        chs_approval_status: "P",
+        service_requested: "TEST"
+      )
+      exhaust_alternate_resources!(referral)
+      review = Corvid::CommitteeReview.create!(
+        prc_referral: referral,
+        committee_date: Date.current,
+        decision: "approved",
+        approved_amount: 50_000,
+        reviewer_identifier: "pr_101"
+      )
+      fake = RecordingAdapter.new
+
+      result = Corvid::CommitteeReviewSyncService.sync_decision(review, adapter: fake)
+
+      refute fake.committee_decision_synced?
+      refute result[:success]
+      assert result[:blocked]
+      assert_equal [ "referral: draft" ], result[:blockers]
+    end
+  end
+
+  test "sync_decision blocks modified sync for exhausted draft referral" do
+    with_tenant(TENANT) do
+      referral = create_referral
+      Corvid.adapter.add_referral(
+        referral.referral_identifier,
+        patient_identifier: "pt_crs",
+        status: "pending",
+        estimated_cost: 75_000,
+        emergent: false,
+        urgent: false,
+        chs_approval_status: "P",
+        service_requested: "TEST"
+      )
+      exhaust_alternate_resources!(referral)
+      review = Corvid::CommitteeReview.create!(
+        prc_referral: referral,
+        committee_date: Date.current,
+        decision: "modified",
+        approved_amount: 75_000,
+        reviewer_identifier: "pr_101"
+      )
+      fake = RecordingAdapter.new
+
+      result = Corvid::CommitteeReviewSyncService.sync_decision(review, adapter: fake)
+
+      refute fake.committee_decision_synced?
+      refute result[:success]
+      assert result[:blocked]
+      assert_equal [ "referral: draft" ], result[:blockers]
+    end
+  end
+
+  # -- Authorized referral retry (#653) ---------------------------------------
+
+  test "committee_approval_blockers empty for authorized referral with exhaustion" do
+    with_tenant(TENANT) do
+      review = create_approved_review_in_committee_review
+      exhaust_alternate_resources!(review.prc_referral)
+      review.prc_referral.authorize!
+      assert_equal "authorized", review.prc_referral.reload.status
+
+      assert_empty review.prc_referral.committee_approval_blockers
+    end
+  end
+
+  test "sync_decision retries committee approval sync for authorized referral" do
+    with_tenant(TENANT) do
+      review = create_approved_review_in_committee_review
+      exhaust_alternate_resources!(review.prc_referral)
+      review.prc_referral.authorize!
+      fake = RecordingAdapter.new
+
+      result = Corvid::CommitteeReviewSyncService.sync_decision(review, adapter: fake)
+
+      assert fake.committee_decision_synced?
+      assert result[:success]
+      assert_equal "AUTHORIZED", result[:backend_status]
+    end
+  end
+
+  # -- authorize! refusal must not look like success (#653) -------------------
+
+  test "sync_and_apply! does not sync committee decision when authorize! returns false" do
+    with_tenant(TENANT) do
+      review = create_approved_review_in_committee_review
+      exhaust_alternate_resources!(review.prc_referral)
+      review.prc_referral.define_singleton_method(:authorize!) { false }
+      fake = RecordingAdapter.new
+
+      result = Corvid::CommitteeReviewSyncService.sync_and_apply!(review, adapter: fake)
+
+      refute fake.committee_decision_synced?
+      refute result[:success]
+      assert result[:blocked]
+      assert result[:blockers].present?
+      refute result[:backend_synced]
+      refute result[:referral_updated]
+      assert_equal "committee_review", review.prc_referral.reload.status
     end
   end
 
@@ -340,7 +468,8 @@ class Corvid::CommitteeReviewSyncServiceTest < ActiveSupport::TestCase
   test "sync_decision includes conditions_synced count" do
     with_tenant(TENANT) do
       referral = create_referral
-      Corvid.adapter.add_referral(referral.referral_identifier, patient_identifier: "pt_crs", status: "pending", estimated_cost: 75_000, emergent: false, urgent: false, chs_approval_status: "P", service_requested: "TEST")
+      referral.update!(status: "committee_review", medical_priority: 3, estimated_cost: 75_000)
+      Corvid.adapter.add_referral(referral.referral_identifier, patient_identifier: "pt_crs", status: "committee_review", estimated_cost: 75_000, emergent: false, urgent: false, chs_approval_status: "P", service_requested: "TEST")
 
       conditions = [
         { "condition" => "Obtain second opinion", "required" => true },
@@ -366,7 +495,8 @@ class Corvid::CommitteeReviewSyncServiceTest < ActiveSupport::TestCase
   test "sync_decision includes attendees_synced count" do
     with_tenant(TENANT) do
       referral = create_referral
-      Corvid.adapter.add_referral(referral.referral_identifier, patient_identifier: "pt_crs", status: "pending", estimated_cost: 75_000, emergent: false, urgent: false, chs_approval_status: "P", service_requested: "TEST")
+      referral.update!(status: "committee_review", medical_priority: 3, estimated_cost: 75_000)
+      Corvid.adapter.add_referral(referral.referral_identifier, patient_identifier: "pt_crs", status: "committee_review", estimated_cost: 75_000, emergent: false, urgent: false, chs_approval_status: "P", service_requested: "TEST")
 
       attendees = [
         { "name" => "Dr. Smith", "role" => "Chair" },
@@ -410,6 +540,12 @@ class Corvid::CommitteeReviewSyncServiceTest < ActiveSupport::TestCase
     def update_referral_called?
       @calls.any? { |call| call.first == :update_referral }
     end
+
+    def committee_decision_synced?
+      @calls.any? do |call|
+        call.first == :update_referral && call[2].is_a?(Hash) && call[2].key?(:committee_decision)
+      end
+    end
   end
 
   private
@@ -421,8 +557,18 @@ class Corvid::CommitteeReviewSyncServiceTest < ActiveSupport::TestCase
 
   def create_approved_review(approved_amount: 50_000, exhaust: true)
     referral = create_referral
+    referral.update!(status: "committee_review", medical_priority: 3, estimated_cost: approved_amount)
     # Seed the referral in the mock adapter so update_referral can find it
-    Corvid.adapter.add_referral(referral.referral_identifier, patient_identifier: "pt_crs", status: "pending", estimated_cost: approved_amount, emergent: false, urgent: false, chs_approval_status: "P", service_requested: "TEST")
+    Corvid.adapter.add_referral(
+      referral.referral_identifier,
+      patient_identifier: "pt_crs",
+      status: "committee_review",
+      estimated_cost: approved_amount,
+      emergent: false,
+      urgent: false,
+      chs_approval_status: "P",
+      service_requested: "TEST"
+    )
     exhaust_alternate_resources!(referral) if exhaust
 
     Corvid::CommitteeReview.create!(
