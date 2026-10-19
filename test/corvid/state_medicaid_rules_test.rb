@@ -403,6 +403,19 @@ class Corvid::StateMedicaidRulesTest < Minitest::Test
     end
   end
 
+  def test_register_raises_when_program_code_has_no_visible_text
+    [ "‎", "­", "ㅤ", "\x01", "".encode("UTF-16LE") ].each do |code|
+      assert_raises(ArgumentError, "accepted #{code.inspect}") do
+        Corvid::StateMedicaidRules.register(
+          "XV",
+          expanded: false,
+          work_requirement_programs: [ { code: code, description_pattern: /x/ } ],
+          groups: minimal_groups
+        )
+      end
+    end
+  end
+
   def test_register_raises_for_duplicate_work_requirement_program_codes
     assert_raises(ArgumentError) do
       Corvid::StateMedicaidRules.register(
@@ -786,6 +799,40 @@ class Corvid::StateMedicaidRulesTest < Minitest::Test
     entry = Corvid::StateMedicaidRules.lookup("WE")
     description = "demo waiver".encode("UTF-16LE")
     assert_raises(ArgumentError) { entry.waiver_program_for(description) }
+  end
+
+  def test_waiver_program_for_raises_argument_error_when_description_has_no_visible_text
+    entry = register_sample_state("XI")
+    [ "‎", "­", "ㅤ", "\x01" ].each do |description|
+      assert_raises(ArgumentError, "accepted #{description.inspect}") do
+        entry.waiver_program_for(description)
+      end
+    end
+  end
+
+  def test_waiver_program_for_raises_argument_error_for_non_ascii_binary_description
+    Corvid::StateMedicaidRules.register(
+      "WB",
+      expanded: false,
+      work_requirement_programs: [ { code: "syn", description_pattern: /SYNTHETIC/ } ],
+      groups: minimal_groups
+    )
+    entry = Corvid::StateMedicaidRules.lookup("WB")
+    [ "\xFF".b, "SYNTHETIC\xFF".b ].each do |description|
+      assert_raises(ArgumentError) { entry.waiver_program_for(description) }
+    end
+  end
+
+  def test_waiver_program_for_reads_latin1_description
+    Corvid::StateMedicaidRules.register(
+      "WL",
+      expanded: false,
+      work_requirement_programs: [ { code: "alpha", description_pattern: /\bALPHA\b/ } ],
+      groups: minimal_groups
+    )
+    entry = Corvid::StateMedicaidRules.lookup("WL")
+    assert_equal "alpha", entry.waiver_program_for("ALPHA café plan".encode("ISO-8859-1")).code
+    assert_nil entry.waiver_program_for("café plan".encode("ISO-8859-1"))
   end
 
   # -- Immutability ------------------------------------------------------------
