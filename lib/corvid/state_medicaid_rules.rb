@@ -62,11 +62,31 @@ module Corvid
         groups[key]
       end
 
+      # Nil, blank, or unreadable text is undetermined, not "no waiver".
+      # Name the problem only; the text may be member plan data.
       def waiver_program_for(description)
-        text = description.to_s
-        return if text.strip.empty?
+        text = plan_description(description)
+        work_requirement_programs.find do |program|
+          program.description_pattern.match?(text)
+        rescue Encoding::CompatibilityError
+          raise ArgumentError, "description encoding is incompatible"
+        end
+      end
 
-        work_requirement_programs.find { |program| program.description_pattern.match?(text) }
+      private
+
+      def plan_description(description)
+        unless description.is_a?(String)
+          raise ArgumentError, "description must be a String"
+        end
+
+        text = String.new(description)
+        unless text.valid_encoding? && text.encoding.ascii_compatible?
+          raise ArgumentError, "description encoding is incompatible"
+        end
+        raise ArgumentError, "description is blank" if text.strip.empty?
+
+        text
       end
     end
 
@@ -200,21 +220,29 @@ module Corvid
       end
 
       # Full Unicode upcase maps "ß" to "SS" and "ﬀ" to "FF". Validate the
-      # raw string first, then ASCII-upcase, so those cannot alias a state.
+      # raw characters first, then ASCII-upcase, so those cannot alias a state.
+      # Read the string's own bytes, or Symbol#name. String#to_s can be
+      # overridden and would alias another state. An incompatible encoding
+      # is not a state code, so lookup fails closed instead of raising.
       def canonical_state_code(state_code)
-        return unless state_code.is_a?(String) || state_code.is_a?(Symbol)
-
-        raw = state_code.to_s
+        raw = state_code_characters(state_code)
+        return if raw.nil?
+        return unless raw.valid_encoding? && raw.encoding.ascii_compatible?
         return unless STATE_CODE.match?(raw)
 
         raw.upcase(:ascii).dup.freeze
+      end
+
+      def state_code_characters(state_code)
+        return state_code.name if state_code.is_a?(Symbol)
+        String.new(state_code) if state_code.is_a?(String)
       end
 
       # A malformed string is copied later; a symbol follows that string.
       # Anything else is not a state code.
       def presented_state_code(state_code)
         return state_code if state_code.is_a?(String)
-        state_code.to_s if state_code.is_a?(Symbol)
+        state_code.name if state_code.is_a?(Symbol)
       end
 
       def freeze_copy(value)
