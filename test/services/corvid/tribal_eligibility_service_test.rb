@@ -130,6 +130,20 @@ class Corvid::TribalEligibilityServiceTest < ActiveSupport::TestCase
 
   # ---- Persistence contract -------------------------------------------------
 
+  test "decide treats blank tenant_identifier as absent and uses TenantContext tenant" do
+    with_tenant("tnt_test") do
+      assert_difference "Corvid::PrcEligibilityDecision.count", 1 do
+        Corvid::TribalEligibilityService.decide(
+          person_identifier: "pt_blank_tenant",
+          facility: @facility,
+          tenant_identifier: ""
+        )
+      end
+
+      assert_equal "tnt_test", Corvid::PrcEligibilityDecision.last.tenant_identifier
+    end
+  end
+
   test "decide persists a PrcEligibilityDecision row per call" do
     assert_difference "Corvid::PrcEligibilityDecision.count", 1 do
       Corvid::TribalEligibilityService.decide(

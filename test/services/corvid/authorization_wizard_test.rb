@@ -20,9 +20,10 @@ class Corvid::AuthorizationWizardTest < ActiveSupport::TestCase
   end
 
   test "initialize raises when tenant_identifier is blank and TenantContext has no tenant" do
-    assert_raises(ArgumentError, /tenant_identifier required/) do
+    error = assert_raises(ArgumentError) do
       Corvid::AuthorizationWizard.new(tenant_identifier: "")
     end
+    assert_match(/tenant_identifier required/, error.message)
   end
 
   test "initialize treats blank facility_identifier as absent and uses TenantContext facility" do

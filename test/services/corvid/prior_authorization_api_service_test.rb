@@ -199,6 +199,105 @@ class Corvid::PriorAuthorizationApiServiceTest < ActiveSupport::TestCase
     end
   end
 
+  test "submit_from_claim falls back from blank string-keyed CodeableConcept text to coding display" do
+    claim = {
+      "resourceType" => "Claim",
+      "status" => "active",
+      "use" => "preauthorization",
+      "patient" => { "reference" => "Patient/pt_pa_str_001" },
+      "provider" => { "reference" => "Practitioner/pr_pa_str_001" },
+      "total" => { "value" => 2500, "currency" => "USD" },
+      "item" => [ {
+        "productOrService" => {
+          "text" => "",
+          "coding" => [ { "display" => "TEST,PROCEDURE 002", "code" => "P1" } ]
+        }
+      } ]
+    }
+    with_tenant(TENANT) do
+      Corvid::TenantContext.current_facility_identifier = FACILITY
+      Corvid::PriorAuthorizationApiService.submit_from_claim(claim)
+      referral = Corvid::PrcReferral.order(created_at: :desc).first
+      stored = Corvid.adapter.find_referral(referral.referral_identifier)
+      assert_equal "TEST,PROCEDURE 002", stored.service_requested
+    ensure
+      Corvid::TenantContext.reset!
+    end
+  end
+
+  test "submit_from_claim falls back from blank string-keyed coding display to code" do
+    claim = {
+      "resourceType" => "Claim",
+      "status" => "active",
+      "use" => "preauthorization",
+      "patient" => { "reference" => "Patient/pt_pa_str_002" },
+      "provider" => { "reference" => "Practitioner/pr_pa_str_002" },
+      "total" => { "value" => 2500, "currency" => "USD" },
+      "item" => [ {
+        "productOrService" => {
+          "text" => "",
+          "coding" => [ { "display" => "", "code" => "P1" } ]
+        }
+      } ]
+    }
+    with_tenant(TENANT) do
+      Corvid::TenantContext.current_facility_identifier = FACILITY
+      Corvid::PriorAuthorizationApiService.submit_from_claim(claim)
+      referral = Corvid::PrcReferral.order(created_at: :desc).first
+      stored = Corvid.adapter.find_referral(referral.referral_identifier)
+      assert_equal "P1", stored.service_requested
+    ensure
+      Corvid::TenantContext.reset!
+    end
+  end
+
+  test "claim_response_for uses decision method when vault denial text is blank" do
+    with_tenant(TENANT) do
+      kase = Corvid::Case.create!(patient_identifier: "pt_pa_blank_denial", facility_identifier: FACILITY)
+      token = Corvid.adapter.store_text(
+        case_token: kase.id.to_s, kind: :reason, text: "   "
+      )
+      referral = Corvid::PrcReferral.create!(
+        case: kase,
+        referral_identifier: "rf_blank_denial_text",
+        facility_identifier: FACILITY,
+        status: "denied",
+        deferred_reason_token: token
+      )
+      referral.record_determination!(
+        outcome: "denied",
+        decision_method: "staff_review",
+        determined_by_identifier: "pr_rev_blank"
+      )
+
+      response = Corvid::PriorAuthorizationApiService.claim_response_for(referral)
+      note = response[:processNote].find { |n| n[:type] == "display" }
+      assert_equal "Denied per staff_review", note[:text]
+    end
+  end
+
+  test "claim_response_for reports denial reason not recorded when deferred_reason_token is blank" do
+    with_tenant(TENANT) do
+      kase = Corvid::Case.create!(patient_identifier: "pt_pa_no_denial_token", facility_identifier: FACILITY)
+      referral = Corvid::PrcReferral.create!(
+        case: kase,
+        referral_identifier: "rf_no_denial_token",
+        facility_identifier: FACILITY,
+        status: "denied",
+        deferred_reason_token: ""
+      )
+      referral.record_determination!(
+        outcome: "denied",
+        decision_method: "staff_review",
+        determined_by_identifier: "pr_rev_none"
+      )
+
+      response = Corvid::PriorAuthorizationApiService.claim_response_for(referral)
+      note = response[:processNote].find { |n| n[:type] == "display" }
+      assert_equal "Denial reason not recorded", note[:text]
+    end
+  end
+
   test "submit_from_claim uses Service when CodeableConcept parts are all blank" do
     claim = build_fhir_claim(
       item: [ {
