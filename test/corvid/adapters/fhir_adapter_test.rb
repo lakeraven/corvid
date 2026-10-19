@@ -135,6 +135,24 @@ class Corvid::Adapters::FhirAdapterTest < Minitest::Test
     end
   end
 
+  def test_list_claims_skips_whitespace_provider_reference_id_for_display
+    line = list_claim_with_provider(
+      "identifier" => { "value" => "" },
+      "reference" => "Practitioner/ ",
+      "display" => "TEST PROVIDER DISPLAY"
+    )
+    assert_equal "TEST PROVIDER DISPLAY", line.provider_identifier
+  end
+
+  def test_list_claims_provider_identifier_nil_when_all_provider_fields_blank
+    line = list_claim_with_provider(
+      "identifier" => { "value" => "" },
+      "reference" => "",
+      "display" => " "
+    )
+    assert_nil line.provider_identifier
+  end
+
   def test_list_claims_procedure_display_nil_when_all_label_fallbacks_blank
     bundle = {
       "resourceType" => "Bundle",
@@ -454,5 +472,24 @@ class Corvid::Adapters::FhirAdapterTest < Minitest::Test
       assert_equal "100 Main St, Broken Rock, WA", result[:address]
       assert_equal "Broken Rock Health Center", result[:service_area]
     end
+  end
+  private
+
+  def list_claim_with_provider(provider)
+    bundle = {
+      "resourceType" => "Bundle",
+      "entry" => [ { "resource" => {
+        "resourceType" => "Claim",
+        "id" => "clm_pr_helper",
+        "patient" => { "reference" => "Patient/pt_pr3" },
+        "provider" => provider,
+        "item" => [ {
+          "sequence" => 1,
+          "productOrService" => { "coding" => [ { "system" => "http://www.ama-assn.org/go/cpt", "code" => "99213" } ] },
+          "net" => { "value" => 100.0, "currency" => "USD" }
+        } ]
+      } } ]
+    }
+    @adapter.stub(:fhir_search, bundle) { @adapter.list_claims("pt_pr3").first }
   end
 end
