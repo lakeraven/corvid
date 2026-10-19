@@ -144,6 +144,18 @@ module Corvid
       end.sort
     end
 
+    # Why a committee approval must not authorize. While any alternate
+    # resource is open this is authorization_blockers, same strings and
+    # order. Once they are determined, a workflow state that cannot
+    # authorize is named alone. Draft has not entered that workflow, so
+    # an exhausted draft is not a state refusal (ADR 0003).
+    def committee_approval_blockers
+      return authorization_blockers unless alternate_resources_exhausted?
+      return [] if may_authorize? || draft?
+
+      [ "referral: #{status}" ]
+    end
+
     def requires_committee?
       # Money's `>=` is currency-aware (raises across mismatched currencies);
       # the threshold is a numeric (USD-equivalent dollar amount) by

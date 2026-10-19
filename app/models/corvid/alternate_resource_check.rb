@@ -167,14 +167,25 @@ module Corvid
       self.checked_at = Time.current if status_previously_was == "not_checked" || status_previously_was == "checking"
     end
 
-    # true keeps a coordinated row coordinated while coverage is still
-    # active. nil means the adapter did not determine eligibility; verify!
-    # leaves the row unchanged rather than treating silence as not enrolled.
+    # Coordinated sticks only when the adapter's policy token is present
+    # and matches the stored token. Any other eligible result is enrolled
+    # (verify! stores the new token). Ineligible is not_enrolled. nil
+    # leaves the row unchanged — silence is not a determination.
     def status_for_eligibility(result)
       case result[:eligible]
-      when true then coordinated? ? :coordinated : :enrolled
+      when true then eligible_status(result)
       when false then :not_enrolled
       end
+    end
+
+    def eligible_status(result)
+      return :coordinated if same_coordinated_policy?(result[:policy_token])
+
+      :enrolled
+    end
+
+    def same_coordinated_policy?(token)
+      coordinated? && token.present? && token == policy_token
     end
   end
 end

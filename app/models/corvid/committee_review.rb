@@ -115,14 +115,13 @@ module Corvid
 
     private
 
-    # PRC pays last. Refuse the approval before authorize! so a blocked
-    # transition cannot be mistaken for success.
+    # PRC pays last, and only from a state that can authorize. Refuse
+    # before authorize! so a blocked transition cannot look like success.
     def authorize_exhausted_referral!
-      if prc_referral.alternate_resources_exhausted?
-        prc_referral.authorize!
-      else
-        raise AuthorizationBlockedError.new(prc_referral.authorization_blockers)
-      end
+      blockers = prc_referral.committee_approval_blockers
+      raise AuthorizationBlockedError.new(blockers) if blockers.any?
+
+      prc_referral.authorize!
     end
 
     def attendees_data
