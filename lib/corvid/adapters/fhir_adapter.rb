@@ -521,7 +521,7 @@ module Corvid
             provider_identifier: provider_id,
             procedure_code: coding["code"],
             procedure_display: coding["display"].presence || item.dig("productOrService", "text").presence,
-            serviced_date: parse_date(item["servicedDate"] || item.dig("servicedPeriod", "start")),
+            serviced_date: parse_date(item["servicedDate"].presence || item.dig("servicedPeriod", "start")),
             billed_amount: amount,
             amount_error: amount_error,
             currency: item.dig("net", "currency") || "USD",
