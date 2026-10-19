@@ -336,6 +336,27 @@ class Corvid::Adapters::FhirAdapterTest < Minitest::Test
     end
   end
 
+  def test_list_claims_serviced_date_from_period_when_serviced_date_blank
+    bundle = {
+      "resourceType" => "Bundle",
+      "entry" => [ { "resource" => {
+        "resourceType" => "Claim",
+        "id" => "clm_blank_serviced_date",
+        "patient" => { "reference" => "Patient/pt_serviced" },
+        "item" => [ {
+          "sequence" => 1,
+          "servicedDate" => "",
+          "servicedPeriod" => { "start" => "2026-01-05" },
+          "productOrService" => { "coding" => [ { "system" => "http://www.ama-assn.org/go/cpt", "code" => "99213" } ] }
+        } ]
+      } } ]
+    }
+    @adapter.stub(:fhir_search, bundle) do
+      line = @adapter.list_claims("pt_serviced").first
+      assert_equal Date.new(2026, 1, 5), line.serviced_date
+    end
+  end
+
   def test_coverage_type_map_covers_all_resource_types
     resource_types = %w[
       medicare_a medicare_b medicare_d medicaid va_benefits

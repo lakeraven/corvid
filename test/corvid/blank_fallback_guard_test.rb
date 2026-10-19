@@ -18,6 +18,9 @@ class Corvid::BlankFallbackGuardTest < Minitest::Test
     cases = {
       'x.presence || y.display_name || "z"' => 1,
       "a.display_name || b" => 1,
+      '(a.display_name) || "c"' => 1,
+      '(a.display_name || b.display_name) || "c"' => 2,
+      '(a.display_name.presence || b.display_name.presence) || "c"' => 0,
       'a.display_name.presence || b.text.presence || "c"' => 0,
       "tenant_identifier || ctx" => 1,
       's[/re/, 1] || "stub"' => 0,
@@ -82,7 +85,16 @@ class Corvid::BlankFallbackGuardTest < Minitest::Test
 
     def unwrap_parentheses(node)
       while node.is_a?(Prism::ParenthesesNode)
-        node = node.body
+        body = node.body
+        node =
+          if body.is_a?(Prism::StatementsNode) && body.body.length == 1
+            body.body.first
+          else
+            body
+          end
+      end
+      if node.is_a?(Prism::StatementsNode) && node.body.length == 1
+        node = node.body.first
       end
       node
     end
