@@ -42,10 +42,10 @@ module Corvid
       # Default tenant/facility from the ambient context (consistent with
       # TenantScoped), so callers already inside with_tenant blocks don't
       # have to thread the identifiers through explicitly.
-      @tenant_identifier = tenant_identifier ||
-        Corvid::TenantContext.current_tenant_identifier
-      @facility_identifier = facility_identifier ||
-        Corvid::TenantContext.current_facility_identifier
+      @tenant_identifier = tenant_identifier.presence ||
+        Corvid::TenantContext.current_tenant_identifier.presence
+      @facility_identifier = facility_identifier.presence ||
+        Corvid::TenantContext.current_facility_identifier.presence
       raise ArgumentError, "tenant_identifier required (pass explicitly or set Corvid::TenantContext)" unless @tenant_identifier
       @current_step = :patient_selection
       @data = { patient_identifier: patient_identifier }
