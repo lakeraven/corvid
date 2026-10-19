@@ -28,8 +28,26 @@ module Corvid
     GROUPS = %w[expansion_adult waiver_adult other].freeze
     GROUP_FIELDS = %w[renewal_months retro_coverage_months work_requirement].freeze
     PROGRAM_FIELDS = %w[code description_pattern].freeze
-    # Two ASCII letters, checked before ASCII-upcasing. Stored codes are uppercase.
+    # Two ASCII letters, checked before ASCII-upcasing. Stored codes are uppercase UTF-8.
     STATE_CODE = /\A[A-Za-z]{2}\z/
+
+    # Shared by plan descriptions and program codes. String#strip is ASCII-only,
+    # so Unicode spaces and zero-width/BOM characters would otherwise count as
+    # text. NUL stays blank because strip removes it.
+    module BlankText
+      BLANK_TEXT = /\A[\0[:space:]\u200B-\u200D\u2060\uFEFF]*\z/
+
+      module_function
+
+      def blank?(text)
+        return false unless text.encoding.ascii_compatible? && text.valid_encoding?
+        return false if text.encoding == Encoding::ASCII_8BIT && !text.ascii_only?
+
+        BLANK_TEXT.match?(text)
+      end
+    end
+    private_constant :BlankText
+    extend BlankText
 
     Group = Struct.new(
       :renewal_months,
@@ -49,12 +67,14 @@ module Corvid
       :work_requirement_programs,
       keyword_init: true
     ) do
+      include BlankText
+
       def configured? = true
 
       def expanded? = expanded
 
       def group(name)
-        key = name.to_s
+        key = group_name(name)
         unless GROUPS.include?(key)
           raise ArgumentError, "unknown eligibility group #{name.inspect}"
         end
@@ -75,6 +95,14 @@ module Corvid
 
       private
 
+      # Read the string's own characters, or Symbol#name. String#to_s can be
+      # overridden and would resolve a different eligibility group.
+      def group_name(name)
+        return name.name if name.is_a?(Symbol)
+
+        String.new(name) if name.is_a?(String)
+      end
+
       def plan_description(description)
         unless description.is_a?(String)
           raise ArgumentError, "description must be a String"
@@ -84,7 +112,7 @@ module Corvid
         unless text.valid_encoding? && text.encoding.ascii_compatible?
           raise ArgumentError, "description encoding is incompatible"
         end
-        raise ArgumentError, "description is blank" if text.strip.empty?
+        raise ArgumentError, "description is blank" if blank?(text)
 
         text
       end
@@ -170,7 +198,17 @@ module Corvid
           raise ArgumentError, "work_requirement_programs must be an Array, got #{programs.class}"
         end
 
-        programs.map { |program| build_program(program) }.freeze
+        seen = {}
+        programs.map do |program|
+          built = build_program(program)
+          code = built.code
+          if seen.include?(code)
+            raise ArgumentError, "duplicate work requirement program code #{code.inspect}"
+          end
+
+          seen[code] = true
+          built
+        end.freeze
       end
 
       def build_program(program)
@@ -224,13 +262,15 @@ module Corvid
       # Read the string's own bytes, or Symbol#name. String#to_s can be
       # overridden and would alias another state. An incompatible encoding
       # is not a state code, so lookup fails closed instead of raising.
+      # Re-encode after validation: upcase keeps the caller encoding, so a
+      # binary code would otherwise stay ASCII-8BIT in the registry.
       def canonical_state_code(state_code)
         raw = state_code_characters(state_code)
         return if raw.nil?
         return unless raw.valid_encoding? && raw.encoding.ascii_compatible?
         return unless STATE_CODE.match?(raw)
 
-        raw.upcase(:ascii).dup.freeze
+        raw.upcase(:ascii).encode(Encoding::UTF_8).freeze
       end
 
       def state_code_characters(state_code)
@@ -262,7 +302,7 @@ module Corvid
       end
 
       def program_code(code)
-        unless code.is_a?(String) && !code.empty?
+        unless code.is_a?(String) && !blank?(code)
           raise ArgumentError, "work requirement program :code must be a non-empty String, got #{code.inspect}"
         end
 
@@ -272,6 +312,11 @@ module Corvid
       def description_pattern(pattern)
         unless pattern.is_a?(Regexp)
           raise ArgumentError, "description_pattern must be a Regexp, got #{pattern.inspect}"
+        end
+        # A pattern that matches "" matches every description, so every plan
+        # would be classified as that waiver.
+        if pattern.match?("")
+          raise ArgumentError, "description_pattern must not match an empty string"
         end
 
         pattern.dup.freeze
