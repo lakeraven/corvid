@@ -7,6 +7,7 @@ Given("the referral has been submitted") do
 end
 
 Given("the referral has been authorized") do
+  exhaust_alternate_resources!(@referral)
   @referral.authorize!
 end
 
@@ -25,6 +26,7 @@ Given("the referral is in priority assignment with low cost") do
   @referral.request_management_approval!
   @referral.pending_approval_by = "pr_test_mgr"
   @referral.approve_management!
+  exhaust_alternate_resources!(@referral)
   @referral.verify_alternate_resources!
   @referral.update!(estimated_cost: 5_000)
   assert_equal "priority_assignment", @referral.status
@@ -45,6 +47,7 @@ Given("the referral is in priority assignment with high cost") do
   @referral.request_management_approval!
   @referral.pending_approval_by = "pr_test_mgr"
   @referral.approve_management!
+  exhaust_alternate_resources!(@referral)
   @referral.verify_alternate_resources!
   @referral.update!(estimated_cost: 100_000)
   assert_equal "priority_assignment", @referral.status
@@ -71,6 +74,7 @@ Then("the referral cannot be cancelled") do
 end
 
 When("the referral is authorized") do
+  exhaust_alternate_resources!(@referral)
   @referral.authorize!
 end
 
@@ -79,6 +83,7 @@ When("the referral is denied") do
 end
 
 When("priority assignment completes") do
+  exhaust_alternate_resources!(@referral)
   @referral.complete_priority_assignment!
 end
 

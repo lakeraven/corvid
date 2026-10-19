@@ -107,6 +107,7 @@ module Corvid
       r.approve_management!
       return r if target == :alternate_resource_review
 
+      exhaust_alternate_resources!(r)
       r.verify_alternate_resources!
       return r if target == :priority_assignment
 
