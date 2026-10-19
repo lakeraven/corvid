@@ -32,8 +32,20 @@ namespace :demo do
       Corvid::TenantContext.current_facility_identifier = facility
 
       # Clean up any prior run so this task is safely re-runnable.
+      #
+      # Fulfilment reports are append-only, so the referral association
+      # restricts rather than cascades and Case#destroy! would raise once a
+      # referral carries any report. Reseeding a demo is the one legitimate
+      # reason to discard them, so it is done here, explicitly and visibly,
+      # rather than by weakening the guarantee the application relies on.
       old_case = Corvid::Case.find_by(patient_identifier: patient_id, facility_identifier: facility)
-      old_case&.destroy!
+      if old_case
+        report_ids = Corvid::ReferralFulfilmentReport
+          .where(prc_referral_id: old_case.prc_referrals.select(:id))
+          .pluck(:id)
+        Corvid::ReferralFulfilmentReport.where(id: report_ids).delete_all if report_ids.any?
+        old_case.destroy!
+      end
 
       # ----------------------------------------------------------------
       # 1. Patient registration

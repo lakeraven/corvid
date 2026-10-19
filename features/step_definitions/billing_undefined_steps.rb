@@ -18,7 +18,10 @@ Given("there are paid claim submissions from multiple providers") do
       billed_amount: 500.00 + (i * 100),
       paid_amount: 400.00 + (i * 80),
       paid_date: Date.current - i.days,
-      service_date: Date.current - (i + 3).days,
+      # Clamped for the same reason as the Article 6 seed: a bare lookback
+      # straddles the quarter start, and this Given is one wiring change away
+      # from being read by a service_date-filtered report.
+      service_date: [ Date.current - (i + 3).days, Date.current.beginning_of_quarter ].max,
       provider_identifier: "pr_mp_#{i}",
       state_share: (400.00 + (i * 80)) * 0.5,
       county_share: (400.00 + (i * 80)) * 0.5
@@ -103,15 +106,31 @@ Then("each quarter should have aggregated totals") do
 end
 
 Then("the billed amounts should match the sum of ClaimSubmission billed amounts") do
-  total_dollars = Corvid::ClaimSubmission.paid.sum(:billed_amount_cents) / 100.0
+  quarter = Date.current.beginning_of_quarter..Date.current.end_of_quarter
+  expected = Corvid::ClaimSubmission.paid.in_date_range(quarter).sum(:billed_amount_cents) / 100.0
+  all_paid = Corvid::ClaimSubmission.paid.sum(:billed_amount_cents) / 100.0
   report_total = @report.is_a?(Hash) ? @report[:total_billed] : @report.sum { |r| r[:billed] || 0 }
-  assert_in_delta total_dollars, report_total.to_f, 0.01
+  # Two guards that can actually fail, unlike comparing an UNFILTERED sum:
+  #   - in-window data exists, so the match below is not 0 == 0
+  #   - an out-of-quarter claim exists, so a report that ignored service_date
+  #     would total all_paid and fail the match (the seed plants a decoy)
+  assert_operator expected, :>, 0, "no in-quarter claims seeded; the billed comparison would be vacuous"
+  assert_operator all_paid, :>, expected, "no out-of-quarter claim seeded; a report ignoring service_date would still pass"
+  assert_in_delta expected, report_total.to_f, 0.01
 end
 
 Then("the paid amounts should match the sum of ClaimSubmission paid amounts") do
-  total_dollars = Corvid::ClaimSubmission.paid.sum(:paid_amount_cents) / 100.0
+  quarter = Date.current.beginning_of_quarter..Date.current.end_of_quarter
+  expected = Corvid::ClaimSubmission.paid.in_date_range(quarter).sum(:paid_amount_cents) / 100.0
+  all_paid = Corvid::ClaimSubmission.paid.sum(:paid_amount_cents) / 100.0
   report_total = @report.is_a?(Hash) ? @report[:total_paid] : @report.sum { |r| r[:paid] || 0 }
-  assert_in_delta total_dollars, report_total.to_f, 0.01
+  # Two guards that can actually fail, unlike comparing an UNFILTERED sum:
+  #   - in-window data exists, so the match below is not 0 == 0
+  #   - an out-of-quarter claim exists, so a report that ignored service_date
+  #     would total all_paid and fail the match (the seed plants a decoy)
+  assert_operator expected, :>, 0, "no in-quarter claims seeded; the paid comparison would be vacuous"
+  assert_operator all_paid, :>, expected, "no out-of-quarter claim seeded; a report ignoring service_date would still pass"
+  assert_in_delta expected, report_total.to_f, 0.01
 end
 
 Then("I should receive a CSV string with reimbursement headers") do

@@ -4,6 +4,7 @@
 
 Given("there are paid claim submissions in the system") do
   3.times do |i|
+    service_date = [ Date.current - (i + 5).days, Date.current.beginning_of_quarter ].max
     Corvid::ClaimSubmission.create!(
       tenant_identifier: @tenant,
       facility_identifier: @facility,
@@ -13,12 +14,89 @@ Given("there are paid claim submissions in the system") do
       status: "paid",
       billed_amount: 500.00 + (i * 100),
       paid_amount: 400.00 + (i * 80),
-      paid_date: Date.current - i.days,
-      service_date: Date.current - (i + 5).days,
+      # Both dates are clamped into the current quarter, and paid_date is never
+      # before service_date.
+      #
+      # WHY: the report filters on service_date (ClaimSubmission.in_date_range).
+      # An UNCLAMPED `Date.current - (i + 5).days` falls in the previous quarter
+      # during a quarter's first week -- of the three claims none were in-window
+      # on days 1-5, one on day 6, two on day 7 -- so the report summed less than
+      # the suite expected. Green 2026-09-26, red 2026-10-01. With the clamp all
+      # three are always in-window; the decoys below are what keep the filter
+      # itself under test.
+      service_date: service_date,
+      paid_date: [ Date.current - i.days, service_date ].max,
       provider_identifier: "pr_art6_#{i % 2}",
       state_share: (400.00 + (i * 80)) * 0.5,
       county_share: (400.00 + (i * 80)) * 0.5,
       submitted_at: (i + 10).days.ago
+    )
+  end
+
+  # Two BOUNDARY claims exactly on the window edges, both in-window and both
+  # counted in the expected sum. They are what kill an off-by-one on either
+  # bound: without a row on quarter_start, `quarter_start.next_day..` passes;
+  # without one on quarter_end, `..quarter_end - 1.day` passes. The clamped
+  # claims above only sit on quarter_start during a quarter's first week, so
+  # relying on them makes the kill date-dependent.
+  #
+  # The NON-PAID row is what keeps the `.paid` scope under test: with every
+  # seeded row paid, dropping `.paid` from the report changes nothing.
+  [
+    { suffix: "start", service_date: Date.current.beginning_of_quarter, status: "paid",
+      billed: 111.00, paid: 101.00 },
+    { suffix: "end", service_date: Date.current.end_of_quarter, status: "paid",
+      billed: 222.00, paid: 202.00 },
+    { suffix: "unpaid", service_date: Date.current.beginning_of_quarter + 1.day,
+      status: "submitted", billed: 555.00, paid: 0.00 }
+  ].each do |edge|
+    Corvid::ClaimSubmission.create!(
+      tenant_identifier: @tenant,
+      facility_identifier: @facility,
+      patient_identifier: "pt_art6_edge_#{edge[:suffix]}",
+      claim_identifier: "CLM_ART6_EDGE_#{edge[:suffix].upcase}",
+      claim_type: "professional",
+      status: edge[:status],
+      billed_amount: edge[:billed],
+      paid_amount: edge[:paid],
+      paid_date: edge[:status] == "paid" ? edge[:service_date] : nil,
+      service_date: edge[:service_date],
+      provider_identifier: "pr_art6_edge_#{edge[:suffix]}",
+      state_share: edge[:paid] / 2,
+      county_share: edge[:paid] / 2,
+      submitted_at: 40.days.ago
+    )
+  end
+
+  # Two decoys OUTSIDE the current quarter, so the report's service_date window
+  # is observable in BOTH directions. Without them every seeded claim is
+  # in-window by construction and the suite passes with `in_date_range` deleted.
+  #
+  # The early decoy's paid_date is deliberately in the CURRENT quarter while its
+  # service_date is in the previous one: that is what catches a report filtering
+  # the wrong COLUMN (paid_date instead of service_date), which a decoy with both
+  # dates in the past cannot catch. The late decoy catches a missing upper bound.
+  [
+    { suffix: "early", service_date: Date.current.beginning_of_quarter - 10.days,
+      paid_date: Date.current, billed: 999.00, paid: 777.00 },
+    { suffix: "late", service_date: Date.current.end_of_quarter + 10.days,
+      paid_date: Date.current.end_of_quarter + 10.days, billed: 888.00, paid: 666.00 }
+  ].each do |decoy|
+    Corvid::ClaimSubmission.create!(
+      tenant_identifier: @tenant,
+      facility_identifier: @facility,
+      patient_identifier: "pt_art6_decoy_#{decoy[:suffix]}",
+      claim_identifier: "CLM_ART6_DECOY_#{decoy[:suffix].upcase}",
+      claim_type: "professional",
+      status: "paid",
+      billed_amount: decoy[:billed],
+      paid_amount: decoy[:paid],
+      paid_date: decoy[:paid_date],
+      service_date: decoy[:service_date],
+      provider_identifier: "pr_art6_decoy_#{decoy[:suffix]}",
+      state_share: decoy[:paid] / 2,
+      county_share: decoy[:paid] / 2,
+      submitted_at: 40.days.ago
     )
   end
 end

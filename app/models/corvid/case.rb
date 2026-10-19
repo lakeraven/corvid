@@ -37,18 +37,14 @@ module Corvid
       @patient ||= Corvid.adapter.find_patient(patient_identifier)
     end
 
-    # Display name with cache fallback. Per ADR 0003, patient_name_cached
-    # is OPTIONAL — hosts that prefer zero-PHI-at-rest leave it nil.
+    # Display name, resolved through the adapter for the request duration only.
+    # There is deliberately no cached fallback: ADR 0003's criterion is that a
+    # corvid dump reveals no PHI, and a cached name is PHI at rest whether or
+    # not a host elected to populate it. Without vault access this degrades to
+    # a placeholder, which is the intended failure — a missing name is a
+    # smaller problem than a name nobody meant to store.
     def display_name
-      patient_name_cached || patient&.display_name || "Unknown Patient"
-    end
-
-    # Cache patient data for offline display. Hosts call this only if they
-    # accept the duplicated-PHI trade-off.
-    def cache_patient_data!
-      if (p = patient)
-        update!(patient_name_cached: p.display_name, patient_dob_cached: p.dob)
-      end
+      patient&.display_name || "Unknown Patient"
     end
 
     def program_case?

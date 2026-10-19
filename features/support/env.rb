@@ -38,6 +38,7 @@ def clean_corvid_tables!
   Corvid::PrcEligibilityDecision.unscoped.delete_all
   Corvid::AlternateResourceCheck.unscoped.delete_all
   Corvid::CommitteeReview.unscoped.delete_all
+  Corvid::ReferralFulfilmentReport.unscoped.delete_all
   Corvid::PrcOverpaymentAnalysis.unscoped.delete_all
   Corvid::PrcPayment.unscoped.delete_all
   Corvid::PrcObligation.unscoped.delete_all

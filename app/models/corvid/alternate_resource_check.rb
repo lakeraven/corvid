@@ -61,9 +61,13 @@ module Corvid
       end
     end
 
+    # An absent determination never counts — PRC is payer of last resort (42 CFR 136.61).
     def self.all_exhausted?(prc_referral)
-      return false if prc_referral.alternate_resource_checks.pending.exists?
-      prc_referral.alternate_resource_checks.active_coverage.count == 0
+      checks = prc_referral.alternate_resource_checks
+      unavailable_types = checks.unavailable.distinct.pluck(:resource_type)
+
+      (RESOURCE_TYPES - unavailable_types).empty? &&
+        checks.where.not(status: %w[not_enrolled denied exhausted]).none?
     end
 
     def self.any_pending?(prc_referral)
@@ -114,7 +118,8 @@ module Corvid
       return false unless patient_identifier
 
       result = Corvid.adapter.verify_eligibility(patient_identifier, resource_type)
-      return false unless result
+      # An unreadable answer is not a determination (42 CFR 136.61).
+      return false unless result.is_a?(Hash) && (result[:eligible] == true || result[:eligible] == false)
 
       update!(
         status: result[:eligible] ? :enrolled : :not_enrolled,
