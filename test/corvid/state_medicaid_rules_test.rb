@@ -692,12 +692,12 @@ class Corvid::StateMedicaidRulesTest < Minitest::Test
 
   def test_waiver_program_for_raises_argument_error_for_utf16le_description
     Corvid::StateMedicaidRules.register(
-      "W16",
+      "WE",
       expanded: false,
       work_requirement_programs: [ { code: "demo", description_pattern: /demo/i } ],
       groups: minimal_groups
     )
-    entry = Corvid::StateMedicaidRules.lookup("W16")
+    entry = Corvid::StateMedicaidRules.lookup("WE")
     description = "demo waiver".encode("UTF-16LE")
     assert_raises(ArgumentError) { entry.waiver_program_for(description) }
   end
