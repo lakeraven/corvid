@@ -145,4 +145,77 @@ class Corvid::PriorAuthorizationApiServiceTest < ActiveSupport::TestCase
     assert_equal "Questionnaire", q[:resourceType]
     assert q[:item].any? { |i| i[:required] }
   end
+
+  test "submit_from_claim falls back from blank CodeableConcept text to coding display" do
+    claim = build_fhir_claim(
+      item: [ {
+        productOrService: {
+          text: "",
+          coding: [ { display: "TEST,PROCEDURE 001", code: "P001" } ]
+        }
+      } ]
+    )
+    with_tenant(TENANT) do
+      Corvid::TenantContext.current_facility_identifier = FACILITY
+      Corvid::PriorAuthorizationApiService.submit_from_claim(claim)
+      referral = Corvid::PrcReferral.order(created_at: :desc).first
+      stored = Corvid.adapter.find_referral(referral.referral_identifier)
+      assert_equal "TEST,PROCEDURE 001", stored.service_requested
+    ensure
+      Corvid::TenantContext.reset!
+    end
+  end
+
+  test "submit_from_claim falls back from blank coding display to code" do
+    claim = build_fhir_claim(
+      item: [ {
+        productOrService: {
+          text: "   ",
+          coding: [ { display: "", code: "CODE-FALLBACK" } ]
+        }
+      } ]
+    )
+    with_tenant(TENANT) do
+      Corvid::TenantContext.current_facility_identifier = FACILITY
+      Corvid::PriorAuthorizationApiService.submit_from_claim(claim)
+      referral = Corvid::PrcReferral.order(created_at: :desc).first
+      stored = Corvid.adapter.find_referral(referral.referral_identifier)
+      assert_equal "CODE-FALLBACK", stored.service_requested
+    ensure
+      Corvid::TenantContext.reset!
+    end
+  end
+
+  test "submit_from_claim uses Service when productOrService is a blank string" do
+    claim = build_fhir_claim(item: [ { productOrService: "   " } ])
+    with_tenant(TENANT) do
+      Corvid::TenantContext.current_facility_identifier = FACILITY
+      Corvid::PriorAuthorizationApiService.submit_from_claim(claim)
+      referral = Corvid::PrcReferral.order(created_at: :desc).first
+      stored = Corvid.adapter.find_referral(referral.referral_identifier)
+      assert_equal "Service", stored.service_requested
+    ensure
+      Corvid::TenantContext.reset!
+    end
+  end
+
+  test "submit_from_claim uses Service when CodeableConcept parts are all blank" do
+    claim = build_fhir_claim(
+      item: [ {
+        productOrService: {
+          text: "",
+          coding: [ { display: "  ", code: "  " } ]
+        }
+      } ]
+    )
+    with_tenant(TENANT) do
+      Corvid::TenantContext.current_facility_identifier = FACILITY
+      Corvid::PriorAuthorizationApiService.submit_from_claim(claim)
+      referral = Corvid::PrcReferral.order(created_at: :desc).first
+      stored = Corvid.adapter.find_referral(referral.referral_identifier)
+      assert_equal "Service", stored.service_requested
+    ensure
+      Corvid::TenantContext.reset!
+    end
+  end
 end

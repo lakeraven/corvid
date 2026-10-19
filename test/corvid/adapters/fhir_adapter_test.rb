@@ -70,6 +70,47 @@ class Corvid::Adapters::FhirAdapterTest < Minitest::Test
     end
   end
 
+  def test_find_referral_falls_back_from_blank_code_text_to_coding_display
+    resource = {
+      "id" => "rf_blank_text",
+      "status" => "active",
+      "subject" => { "reference" => "Patient/pt_001" },
+      "code" => {
+        "text" => "",
+        "coding" => [ { "display" => "TEST,SERVICE 001" } ]
+      }
+    }
+    @adapter.stub(:fhir_read, resource) do
+      result = @adapter.find_referral("rf_blank_text")
+      assert_equal "TEST,SERVICE 001", result.service_requested
+    end
+  end
+
+  def test_list_claims_falls_back_procedure_display_from_product_or_service_text
+    bundle = {
+      "resourceType" => "Bundle",
+      "entry" => [ { "resource" => {
+        "resourceType" => "Claim",
+        "id" => "clm_blank_disp",
+        "patient" => { "reference" => "Patient/pt_disp" },
+        "item" => [ {
+          "sequence" => 1,
+          "productOrService" => {
+            "text" => "TEST,CLAIM LINE 001",
+            "coding" => [
+              { "system" => "http://www.ama-assn.org/go/cpt", "code" => "99213", "display" => "" }
+            ]
+          },
+          "net" => { "value" => 100.0, "currency" => "USD" }
+        } ]
+      } } ]
+    }
+    @adapter.stub(:fhir_search, bundle) do
+      line = @adapter.list_claims("pt_disp").first
+      assert_equal "TEST,CLAIM LINE 001", line.procedure_display
+    end
+  end
+
   def test_update_referral_whitelists_safe_fields
     existing = { "resourceType" => "ServiceRequest", "id" => "rf_001", "status" => "draft", "subject" => { "reference" => "Patient/pt_001" } }
     captured = nil
