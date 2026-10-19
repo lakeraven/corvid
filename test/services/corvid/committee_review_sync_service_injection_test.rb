@@ -72,6 +72,7 @@ class Corvid::CommitteeReviewSyncServiceInjectionTest < ActiveSupport::TestCase
     # — that's the documented #264 gap. We don't poison the global here
     # because the apply half legitimately needs it until #264 lands.
     review = build_approved_review
+    exhaust_alternate_resources!(review.prc_referral)
     Corvid.configure { |c| c.adapter = Corvid::Adapters::MockAdapter.new }
     service = Corvid::CommitteeReviewSyncService.new(adapter: @fake)
 
