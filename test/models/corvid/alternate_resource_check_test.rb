@@ -318,6 +318,21 @@ class Corvid::AlternateResourceCheckTest < ActiveSupport::TestCase
     end
   end
 
+  test "coordinated status persists and counts toward all_exhausted among twelve checks" do
+    with_tenant(TENANT) do
+      referral = create_referral
+      create_all_twelve_unavailable_checks(referral, "medicaid" => "coordinated")
+
+      coordinated = referral.alternate_resource_checks.find_by!(resource_type: "medicaid")
+      assert_equal "coordinated", coordinated.status
+      coordinated.reload
+      assert_equal "coordinated", coordinated.status
+
+      assert Corvid::AlternateResourceCheck.all_exhausted?(referral)
+      assert_exhaustion_agreement(referral)
+    end
+  end
+
   test "any_pending? returns false when no checks pending" do
     with_tenant(TENANT) do
       referral = create_referral
