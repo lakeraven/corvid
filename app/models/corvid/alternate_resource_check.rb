@@ -43,7 +43,10 @@ module Corvid
     # so it counts the same as not enrolled, denied, or exhausted (42 CFR 136.61).
     UNAVAILABLE_STATUSES = %w[not_enrolled denied exhausted coordinated].freeze
 
-    scope :active_coverage, -> { where(status: %w[enrolled pending_enrollment]) }
+    # Coordinated coverage is still active: that payer pays first.
+    COVERAGE_STATUSES = %w[enrolled pending_enrollment coordinated].freeze
+
+    scope :active_coverage, -> { where(status: COVERAGE_STATUSES) }
     scope :unavailable, -> { where(status: UNAVAILABLE_STATUSES) }
     scope :pending, -> { where(status: %w[not_checked checking pending_enrollment]) }
     scope :federal, -> { where(resource_type: FEDERAL_TYPES) }
@@ -105,7 +108,7 @@ module Corvid
     end
 
     def has_coverage?
-      enrolled? || pending_enrollment?
+      COVERAGE_STATUSES.include?(status)
     end
 
     def coverage_summary
