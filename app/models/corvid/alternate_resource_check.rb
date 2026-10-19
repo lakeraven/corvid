@@ -16,6 +16,7 @@ module Corvid
       not_checked: "not_checked",
       checking: "checking",
       enrolled: "enrolled",
+      coordinated: "coordinated",
       not_enrolled: "not_enrolled",
       denied: "denied",
       exhausted: "exhausted",
@@ -37,8 +38,16 @@ module Corvid
     FEDERAL_TYPES = %w[medicare_a medicare_b medicare_d medicaid va_benefits].freeze
     PRIVATE_TYPES = %w[private_insurance workers_comp auto_insurance liability_coverage].freeze
 
-    scope :active_coverage, -> { where(status: %w[enrolled pending_enrollment]) }
-    scope :unavailable, -> { where(status: %w[not_enrolled denied exhausted]) }
+    # Determinations that leave nothing for that payer to pay. `coordinated`
+    # is active coverage whose coordination of benefits is already complete,
+    # so it counts the same as not enrolled, denied, or exhausted (42 CFR 136.61).
+    UNAVAILABLE_STATUSES = %w[not_enrolled denied exhausted coordinated].freeze
+
+    # Coordinated coverage is still active: that payer pays first.
+    COVERAGE_STATUSES = %w[enrolled pending_enrollment coordinated].freeze
+
+    scope :active_coverage, -> { where(status: COVERAGE_STATUSES) }
+    scope :unavailable, -> { where(status: UNAVAILABLE_STATUSES) }
     scope :pending, -> { where(status: %w[not_checked checking pending_enrollment]) }
     scope :federal, -> { where(resource_type: FEDERAL_TYPES) }
     scope :private_payer, -> { where(resource_type: PRIVATE_TYPES) }
@@ -67,7 +76,7 @@ module Corvid
       unavailable_types = checks.unavailable.distinct.pluck(:resource_type)
 
       (RESOURCE_TYPES - unavailable_types).empty? &&
-        checks.where.not(status: %w[not_enrolled denied exhausted]).none?
+        checks.where.not(status: UNAVAILABLE_STATUSES).none?
     end
 
     def self.any_pending?(prc_referral)
@@ -80,10 +89,12 @@ module Corvid
 
     # Seed checks for a new referral from a previous referral's results.
     # Copies status and checked_at — stale checks will need re-verification.
+    # Coordination of benefits is per service, so a previous coordinated
+    # determination is copied as enrolled and must be coordinated again.
     def self.seed_from_previous!(new_referral, previous_referral)
       previous_referral.alternate_resource_checks.each do |prev_check|
         new_referral.alternate_resource_checks.find_or_create_by!(resource_type: prev_check.resource_type) do |check|
-          check.status = prev_check.status
+          check.status = prev_check.coordinated? ? "enrolled" : prev_check.status
           check.checked_at = prev_check.checked_at
           check.policy_token = prev_check.policy_token
         end
@@ -93,11 +104,11 @@ module Corvid
     # Instance methods
 
     def exhausted_or_unavailable?
-      not_enrolled? || denied? || exhausted?
+      UNAVAILABLE_STATUSES.include?(status)
     end
 
     def has_coverage?
-      enrolled? || pending_enrollment?
+      COVERAGE_STATUSES.include?(status)
     end
 
     def coverage_summary
@@ -121,11 +132,23 @@ module Corvid
       # An unreadable answer is not a determination (42 CFR 136.61).
       return false unless result.is_a?(Hash) && (result[:eligible] == true || result[:eligible] == false)
 
+      next_status = status_for_eligibility(result)
+      return false if next_status.nil?
+
       update!(
-        status: result[:eligible] ? :enrolled : :not_enrolled,
+        status: next_status,
         policy_token: result[:policy_token],
         checked_at: Time.current
       )
+      true
+    end
+
+    # Record that coordination of benefits for this service is done.
+    # Only active enrollment can be coordinated.
+    def mark_coordinated!
+      raise ArgumentError, "coverage is not active" unless enrolled?
+
+      update!(status: :coordinated, checked_at: Time.current)
       true
     end
 
@@ -146,6 +169,27 @@ module Corvid
 
     def set_checked_at
       self.checked_at = Time.current if status_previously_was == "not_checked" || status_previously_was == "checking"
+    end
+
+    # Coordinated sticks only when the adapter's policy token is present
+    # and matches the stored token. Any other eligible result is enrolled
+    # (verify! stores the new token). Ineligible is not_enrolled. nil
+    # leaves the row unchanged — silence is not a determination.
+    def status_for_eligibility(result)
+      case result[:eligible]
+      when true then eligible_status(result)
+      when false then :not_enrolled
+      end
+    end
+
+    def eligible_status(result)
+      return :coordinated if same_coordinated_policy?(result[:policy_token])
+
+      :enrolled
+    end
+
+    def same_coordinated_policy?(token)
+      coordinated? && token.present? && token == policy_token
     end
   end
 end

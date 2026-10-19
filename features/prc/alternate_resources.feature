@@ -255,6 +255,13 @@ Feature: Alternate resource tracking (payer of last resort)
     And I re-verify the check
     Then the check status should be "not_enrolled"
 
+  Scenario: Coordinated check drops to enrolled when re-verification finds a different policy
+    Given an alternate resource check for "medicaid" exists with status "coordinated"
+    And the check has policy token "TOK-A"
+    When the check is re-verified with policy token "TOK-B"
+    Then the check status should be "enrolled"
+    And the check policy token should be "TOK-B"
+
   Scenario: Batch verification with mixed results
     Given all 12 alternate resource checks are created for the referral
     When I verify all and 2 return enrolled and 3 return errors

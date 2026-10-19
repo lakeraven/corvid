@@ -127,6 +127,17 @@ class Corvid::AlternateResourceServiceTest < ActiveSupport::TestCase
     end
   end
 
+  test "has_active_coverage? true when the only covering check is coordinated" do
+    with_tenant(TENANT) do
+      referral = create_referral
+      Corvid::AlternateResourceCheck.create!(
+        prc_referral: referral, resource_type: "medicare_a", status: "coordinated"
+      )
+
+      assert Corvid::AlternateResourceService.has_active_coverage?(referral)
+    end
+  end
+
   test "verify_all with unreachable adapter leaves all checks not_checked" do
     with_tenant(TENANT) do
       referral = create_referral
