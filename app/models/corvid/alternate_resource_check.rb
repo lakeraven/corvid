@@ -16,6 +16,7 @@ module Corvid
       not_checked: "not_checked",
       checking: "checking",
       enrolled: "enrolled",
+      coordinated: "coordinated",
       not_enrolled: "not_enrolled",
       denied: "denied",
       exhausted: "exhausted",
@@ -37,8 +38,13 @@ module Corvid
     FEDERAL_TYPES = %w[medicare_a medicare_b medicare_d medicaid va_benefits].freeze
     PRIVATE_TYPES = %w[private_insurance workers_comp auto_insurance liability_coverage].freeze
 
+    # Determinations that leave nothing for that payer to pay. `coordinated`
+    # is active coverage whose coordination of benefits is already complete,
+    # so it counts the same as not enrolled, denied, or exhausted (42 CFR 136.61).
+    UNAVAILABLE_STATUSES = %w[not_enrolled denied exhausted coordinated].freeze
+
     scope :active_coverage, -> { where(status: %w[enrolled pending_enrollment]) }
-    scope :unavailable, -> { where(status: %w[not_enrolled denied exhausted]) }
+    scope :unavailable, -> { where(status: UNAVAILABLE_STATUSES) }
     scope :pending, -> { where(status: %w[not_checked checking pending_enrollment]) }
     scope :federal, -> { where(resource_type: FEDERAL_TYPES) }
     scope :private_payer, -> { where(resource_type: PRIVATE_TYPES) }
@@ -67,7 +73,7 @@ module Corvid
       unavailable_types = checks.unavailable.distinct.pluck(:resource_type)
 
       (RESOURCE_TYPES - unavailable_types).empty? &&
-        checks.where.not(status: %w[not_enrolled denied exhausted]).none?
+        checks.where.not(status: UNAVAILABLE_STATUSES).none?
     end
 
     def self.any_pending?(prc_referral)
@@ -93,7 +99,7 @@ module Corvid
     # Instance methods
 
     def exhausted_or_unavailable?
-      not_enrolled? || denied? || exhausted?
+      UNAVAILABLE_STATUSES.include?(status)
     end
 
     def has_coverage?

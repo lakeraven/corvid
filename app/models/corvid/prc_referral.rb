@@ -90,16 +90,18 @@ module Corvid
       end
 
       event :verify_alternate_resources do
-        transitions from: :alternate_resource_review, to: :priority_assignment
+        transitions from: :alternate_resource_review, to: :priority_assignment,
+                    guard: :alternate_resources_exhausted?
       end
 
       event :complete_priority_assignment do
         transitions from: :priority_assignment, to: :committee_review, guard: :requires_committee?
-        transitions from: :priority_assignment, to: :authorized
+        transitions from: :priority_assignment, to: :authorized, guard: :alternate_resources_exhausted?
       end
 
       event :authorize, after: :sync_status_to_ehr do
-        transitions from: [ :priority_assignment, :committee_review ], to: :authorized
+        transitions from: [ :priority_assignment, :committee_review ], to: :authorized,
+                    guard: :alternate_resources_exhausted?
       end
 
       event :mark_denied, after: :sync_status_to_ehr do
@@ -125,6 +127,21 @@ module Corvid
 
     def service_request
       @service_request ||= Corvid.adapter.find_referral(referral_identifier) if referral_identifier.present?
+    end
+
+    # 42 CFR 136.61 — PRC pays last. True only when every alternate resource
+    # has a determination: unavailable, or coverage with coordination complete.
+    def alternate_resources_exhausted?
+      AlternateResourceCheck.all_exhausted?(self)
+    end
+
+    # Sorted reasons authorization is refused. Resource type and status only;
+    # patient, payer, and policy data never appear here (ADR 0003).
+    def authorization_blockers
+      by_type = alternate_resource_checks.reload.index_by(&:resource_type)
+      AlternateResourceCheck::RESOURCE_TYPES.filter_map do |type|
+        blocker_for(type, by_type[type])
+      end.sort
     end
 
     def requires_committee?
@@ -337,6 +354,15 @@ module Corvid
     end
 
     private
+
+    def blocker_for(resource_type, check)
+      return "#{resource_type}: not checked" if check.nil?
+      return if check.exhausted_or_unavailable?
+
+      detail = check.status.to_s.tr("_", " ")
+      detail = "#{detail} (coordination of benefits not complete)" if check.enrolled?
+      "#{resource_type}: #{detail}"
+    end
 
     # Get authorization number from RCIS (source of truth).
     # Falls back to local cache if RCIS unavailable.
