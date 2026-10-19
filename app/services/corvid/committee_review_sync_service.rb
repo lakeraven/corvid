@@ -42,20 +42,22 @@ module Corvid
     # `sync_decision` half is. Per-tenant adapter routing for the
     # combined flow isn't safe yet; see ADR 0005 §"Known limitation".
     #
-    # An approved or modified decision that cannot be authorized never
-    # reaches either half. Writing APPROVED to the EHR while the referral
-    # stays put would record care PRC has not agreed to buy.
+    # Apply locally first. Sync the decision to the EHR only once the
+    # referral has reached that state, so APPROVED is never written
+    # while the referral stays put. AuthorizationBlockedError returns
+    # blocked with backend_synced false and does not call sync_decision.
+    # Denied and deferred are not authorizations, so a refused
+    # transition still syncs. A failed EHR sync after a successful
+    # apply stays sync_pending.
     def sync_and_apply!(committee_review)
-      backend_synced = false
-      blocked = blocked_authorization_result(committee_review)
-      return apply_blocked(blocked[:blockers]) if blocked
-
-      sync_result = sync_decision(committee_review)
-      backend_synced = sync_result[:success]
       referral_updated = apply_referral!(committee_review)
+      backend_synced = false
+      if referral_updated || !committee_review.approved_or_modified?
+        backend_synced = sync_decision(committee_review)[:success]
+      end
       apply_result(backend_synced, referral_updated)
     rescue AuthorizationBlockedError => e
-      apply_blocked(e.blockers, backend_synced: backend_synced)
+      apply_blocked(e.blockers, backend_synced: false)
     end
 
     # Class-method shims for backward compatibility. Existing callers
