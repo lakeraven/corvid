@@ -160,7 +160,16 @@ module Corvid
         )
 
         referral.alternate_resource_checks.find_by!(resource_type: "medicare_a").update!(status: "enrolled")
-        review.apply_to_referral!
+        expected_blockers = referral.authorization_blockers
+        assert expected_blockers.any?
+
+        error = assert_raises(Corvid::AuthorizationBlockedError) do
+          review.apply_to_referral!
+        end
+        assert_equal expected_blockers, error.blockers
+        expected_blockers.each do |blocker|
+          assert_includes error.message, blocker
+        end
         assert_equal "committee_review", referral.reload.status
 
         create_all_determined_checks(referral)

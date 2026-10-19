@@ -175,13 +175,51 @@ class Corvid::CommitteeReviewSyncServiceTest < ActiveSupport::TestCase
 
   # -- sync_and_apply! --------------------------------------------------------
 
-  test "sync_and_apply! syncs and applies to referral" do
+  test "sync_and_apply! syncs and applies to referral when alternate resources exhausted" do
     with_tenant(TENANT) do
-      review = create_approved_review
+      review = create_approved_review_in_committee_review
+      exhaust_alternate_resources!(review.prc_referral)
+
       result = Corvid::CommitteeReviewSyncService.sync_and_apply!(review)
 
+      assert result[:success]
       assert result[:backend_synced]
       assert result[:referral_updated]
+      assert_equal "authorized", review.prc_referral.reload.status
+    end
+  end
+
+  test "sync_and_apply! does not sync EHR when authorization blocked by alternate resources" do
+    with_tenant(TENANT) do
+      review = create_approved_review_in_committee_review
+      exhaust_alternate_resources!(review.prc_referral)
+      review.prc_referral.alternate_resource_checks.find_by!(resource_type: "medicare_a").update!(status: "enrolled")
+      blockers = review.prc_referral.authorization_blockers
+      fake = RecordingAdapter.new
+
+      result = Corvid::CommitteeReviewSyncService.sync_and_apply!(review, adapter: fake)
+
+      refute fake.update_referral_called?
+      refute result[:success]
+      refute result[:backend_synced]
+      refute result[:referral_updated]
+      assert result[:blocked]
+      assert_equal blockers, result[:blockers]
+      assert_equal "committee_review", review.prc_referral.reload.status
+    end
+  end
+
+  test "sync_and_apply! still syncs denied decisions without exhaustion check" do
+    with_tenant(TENANT) do
+      review = create_denied_review_in_committee_review
+      fake = RecordingAdapter.new
+
+      result = Corvid::CommitteeReviewSyncService.sync_and_apply!(review, adapter: fake)
+
+      assert fake.update_referral_called?
+      assert result[:backend_synced]
+      assert result[:referral_updated]
+      assert_equal "denied", review.prc_referral.reload.status
     end
   end
 
@@ -235,6 +273,29 @@ class Corvid::CommitteeReviewSyncServiceTest < ActiveSupport::TestCase
     end
   end
 
+  # Records adapter calls for sync_and_apply! authorization-guard specs.
+  class RecordingAdapter
+    attr_reader :calls
+
+    def initialize
+      @calls = []
+    end
+
+    def update_referral(identifier, params)
+      @calls << [ :update_referral, identifier, params ]
+      true
+    end
+
+    def fetch_text(token)
+      @calls << [ :fetch_text, token ]
+      "denial reason"
+    end
+
+    def update_referral_called?
+      @calls.any? { |call| call.first == :update_referral }
+    end
+  end
+
   private
 
   def create_referral
@@ -250,6 +311,55 @@ class Corvid::CommitteeReviewSyncServiceTest < ActiveSupport::TestCase
     Corvid::CommitteeReview.create!(
       prc_referral: referral, committee_date: Date.current,
       decision: "approved", approved_amount: approved_amount,
+      reviewer_identifier: "pr_101"
+    )
+  end
+
+  def create_approved_review_in_committee_review(approved_amount: 50_000)
+    referral = create_referral
+    referral.update!(status: "committee_review", medical_priority: 3, estimated_cost: approved_amount)
+    Corvid.adapter.add_referral(
+      referral.referral_identifier,
+      patient_identifier: "pt_crs",
+      status: "committee_review",
+      estimated_cost: approved_amount,
+      emergent: false,
+      urgent: false,
+      chs_approval_status: "P",
+      service_requested: "TEST"
+    )
+
+    Corvid::CommitteeReview.create!(
+      prc_referral: referral,
+      committee_date: Date.current,
+      decision: "approved",
+      approved_amount: approved_amount,
+      reviewer_identifier: "pr_101"
+    )
+  end
+
+  def create_denied_review_in_committee_review
+    referral = create_referral
+    referral.update!(status: "committee_review", medical_priority: 3, estimated_cost: 50_000)
+    Corvid.adapter.add_referral(
+      referral.referral_identifier,
+      patient_identifier: "pt_crs",
+      status: "committee_review",
+      estimated_cost: 50_000,
+      emergent: false,
+      urgent: false,
+      chs_approval_status: "P",
+      service_requested: "TEST"
+    )
+
+    rationale_token = Corvid.adapter.store_text(case_token: "ct_test", kind: :rationale, text: "Not medically necessary")
+
+    Corvid::CommitteeReview.create!(
+      prc_referral: referral,
+      committee_date: Date.current,
+      decision: "denied",
+      rationale_token: rationale_token,
+      appeal_instructions_token: "ai_test",
       reviewer_identifier: "pr_101"
     )
   end

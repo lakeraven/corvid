@@ -495,6 +495,99 @@ class Corvid::AlternateResourceCheckTest < ActiveSupport::TestCase
     end
   end
 
+  test "seed_from_previous! copies coordinated as enrolled on the new referral" do
+    with_tenant(TENANT) do
+      previous = create_referral
+      Corvid::AlternateResourceCheck.create!(
+        prc_referral: previous,
+        resource_type: "medicaid",
+        status: "coordinated",
+        checked_at: 2.days.ago
+      )
+      Corvid::AlternateResourceCheck.create!(
+        prc_referral: previous,
+        resource_type: "medicare_a",
+        status: "not_enrolled",
+        checked_at: 1.day.ago
+      )
+
+      new_referral = create_referral
+      Corvid::AlternateResourceCheck.seed_from_previous!(new_referral, previous)
+
+      medicaid = new_referral.alternate_resource_checks.find_by!(resource_type: "medicaid")
+      assert_equal "enrolled", medicaid.status
+      assert_equal previous.alternate_resource_checks.find_by!(resource_type: "medicaid").checked_at, medicaid.checked_at
+
+      medicare = new_referral.alternate_resource_checks.find_by!(resource_type: "medicare_a")
+      assert_equal "not_enrolled", medicare.status
+    end
+  end
+
+  test "mark_coordinated! sets coordinated from enrolled and updates checked_at" do
+    with_tenant(TENANT) do
+      check = Corvid::AlternateResourceCheck.create!(
+        prc_referral: create_referral,
+        resource_type: "medicaid",
+        status: "enrolled"
+      )
+      travel_to 1.hour.from_now do
+        assert check.mark_coordinated!
+        check.reload
+        assert check.coordinated?
+        assert_in_delta Time.current, check.checked_at, 1.second
+      end
+    end
+  end
+
+  test "mark_coordinated! raises from non-enrolled status" do
+    with_tenant(TENANT) do
+      check = Corvid::AlternateResourceCheck.create!(
+        prc_referral: create_referral,
+        resource_type: "medicare_a",
+        status: "not_enrolled"
+      )
+
+      assert_raises(ArgumentError, match: /not active/) do
+        check.mark_coordinated!
+      end
+    end
+  end
+
+  test "verify! keeps coordinated when adapter reports eligible coverage" do
+    with_tenant(TENANT) do
+      referral = create_referral
+      check = Corvid::AlternateResourceCheck.create!(
+        prc_referral: referral,
+        resource_type: "medicaid",
+        status: "coordinated",
+        checked_at: 1.day.ago
+      )
+
+      assert check.verify!
+      check.reload
+      assert check.coordinated?
+    end
+  end
+
+  test "verify! on coordinated moves to not_enrolled when adapter reports ineligible" do
+    with_tenant(TENANT) do
+      referral = create_referral
+      check = Corvid::AlternateResourceCheck.create!(
+        prc_referral: referral,
+        resource_type: "medicaid",
+        status: "coordinated"
+      )
+
+      Corvid.adapter.define_singleton_method(:verify_eligibility) do |_pid, _type|
+        { eligible: false }
+      end
+
+      assert check.verify!
+      check.reload
+      assert check.not_enrolled?
+    end
+  end
+
   test "stores coverage details" do
     with_tenant(TENANT) do
       check = Corvid::AlternateResourceCheck.create!(
