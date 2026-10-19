@@ -21,13 +21,42 @@ Feature: Alternate resource tracking (payer of last resort)
 
   Scenario: All alternate resources must be exhausted for PRC authorization
     Given the following alternate resource checks exist:
-      | resource_type      | status       |
-      | medicare_a         | not_enrolled |
-      | medicare_b         | not_enrolled |
-      | medicaid           | exhausted    |
-      | private_insurance  | denied       |
+      | resource_type        | status       |
+      | medicare_a           | not_enrolled |
+      | medicare_b           | not_enrolled |
+      | medicare_d           | not_enrolled |
+      | medicaid             | exhausted    |
+      | va_benefits          | not_enrolled |
+      | private_insurance    | denied       |
+      | workers_comp         | not_enrolled |
+      | auto_insurance       | denied       |
+      | liability_coverage   | exhausted    |
+      | state_program        | not_enrolled |
+      | tribal_program       | denied       |
+      | charity_care         | not_enrolled |
     When I check if alternate resources are exhausted
     Then all resources should be exhausted
+
+  Scenario: A referral with no alternate resource checks is not exhausted
+    When I check if alternate resources are exhausted
+    Then all resources should not be exhausted
+
+  Scenario: A referral with unchecked resource types is not exhausted
+    Given the following alternate resource checks exist:
+      | resource_type        | status       |
+      | medicare_a           | not_enrolled |
+      | medicare_b           | not_enrolled |
+      | medicare_d           | not_enrolled |
+      | medicaid             | exhausted    |
+      | va_benefits          | not_enrolled |
+      | private_insurance    | denied       |
+      | workers_comp         | not_enrolled |
+      | auto_insurance       | denied       |
+      | liability_coverage   | exhausted    |
+      | state_program        | not_enrolled |
+      | tribal_program       | denied       |
+    When I check if alternate resources are exhausted
+    Then all resources should not be exhausted
 
   Scenario: Cannot confirm exhaustion if any resource has active coverage
     Given the following alternate resource checks exist:
