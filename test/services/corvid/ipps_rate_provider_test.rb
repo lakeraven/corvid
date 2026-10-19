@@ -94,7 +94,7 @@ class Corvid::IppsRateProviderTest < ActiveSupport::TestCase
   end
 
   test "lookup_for returns nil when both IPPS release labels are blank" do
-    # Nil, not "". The current `||` returns "" because "" is truthy, and
+    # Nil, not "". The pre-fix `||` returned "" because "" is truthy, and
     # that empty string is what the analyzer then drops. A merge that
     # skips blank labels has nothing left to return, so the contract is nil.
     # Asserting "" would pass against the defect.

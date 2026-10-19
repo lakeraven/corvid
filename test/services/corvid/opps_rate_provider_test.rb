@@ -114,9 +114,9 @@ class Corvid::OppsRateProviderTest < ActiveSupport::TestCase
   end
 
   test "lookup_for returns nil when both OPPS release labels are blank" do
-    # Nil, not "". "" is truthy, so the current `||` returns "" — the
+    # Nil, not "". "" is truthy, so the pre-fix `||` returned "" — the
     # defect. Once blank labels are skipped, neither row contributes a
-    # label and the lookup must return nil. Asserting "" would pass today.
+    # label and the lookup must return nil. Asserting "" passed before the fix.
     relabel_opps(weight: "", factor: "")
     assert_nil opps_release_label
   end
