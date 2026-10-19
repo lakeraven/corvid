@@ -403,6 +403,24 @@ class Corvid::AlternateResourceCheckTest < ActiveSupport::TestCase
     refute check.has_coverage?
   end
 
+  # Coordinated coverage is still active; only its coordination is done.
+  test "has_coverage? returns true for coordinated" do
+    check = Corvid::AlternateResourceCheck.new(status: :coordinated)
+    assert check.has_coverage?
+    assert check.exhausted_or_unavailable?
+  end
+
+  test "active_coverage scope includes coordinated" do
+    with_tenant(TENANT) do
+      referral = create_referral
+      coordinated = Corvid::AlternateResourceCheck.create!(
+        prc_referral: referral, resource_type: "medicare_a", status: "coordinated"
+      )
+
+      assert_includes Corvid::AlternateResourceCheck.active_coverage, coordinated
+    end
+  end
+
   # -- Resource name ---------------------------------------------------------
 
   test "resource_name returns human-readable names" do
