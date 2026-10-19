@@ -86,10 +86,12 @@ module Corvid
 
     # Seed checks for a new referral from a previous referral's results.
     # Copies status and checked_at — stale checks will need re-verification.
+    # Coordination of benefits is per service, so a previous coordinated
+    # determination is copied as enrolled and must be coordinated again.
     def self.seed_from_previous!(new_referral, previous_referral)
       previous_referral.alternate_resource_checks.each do |prev_check|
         new_referral.alternate_resource_checks.find_or_create_by!(resource_type: prev_check.resource_type) do |check|
-          check.status = prev_check.status
+          check.status = prev_check.coordinated? ? "enrolled" : prev_check.status
           check.checked_at = prev_check.checked_at
           check.policy_token = prev_check.policy_token
         end
@@ -126,11 +128,23 @@ module Corvid
       result = Corvid.adapter.verify_eligibility(patient_identifier, resource_type)
       return false unless result
 
+      next_status = status_for_eligibility(result)
+      return false if next_status.nil?
+
       update!(
-        status: result[:eligible] ? :enrolled : :not_enrolled,
+        status: next_status,
         policy_token: result[:policy_token],
         checked_at: Time.current
       )
+      true
+    end
+
+    # Record that coordination of benefits for this service is done.
+    # Only active enrollment can be coordinated.
+    def mark_coordinated!
+      raise ArgumentError, "coverage is not active" unless enrolled?
+
+      update!(status: :coordinated, checked_at: Time.current)
       true
     end
 
@@ -151,6 +165,16 @@ module Corvid
 
     def set_checked_at
       self.checked_at = Time.current if status_previously_was == "not_checked" || status_previously_was == "checking"
+    end
+
+    # true keeps a coordinated row coordinated while coverage is still
+    # active. nil means the adapter did not determine eligibility; verify!
+    # leaves the row unchanged rather than treating silence as not enrolled.
+    def status_for_eligibility(result)
+      case result[:eligible]
+      when true then coordinated? ? :coordinated : :enrolled
+      when false then :not_enrolled
+      end
     end
   end
 end

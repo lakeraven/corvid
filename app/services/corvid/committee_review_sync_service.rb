@@ -38,17 +38,17 @@ module Corvid
     # apply half is NOT routed through the injected `@adapter` — the
     # `sync_decision` half is. Per-tenant adapter routing for the
     # combined flow isn't safe yet; see ADR 0005 §"Known limitation".
+    #
+    # An approved or modified decision whose referral is not exhausted
+    # never reaches either half. Writing APPROVED to the EHR while the
+    # referral stays put would record care PRC has not agreed to buy.
     def sync_and_apply!(committee_review)
+      blocked = blocked_authorization_result(committee_review)
+      return blocked if blocked
+
       sync_result = sync_decision(committee_review)
       backend_synced = sync_result[:success]
-
-      referral_updated = false
-      begin
-        committee_review.apply_to_referral!
-        referral_updated = true
-      rescue => e
-        Rails.logger.warn("CommitteeReviewSyncService: apply_to_referral! failed: #{Corvid.sanitize_phi(e.message)}")
-      end
+      referral_updated = apply_referral!(committee_review)
 
       {
         success: backend_synced && referral_updated,
@@ -72,6 +72,33 @@ module Corvid
     end
 
     private
+
+    # Denied and deferred are not authorizations, so they still sync.
+    # Blockers are the referral's own type-and-status list (ADR 0003).
+    def blocked_authorization_result(committee_review)
+      return unless committee_review.approved_or_modified?
+      return if committee_review.prc_referral.alternate_resources_exhausted?
+
+      {
+        success: false,
+        backend_synced: false,
+        referral_updated: false,
+        blocked: true,
+        blockers: committee_review.prc_referral.authorization_blockers
+      }
+    end
+
+    # Approved/modified counts as updated only once the referral is
+    # authorized. A guard that returns false must not look like success.
+    def apply_referral!(committee_review)
+      committee_review.apply_to_referral!
+      return true unless committee_review.approved_or_modified?
+
+      committee_review.prc_referral.authorized?
+    rescue => e
+      Rails.logger.warn("CommitteeReviewSyncService: apply_to_referral! failed: #{Corvid.sanitize_phi(e.message)}")
+      false
+    end
 
     def missing_referral_identifier?(committee_review)
       committee_review.prc_referral&.referral_identifier.blank?

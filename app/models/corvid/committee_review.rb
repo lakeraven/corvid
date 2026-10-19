@@ -107,13 +107,23 @@ module Corvid
       return if pending?
 
       case decision
-      when "approved", "modified" then prc_referral.authorize!
+      when "approved", "modified" then authorize_exhausted_referral!
       when "denied"               then prc_referral.mark_denied!
       when "deferred"             then prc_referral.mark_deferred!
       end
     end
 
     private
+
+    # PRC pays last. Refuse the approval before authorize! so a blocked
+    # transition cannot be mistaken for success.
+    def authorize_exhausted_referral!
+      if prc_referral.alternate_resources_exhausted?
+        prc_referral.authorize!
+      else
+        raise AuthorizationBlockedError.new(prc_referral.authorization_blockers)
+      end
+    end
 
     def attendees_data
       return [] unless attendees_token.present?
