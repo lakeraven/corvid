@@ -242,12 +242,12 @@ module Corvid
       def normalize_codeable_concept(value)
         case value
         when String
-          value
+          value.presence
         when Hash
           v = value.transform_keys(&:to_sym)
-          v[:text] ||
-            v.dig(:coding, 0, :display) ||
-            v.dig(:coding, 0, :code)
+          v[:text].presence ||
+            v.dig(:coding, 0, :display).presence ||
+            v.dig(:coding, 0, :code).presence
         end
       end
 
