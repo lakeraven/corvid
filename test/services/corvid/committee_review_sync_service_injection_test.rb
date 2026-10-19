@@ -87,6 +87,7 @@ class Corvid::CommitteeReviewSyncServiceInjectionTest < ActiveSupport::TestCase
     # us to flip it into a stricter assertion ("apply half also routes
     # through @adapter"). Until then, this is the fact on the ground.
     review = build_approved_review
+    exhaust_alternate_resources!(review.prc_referral)
     global = Corvid::Adapters::MockAdapter.new
     spy_global = []
     global.define_singleton_method(:update_referral) do |id, params|

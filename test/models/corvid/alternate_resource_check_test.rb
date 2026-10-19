@@ -209,7 +209,7 @@ class Corvid::AlternateResourceCheckTest < ActiveSupport::TestCase
   # -- Status enum -----------------------------------------------------------
 
   test "status enum includes expected values" do
-    expected = %w[not_checked checking enrolled not_enrolled pending_enrollment denied exhausted]
+    expected = %w[not_checked checking enrolled not_enrolled pending_enrollment denied exhausted coordinated]
     assert_equal expected.sort, Corvid::AlternateResourceCheck.statuses.keys.sort
   end
 
