@@ -507,9 +507,9 @@ module Corvid
 
       def build_claim_line_references(claim)
         patient_id = claim.dig("patient", "reference")&.sub("Patient/", "")
-        provider_id = claim.dig("provider", "identifier", "value") ||
-                      claim.dig("provider", "reference")&.split("/")&.last ||
-                      claim.dig("provider", "display")
+        provider_id = claim.dig("provider", "identifier", "value").presence ||
+                      claim.dig("provider", "reference")&.split("/")&.last.presence ||
+                      claim.dig("provider", "display").presence
         claim_id = claim["id"]
 
         Array(claim["item"]).map do |item|
@@ -520,7 +520,7 @@ module Corvid
             patient_identifier: patient_id,
             provider_identifier: provider_id,
             procedure_code: coding["code"],
-            procedure_display: coding["display"].presence || item.dig("productOrService", "text"),
+            procedure_display: coding["display"].presence || item.dig("productOrService", "text").presence,
             serviced_date: parse_date(item["servicedDate"] || item.dig("servicedPeriod", "start")),
             billed_amount: amount,
             amount_error: amount_error,
@@ -562,7 +562,7 @@ module Corvid
           emergent: resource["priority"] == "stat",
           urgent: resource["priority"] == "urgent",
           chs_approval_status: nil,
-          service_requested: resource.dig("code", "text").presence || resource.dig("code", "coding", 0, "display"),
+          service_requested: resource.dig("code", "text").presence || resource.dig("code", "coding", 0, "display").presence,
           requesting_provider_identifier: resource.dig("requester", "reference")&.split("/")&.last
         )
       end
