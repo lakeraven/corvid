@@ -201,7 +201,7 @@ module Corvid
         checked_at: Time.current
       }
       @warnings << "Active coverage found - coordination of benefits required" if status_sym == :enrolled
-      @undetermined_resource_types.delete(resource_type)
+      @undetermined_resource_types.delete(resource_type) unless status_sym == :not_checked
       refresh_undetermined_warning
     end
 
@@ -223,8 +223,6 @@ module Corvid
     # number of resource types whose latest lookup was undetermined.
     def verify_all_enrollment!
       @enrollment_verification_run = true
-      # Clear before lookups so a raise cannot leave the previous count.
-      @warnings.delete_if { |warning| warning.start_with?(UNDETERMINED_ELIGIBILITY_WARNING_PREFIX) }
       @alternate_resources.each do |type, resource|
         next unless resource[:status] == :not_checked
 
@@ -237,7 +235,7 @@ module Corvid
           @undetermined_resource_types.add(type)
         end
       end
-
+    ensure
       refresh_undetermined_warning
     end
 

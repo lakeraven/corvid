@@ -206,7 +206,7 @@ class Corvid::AuthorizationWizardEligibilityTest < ActiveSupport::TestCase
     end
   end
 
-  test "an adapter error mid-run does not leave a stale undetermined warning" do
+  test "an adapter error mid-run keeps the warning for resources still undetermined" do
     types = Corvid::AlternateResourceCheck::RESOURCE_TYPES
     adapter = EligibilityControllingAdapter.new(default: nil)
     Corvid.configure { |c| c.adapter = adapter }
@@ -243,7 +243,24 @@ class Corvid::AuthorizationWizardEligibilityTest < ActiveSupport::TestCase
         end
       end
 
-      assert_empty eligibility_undetermined_warnings(wizard)
+      assert_undetermined_warning_count!(wizard, types.size - 5)
+    end
+  end
+
+  test "resetting an undetermined resource to not_checked keeps it in the warning count" do
+    types = Corvid::AlternateResourceCheck::RESOURCE_TYPES
+    Corvid.configure { |c| c.adapter = EligibilityControllingAdapter.new(default: nil) }
+
+    with_tenant(TENANT) do
+      wizard = build_wizard
+      wizard.verify_all_enrollment!
+
+      wizard.set_resource_status(types.first, "not_checked")
+      assert_undetermined_warning_count!(wizard, types.size)
+
+      types.each { |type| wizard.set_resource_status(type, "not_checked") }
+      assert_undetermined_warning_count!(wizard, types.size)
+      refute wizard.alternate_resources_exhausted?
     end
   end
 
