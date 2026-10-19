@@ -193,6 +193,8 @@ module Corvid
       PRIVATE_INSURANCE_FIELDS
     end
 
+    # Statuses match AlternateResourceCheck, including coordinated.
+    # Only bare enrollment still needs coordination of benefits.
     def set_resource_status(resource_type, status)
       status_sym = status.to_sym
       @alternate_resources[resource_type] = {
@@ -206,8 +208,9 @@ module Corvid
     end
 
     def alternate_resources_exhausted?
+      determined = Corvid::AlternateResourceCheck::UNAVAILABLE_STATUSES.map(&:to_sym)
       @alternate_resources.all? do |_, resource|
-        %i[not_enrolled denied exhausted].include?(resource[:status])
+        determined.include?(resource[:status])
       end
     end
 
