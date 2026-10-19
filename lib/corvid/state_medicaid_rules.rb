@@ -26,7 +26,10 @@ module Corvid
   # work requirement.
   module StateMedicaidRules
     GROUPS = %w[expansion_adult waiver_adult other].freeze
-    STATE_CODE = /\A[A-Z]{2}\z/
+    GROUP_FIELDS = %w[renewal_months retro_coverage_months work_requirement].freeze
+    PROGRAM_FIELDS = %w[code description_pattern].freeze
+    # Two ASCII letters, checked before ASCII-upcasing. Stored codes are uppercase.
+    STATE_CODE = /\A[A-Za-z]{2}\z/
 
     Group = Struct.new(
       :renewal_months,
@@ -83,7 +86,7 @@ module Corvid
         code = canonical_state_code(state_code)
         return entries[code] || not_configured(code) if code
 
-        not_configured(state_code)
+        not_configured(presented_state_code(state_code))
       end
 
       def state_codes
@@ -114,28 +117,23 @@ module Corvid
       end
 
       # Accept symbol- or string-keyed hashes (initializers, YAML, JSON).
-      # Invalid input raises ArgumentError at registration so a host finds
-      # out at boot rather than when a member's coverage is evaluated.
+      # Unknown keys, duplicate keys, and non-String/Symbol keys raise
+      # ArgumentError at registration so a host finds out at boot rather
+      # than when a member's coverage is evaluated.
       def build_groups(groups)
         unless groups.is_a?(Hash) && !groups.empty?
           raise ArgumentError, "groups must be a non-empty Hash, got #{groups.inspect}"
         end
 
+        seen = {}
         groups.each_with_object({}) do |(name, attrs), built|
-          key = normalize_group_name(name)
+          key = normalize_key(name, GROUPS, seen, "eligibility group")
           built[key] = build_group(key, attrs)
         end.freeze
       end
 
-      def normalize_group_name(name)
-        key = name.to_s
-        return key.dup.freeze if GROUPS.include?(key)
-
-        raise ArgumentError, "unknown eligibility group #{name.inspect}"
-      end
-
       def build_group(name, attrs)
-        fields = symbolize_hash(attrs, "group #{name}")
+        fields = normalize_fields(attrs, "group #{name}", GROUP_FIELDS)
         Group.new(
           renewal_months: month_count(fields, name, :renewal_months),
           retro_coverage_months: month_count(fields, name, :retro_coverage_months),
@@ -156,19 +154,42 @@ module Corvid
       end
 
       def build_program(program)
-        fields = symbolize_hash(program, "work requirement program")
+        fields = normalize_fields(program, "work requirement program", PROGRAM_FIELDS)
         WorkRequirementProgram.new(
           code: program_code(fields[:code]),
           description_pattern: description_pattern(fields[:description_pattern])
         ).freeze
       end
 
-      def symbolize_hash(value, label)
+      def normalize_fields(value, label, allowed)
         unless value.is_a?(Hash)
           raise ArgumentError, "#{label} must be a Hash, got #{value.class}"
         end
 
-        value.transform_keys(&:to_sym)
+        seen = {}
+        value.each_with_object({}) do |(key, field_value), fields|
+          name = normalize_key(key, allowed, seen, label)
+          fields[name.to_sym] = field_value
+        end
+      end
+
+      # Group names, group fields, and program fields share one normalised
+      # form so a Symbol and its String cannot collapse last-wins.
+      def normalize_key(key, allowed, seen, label)
+        unless key.is_a?(String) || key.is_a?(Symbol)
+          raise ArgumentError, "#{label} key must be a String or Symbol, got #{key.inspect}"
+        end
+
+        name = key.to_s.dup
+        unless allowed.include?(name)
+          raise ArgumentError, "unknown #{label} #{key.inspect}"
+        end
+        if seen.include?(name)
+          raise ArgumentError, "duplicate #{label} #{key.inspect}"
+        end
+
+        seen[name.freeze] = true
+        name
       end
 
       def normalize_state_code(state_code)
@@ -178,11 +199,22 @@ module Corvid
         raise ArgumentError, "state_code must be two letters, got #{state_code.inspect}"
       end
 
+      # Full Unicode upcase maps "ß" to "SS" and "ﬀ" to "FF". Validate the
+      # raw string first, then ASCII-upcase, so those cannot alias a state.
       def canonical_state_code(state_code)
         return unless state_code.is_a?(String) || state_code.is_a?(Symbol)
 
-        code = state_code.to_s.upcase
-        code.dup.freeze if STATE_CODE.match?(code)
+        raw = state_code.to_s
+        return unless STATE_CODE.match?(raw)
+
+        raw.upcase(:ascii).dup.freeze
+      end
+
+      # A malformed string is copied later; a symbol follows that string.
+      # Anything else is not a state code.
+      def presented_state_code(state_code)
+        return state_code if state_code.is_a?(String)
+        state_code.to_s if state_code.is_a?(Symbol)
       end
 
       def freeze_copy(value)
