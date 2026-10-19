@@ -126,7 +126,8 @@ module Corvid
       return false unless patient_identifier
 
       result = Corvid.adapter.verify_eligibility(patient_identifier, resource_type)
-      return false unless result
+      # An unreadable answer is not a determination (42 CFR 136.61).
+      return false unless result.is_a?(Hash) && (result[:eligible] == true || result[:eligible] == false)
 
       next_status = status_for_eligibility(result)
       return false if next_status.nil?

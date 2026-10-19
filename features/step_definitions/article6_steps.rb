@@ -2,9 +2,80 @@
 
 # Article 6 reimbursement step definitions (ported from the predecessor app)
 
+module Article6SeedHelpers
+  module_function
+
+  def quarter_key(date)
+    "#{date.year}-Q#{((date.month - 1) / 3) + 1}"
+  end
+
+  # ADR 0004: integer cents; state 60% / county 40% of paid, exact sum.
+  def state_county_cents_for_paid(paid_cents)
+    state_cents = paid_cents * 3 / 5
+    county_cents = paid_cents - state_cents
+    [ state_cents, county_cents ]
+  end
+
+  def record_in_window_paid_claim!(expected, billed_cents:, paid_cents:, provider:, currency_iso: "USD")
+    state_cents, county_cents = state_county_cents_for_paid(paid_cents)
+    expected[:total_claims] += 1
+    expected[:total_billed_cents_by_currency][currency_iso] ||= 0
+    expected[:total_billed_cents_by_currency][currency_iso] += billed_cents
+    expected[:total_paid_cents_by_currency][currency_iso] ||= 0
+    expected[:total_paid_cents_by_currency][currency_iso] += paid_cents
+    expected[:total_state_share_cents_by_currency][currency_iso] ||= 0
+    expected[:total_state_share_cents_by_currency][currency_iso] += state_cents
+    expected[:total_county_share_cents_by_currency][currency_iso] ||= 0
+    expected[:total_county_share_cents_by_currency][currency_iso] += county_cents
+    pair = [ provider, currency_iso ]
+    bucket = expected[:by_provider][pair] ||= {
+      billed_cents: 0, paid_cents: 0, state_cents: 0, county_cents: 0, currency_iso: currency_iso
+    }
+    bucket[:billed_cents] += billed_cents
+    bucket[:paid_cents] += paid_cents
+    bucket[:state_cents] += state_cents
+    bucket[:county_cents] += county_cents
+  end
+
+  def seed_other_tenant_paid_claim!(service_date:, billed_cents:, paid_cents:, provider:)
+    state_cents, county_cents = state_county_cents_for_paid(paid_cents)
+    Corvid::TenantContext.with_tenant("tnt_other_art6") do
+      Corvid::ClaimSubmission.create!(
+        tenant_identifier: "tnt_other_art6",
+        facility_identifier: "fac_other_art6",
+        patient_identifier: "pt_art6_other_tenant",
+        claim_identifier: "CLM_ART6_OTHER_TENANT",
+        claim_type: "professional",
+        status: "paid",
+        billed_amount_cents: billed_cents,
+        paid_amount_cents: paid_cents,
+        service_date: service_date,
+        paid_date: service_date,
+        provider_identifier: provider,
+        state_share_cents: state_cents,
+        county_share_cents: county_cents,
+        submitted_at: 40.days.ago
+      )
+    end
+  end
+end
+
 Given("there are paid claim submissions in the system") do
+  @article6_expected = {
+    total_claims: 0,
+    total_billed_cents_by_currency: {},
+    total_paid_cents_by_currency: {},
+    total_state_share_cents_by_currency: {},
+    total_county_share_cents_by_currency: {},
+    by_provider: {}
+  }
+
   3.times do |i|
     service_date = [ Date.current - (i + 5).days, Date.current.beginning_of_quarter ].max
+    billed_cents = 50_037 + (i * 10_000)
+    paid_cents = 40_029 + (i * 8_000)
+    state_cents, county_cents = Article6SeedHelpers.state_county_cents_for_paid(paid_cents)
+    provider = "pr_art6_#{i % 2}"
     Corvid::ClaimSubmission.create!(
       tenant_identifier: @tenant,
       facility_identifier: @facility,
@@ -12,8 +83,8 @@ Given("there are paid claim submissions in the system") do
       claim_identifier: "CLM_ART6_#{i}",
       claim_type: "professional",
       status: "paid",
-      billed_amount: 500.00 + (i * 100),
-      paid_amount: 400.00 + (i * 80),
+      billed_amount_cents: billed_cents,
+      paid_amount_cents: paid_cents,
       # Both dates are clamped into the current quarter, and paid_date is never
       # before service_date.
       #
@@ -26,12 +97,43 @@ Given("there are paid claim submissions in the system") do
       # itself under test.
       service_date: service_date,
       paid_date: [ Date.current - i.days, service_date ].max,
-      provider_identifier: "pr_art6_#{i % 2}",
-      state_share: (400.00 + (i * 80)) * 0.5,
-      county_share: (400.00 + (i * 80)) * 0.5,
+      provider_identifier: provider,
+      state_share_cents: state_cents,
+      county_share_cents: county_cents,
       submitted_at: (i + 10).days.ago
     )
+    Article6SeedHelpers.record_in_window_paid_claim!(
+      @article6_expected, billed_cents: billed_cents, paid_cents: paid_cents, provider: provider
+    )
   end
+
+  # Second in-window USD claim for pr_art6_1 (the loop only seeds one for that provider).
+  art6_1_extra_service = Date.current.beginning_of_quarter + 10.days
+  art6_1_extra_billed = 3_333
+  art6_1_extra_paid = 2_777
+  art6_1_extra_state, art6_1_extra_county = Article6SeedHelpers.state_county_cents_for_paid(art6_1_extra_paid)
+  Corvid::ClaimSubmission.create!(
+    tenant_identifier: @tenant,
+    facility_identifier: @facility,
+    patient_identifier: "pt_art6_1_b",
+    claim_identifier: "CLM_ART6_1_B",
+    claim_type: "professional",
+    status: "paid",
+    billed_amount_cents: art6_1_extra_billed,
+    paid_amount_cents: art6_1_extra_paid,
+    service_date: art6_1_extra_service,
+    paid_date: art6_1_extra_service,
+    provider_identifier: "pr_art6_1",
+    state_share_cents: art6_1_extra_state,
+    county_share_cents: art6_1_extra_county,
+    submitted_at: 40.days.ago
+  )
+  Article6SeedHelpers.record_in_window_paid_claim!(
+    @article6_expected,
+    billed_cents: art6_1_extra_billed,
+    paid_cents: art6_1_extra_paid,
+    provider: "pr_art6_1"
+  )
 
   # Two BOUNDARY claims exactly on the window edges, both in-window and both
   # counted in the expected sum. They are what kill an off-by-one on either
@@ -44,12 +146,14 @@ Given("there are paid claim submissions in the system") do
   # seeded row paid, dropping `.paid` from the report changes nothing.
   [
     { suffix: "start", service_date: Date.current.beginning_of_quarter, status: "paid",
-      billed: 111.00, paid: 101.00 },
+      billed_cents: 11_137, paid_cents: 10_101 },
     { suffix: "end", service_date: Date.current.end_of_quarter, status: "paid",
-      billed: 222.00, paid: 202.00 },
+      billed_cents: 22_200, paid_cents: 20_200 },
     { suffix: "unpaid", service_date: Date.current.beginning_of_quarter + 1.day,
-      status: "submitted", billed: 555.00, paid: 0.00 }
+      status: "submitted", billed_cents: 55_500, paid_cents: 0 }
   ].each do |edge|
+    provider = "pr_art6_edge_#{edge[:suffix]}"
+    state_cents, county_cents = Article6SeedHelpers.state_county_cents_for_paid(edge[:paid_cents])
     Corvid::ClaimSubmission.create!(
       tenant_identifier: @tenant,
       facility_identifier: @facility,
@@ -57,13 +161,82 @@ Given("there are paid claim submissions in the system") do
       claim_identifier: "CLM_ART6_EDGE_#{edge[:suffix].upcase}",
       claim_type: "professional",
       status: edge[:status],
-      billed_amount: edge[:billed],
-      paid_amount: edge[:paid],
+      billed_amount_cents: edge[:billed_cents],
+      paid_amount_cents: edge[:paid_cents],
       paid_date: edge[:status] == "paid" ? edge[:service_date] : nil,
       service_date: edge[:service_date],
-      provider_identifier: "pr_art6_edge_#{edge[:suffix]}",
-      state_share: edge[:paid] / 2,
-      county_share: edge[:paid] / 2,
+      provider_identifier: provider,
+      state_share_cents: state_cents,
+      county_share_cents: county_cents,
+      submitted_at: 40.days.ago
+    )
+    if edge[:status] == "paid"
+      Article6SeedHelpers.record_in_window_paid_claim!(
+        @article6_expected,
+        billed_cents: edge[:billed_cents],
+        paid_cents: edge[:paid_cents],
+        provider: provider
+      )
+    end
+  end
+
+  # Second in-window paid claim per edge provider so CSV/summary by_provider rows require SUM.
+  [
+    { suffix: "start", service_date: Date.current.beginning_of_quarter + 2.days,
+      billed_cents: 1_117, paid_cents: 1_001 },
+    { suffix: "end", service_date: Date.current.end_of_quarter - 2.days,
+      billed_cents: 2_117, paid_cents: 2_001 }
+  ].each do |edge|
+    provider = "pr_art6_edge_#{edge[:suffix]}"
+    state_cents, county_cents = Article6SeedHelpers.state_county_cents_for_paid(edge[:paid_cents])
+    Corvid::ClaimSubmission.create!(
+      tenant_identifier: @tenant,
+      facility_identifier: @facility,
+      patient_identifier: "pt_art6_edge_#{edge[:suffix]}_b",
+      claim_identifier: "CLM_ART6_EDGE_#{edge[:suffix].upcase}_B",
+      claim_type: "professional",
+      status: "paid",
+      billed_amount_cents: edge[:billed_cents],
+      paid_amount_cents: edge[:paid_cents],
+      paid_date: edge[:service_date],
+      service_date: edge[:service_date],
+      provider_identifier: provider,
+      state_share_cents: state_cents,
+      county_share_cents: county_cents,
+      submitted_at: 40.days.ago
+    )
+    Article6SeedHelpers.record_in_window_paid_claim!(
+      @article6_expected,
+      billed_cents: edge[:billed_cents],
+      paid_cents: edge[:paid_cents],
+      provider: provider
+    )
+  end
+
+  # Status is NOT "paid" but paid_date and paid_amount are set in-quarter.
+  # Excluded from @article6_expected: `.where.not(paid_date: nil)` or
+  # `paid_amount_cents > 0` instead of `.paid` would include these rows and
+  # break the summary/CSV totals. One row per non-paid status kills a widened
+  # `scope :paid` that treats appealed (etc.) as paid.
+  (Corvid::ClaimSubmission::STATUSES - [ "paid" ]).each_with_index do |status, idx|
+    pseudo_paid_service = Date.current.beginning_of_quarter + (3 + idx).days
+    paid_cents = 33_300 + (idx * 11)
+    billed_cents = 44_400 + (idx * 13)
+    state_cents, county_cents = Article6SeedHelpers.state_county_cents_for_paid(paid_cents)
+    Corvid::ClaimSubmission.create!(
+      tenant_identifier: @tenant,
+      facility_identifier: @facility,
+      patient_identifier: "pt_art6_np_#{status}",
+      claim_identifier: "CLM_ART6_NP_#{status.upcase}",
+      claim_type: "professional",
+      status: status,
+      billed_amount_cents: billed_cents,
+      paid_amount_cents: paid_cents,
+      service_date: pseudo_paid_service,
+      paid_date: pseudo_paid_service + 1.day,
+      provider_identifier: "pr_art6_np_#{status}",
+      state_share_cents: state_cents,
+      county_share_cents: county_cents,
       submitted_at: 40.days.ago
     )
   end
@@ -78,10 +251,11 @@ Given("there are paid claim submissions in the system") do
   # dates in the past cannot catch. The late decoy catches a missing upper bound.
   [
     { suffix: "early", service_date: Date.current.beginning_of_quarter - 10.days,
-      paid_date: Date.current, billed: 999.00, paid: 777.00 },
+      paid_date: Date.current, billed_cents: 99_900, paid_cents: 77_700 },
     { suffix: "late", service_date: Date.current.end_of_quarter + 10.days,
-      paid_date: Date.current.end_of_quarter + 10.days, billed: 888.00, paid: 666.00 }
+      paid_date: Date.current.end_of_quarter + 10.days, billed_cents: 88_800, paid_cents: 66_600 }
   ].each do |decoy|
+    state_cents, county_cents = Article6SeedHelpers.state_county_cents_for_paid(decoy[:paid_cents])
     Corvid::ClaimSubmission.create!(
       tenant_identifier: @tenant,
       facility_identifier: @facility,
@@ -89,70 +263,156 @@ Given("there are paid claim submissions in the system") do
       claim_identifier: "CLM_ART6_DECOY_#{decoy[:suffix].upcase}",
       claim_type: "professional",
       status: "paid",
-      billed_amount: decoy[:billed],
-      paid_amount: decoy[:paid],
+      billed_amount_cents: decoy[:billed_cents],
+      paid_amount_cents: decoy[:paid_cents],
       paid_date: decoy[:paid_date],
       service_date: decoy[:service_date],
       provider_identifier: "pr_art6_decoy_#{decoy[:suffix]}",
-      state_share: decoy[:paid] / 2,
-      county_share: decoy[:paid] / 2,
+      state_share_cents: state_cents,
+      county_share_cents: county_cents,
       submitted_at: 40.days.ago
     )
   end
+
+  # In-quarter paid claim for another tenant: kills reports that drop tenant scoping.
+  other_service = Date.current.beginning_of_quarter + 4.days
+  Article6SeedHelpers.seed_other_tenant_paid_claim!(
+    service_date: other_service,
+    billed_cents: 43_200,
+    paid_cents: 32_100,
+    provider: "pr_art6_other_tenant"
+  )
+
+  # In-window paid claim in a non-USD currency (ADR 0004: never sum across currencies).
+  jod_service = Date.current.beginning_of_quarter + 7.days
+  jod_billed_cents = 12_345
+  jod_paid_cents = 9_876
+  jod_state_cents, jod_county_cents = Article6SeedHelpers.state_county_cents_for_paid(jod_paid_cents)
+  Corvid::ClaimSubmission.create!(
+    tenant_identifier: @tenant,
+    facility_identifier: @facility,
+    patient_identifier: "pt_art6_jod",
+    claim_identifier: "CLM_ART6_JOD",
+    claim_type: "professional",
+    status: "paid",
+    currency_iso: "JOD",
+    billed_amount_cents: jod_billed_cents,
+    paid_amount_cents: jod_paid_cents,
+    service_date: jod_service,
+    paid_date: jod_service,
+    provider_identifier: "pr_art6_jod",
+    state_share_cents: jod_state_cents,
+    county_share_cents: jod_county_cents,
+    submitted_at: 40.days.ago
+  )
+  Article6SeedHelpers.record_in_window_paid_claim!(
+    @article6_expected,
+    billed_cents: jod_billed_cents,
+    paid_cents: jod_paid_cents,
+    provider: "pr_art6_jod",
+    currency_iso: "JOD"
+  )
+
+  jod2_service = Date.current.beginning_of_quarter + 13.days
+  jod2_billed_cents = 4_321
+  jod2_paid_cents = 3_210
+  jod2_state_cents, jod2_county_cents = Article6SeedHelpers.state_county_cents_for_paid(jod2_paid_cents)
+  Corvid::ClaimSubmission.create!(
+    tenant_identifier: @tenant,
+    facility_identifier: @facility,
+    patient_identifier: "pt_art6_jod_b",
+    claim_identifier: "CLM_ART6_JOD_B",
+    claim_type: "professional",
+    status: "paid",
+    currency_iso: "JOD",
+    billed_amount_cents: jod2_billed_cents,
+    paid_amount_cents: jod2_paid_cents,
+    service_date: jod2_service,
+    paid_date: jod2_service,
+    provider_identifier: "pr_art6_jod",
+    state_share_cents: jod2_state_cents,
+    county_share_cents: jod2_county_cents,
+    submitted_at: 40.days.ago
+  )
+  Article6SeedHelpers.record_in_window_paid_claim!(
+    @article6_expected,
+    billed_cents: jod2_billed_cents,
+    paid_cents: jod2_paid_cents,
+    provider: "pr_art6_jod",
+    currency_iso: "JOD"
+  )
+
+  # Same provider as an existing USD row, second currency — CSV must emit two rows.
+  dual_billed_cents = 6_543
+  dual_paid_cents = 5_432
+  dual_state_cents, dual_county_cents = Article6SeedHelpers.state_county_cents_for_paid(dual_paid_cents)
+  dual_service = Date.current.beginning_of_quarter + 8.days
+  Corvid::ClaimSubmission.create!(
+    tenant_identifier: @tenant,
+    facility_identifier: @facility,
+    patient_identifier: "pt_art6_0_jod",
+    claim_identifier: "CLM_ART6_0_JOD",
+    claim_type: "professional",
+    status: "paid",
+    currency_iso: "JOD",
+    billed_amount_cents: dual_billed_cents,
+    paid_amount_cents: dual_paid_cents,
+    service_date: dual_service,
+    paid_date: dual_service,
+    provider_identifier: "pr_art6_0",
+    state_share_cents: dual_state_cents,
+    county_share_cents: dual_county_cents,
+    submitted_at: 40.days.ago
+  )
+  Article6SeedHelpers.record_in_window_paid_claim!(
+    @article6_expected,
+    billed_cents: dual_billed_cents,
+    paid_cents: dual_paid_cents,
+    provider: "pr_art6_0",
+    currency_iso: "JOD"
+  )
+
+  dual2_service = Date.current.beginning_of_quarter + 15.days
+  dual2_billed_cents = 1_987
+  dual2_paid_cents = 1_654
+  dual2_state_cents, dual2_county_cents = Article6SeedHelpers.state_county_cents_for_paid(dual2_paid_cents)
+  Corvid::ClaimSubmission.create!(
+    tenant_identifier: @tenant,
+    facility_identifier: @facility,
+    patient_identifier: "pt_art6_0_jod_b",
+    claim_identifier: "CLM_ART6_0_JOD_B",
+    claim_type: "professional",
+    status: "paid",
+    currency_iso: "JOD",
+    billed_amount_cents: dual2_billed_cents,
+    paid_amount_cents: dual2_paid_cents,
+    service_date: dual2_service,
+    paid_date: dual2_service,
+    provider_identifier: "pr_art6_0",
+    state_share_cents: dual2_state_cents,
+    county_share_cents: dual2_county_cents,
+    submitted_at: 40.days.ago
+  )
+  Article6SeedHelpers.record_in_window_paid_claim!(
+    @article6_expected,
+    billed_cents: dual2_billed_cents,
+    paid_cents: dual2_paid_cents,
+    provider: "pr_art6_0",
+    currency_iso: "JOD"
+  )
 end
 
 When("I generate an Article 6 summary report for the current quarter") do
   quarter_start = Date.current.beginning_of_quarter
   quarter_end = Date.current.end_of_quarter
   claims = Corvid::ClaimSubmission.paid.in_date_range(quarter_start..quarter_end)
-  # Article 6 is US-domestic state/county Medicaid reimbursement so
-  # cents → dollars is unambiguous here. For multi-currency tenants the
-  # production report path (e.g., PrcOverpaymentReportService) uses
-  # money-rails' per-currency bucketing instead.
-  to_dollars = ->(cents) { (cents || 0) / 100.0 }
   @report = {
     period: "#{quarter_start} to #{quarter_end}",
     total_claims: claims.count,
-    total_billed: to_dollars[claims.sum(:billed_amount_cents)],
-    total_paid: to_dollars[claims.sum(:paid_amount_cents)],
-    total_state_share: to_dollars[claims.sum(:state_share_cents)],
-    total_county_share: to_dollars[claims.sum(:county_share_cents)],
-    by_provider: claims.group(:provider_identifier)
-                       .sum(:paid_amount_cents)
-                       .transform_values(&to_dollars)
+    total_billed_cents_by_currency: claims.group(:currency_iso).sum(:billed_amount_cents),
+    total_paid_cents_by_currency: claims.group(:currency_iso).sum(:paid_amount_cents),
+    total_state_share_cents_by_currency: claims.group(:currency_iso).sum(:state_share_cents),
+    total_county_share_cents_by_currency: claims.group(:currency_iso).sum(:county_share_cents),
+    by_provider_paid_cents: claims.group(:provider_identifier, :currency_iso).sum(:paid_amount_cents)
   }
-end
-
-When("I export the report as CSV") do
-  @csv_lines = []
-  @csv_lines << "Provider,Paid Amount,State Share,County Share"
-  claims = Corvid::ClaimSubmission.paid
-  claims.group(:provider_identifier).each do |provider, _|
-    provider_claims = claims.where(provider_identifier: provider)
-    paid = provider_claims.sum(:paid_amount_cents) / 100.0
-    state = provider_claims.sum(:state_share_cents) / 100.0
-    county = provider_claims.sum(:county_share_cents) / 100.0
-    @csv_lines << "#{provider},#{paid},#{state},#{county}"
-  end
-end
-
-Then("I should see the total reimbursement amount") do
-  assert @report[:total_paid] > 0
-end
-
-Then("I should see claims grouped by provider") do
-  assert @report[:by_provider].keys.length > 0
-end
-
-Then("I should see claims grouped by quarter") do
-  refute_nil @report[:period]
-end
-
-Then("I should see the state and county share breakdown") do
-  assert @report[:total_state_share] > 0 || @report[:total_county_share] > 0
-end
-
-Then("the CSV should contain the report data") do
-  assert @csv_lines.length > 1
-  assert @csv_lines.first.include?("Provider")
 end

@@ -240,6 +240,14 @@ Feature: Alternate resource tracking (payer of last resort)
     Then the check status should be "not_checked"
     And the check should still count as pending
 
+  Scenario: An unreadable payer response is not recorded as not enrolled
+    Given all 12 alternate resource checks are created for the referral
+    And every eligibility lookup returns an error payload
+    When I verify all enrollment statuses through the alternate resource service
+    Then 0 checks should have status "not_enrolled"
+    And 12 checks should have status "not_checked"
+    And the referral should not be ready for authorization
+
   Scenario: Patient loses coverage between check and authorization
     Given an alternate resource check for "medicaid" exists with status "enrolled"
     And the check was verified 25 days ago
