@@ -2,70 +2,151 @@
 
 require "json"
 require "openssl"
+require "time"
 
 module Corvid
   # HMAC-SHA256 fingerprint of an eligibility verification snapshot (ADR 0008).
   #
   # The key comes from Corvid.configuration, which hosts load from a secret
-  # store. A plain SHA256 is never produced. When the current version is
-  # blank, or the key is missing, not a String, or shorter than MIN_KEY_BYTES,
-  # compute returns [nil, nil] so callers persist no fingerprint.
+  # store. A plain SHA256 is never produced. The HMAC input is canonical JSON.
+  # A usable version is a String or Symbol, non-blank after strip, at most
+  # MAX_VERSION_LENGTH characters. When no usable key is configured, or the
+  # digest cannot be computed, compute returns [nil, nil] so callers persist
+  # no fingerprint.
   module SnapshotFingerprint
     MIN_KEY_BYTES = 32
+    MAX_VERSION_LENGTH = 64
 
     class << self
       # Returns [hex_digest, key_version], or [nil, nil] when no usable key
-      # is configured.
+      # is configured or the digest cannot be computed. key_version is the
+      # configured version as a String.
       def compute(payload)
-        version = configured_version
+        version = normalized_version(Corvid.configuration.verification_snapshot_key_version)
         key = usable_key(version)
         return [ nil, nil ] if key.nil?
 
-        [ OpenSSL::HMAC.hexdigest("SHA256", key, JSON.generate(payload)), version ]
-      rescue StandardError
-        [ nil, nil ]
+        begin
+          [ hex_digest(key, payload), version ]
+        rescue StandardError => error
+          log_fingerprint_failure(error)
+          [ nil, nil ]
+        end
       end
 
       # True or false when the row's key version can be checked. nil when
-      # the version is blank or that key is missing or invalid (legacy and
-      # unknown versions are unverifiable, not mismatches).
+      # the version is blank, that key is missing or invalid, or the digest
+      # cannot be computed (legacy and unknown versions are unverifiable,
+      # not mismatches).
       def matches?(hash:, version:, payload:)
         key = usable_key(version)
         return nil if key.nil?
         return false unless hash.is_a?(String)
 
-        expected = OpenSSL::HMAC.hexdigest("SHA256", key, JSON.generate(payload))
-        secure_equal?(hash, expected)
+        secure_equal?(hash, hex_digest(key, payload))
       rescue StandardError
-        false
+        nil
       end
 
       private
 
-      def configured_version
-        version = Corvid.configuration.verification_snapshot_key_version
-        return if blank_version?(version)
-
-        version
-      end
-
       def usable_key(version)
-        return if blank_version?(version)
+        name = normalized_version(version)
+        return if name.nil?
 
-        keys = Corvid.configuration.verification_snapshot_keys
-        return unless keys.respond_to?(:[])
-
-        key = keys[version]
+        key = key_named(name)
         key if key.is_a?(String) && key.bytesize >= MIN_KEY_BYTES
       rescue StandardError
         nil
       end
 
-      def blank_version?(version)
-        return true if version.nil? || version == false
-        return true if version.is_a?(String) && version.strip.empty?
+      def normalized_version(version)
+        return unless version.is_a?(String) || version.is_a?(Symbol)
 
-        false
+        name = version.to_s
+        return if name.strip.empty? || name.length > MAX_VERSION_LENGTH
+
+        name
+      end
+
+      # Pair walk: Hash#[] would follow a default value or default proc.
+      def key_named(name)
+        keys = Corvid.configuration.verification_snapshot_keys
+        return unless keys.respond_to?(:each_pair)
+
+        keys.each_pair do |candidate, material|
+          return material if candidate.to_s == name
+        end
+
+        nil
+      end
+
+      def hex_digest(key, payload)
+        OpenSSL::HMAC.hexdigest("SHA256", key, canonical_json(payload))
+      end
+
+      def canonical_json(payload)
+        JSON.generate(canonicalize(payload))
+      end
+
+      def canonicalize(value)
+        case value
+        when Hash
+          canonical_hash(value)
+        when Array
+          value.map { |entry| canonicalize(entry) }
+        else
+          canonical_leaf(value)
+        end
+      end
+
+      def canonical_hash(hash)
+        string_keyed = {}
+        hash.each_pair do |key, nested|
+          string_keyed[key.to_s] = canonicalize(nested)
+        end
+        string_keyed.sort.to_h
+      end
+
+      def canonical_leaf(value)
+        return canonical_time(value) if time_like?(value)
+        return value.iso8601 if date_like?(value)
+
+        value
+      end
+
+      def canonical_time(value)
+        time = value.respond_to?(:to_time) ? value.to_time : value
+        time.dup.utc.iso8601(6)
+      end
+
+      def time_like?(value)
+        value.is_a?(Time) || date_time?(value) || time_with_zone?(value)
+      end
+
+      def date_time?(value)
+        defined?(DateTime) && value.is_a?(DateTime)
+      end
+
+      def time_with_zone?(value)
+        defined?(ActiveSupport::TimeWithZone) && value.is_a?(ActiveSupport::TimeWithZone)
+      end
+
+      def date_like?(value)
+        defined?(Date) && value.is_a?(Date) && !time_like?(value)
+      end
+
+      def log_fingerprint_failure(error)
+        return unless defined?(Rails)
+        return unless Rails.respond_to?(:logger)
+
+        Rails.logger&.warn(fingerprint_failure_message(error))
+      rescue StandardError
+        nil
+      end
+
+      def fingerprint_failure_message(error)
+        "corvid.snapshot_fingerprint: could not compute verification snapshot fingerprint (#{error.class})"
       end
 
       def secure_equal?(left, right)

@@ -153,7 +153,7 @@ class Corvid::SnapshotFingerprintTest < ActiveSupport::TestCase
 
   test "compute finds symbol-keyed snapshot key when configured version is String" do
     Corvid.configure do |c|
-      c.verification_snapshot_keys = { :"v1-test" => KEY_V1 }
+      c.verification_snapshot_keys = { "v1-test": KEY_V1 }
       c.verification_snapshot_key_version = "v1-test"
     end
 
@@ -188,13 +188,13 @@ class Corvid::SnapshotFingerprintTest < ActiveSupport::TestCase
     payload = { enrollment: { enrolled: false }, identity: {}, residency: {} }
 
     Corvid.configure do |c|
-      c.verification_snapshot_keys = { :"v1-test" => KEY_V1 }
+      c.verification_snapshot_keys = { "v1-test": KEY_V1 }
       c.verification_snapshot_key_version = "v1-test"
     end
     digest, = Corvid::SnapshotFingerprint.compute(payload)
 
     Corvid.configure do |c|
-      c.verification_snapshot_keys = { :"v1-test" => KEY_V1 }
+      c.verification_snapshot_keys = { "v1-test": KEY_V1 }
     end
 
     assert Corvid::SnapshotFingerprint.matches?(hash: digest, version: "v1-test", payload: payload)

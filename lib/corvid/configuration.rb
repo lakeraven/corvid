@@ -21,7 +21,8 @@ module Corvid
   # forgetting to configure it does not increase PHI exposure.
   #
   # #inspect lists verification snapshot key versions and does not reveal
-  # key material.
+  # key material. #as_json, #to_json, and #to_yaml emit those same redacted
+  # fields and omit key bytes.
   class Configuration
     attr_accessor :adapter, :edi_adapter, :phi_sanitizer, :on_provenance, :fetch_provenance
     attr_accessor :verification_snapshot_keys, :verification_snapshot_key_version
@@ -43,7 +44,28 @@ module Corvid
         "verification_snapshot_key_version=#{verification_snapshot_key_version.inspect}>"
     end
 
+    def as_json(*)
+      redacted_serialization
+    end
+
+    def to_json(*)
+      as_json(*).to_json(*)
+    end
+
+    def encode_with(coder)
+      redacted_serialization.each do |field, value|
+        coder[field] = value
+      end
+    end
+
     private
+
+    def redacted_serialization
+      {
+        "verification_snapshot_key_versions" => snapshot_key_versions,
+        "verification_snapshot_key_version" => verification_snapshot_key_version
+      }
+    end
 
     def snapshot_key_versions
       keys = verification_snapshot_keys

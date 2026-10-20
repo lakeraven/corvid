@@ -51,9 +51,16 @@ module Corvid
             decided_by_identifier: d.decided_by_identifier,
             as_of_date: d.as_of_date.iso8601,
             provider_source: d.provider_source,
-            verification_snapshot_hash: d.verification_snapshot_hash,
+            verification_snapshot_hash: verification_snapshot_hash_for(d),
             verification_snapshot_key_version: d.verification_snapshot_key_version
           )
+        end
+
+        # Legacy rows have no key version, so the unkeyed digest is not served.
+        def verification_snapshot_hash_for(decision)
+          return if decision.verification_snapshot_key_version.blank?
+
+          decision.verification_snapshot_hash
         end
       end
     end
