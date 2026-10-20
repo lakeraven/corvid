@@ -1012,10 +1012,8 @@ class Corvid::Adapters::FhirAdapterTest < Minitest::Test
   end
 
   def test_get_medications_returns_nil_when_medication_codeable_concept_empty_without_reference
-    request = build_medication_request_resource(
-      medicationCodeableConcept: {},
-      medicationReference: nil
-    )
+    request = build_medication_request_resource(medicationReference: nil)
+    request["medicationCodeableConcept"] = {}
     request.delete("medicationReference")
     assert_nil get_medications_with_bundle(medications_bundle([ request ]))
   end
