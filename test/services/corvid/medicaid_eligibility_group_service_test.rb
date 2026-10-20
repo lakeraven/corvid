@@ -947,6 +947,250 @@ class Corvid::MedicaidEligibilityGroupServiceTest < ActiveSupport::TestCase
     end
   end
 
+  # -- Issue #646 round 3: stale inference race, skip adapter, DOB/DOS types ---------
+
+  test "record! records unknown when concurrent inference disagrees during find_patient" do
+    with_tenant(TENANT) do
+      check = medicaid_check_for(patient_id: "pt_mcd_race_001", dob: Date.new(1996, 6, 15))
+      racing = RaceSimulatingAdapterDelegate.new(
+        @adapter,
+        on_first_find_patient: lambda {
+          check.update!(
+            eligibility_group: "unknown",
+            eligibility_group_source: "inferred",
+            eligibility_group_set_at: Time.current
+          )
+        }
+      )
+      service = Corvid::MedicaidEligibilityGroupService.new(adapter: racing)
+
+      result = service.record!(
+        check,
+        coverage: { state: "XA", plan_name: "TEST REGULAR PLAN" },
+        date_of_service: DOS
+      )
+
+      assert_equal "unknown", result
+      assert_group_fields(check, "unknown", "inferred")
+    end
+  end
+
+  test "record! keeps inferred group when concurrent write matches computed inference" do
+    with_tenant(TENANT) do
+      check = medicaid_check_for(patient_id: "pt_mcd_race_002", dob: Date.new(1996, 6, 15))
+      racing = RaceSimulatingAdapterDelegate.new(
+        @adapter,
+        on_first_find_patient: lambda {
+          check.update!(
+            eligibility_group: "expansion_adult",
+            eligibility_group_source: "inferred",
+            eligibility_group_set_at: Time.current
+          )
+        }
+      )
+      service = Corvid::MedicaidEligibilityGroupService.new(adapter: racing)
+
+      result = service.record!(
+        check,
+        coverage: { state: "XA", plan_name: "TEST REGULAR PLAN" },
+        date_of_service: DOS
+      )
+
+      assert_equal "expansion_adult", result
+      assert_group_fields(check, "expansion_adult", "inferred")
+    end
+  end
+
+  test "record! does not overwrite staff_entry when concurrent write happens during find_patient" do
+    with_tenant(TENANT) do
+      check = medicaid_check_for(patient_id: "pt_mcd_race_003", dob: Date.new(1996, 6, 15))
+      inner_service = Corvid::MedicaidEligibilityGroupService.new(adapter: @adapter)
+      racing = RaceSimulatingAdapterDelegate.new(
+        @adapter,
+        on_first_find_patient: lambda {
+          inner_service.record_staff_entry!(check, eligibility_group: "other")
+        }
+      )
+      service = Corvid::MedicaidEligibilityGroupService.new(adapter: racing)
+
+      result = service.record!(
+        check,
+        coverage: { state: "XA", plan_name: "TEST REGULAR PLAN" },
+        date_of_service: DOS
+      )
+
+      assert_equal "other", result
+      assert_group_fields(check, "other", "staff_entry")
+    end
+  end
+
+  test "record! records unknown when nested record! disagrees during find_patient" do
+    with_tenant(TENANT) do
+      check = medicaid_check_for(patient_id: "pt_mcd_race_004", dob: Date.new(1996, 6, 15))
+      inner_service = Corvid::MedicaidEligibilityGroupService.new(adapter: @adapter)
+      racing = RaceSimulatingAdapterDelegate.new(
+        @adapter,
+        on_first_find_patient: lambda {
+          inner_service.record!(
+            check,
+            coverage: { state: "ZZ", plan_name: "TEST REGULAR PLAN" },
+            date_of_service: DOS
+          )
+        }
+      )
+      service = Corvid::MedicaidEligibilityGroupService.new(adapter: racing)
+
+      result = service.record!(
+        check,
+        coverage: { state: "XA", plan_name: "TEST REGULAR PLAN" },
+        date_of_service: DOS
+      )
+
+      assert_equal "unknown", result
+      assert_group_fields(check, "unknown", "inferred")
+    end
+  end
+
+  test "record! does not call find_patient when coverage states a recognised group" do
+    with_tenant(TENANT) do
+      counting = CountingAdapterDelegate.new(@adapter)
+      service = Corvid::MedicaidEligibilityGroupService.new(adapter: counting)
+      check = medicaid_check_for(patient_id: "pt_mcd_skip_001", dob: Date.new(1996, 6, 15))
+      coverage = {
+        state: "XA",
+        eligibility_group: "waiver_adult",
+        eligibility_group_source: "registration"
+      }
+
+      result = service.record!(check, coverage: coverage, date_of_service: DOS)
+
+      assert_equal "waiver_adult", result
+      assert_equal 0, counting.find_patient_calls
+      assert_group_fields(check, "waiver_adult", "registration")
+    end
+  end
+
+  test "record! does not call find_patient when row already has staff_entry" do
+    with_tenant(TENANT) do
+      counting = CountingAdapterDelegate.new(@adapter)
+      service = Corvid::MedicaidEligibilityGroupService.new(adapter: counting)
+      check = medicaid_check_for(patient_id: "pt_mcd_skip_002", dob: Date.new(1996, 6, 15))
+      service.record_staff_entry!(check, eligibility_group: "other")
+
+      result = service.record!(
+        check,
+        coverage: { state: "XA", plan_name: "TEST REGULAR PLAN" },
+        date_of_service: DOS
+      )
+
+      assert_equal "other", result
+      assert_equal 0, counting.find_patient_calls
+      assert_group_fields(check, "other", "staff_entry")
+    end
+  end
+
+  test "record! does not call find_patient when row already has stated non-inferred group" do
+    with_tenant(TENANT) do
+      counting = CountingAdapterDelegate.new(@adapter)
+      service = Corvid::MedicaidEligibilityGroupService.new(adapter: counting)
+      check = medicaid_check_for(patient_id: "pt_mcd_skip_003", dob: Date.new(1996, 6, 15))
+      stated = {
+        state: "XA",
+        eligibility_group: "waiver_adult",
+        eligibility_group_source: "state_case_data"
+      }
+      service.record!(check, coverage: stated, date_of_service: DOS)
+      counting.reset_find_patient_calls!
+
+      result = service.record!(
+        check,
+        coverage: { state: "XA", plan_name: "TEST REGULAR PLAN" },
+        date_of_service: DOS
+      )
+
+      assert_equal "waiver_adult", result
+      assert_equal 0, counting.find_patient_calls
+      assert_group_fields(check, "waiver_adult", "state_case_data")
+    end
+  end
+
+  test "record! persists stated group when find_patient would raise Timeout::Error" do
+    with_tenant(TENANT) do
+      counting = CountingAdapterDelegate.new(@adapter, find_patient_raises: Timeout::Error)
+      service = Corvid::MedicaidEligibilityGroupService.new(adapter: counting)
+      check = medicaid_check_for(patient_id: "pt_mcd_skip_004", dob: Date.new(1996, 6, 15))
+      coverage = {
+        state: "XA",
+        eligibility_group: "other",
+        eligibility_group_source: "eligibility_response"
+      }
+
+      result = service.record!(check, coverage: coverage, date_of_service: DOS)
+
+      assert_equal "other", result
+      assert_group_fields(check, "other", "eligibility_response")
+    end
+  end
+
+  test "record! treats Time date of birth as calendar date without zone shift in Denver" do
+    original_zone = Time.zone
+    Time.zone = "America/Denver"
+    with_tenant(TENANT) do
+      patient_id = "pt_mcd_dob_time_001"
+      @adapter.add_patient(
+        patient_id,
+        display_name: "TEST,PATIENT 001",
+        dob: Time.utc(2007, 6, 15),
+        sex: "F",
+        ssn_last4: "0000"
+      )
+      check = Corvid::AlternateResourceCheck.create!(
+        prc_referral: create_referral(patient_id: patient_id),
+        resource_type: "medicaid",
+        status: "checking"
+      )
+      result = @service.record!(
+        check,
+        coverage: { state: "XA", plan_name: "TEST REGULAR PLAN" },
+        date_of_service: Date.new(2026, 6, 14)
+      )
+
+      assert_equal "other", result
+      assert_group_fields(check, "other", "inferred")
+    end
+  ensure
+    Time.zone = original_zone
+  end
+
+  test "record! converts DateTime date_of_service like Time for age in UTC" do
+    original_zone = Time.zone
+    Time.zone = "UTC"
+    with_tenant(TENANT) do
+      check = medicaid_check_for(patient_id: "pt_mcd_dos_dt_001", dob: Date.new(2007, 6, 15))
+      dos_datetime = DateTime.new(2026, 6, 14, 20, 0, 0, "-07:00")
+      dos_time = Time.utc(2026, 6, 15, 3, 0, 0)
+
+      datetime_result = @service.record!(
+        check,
+        coverage: { state: "XA", plan_name: "TEST REGULAR PLAN" },
+        date_of_service: dos_datetime
+      )
+      check_time = medicaid_check_for(patient_id: "pt_mcd_dos_dt_002", dob: Date.new(2007, 6, 15))
+      time_result = @service.record!(
+        check_time,
+        coverage: { state: "XA", plan_name: "TEST REGULAR PLAN" },
+        date_of_service: dos_time
+      )
+
+      assert_equal "expansion_adult", datetime_result
+      assert_equal "expansion_adult", time_result
+      assert_group_fields(check, "expansion_adult", "inferred")
+      assert_group_fields(check_time, "expansion_adult", "inferred")
+    end
+  ensure
+    Time.zone = original_zone
+  end
+
   # -- ADR 0003: date of birth never persisted or logged ------------------------------
 
   test "record! does not write or log synthetic date of birth" do
@@ -987,6 +1231,59 @@ class Corvid::MedicaidEligibilityGroupServiceTest < ActiveSupport::TestCase
     ensure
       Rails.logger = original_rails_logger
       ActiveRecord::Base.logger = original_ar_logger
+    end
+  end
+
+  class RaceSimulatingAdapterDelegate
+    def initialize(inner, on_first_find_patient:)
+      @inner = inner
+      @on_first_find_patient = on_first_find_patient
+      @first_call = true
+    end
+
+    def find_patient(patient_id)
+      if @first_call
+        @first_call = false
+        @on_first_find_patient.call
+      end
+      @inner.find_patient(patient_id)
+    end
+
+    def respond_to_missing?(method, include_private = false)
+      @inner.respond_to?(method, include_private) || super
+    end
+
+    def method_missing(method, *args, **kwargs, &block)
+      @inner.public_send(method, *args, **kwargs, &block)
+    end
+  end
+
+  class CountingAdapterDelegate
+    attr_reader :find_patient_calls
+
+    def initialize(inner, find_patient_raises: nil)
+      @inner = inner
+      @find_patient_raises = find_patient_raises
+      @find_patient_calls = 0
+    end
+
+    def reset_find_patient_calls!
+      @find_patient_calls = 0
+    end
+
+    def find_patient(patient_id)
+      @find_patient_calls += 1
+      raise @find_patient_raises if @find_patient_raises
+
+      @inner.find_patient(patient_id)
+    end
+
+    def respond_to_missing?(method, include_private = false)
+      @inner.respond_to?(method, include_private) || super
+    end
+
+    def method_missing(method, *args, **kwargs, &block)
+      @inner.public_send(method, *args, **kwargs, &block)
     end
   end
 
