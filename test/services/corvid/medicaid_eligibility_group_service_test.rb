@@ -6,6 +6,7 @@ class Corvid::MedicaidEligibilityGroupServiceTest < ActiveSupport::TestCase
   include ActiveSupport::Testing::TimeHelpers
 
   TENANT = "tnt_test"
+  OTHER_TENANT = "tnt_other"
   DOS = Date.new(2026, 6, 15)
 
   setup do
@@ -393,6 +394,247 @@ class Corvid::MedicaidEligibilityGroupServiceTest < ActiveSupport::TestCase
     end
   end
 
+  # -- Issue #646 P1: stale in-memory check must not overwrite persisted staff_entry -
+
+  test "record! on stale check does not overwrite staff_entry with inference" do
+    with_tenant(TENANT) do
+      check = medicaid_check_for(patient_id: "pt_mcd_stale_001", dob: Date.new(1996, 6, 15))
+      job_copy = stale_in_memory_check_after(check) do
+        @service.record_staff_entry!(check, eligibility_group: "other")
+      end
+
+      @service.record!(
+        job_copy,
+        coverage: { state: "XA", plan_name: "TEST REGULAR PLAN" },
+        date_of_service: DOS
+      )
+
+      assert_group_fields(check, "other", "staff_entry")
+    end
+  end
+
+  test "record! on stale check with stated coverage does not overwrite staff_entry" do
+    with_tenant(TENANT) do
+      check = medicaid_check_for(patient_id: "pt_mcd_stale_002", dob: Date.new(1996, 6, 15))
+      stated_coverage = {
+        state: "XA",
+        eligibility_group: "expansion_adult",
+        eligibility_group_source: "registration"
+      }
+      @service.record!(check, coverage: stated_coverage, date_of_service: DOS)
+      job_copy = stale_in_memory_check_after(check) do
+        @service.record_staff_entry!(check, eligibility_group: "other")
+      end
+
+      @service.record!(job_copy, coverage: stated_coverage, date_of_service: DOS)
+
+      assert_group_fields(check, "other", "staff_entry")
+    end
+  end
+
+  # -- Issue #646 P2: adapter may only state eligibility_response, state_case_data, registration
+
+  test "record! maps disallowed eligibility_group_source staff_entry to eligibility_response" do
+    with_tenant(TENANT) do
+      check = medicaid_check_for(patient_id: "pt_mcd_src_001", dob: Date.new(1996, 6, 15))
+      coverage = {
+        state: "XA",
+        eligibility_group: "other",
+        eligibility_group_source: "staff_entry"
+      }
+
+      result = @service.record!(check, coverage: coverage, date_of_service: DOS)
+
+      assert_equal "other", result
+      assert_group_fields(check, "other", "eligibility_response")
+    end
+  end
+
+  test "record! replaces adapter-normalized group when registration source is stated later" do
+    with_tenant(TENANT) do
+      check = medicaid_check_for(patient_id: "pt_mcd_src_002", dob: Date.new(1996, 6, 15))
+      first = {
+        state: "XA",
+        eligibility_group: "other",
+        eligibility_group_source: "staff_entry"
+      }
+      @service.record!(check, coverage: first, date_of_service: DOS)
+      assert_group_fields(check, "other", "eligibility_response")
+
+      second = {
+        state: "XA",
+        eligibility_group: "expansion_adult",
+        eligibility_group_source: "registration"
+      }
+      result = @service.record!(check, coverage: second, date_of_service: DOS)
+
+      assert_equal "expansion_adult", result
+      assert_group_fields(check, "expansion_adult", "registration")
+    end
+  end
+
+  test "record! maps 271 eligibility_group_source to eligibility_response over inferred group" do
+    with_tenant(TENANT) do
+      check = medicaid_check_for(patient_id: "pt_mcd_src_003", dob: Date.new(1996, 6, 15))
+      record!(check, state: "XA", plan_name: "TEST REGULAR PLAN")
+      assert_group_fields(check, "expansion_adult", "inferred")
+
+      coverage = {
+        state: "XA",
+        plan_name: "TEST REGULAR PLAN",
+        eligibility_group: "waiver_adult",
+        eligibility_group_source: "271"
+      }
+      result = @service.record!(check, coverage: coverage, date_of_service: DOS)
+
+      assert_equal "waiver_adult", result
+      assert_group_fields(check, "waiver_adult", "eligibility_response")
+    end
+  end
+
+  # -- Issue #646 P3: nil or blank eligibility_group is not a statement ----------------
+
+  test "record! infers when eligibility_group key is present but nil" do
+    with_tenant(TENANT) do
+      check = medicaid_check_for(patient_id: "pt_mcd_nil_grp_001", dob: Date.new(1996, 6, 15))
+      coverage = { eligibility_group: nil, state: "XA", plan_name: "TEST REGULAR PLAN" }
+      result = @service.record!(check, coverage: coverage, date_of_service: DOS)
+
+      assert_equal "expansion_adult", result
+      assert_group_fields(check, "expansion_adult", "inferred")
+    end
+  end
+
+  test "record! infers when eligibility_group is blank string" do
+    with_tenant(TENANT) do
+      check = medicaid_check_for(patient_id: "pt_mcd_nil_grp_002", dob: Date.new(1996, 6, 15))
+      coverage = { eligibility_group: "", state: "XA", plan_name: "TEST REGULAR PLAN" }
+      result = @service.record!(check, coverage: coverage, date_of_service: DOS)
+
+      assert_equal "expansion_adult", result
+      assert_group_fields(check, "expansion_adult", "inferred")
+    end
+  end
+
+  test "record! does not replace registration-sourced group when eligibility_group is nil" do
+    with_tenant(TENANT) do
+      check = medicaid_check_for(patient_id: "pt_mcd_nil_grp_003", dob: Date.new(1996, 6, 15))
+      stated = {
+        state: "XA",
+        eligibility_group: "waiver_adult",
+        eligibility_group_source: "registration"
+      }
+      @service.record!(check, coverage: stated, date_of_service: DOS)
+
+      coverage = { eligibility_group: nil, state: "XA", plan_name: "TEST REGULAR PLAN" }
+      @service.record!(check, coverage: coverage, date_of_service: DOS)
+
+      assert_group_fields(check, "waiver_adult", "registration")
+    end
+  end
+
+  # -- Issue #646 P4: ADR 0002 tenant scoping on writes --------------------------------
+
+  test "record! from another tenant does not write stated group" do
+    check = nil
+    with_tenant(TENANT) do
+      check = medicaid_check_for(patient_id: "pt_mcd_tenant_001", dob: Date.new(1996, 6, 15))
+    end
+
+    result = nil
+    with_tenant(OTHER_TENANT) do
+      coverage = {
+        state: "XA",
+        eligibility_group: "other",
+        eligibility_group_source: "registration"
+      }
+      result = @service.record!(check, coverage: coverage, date_of_service: DOS)
+    end
+
+    assert_nil result
+    assert_group_fields_under_tenant(check, TENANT, nil, nil)
+  end
+
+  test "record! from another tenant does not write inferred group" do
+    check = nil
+    with_tenant(TENANT) do
+      check = medicaid_check_for(patient_id: "pt_mcd_tenant_002", dob: Date.new(1996, 6, 15))
+    end
+
+    result = nil
+    with_tenant(OTHER_TENANT) do
+      result = @service.record!(
+        check,
+        coverage: { state: "XA", plan_name: "TEST REGULAR PLAN" },
+        date_of_service: DOS
+      )
+    end
+
+    assert_nil result
+    assert_group_fields_under_tenant(check, TENANT, nil, nil)
+  end
+
+  test "record_staff_entry! from another tenant raises and does not write" do
+    check = nil
+    with_tenant(TENANT) do
+      check = medicaid_check_for(patient_id: "pt_mcd_tenant_003", dob: Date.new(1996, 6, 15))
+    end
+
+    with_tenant(OTHER_TENANT) do
+      assert_raises(ArgumentError) do
+        @service.record_staff_entry!(check, eligibility_group: "other")
+      end
+    end
+
+    assert_group_fields_under_tenant(check, TENANT, nil, nil)
+  end
+
+  test "record! without tenant context does not write stated group" do
+    check = nil
+    with_tenant(TENANT) do
+      check = medicaid_check_for(patient_id: "pt_mcd_tenant_004", dob: Date.new(1996, 6, 15))
+    end
+
+    coverage = {
+      state: "XA",
+      eligibility_group: "other",
+      eligibility_group_source: "registration"
+    }
+    result = @service.record!(check, coverage: coverage, date_of_service: DOS)
+
+    assert_nil result
+    assert_group_fields_under_tenant(check, TENANT, nil, nil)
+  end
+
+  test "record! without tenant context does not write inferred group" do
+    check = nil
+    with_tenant(TENANT) do
+      check = medicaid_check_for(patient_id: "pt_mcd_tenant_005", dob: Date.new(1996, 6, 15))
+    end
+
+    result = @service.record!(
+      check,
+      coverage: { state: "XA", plan_name: "TEST REGULAR PLAN" },
+      date_of_service: DOS
+    )
+
+    assert_nil result
+    assert_group_fields_under_tenant(check, TENANT, nil, nil)
+  end
+
+  test "record_staff_entry! without tenant context raises and does not write" do
+    check = nil
+    with_tenant(TENANT) do
+      check = medicaid_check_for(patient_id: "pt_mcd_tenant_006", dob: Date.new(1996, 6, 15))
+    end
+
+    assert_raises(ArgumentError) do
+      @service.record_staff_entry!(check, eligibility_group: "other")
+    end
+
+    assert_group_fields_under_tenant(check, TENANT, nil, nil)
+  end
+
   # -- ADR 0003: date of birth never persisted or logged ------------------------------
 
   test "record! does not write or log synthetic date of birth" do
@@ -437,6 +679,18 @@ class Corvid::MedicaidEligibilityGroupServiceTest < ActiveSupport::TestCase
   end
 
   private
+
+  def stale_in_memory_check_after(check)
+    snapshot = Corvid::AlternateResourceCheck.find(check.id).attributes.slice(
+      "eligibility_group",
+      "eligibility_group_source",
+      "eligibility_group_set_at"
+    )
+    yield
+    stale = Corvid::AlternateResourceCheck.find(check.id)
+    stale.assign_attributes(snapshot)
+    stale
+  end
 
   def medicaid_check_for(patient_id:, dob: Date.new(1996, 6, 15), register_patient: true)
     if register_patient
@@ -486,6 +740,19 @@ class Corvid::MedicaidEligibilityGroupServiceTest < ActiveSupport::TestCase
     check.reload
     assert_equal group, check.eligibility_group
     assert_equal source, check.eligibility_group_source
-    refute_nil check.eligibility_group_set_at
+    refute_nil check.eligibility_group_set_at unless group.nil?
+  end
+
+  def assert_group_fields_under_tenant(check, tenant, group, source)
+    with_tenant(tenant) do
+      reloaded = Corvid::AlternateResourceCheck.find(check.id)
+      assert_equal group, reloaded.eligibility_group
+      assert_equal source, reloaded.eligibility_group_source
+      if group.nil?
+        assert_nil reloaded.eligibility_group_set_at
+      else
+        refute_nil reloaded.eligibility_group_set_at
+      end
+    end
   end
 end
