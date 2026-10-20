@@ -90,23 +90,33 @@ module Corvid
         COVERAGE_SELFPAY_SYSTEM,
         COVERAGE_STU3_SELFPAY_SYSTEM
       ].freeze
-      # X12 claim filing indicator. Code "09" with this system, or with
-      # no system, is self-pay (issue #607).
+      # X12 claim filing indicator (issue #607). On this system, code
+      # "09", "9", or Integer 9 is self-pay. With no system, only "09".
       COVERAGE_X12_SELF_PAY_CODE = "09"
+      COVERAGE_X12_SELF_PAY_SHORT_CODE = "9"
+      COVERAGE_X12_SELF_PAY_INTEGER = 9
       COVERAGE_X12_CLAIM_FILING_INDICATOR_SYSTEM =
         "https://x12.org/codes/claim-filing-indicator-codes"
-      # type.text matching this value, case-insensitively after strip, is
-      # self-pay when Coverage.type has no coding (issue #607).
-      COVERAGE_SELF_PAY_TEXT = "self pay"
-      # PHDSC Source of Payment Typology (issue #607). On either system
+      # type.text is self-pay when Coverage.type has no coding and the
+      # text, downcased with whitespace and hyphens removed, equals this
+      # value (issue #607).
+      COVERAGE_SELF_PAY_TEXT = "selfpay"
+      # PHDSC Source of Payment Typology (issue #607). On any system
       # below, a coding is insurance only when its code is digits whose
       # first digit is in COVERAGE_SOP_INSURER_FIRST_DIGITS. A first digit
       # of 3 (IHS/Tribe incl. PRC), 8 (no payment), or 9 (miscellaneous),
       # or a non-digit code, is not insurance. Any such coding excludes
       # the Coverage even when another coding is an insurer code.
+      # https://nahdo.org/sopt is the HL7 THO canonical URL of the same
+      # typology.
       COVERAGE_SOP_SYSTEM = "urn:oid:2.16.840.1.113883.3.221.5"
       COVERAGE_SOP_BARE_OID = "2.16.840.1.113883.3.221.5"
-      COVERAGE_SOP_SYSTEMS = [ COVERAGE_SOP_SYSTEM, COVERAGE_SOP_BARE_OID ].freeze
+      COVERAGE_SOP_NAHDO_SYSTEM = "https://nahdo.org/sopt"
+      COVERAGE_SOP_SYSTEMS = [
+        COVERAGE_SOP_SYSTEM,
+        COVERAGE_SOP_BARE_OID,
+        COVERAGE_SOP_NAHDO_SYSTEM
+      ].freeze
       COVERAGE_SOP_INSURER_FIRST_DIGITS = "124567"
       # Digits whose first digit is an insurer family (issue #607).
       COVERAGE_SOP_INSURER_CODE_RE =
@@ -329,20 +339,20 @@ module Corvid
       # PHDSC code (issue #607). Self-pay is code "pay" with system
       # http://terminology.hl7.org/CodeSystem/coverage-selfpay, system
       # http://hl7.org/fhir/coverage-selfpay (STU3), or no system; or
-      # code "09" with system
-      # https://x12.org/codes/claim-filing-indicator-codes or no system.
-      # On PHDSC Source of Payment Typology system
-      # urn:oid:2.16.840.1.113883.3.221.5 or bare OID
-      # 2.16.840.1.113883.3.221.5, a coding is insurance only when its
-      # code is digits whose first digit is 1, 2, 4, 5, 6, or 7. A first
-      # digit of 3 (IHS/Tribe incl. PRC), 8 (no payment), or 9
-      # (miscellaneous), or a non-digit code, is not insurance; any such
-      # coding excludes the Coverage even when another coding is an
-      # insurer code. Codes in other systems keep the prior rules.
-      # type.text equal to "self pay", case-insensitively after strip, is
-      # self-pay when there is no coding. When kind is present it must be
-      # "insurance". Coverages excluded by this allowlist still count
-      # toward the total check.
+      # code "09", "9", or Integer 9 with system
+      # https://x12.org/codes/claim-filing-indicator-codes; or code "09"
+      # with no system. On PHDSC Source of Payment Typology system
+      # urn:oid:2.16.840.1.113883.3.221.5, bare OID
+      # 2.16.840.1.113883.3.221.5, or https://nahdo.org/sopt, a coding is
+      # insurance only when its code is digits whose first digit is 1, 2,
+      # 4, 5, 6, or 7. A first digit of 3 (IHS/Tribe incl. PRC), 8 (no
+      # payment), or 9 (miscellaneous), or a non-digit code, is not
+      # insurance; any such coding excludes the Coverage even when another
+      # coding is an insurer code. Codes in other systems keep the prior
+      # rules. type.text, downcased with whitespace and hyphens removed,
+      # equal to "selfpay" is self-pay when there is no coding. When kind
+      # is present it must be "insurance". Coverages excluded by this
+      # allowlist still count toward the total check.
       #
       # The array is active coverages whose period covers now. A missing
       # start or end is an open bound. A present bound must match strict
@@ -1029,11 +1039,16 @@ module Corvid
       end
 
       def x12_self_pay?(code, system)
-        code == COVERAGE_X12_SELF_PAY_CODE && x12_self_pay_system?(system)
+        return code == COVERAGE_X12_SELF_PAY_CODE if system.nil?
+        return false unless system == COVERAGE_X12_CLAIM_FILING_INDICATOR_SYSTEM
+
+        x12_claim_filing_self_pay_code?(code)
       end
 
-      def x12_self_pay_system?(system)
-        system.nil? || system == COVERAGE_X12_CLAIM_FILING_INDICATOR_SYSTEM
+      def x12_claim_filing_self_pay_code?(code)
+        code == COVERAGE_X12_SELF_PAY_CODE ||
+          code == COVERAGE_X12_SELF_PAY_SHORT_CODE ||
+          (code.is_a?(Integer) && code == COVERAGE_X12_SELF_PAY_INTEGER)
       end
 
       # Issue #607. A PHDSC SOP coding that is not an insurer family
@@ -1056,12 +1071,18 @@ module Corvid
         !self_pay_coding?(coding) && !sop_non_insurer_coding?(coding)
       end
 
-      # Issue #607. type.text "self pay" applies only when there is no coding.
+      # Issue #607. type.text applies only when there is no coding. Self-pay
+      # only when downcasing and removing whitespace and hyphens yields
+      # "selfpay".
       def self_pay_type_text?(resource, codings)
         return false unless codings.empty?
 
         text = coverage_type_text(resource)
-        text.is_a?(String) && text.strip.casecmp?(COVERAGE_SELF_PAY_TEXT)
+        text.is_a?(String) && normalized_self_pay_text(text) == COVERAGE_SELF_PAY_TEXT
+      end
+
+      def normalized_self_pay_text(text)
+        text.downcase.gsub(/[[:space:]]|-/, "")
       end
 
       def coverage_type_text(resource)
