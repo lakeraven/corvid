@@ -9,13 +9,16 @@ module Corvid
   #
   # The key comes from Corvid.configuration, which hosts load from a secret
   # store. A plain SHA256 is never produced. The HMAC input is canonical JSON
-  # of the allowed leaf types. A usable version is a String or Symbol,
-  # non-blank after strip, at most MAX_VERSION_LENGTH characters. A usable
-  # key is a String of at least MIN_KEY_BYTES whose bytes are not all the
-  # same byte. When the configured version is non-nil and no usable key
-  # backs it, compute logs a warning and returns [nil, nil]. A nil version
-  # logs nothing. When the digest cannot be computed, compute returns
-  # [nil, nil] so callers persist no fingerprint.
+  # of the allowed leaf types. A usable version is a String or Symbol whose
+  # to_s has a valid encoding, contains no control characters, is non-blank
+  # after strip, and is at most MAX_VERSION_LENGTH characters.
+  # normalized_version does not raise. A usable key is a String of at least
+  # MIN_KEY_BYTES whose bytes are not all the same byte. More than one
+  # configured name matching the version after to_s makes the key unusable.
+  # When the configured version is non-nil and no usable key backs it,
+  # compute logs a fixed warning and returns [nil, nil]. A nil version logs
+  # nothing. When the digest cannot be computed, compute returns [nil, nil]
+  # so callers persist no fingerprint.
   module SnapshotFingerprint
     MIN_KEY_BYTES = 32
     MAX_VERSION_LENGTH = 64
@@ -45,13 +48,16 @@ module Corvid
         end
       end
 
-      # True or false when the row's key version can be checked. nil when
-      # the version is blank, that key is missing or invalid (including a
-      # repeated-byte key), or the digest cannot be computed (legacy and
-      # unknown versions are unverifiable, not mismatches).
+      # True when the digest matches. False when hash is a non-empty string
+      # that does not match. nil when hash is nil or empty, the version is
+      # blank or malformed, that key is missing or invalid (including a
+      # repeated-byte key, or more than one name matching after to_s), or
+      # the digest cannot be computed. Legacy and unknown versions are
+      # unverifiable, not mismatches.
       def matches?(hash:, version:, payload:)
         key = usable_key(version)
         return nil if key.nil?
+        return nil if hash.nil? || hash == ""
         return false unless hash.is_a?(String)
 
         secure_equal?(hash, hex_digest(key, payload))
@@ -89,25 +95,44 @@ module Corvid
         key.each_byte.all? { |byte| byte == sample }
       end
 
+      # String or Symbol only. to_s must be valid_encoding? before the
+      # control-character check; blank and length rules are unchanged.
+      # Never raises.
       def normalized_version(version)
         return unless version.is_a?(String) || version.is_a?(Symbol)
 
         name = version.to_s
-        return if name.strip.empty? || name.length > MAX_VERSION_LENGTH
+        return unless acceptable_version_name?(name)
 
         name
+      rescue StandardError
+        nil
+      end
+
+      def acceptable_version_name?(name)
+        name.is_a?(String) &&
+          name.valid_encoding? &&
+          !name.match?(/[[:cntrl:]]/) &&
+          !name.strip.empty? &&
+          name.length <= MAX_VERSION_LENGTH
       end
 
       # Pair walk: Hash#[] would follow a default value or default proc.
+      # More than one name equal after to_s leaves the key unusable.
       def key_named(name)
+        materials = key_materials_named(name)
+        materials.first if materials&.one?
+      end
+
+      def key_materials_named(name)
         keys = Corvid.configuration.verification_snapshot_keys
         return unless keys.respond_to?(:each_pair)
 
+        found = []
         keys.each_pair do |candidate, material|
-          return material if candidate.to_s == name
+          found << material if candidate.to_s == name
         end
-
-        nil
+        found
       end
 
       def hex_digest(key, payload)
