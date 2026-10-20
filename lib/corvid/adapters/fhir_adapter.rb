@@ -4,6 +4,8 @@ require "net/http"
 require "json"
 require "uri"
 require "date"
+require "time"
+require "zlib"
 require "bigdecimal"
 require "corvid/adapters/base"
 require "corvid/value_objects"
@@ -268,24 +270,44 @@ module Corvid
       # Coverages
       #
       # GET Coverage?beneficiary=Patient/<id>, then follow Bundle.link
-      # relation "next" for up to MAX_COVERAGE_PAGES pages on this origin.
-      # Returns active coverages whose period covers Date.current (a missing
-      # start or end is an open bound). plan_name is the class entry typed
-      # "plan": its name, otherwise its value.
+      # relation "next" (any case) for up to MAX_COVERAGE_PAGES pages on
+      # this origin. A relative next URL is resolved with URI.join against
+      # base_url before the same-origin and path checks; that absolute URL
+      # is what gets fetched.
+      #
+      # Every Coverage entry must name this patient: beneficiary.reference
+      # equals "Patient/<id>" or ends with "/Patient/<id>". A Coverage with
+      # a different or missing beneficiary means the server ignored the
+      # filter, so the whole result is nil.
+      #
+      # Returns active coverages whose period covers now. A missing start or
+      # end is an open bound. FHIR precision: "YYYY" is Jan 1 (start) or
+      # Dec 31 (end); "YYYY-MM" is the first or last day of that month;
+      # "YYYY-MM-DD" is that date against Date.current. A dateTime (value
+      # contains "T") is an instant — Time.iso8601, otherwise DateTime —
+      # compared with Time.current (start <= now, end >= now). A present
+      # but unparseable bound makes the whole result nil, not a dropped row.
+      #
+      # A Bundle with no entry is [] only when total is absent or 0; total
+      # greater than 0 with no entries is nil. plan_name is the class entry
+      # typed "plan": its name, otherwise its value.
       #
       # An Array means the search finished ([] when nothing matched). nil
       # means unknown — a non-2xx page, bad JSON, a non-Bundle body, an
-      # off-origin / cyclic / over-limit next link, or a transport error
+      # untrusted beneficiary or period, a positive total with no entries,
+      # an off-origin / cyclic / over-limit next link, or a transport error
       # (Timeout::Error, including Net::ReadTimeout and Net::OpenTimeout,
-      # SocketError, SystemCallError, OpenSSL::SSL::SSLError, IOError).
+      # SocketError, SystemCallError, OpenSSL::SSL::SSLError, IOError,
+      # Net::HTTPBadResponse, Net::HTTPHeaderSyntaxError, Zlib::Error).
       # Callers fail closed; a partial page list is never returned.
       # ----------------------------------------------------------------------
 
       def get_coverages(patient_identifier)
         query = URI.encode_www_form(beneficiary: "Patient/#{patient_identifier}")
-        collect_coverage_pages("#{@base_url}/Coverage?#{query}")
+        collect_coverage_pages("#{@base_url}/Coverage?#{query}", patient_identifier)
       rescue Timeout::Error, SocketError, SystemCallError,
-             OpenSSL::SSL::SSLError, IOError
+             OpenSSL::SSL::SSLError, IOError, Net::HTTPBadResponse,
+             Net::HTTPHeaderSyntaxError, Zlib::Error
         nil
       end
 
@@ -665,12 +687,12 @@ module Corvid
 
       # Coverage search -----------------------------------------------------
 
-      def collect_coverage_pages(url)
+      def collect_coverage_pages(url, patient_identifier)
         found = []
         seen = {}
 
         MAX_COVERAGE_PAGES.times do
-          page = read_coverage_page(url, seen)
+          page = read_coverage_page(url, seen, patient_identifier)
           return nil unless page
 
           found.concat(page[:coverages])
@@ -680,39 +702,39 @@ module Corvid
         nil
       end
 
-      def read_coverage_page(url, seen)
-        return nil if seen[url] || !same_origin_coverage_url?(url)
+      def read_coverage_page(url, seen, patient_identifier)
+        absolute = absolute_coverage_url(url)
+        return nil if absolute.nil? || seen[absolute] || !same_origin_coverage_url?(absolute)
 
-        seen[url] = true
-        fetch_coverage_bundle(url)
+        seen[absolute] = true
+        fetch_coverage_bundle(absolute, patient_identifier)
       end
 
-      def fetch_coverage_bundle(url)
+      # Relative next links are resolved against base_url before the
+      # same-origin check. An absolute link is unchanged when it is already
+      # a valid URI.
+      def absolute_coverage_url(url)
+        return nil unless url.is_a?(String) && !url.empty?
+
+        URI.join(@base_url, url).to_s
+      rescue URI::InvalidURIError, URI::InvalidComponentError, URI::BadURIError
+        nil
+      end
+
+      def fetch_coverage_bundle(url, patient_identifier)
         response = http_get(url)
         return nil unless response.is_a?(Net::HTTPSuccess)
 
-        bundle = parse_coverage_bundle(coverage_response_body(response))
+        bundle = parse_coverage_bundle(response.body)
         return nil unless bundle
 
-        rows = active_coverage_rows(bundle)
+        rows = active_coverage_rows(bundle, patient_identifier)
         return nil if rows.nil?
 
         next_url = bundle_next_url(bundle)
         return nil if next_url == :invalid_coverage_next
 
         { coverages: rows, next_url: next_url }
-      end
-
-      # #body re-reads the socket unless Net::HTTP already consumed it
-      # (@read). http_get does that before returning. Test doubles only
-      # assign #body=, which stores the string and leaves @read false, so
-      # #body would raise IOError — use the buffered string in that case.
-      def coverage_response_body(response)
-        if response.instance_variable_get(:@read)
-          response.body
-        else
-          response.instance_variable_get(:@body)
-        end
       end
 
       def parse_coverage_bundle(body)
@@ -724,22 +746,47 @@ module Corvid
         nil
       end
 
-      def active_coverage_rows(bundle)
+      def active_coverage_rows(bundle, patient_identifier)
         entries = bundle["entry"]
-        return [] if entries.nil?
+        return coverage_page_without_entries(bundle) if entries.nil?
         return nil unless entries.is_a?(Array)
 
-        entries.filter_map { |entry| coverage_row(entry) }
+        rows = []
+        entries.each do |entry|
+          row = coverage_row(entry, patient_identifier)
+          return nil if row == :unknown_coverage
+
+          rows << row if row
+        end
+        rows
       end
 
-      def coverage_row(entry)
+      # No entry array: an omitted or zero total is an empty search. A
+      # positive total with nothing inline means the page is incomplete.
+      def coverage_page_without_entries(bundle)
+        total = bundle["total"]
+        total.nil? || total == 0 ? [] : nil
+      end
+
+      def coverage_row(entry, patient_identifier)
         resource = entry.is_a?(Hash) ? entry["resource"] : nil
-        return nil unless resource.is_a?(Hash)
-        return nil unless resource["resourceType"] == "Coverage"
+        return nil unless resource.is_a?(Hash) && resource["resourceType"] == "Coverage"
+        return :unknown_coverage unless coverage_beneficiary_matches?(resource, patient_identifier)
         return nil unless resource["status"] == "active"
-        return nil unless coverage_period_current?(resource)
+
+        period_state = coverage_period_current?(resource)
+        return :unknown_coverage if period_state == :unknown_coverage
+        return nil unless period_state
 
         coverage_attributes(resource)
+      end
+
+      def coverage_beneficiary_matches?(resource, patient_identifier)
+        reference = resource.dig("beneficiary", "reference")
+        return false unless reference.is_a?(String)
+
+        expected = "Patient/#{patient_identifier}"
+        reference == expected || reference.end_with?("/#{expected}")
       end
 
       def coverage_period_current?(resource)
@@ -747,17 +794,59 @@ module Corvid
         return true if period.nil?
         return false unless period.is_a?(Hash)
 
-        coverage_bound_ok?(period["start"], :on_or_before) &&
-          coverage_bound_ok?(period["end"], :on_or_after)
+        start_ok = coverage_bound_ok?(period["start"], :on_or_before)
+        end_ok = coverage_bound_ok?(period["end"], :on_or_after)
+        return :unknown_coverage if start_ok == :unknown_coverage || end_ok == :unknown_coverage
+
+        start_ok && end_ok
       end
 
+      # true / false filter the row. :unknown_coverage fails the whole search.
       def coverage_bound_ok?(raw, direction)
         return true if raw.nil? || raw == ""
+        return :unknown_coverage unless raw.is_a?(String)
 
-        date = parse_date(raw)
-        return false unless date
+        point = coverage_bound_point(raw, direction)
+        return :unknown_coverage unless point
 
-        direction == :on_or_before ? date <= Date.current : date >= Date.current
+        current = point.is_a?(Time) ? Time.current : Date.current
+        direction == :on_or_before ? point <= current : point >= current
+      end
+
+      # Full dates go through parse_date. Year and year-month do not:
+      # Ruby 4 Date.parse rejects them, and an end bound is the last day.
+      def coverage_bound_point(raw, direction)
+        if raw.include?("T")
+          parse_coverage_instant(raw)
+        elsif raw.match?(/\A\d{4}-\d{2}\z/)
+          year_text, month_text = raw.split("-", 2)
+          parse_month_bound(year_text, month_text, direction)
+        elsif raw.match?(/\A\d{4}\z/)
+          parse_date(direction == :on_or_before ? "#{raw}-01-01" : "#{raw}-12-31")
+        else
+          parse_date(raw)
+        end
+      end
+
+      def parse_month_bound(year_text, month_text, direction)
+        month = month_text.to_i
+        return nil unless (1..12).cover?(month)
+
+        year = year_text.to_i
+        day = direction == :on_or_before ? 1 : Date.new(year, month, -1).day
+        parse_date(format("%s-%02d-%02d", year_text, month, day))
+      end
+
+      def parse_coverage_instant(text)
+        Time.iso8601(text)
+      rescue ArgumentError
+        parse_coverage_datetime(text)
+      end
+
+      def parse_coverage_datetime(text)
+        DateTime.iso8601(text).to_time
+      rescue ArgumentError
+        nil
       end
 
       def coverage_attributes(resource)
@@ -789,7 +878,7 @@ module Corvid
         return nil if links.nil?
         return :invalid_coverage_next unless links.is_a?(Array)
 
-        link = links.find { |row| row.is_a?(Hash) && row["relation"] == "next" }
+        link = links.find { |row| row.is_a?(Hash) && row["relation"].to_s.casecmp?("next") }
         return nil unless link
 
         url = link["url"]
