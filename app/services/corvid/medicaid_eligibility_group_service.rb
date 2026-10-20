@@ -10,11 +10,15 @@ module Corvid
   # when the state has work-requirement programs. Ambiguity is recorded
   # as "unknown" — never a guess.
   #
-  # The caller is used only for its id. The adapter is called and the
-  # inferred group is computed before any lock. Tenant visibility,
-  # resource type, and precedence are decided under that lock after
-  # reload. A stale in-memory copy cannot overwrite a staff entry, and
-  # an inference cannot overwrite a stated group.
+  # The caller is used only for its id. Eligibility fields are
+  # snapshotted before an inference is computed, and the adapter runs
+  # before any lock. Coverage that states a recognised group, or a
+  # fresh unlocked read that already has staff_entry or another stated
+  # source, does not call the adapter. Tenant visibility, resource
+  # type, and precedence are decided under the lock after reload. A
+  # stated or staff value is never overwritten. When the stored
+  # inferred group changed during the lookup and disagrees with the
+  # new inference, the recorded group is unknown.
   #
   # Coverage may state only eligibility_response, state_case_data, or
   # registration. Any other source is recorded as eligibility_response.
@@ -41,10 +45,8 @@ module Corvid
     def record!(check, coverage:, date_of_service:)
       coverage = coverage_hash(coverage)
       row = persisted_check(check)
-      # Age comes from the adapter. Compute it before the lock so the
-      # patient lookup is not held inside the row transaction.
-      inferred = inferred_group(row, coverage, date_of_service)
-      row.with_lock { apply_locked(row, coverage, inferred) }
+      inferred, snapshot = prepare_inference(row, coverage, date_of_service)
+      row.with_lock { apply_locked(row, coverage, inferred, snapshot) }
     end
 
     def record_staff_entry!(check, eligibility_group:)
@@ -87,17 +89,71 @@ module Corvid
       coverage.is_a?(Hash) ? coverage : {}
     end
 
+    # The row was just loaded and is not locked. A recognised group on
+    # the coverage, a staff entry, or any other stated source does not
+    # need the patient, so a failing lookup cannot block that write.
+    def prepare_inference(row, coverage, date_of_service)
+      return unless adapter_needed?(row, coverage)
+
+      snapshot = eligibility_snapshot(row)
+      [ inferred_group(row, coverage, date_of_service), snapshot ]
+    end
+
+    def adapter_needed?(row, coverage)
+      return false if stated?(coverage)
+
+      !preserved?(row)
+    end
+
     # with_lock has reloaded this row. Visibility, resource type, and
-    # precedence come from that read. The inferred group was computed
-    # before the lock was taken.
-    def apply_locked(row, coverage, inferred)
+    # precedence come from that read. An inference was computed, when
+    # one was needed, before the lock was taken.
+    def apply_locked(row, coverage, inferred, snapshot)
       return unless medicaid?(row)
       return unless referral_visible?(row)
       return current_group(row) if staff_entry?(row)
       return write_stated!(row, coverage) if stated?(coverage)
       return current_group(row) if preserved?(row)
 
+      apply_inference(row, inferred, snapshot)
+    end
+
+    def apply_inference(row, inferred, snapshot)
+      return current_group(row) if inferred.nil?
+      return reconcile_changed_inference(row, inferred) if eligibility_changed?(row, snapshot)
+
       write!(row, inferred, "inferred")
+    end
+
+    # Two inferences that disagree are unknown — never a guess. The
+    # same inferred group is left as stored.
+    def reconcile_changed_inference(row, inferred)
+      return current_group(row) if same_inferred_group?(row, inferred)
+      return write!(row, "unknown", "inferred") if inferred_source?(row)
+
+      write!(row, inferred, "inferred")
+    end
+
+    def same_inferred_group?(row, inferred)
+      inferred_source?(row) && row.eligibility_group == inferred
+    end
+
+    def inferred_source?(check)
+      check.eligibility_group_source == "inferred"
+    end
+
+    def eligibility_changed?(row, snapshot)
+      return false if snapshot.nil?
+
+      snapshot != eligibility_snapshot(row)
+    end
+
+    def eligibility_snapshot(row)
+      [
+        row.eligibility_group,
+        row.eligibility_group_source,
+        row.eligibility_group_set_at
+      ]
     end
 
     def write_staff!(row, group)
@@ -138,7 +194,7 @@ module Corvid
     end
 
     def inferred_group(check, coverage, date_of_service)
-      on_date = calendar_date(date_of_service)
+      on_date = service_date(date_of_service)
       return "unknown" unless on_date
 
       rules = StateMedicaidRules.lookup(coverage_value(coverage, :state))
@@ -181,7 +237,7 @@ module Corvid
     end
 
     def member_age(check, on_date)
-      dob = calendar_date(patient_for(check)&.dob)
+      dob = birth_date(patient_for(check)&.dob)
       return unless dob
 
       age_in_whole_years(dob, on_date)
@@ -222,10 +278,22 @@ module Corvid
       dob.month == 2 && dob.day == 29
     end
 
-    # Time and TimeWithZone are the business date in Time.zone. A Date
-    # is already a calendar day and is not shifted.
-    def calendar_date(value)
+    # Time, TimeWithZone, and DateTime keep the calendar date in their
+    # own fields. A date of birth is never shifted into Time.zone.
+    def birth_date(value)
       case value
+      when DateTime, Time, ActiveSupport::TimeWithZone, Date
+        Date.new(value.year, value.month, value.day)
+      end
+    end
+
+    # Time and TimeWithZone are the business date in Time.zone. A
+    # DateTime is that same instant. A Date is already a calendar day
+    # and is not shifted. DateTime is matched before Date.
+    def service_date(value)
+      case value
+      when DateTime
+        value.to_time.in_time_zone(Time.zone).to_date
       when Time, ActiveSupport::TimeWithZone
         value.in_time_zone(Time.zone).to_date
       when Date
