@@ -66,6 +66,8 @@ module Corvid
 
       DEFAULT_OPEN_TIMEOUT = 10
       DEFAULT_READ_TIMEOUT = 30
+      # get_coverages follows at most this many Bundle pages, then fails closed.
+      MAX_COVERAGE_PAGES = 50
 
       def initialize(base_url:, bearer_token: nil, headers: {},
                      open_timeout: DEFAULT_OPEN_TIMEOUT,
@@ -260,6 +262,31 @@ module Corvid
             )
           end
         end
+      end
+
+      # ----------------------------------------------------------------------
+      # Coverages
+      #
+      # GET Coverage?beneficiary=Patient/<id>, then follow Bundle.link
+      # relation "next" for up to MAX_COVERAGE_PAGES pages on this origin.
+      # Returns active coverages whose period covers Date.current (a missing
+      # start or end is an open bound). plan_name is the class entry typed
+      # "plan": its name, otherwise its value.
+      #
+      # An Array means the search finished ([] when nothing matched). nil
+      # means unknown — a non-2xx page, bad JSON, a non-Bundle body, an
+      # off-origin / cyclic / over-limit next link, or a transport error
+      # (Timeout::Error, including Net::ReadTimeout and Net::OpenTimeout,
+      # SocketError, SystemCallError, OpenSSL::SSL::SSLError, IOError).
+      # Callers fail closed; a partial page list is never returned.
+      # ----------------------------------------------------------------------
+
+      def get_coverages(patient_identifier)
+        query = URI.encode_www_form(beneficiary: "Patient/#{patient_identifier}")
+        collect_coverage_pages("#{@base_url}/Coverage?#{query}")
+      rescue Timeout::Error, SocketError, SystemCallError,
+             OpenSSL::SSL::SSLError, IOError
+        nil
       end
 
       # ----------------------------------------------------------------------
@@ -634,6 +661,196 @@ module Corvid
         Date.parse(value.to_s)
       rescue ArgumentError
         nil
+      end
+
+      # Coverage search -----------------------------------------------------
+
+      def collect_coverage_pages(url)
+        found = []
+        seen = {}
+
+        MAX_COVERAGE_PAGES.times do
+          page = read_coverage_page(url, seen)
+          return nil unless page
+
+          found.concat(page[:coverages])
+          url = page[:next_url]
+          return found if url.nil?
+        end
+        nil
+      end
+
+      def read_coverage_page(url, seen)
+        return nil if seen[url] || !same_origin_coverage_url?(url)
+
+        seen[url] = true
+        fetch_coverage_bundle(url)
+      end
+
+      def fetch_coverage_bundle(url)
+        response = http_get(url)
+        return nil unless response.is_a?(Net::HTTPSuccess)
+
+        bundle = parse_coverage_bundle(coverage_response_body(response))
+        return nil unless bundle
+
+        rows = active_coverage_rows(bundle)
+        return nil if rows.nil?
+
+        next_url = bundle_next_url(bundle)
+        return nil if next_url == :invalid_coverage_next
+
+        { coverages: rows, next_url: next_url }
+      end
+
+      # #body re-reads the socket unless Net::HTTP already consumed it
+      # (@read). http_get does that before returning. Test doubles only
+      # assign #body=, which stores the string and leaves @read false, so
+      # #body would raise IOError — use the buffered string in that case.
+      def coverage_response_body(response)
+        if response.instance_variable_get(:@read)
+          response.body
+        else
+          response.instance_variable_get(:@body)
+        end
+      end
+
+      def parse_coverage_bundle(body)
+        return nil unless body.is_a?(String)
+
+        parsed = JSON.parse(body)
+        parsed if parsed.is_a?(Hash) && parsed["resourceType"] == "Bundle"
+      rescue JSON::ParserError
+        nil
+      end
+
+      def active_coverage_rows(bundle)
+        entries = bundle["entry"]
+        return [] if entries.nil?
+        return nil unless entries.is_a?(Array)
+
+        entries.filter_map { |entry| coverage_row(entry) }
+      end
+
+      def coverage_row(entry)
+        resource = entry.is_a?(Hash) ? entry["resource"] : nil
+        return nil unless resource.is_a?(Hash)
+        return nil unless resource["resourceType"] == "Coverage"
+        return nil unless resource["status"] == "active"
+        return nil unless coverage_period_current?(resource)
+
+        coverage_attributes(resource)
+      end
+
+      def coverage_period_current?(resource)
+        period = resource["period"]
+        return true if period.nil?
+        return false unless period.is_a?(Hash)
+
+        coverage_bound_ok?(period["start"], :on_or_before) &&
+          coverage_bound_ok?(period["end"], :on_or_after)
+      end
+
+      def coverage_bound_ok?(raw, direction)
+        return true if raw.nil? || raw == ""
+
+        date = parse_date(raw)
+        return false unless date
+
+        direction == :on_or_before ? date <= Date.current : date >= Date.current
+      end
+
+      def coverage_attributes(resource)
+        {
+          payer_name: resource.dig("payor", 0, "display"),
+          plan_name: coverage_plan_name(resource),
+          coverage_type: resource.dig("type", "coding", 0, "code"),
+          policy_number: resource["subscriberId"],
+          coverage_start: parse_date(resource.dig("period", "start")),
+          coverage_end: parse_date(resource.dig("period", "end")),
+          status: resource["status"]
+        }
+      end
+
+      def coverage_plan_name(resource)
+        classes = resource["class"]
+        return nil unless classes.is_a?(Array)
+
+        plan = classes.find do |row|
+          row.is_a?(Hash) && row.dig("type", "coding", 0, "code") == "plan"
+        end
+        return nil unless plan
+
+        [ plan["name"], plan["value"] ].find { |item| item.is_a?(String) && !item.empty? }
+      end
+
+      def bundle_next_url(bundle)
+        links = bundle["link"]
+        return nil if links.nil?
+        return :invalid_coverage_next unless links.is_a?(Array)
+
+        link = links.find { |row| row.is_a?(Hash) && row["relation"] == "next" }
+        return nil unless link
+
+        url = link["url"]
+        url.is_a?(String) && !url.empty? ? url : :invalid_coverage_next
+      end
+
+      def same_origin_coverage_url?(url)
+        return false unless url.is_a?(String) && !url.empty?
+
+        candidate = URI.parse(url)
+        base = URI.parse(@base_url)
+        return false unless candidate.is_a?(URI::HTTP) && base.is_a?(URI::HTTP)
+        return false unless candidate.scheme == base.scheme && candidate.port == base.port
+        return false unless candidate.host.to_s.casecmp?(base.host.to_s)
+
+        path_under_base?(candidate.path, base.path)
+      rescue URI::InvalidURIError, URI::InvalidComponentError
+        false
+      end
+
+      def path_under_base?(candidate_path, base_path)
+        child = normalized_coverage_path(candidate_path)
+        root = normalized_coverage_path(base_path)
+        return false unless child && root
+
+        child == root || child.start_with?(root == "/" ? "/" : "#{root}/")
+      end
+
+      def normalized_coverage_path(path)
+        return nil unless path.is_a?(String)
+
+        decoded = repeated_decode(path)
+        return nil unless decoded.is_a?(String)
+        return nil if decoded.match?(/[[:cntrl:]\\]/)
+        return nil unless decoded.empty? || decoded.start_with?("/")
+
+        collapse_coverage_segments(decoded)
+      end
+
+      def repeated_decode(path)
+        decoded = path
+        5.times do
+          nxt = URI.decode_uri_component(decoded)
+          return nxt if nxt == decoded
+
+          decoded = nxt
+        end
+        nil
+      rescue ArgumentError
+        nil
+      end
+
+      def collapse_coverage_segments(decoded)
+        segments = []
+        decoded.split("/").each do |segment|
+          next if segment.empty? || segment == "."
+          return nil if segment == ".." && segments.empty?
+
+          segment == ".." ? segments.pop : segments << segment
+        end
+        "/#{segments.join("/")}"
       end
     end
   end
