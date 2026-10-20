@@ -6,6 +6,7 @@ require "uri"
 require "date"
 require "bigdecimal"
 require "openssl"
+require "zlib"
 require "corvid/adapters/base"
 require "corvid/value_objects"
 
@@ -52,14 +53,36 @@ module Corvid
       # (http://terminology.hl7.org/CodeSystem/condition-category).
       CONDITION_CATEGORY_SYSTEM = "http://terminology.hl7.org/CodeSystem/condition-category"
       US_CORE_CONDITION_CATEGORIES = %w[problem-list-item encounter-diagnosis].freeze
-      INCLUDED_CLINICAL_STATUSES = %w[active resolved].freeze
+      CONDITION_CLINICAL_SYSTEM = "http://terminology.hl7.org/CodeSystem/condition-clinical"
+      CONDITION_VER_STATUS_SYSTEM = "http://terminology.hl7.org/CodeSystem/condition-ver-status"
+      # Full condition-clinical value set. An in-set code outside
+      # INCLUDED_CLINICAL_STATUSES is dropped; a code outside this set makes
+      # the page unknown.
+      FHIR_CLINICAL_STATUSES = %w[active recurrence relapse inactive remission resolved].freeze
+      INCLUDED_CLINICAL_STATUSES = %w[active recurrence relapse resolved].freeze
+      EXCLUDED_VERIFICATION_STATUSES = %w[refuted entered-in-error].freeze
       BLOCKING_OUTCOME_SEVERITIES = %w[error fatal].freeze
+      # FHIR R4 dateTime grammar (anchored). Year and year-month are valid
+      # partials and carry no day. Do not use Date.parse — it accepts prose.
+      FHIR_YEAR = "(?:[0-9](?:[0-9](?:[0-9][1-9]|[1-9]0)|[1-9]00)|[1-9]000)"
+      FHIR_MONTH = "(?:0[1-9]|1[0-2])"
+      FHIR_DAY = "(?:0[1-9]|[1-2][0-9]|3[0-1])"
+      FHIR_TIME = "T(?:[01][0-9]|2[0-3]):[0-5][0-9]:(?:[0-5][0-9]|60)" \
+                  "(?:\\.[0-9]+)?(?:Z|[+-](?:(?:0[0-9]|1[0-3]):[0-5][0-9]|14:00))"
+      FHIR_DATETIME = /
+        \A
+        (?<year>#{FHIR_YEAR})
+        (?:-(?<month>#{FHIR_MONTH})(?:-(?<day>#{FHIR_DAY})(?:#{FHIR_TIME})?)?)?
+        \z
+      /x
 
       # Maps Corvid resource types to FHIR Coverage.type codes (HL7 v3 ActCode).
       # Real servers vary; align with deployment ValueSet.
 
       # A search that cannot be trusted is unknown (nil), never a partial list.
       # ArgumentError covers Date::Error while mapping an unparseable date.
+      # Header, protocol, and zlib faults are unknown too — they are not
+      # subclasses of one another on Ruby 4.
       CLINICAL_READ_ERRORS = [
         Timeout::Error,
         SocketError,
@@ -67,6 +90,9 @@ module Corvid
         OpenSSL::SSL::SSLError,
         IOError,
         Net::ProtocolError,
+        Net::HTTPBadResponse,
+        Net::HTTPHeaderSyntaxError,
+        Zlib::Error,
         EncodingError,
         ArgumentError,
         JSON::ParserError
@@ -236,17 +262,18 @@ module Corvid
 
       # One Condition search page (no Bundle.link follow). Array of
       # ConditionReference, or nil when the page is unknown. [] means none.
-      # US Core problem-list-item and encounter-diagnosis, active or resolved.
-      # In memory only — never persisted or logged (ADR 0003).
+      # US Core problem-list-item and encounter-diagnosis; clinical status
+      # active, recurrence, relapse, or resolved. Refuted and entered-in-error
+      # are excluded. In memory only — never persisted or logged (ADR 0003).
       def get_conditions(patient_identifier)
         clinical_search("Condition", patient_identifier) do |bundle|
           map_condition_entries(bundle, patient_identifier)
         end
       end
 
-      # One MedicationRequest search page. Resolves contained or bundle-included
-      # Medication resources. Array of MedicationReference, or nil when unknown.
-      # In memory only — never persisted or logged (ADR 0003).
+      # One MedicationRequest search page. Resolves contained, bundle-included,
+      # or same-server Medication references. Array of MedicationReference, or
+      # nil when unknown. In memory only — never persisted or logged (ADR 0003).
       def get_medications(patient_identifier)
         clinical_search("MedicationRequest", patient_identifier) do |bundle|
           map_medication_entries(bundle, patient_identifier)
@@ -682,42 +709,17 @@ module Corvid
       # One page. nil means unknown; never a partial list. Response bodies are
       # not logged (ADR 0003).
 
+      # Goes through #fhir_search so an override (FhirDemoAdapter) can serve
+      # the page from memory. Blank ids are unknown and must not hit the wire.
       def clinical_search(resource_type, patient_identifier)
-        response = http_get(clinical_search_url(resource_type, patient_identifier))
-        bundle = parse_search_bundle(response)
-        return nil if bundle.nil?
+        return nil if patient_identifier.blank?
+
+        bundle = fhir_search(resource_type, patient: patient_identifier)
+        return nil unless search_bundle?(bundle)
 
         yield bundle
       rescue *CLINICAL_READ_ERRORS
         nil
-      end
-
-      def clinical_search_url(resource_type, patient_identifier)
-        query = URI.encode_www_form(patient: patient_identifier)
-        "#{@base_url}/#{resource_type}?#{query}"
-      end
-
-      def parse_search_bundle(response)
-        body = clinical_response_body(response)
-        return nil if body.nil?
-
-        parsed = JSON.parse(body)
-        parsed if search_bundle?(parsed)
-      rescue JSON::ParserError
-        nil
-      end
-
-      def clinical_response_body(response)
-        return nil unless response.is_a?(Net::HTTPSuccess)
-
-        utf8_body(response.body)
-      end
-
-      def utf8_body(body)
-        return nil unless body.is_a?(String)
-
-        utf8 = body.dup.force_encoding(Encoding::UTF_8)
-        utf8 if utf8.valid_encoding?
       end
 
       def search_bundle?(parsed)
@@ -768,8 +770,18 @@ module Corvid
         value
       end
 
+      # Full day precision becomes a Date. A grammar-valid partial (year or
+      # year-month) is nil so the row is kept. Anything else is unknown.
       def strict_date(value)
-        Date.parse(value)
+        match = FHIR_DATETIME.match(value)
+        return :unknown unless match
+        return nil unless match[:day]
+
+        calendar_date(match)
+      end
+
+      def calendar_date(match)
+        Date.new(match[:year].to_i, match[:month].to_i, match[:day].to_i)
       rescue ArgumentError
         :unknown
       end
@@ -784,8 +796,8 @@ module Corvid
       def patient_reference?(reference, patient_identifier)
         return false unless reference.is_a?(String)
 
-        segments = reference.split("/")
-        segments[-2] == "Patient" && segments[-1] == patient_identifier.to_s
+        relative = "Patient/#{patient_identifier}"
+        reference == relative || reference == "#{@base_url}/#{relative}"
       end
 
       # Conditions ------------------------------------------------------------
@@ -805,8 +817,24 @@ module Corvid
       def condition_from_entry(entry, patient_identifier)
         resource = entry_resource(entry)
         return :unknown if resource == :unknown
+        return nil if ignorable_include?(entry, resource, "Condition")
 
         map_condition_resource(resource, patient_identifier)
+      end
+
+      # search.mode include may carry other resource types. Those are skipped.
+      # Any other unexpected type makes the page unknown.
+      def ignorable_include?(entry, resource, *types)
+        return false unless include_entry?(entry)
+        return false if types.include?(resource["resourceType"])
+        return false if resource["resourceType"] == "OperationOutcome"
+
+        true
+      end
+
+      def include_entry?(entry)
+        search = entry["search"]
+        search.is_a?(Hash) && search["mode"] == "include"
       end
 
       def map_condition_resource(resource, patient_identifier)
@@ -823,6 +851,19 @@ module Corvid
       def build_condition_reference(resource, patient_identifier)
         return :unknown unless subject_matches?(resource, patient_identifier)
 
+        marker = verification_marker(resource)
+        assembled = assemble_condition(resource)
+        condition_result(marker, assembled)
+      end
+
+      def condition_result(marker, assembled)
+        return :unknown if marker == :unknown || assembled == :unknown
+        return nil if marker == :skip
+
+        assembled
+      end
+
+      def assemble_condition(resource)
         category = us_core_category(resource)
         status = clinical_status_code(resource)
         parts = codeable_parts(resource["code"])
@@ -831,6 +872,26 @@ module Corvid
         return nil unless include_condition?(category, status)
 
         condition_reference(parts, status, category, onset)
+      end
+
+      def verification_marker(resource)
+        codings = status_codings(resource["verificationStatus"])
+        return :unknown if codings == :unknown
+        return :ok if codings.nil? || codings.empty?
+        return :skip if codings.any? { |coding| excluded_verification_coding?(coding) }
+
+        :ok
+      end
+
+      def excluded_verification_coding?(coding)
+        return false unless verification_system?(coding)
+
+        code = coding["code"]
+        code.is_a?(String) && EXCLUDED_VERIFICATION_STATUSES.include?(code)
+      end
+
+      def verification_system?(coding)
+        coding["system"] == CONDITION_VER_STATUS_SYSTEM || absent_system?(coding)
       end
 
       def include_condition?(category, status)
@@ -895,9 +956,30 @@ module Corvid
       def clinical_status_code(resource)
         codings = status_codings(resource["clinicalStatus"])
         return codings if codings.nil? || codings == :unknown
-        return nil if codings.empty?
 
-        optional_string(codings.first["code"])
+        clinical_code(select_clinical_coding(codings))
+      end
+
+      # Official condition-clinical coding wins, in any position. A coding
+      # with no system is the same value set. Other systems are ignored.
+      def select_clinical_coding(codings)
+        codings.find { |coding| coding["system"] == CONDITION_CLINICAL_SYSTEM } ||
+          codings.find { |coding| absent_system?(coding) }
+      end
+
+      def clinical_code(coding)
+        return nil if coding.nil?
+
+        code = optional_string(coding["code"])
+        return code if code.nil? || code == :unknown
+        return :unknown unless FHIR_CLINICAL_STATUSES.include?(code)
+
+        code
+      end
+
+      def absent_system?(coding)
+        system = coding["system"]
+        system.nil? || (system.is_a?(String) && system.blank?)
       end
 
       def status_codings(status)
@@ -994,6 +1076,7 @@ module Corvid
       def classify_medication_entry(entry, index)
         resource = entry_resource(entry)
         return :unknown if resource == :unknown
+        return nil if ignorable_include?(entry, resource, "Medication", "MedicationRequest")
 
         case resource["resourceType"]
         when "OperationOutcome"
@@ -1010,8 +1093,9 @@ module Corvid
       def index_medication(index, resource)
         id = resource["id"]
         return :unknown unless id.is_a?(String) && id.present?
+        return :unknown if index.key?(id)
 
-        index[id] ||= resource
+        index[id] = resource
         nil
       end
 
@@ -1063,8 +1147,29 @@ module Corvid
       end
 
       def concept_present?(request)
-        value = request["medicationCodeableConcept"]
-        request.key?("medicationCodeableConcept") && !value.nil?
+        concept = request["medicationCodeableConcept"]
+        return false if concept.nil?
+        return true unless concept.is_a?(Hash)
+
+        codeable_content?(concept)
+      end
+
+      def codeable_content?(concept)
+        text_content?(concept["text"]) || any_coding_content?(concept["coding"])
+      end
+
+      def any_coding_content?(codings)
+        return false unless codings.is_a?(Array)
+
+        codings.any? { |coding| coding_content?(coding) }
+      end
+
+      def coding_content?(coding)
+        coding.is_a?(Hash) && (text_content?(coding["code"]) || text_content?(coding["display"]))
+      end
+
+      def text_content?(text)
+        text.is_a?(String) && text.present?
       end
 
       def referenced_code_parts(request, index)
@@ -1095,23 +1200,68 @@ module Corvid
       end
 
       def contained_medication(request, id)
-        contained = request["contained"]
-        return nil if contained.nil?
-        return :unknown unless contained.is_a?(Array)
-        return :unknown if contained.any? { |resource| !resource.is_a?(Hash) }
+        medications = contained_medications(request)
+        return medications if medications.nil? || medications == :unknown
+        return :unknown if duplicate_medication_ids?(medications)
 
-        contained.find { |resource| medication_id?(resource, id) }
+        medications.find { |resource| resource["id"] == id }
       end
 
-      def medication_id?(resource, id)
-        resource["resourceType"] == "Medication" && resource["id"] == id
+      def contained_medications(request)
+        contained = request["contained"]
+        return nil if contained.nil?
+        return :unknown unless contained_list?(contained)
+
+        contained.select { |resource| resource["resourceType"] == "Medication" }
+      end
+
+      def contained_list?(contained)
+        contained.is_a?(Array) && contained.all? { |resource| resource.is_a?(Hash) }
+      end
+
+      def duplicate_medication_ids?(medications)
+        ids = medications.map { |resource| resource["id"] }
+        ids.uniq.size != ids.size
       end
 
       def bundled_medication(index, reference)
-        segments = reference.split("?").first.split("/")
-        return nil unless segments[-2] == "Medication"
+        id = medication_id_from_reference(reference)
+        return nil if id.nil?
 
-        index[segments[-1]]
+        index[id] || read_medication(id)
+      end
+
+      # Relative Medication/<id> or exactly base_url/Medication/<id>.
+      # Foreign absolutes and malformed references do not resolve.
+      def medication_id_from_reference(reference)
+        prefix = medication_reference_prefix(reference)
+        return nil unless prefix
+
+        id = reference.delete_prefix(prefix)
+        id if medication_id_token?(id)
+      end
+
+      def medication_reference_prefix(reference)
+        return nil unless reference.is_a?(String)
+
+        absolute = "#{@base_url}/Medication/"
+        return absolute if reference.start_with?(absolute)
+        return "Medication/" if reference.start_with?("Medication/")
+
+        nil
+      end
+
+      def medication_id_token?(id)
+        id.present? && !id.include?("/") && !id.include?("?") && !id.include?("#")
+      end
+
+      def read_medication(id)
+        resource = fhir_read("Medication", id)
+        resource if medication_resource?(resource, id)
+      end
+
+      def medication_resource?(resource, id)
+        resource.is_a?(Hash) && resource["resourceType"] == "Medication" && resource["id"] == id
       end
 
       def authored_on_for(request)

@@ -159,7 +159,8 @@ module Corvid
       # ----------------------------------------------------------------------
       # Clinical reads.
       # Elements are ConditionReference / MedicationReference.
-      # [] means none on record. nil means unknown (the source did not answer).
+      # nil means unknown (the source did not answer). Adapters that cannot
+      # read these return [].
       # In memory only — never persist or log (ADR 0003).
       # ----------------------------------------------------------------------
 

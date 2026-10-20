@@ -451,19 +451,27 @@ module Corvid
       end
 
       def add_condition(patient_identifier, reference)
+        unless reference.is_a?(Corvid::ConditionReference)
+          raise ArgumentError, "expected ConditionReference"
+        end
+
         (@conditions[patient_identifier.to_s] ||= []) << reference
       end
 
       def get_conditions(patient_identifier)
-        @conditions[patient_identifier.to_s] || []
+        (@conditions[patient_identifier.to_s] || []).dup
       end
 
       def add_medication(patient_identifier, reference)
+        unless reference.is_a?(Corvid::MedicationReference)
+          raise ArgumentError, "expected MedicationReference"
+        end
+
         (@medications[patient_identifier.to_s] ||= []) << reference
       end
 
       def get_medications(patient_identifier)
-        @medications[patient_identifier.to_s] || []
+        (@medications[patient_identifier.to_s] || []).dup
       end
 
       def reset!
