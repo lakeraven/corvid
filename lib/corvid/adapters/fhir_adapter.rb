@@ -80,10 +80,37 @@ module Corvid
         /\A\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})\z/
       # Coverage.status. Any other value fails the search closed.
       COVERAGE_STATUSES = %w[active cancelled draft entered-in-error].freeze
-      # "pay" is self-pay with this system, or when the coding has no system.
+      # Code "pay" is self-pay with either system below, or when the
+      # coding has no system (issue #607 adds the STU3 system).
+      COVERAGE_SELF_PAY_CODE = "pay"
       COVERAGE_SELFPAY_SYSTEM = "http://terminology.hl7.org/CodeSystem/coverage-selfpay"
-      # PHDSC Source of Payment Typology. Code "81" with this system is self-pay.
+      # STU3 Coverage self-pay code system (issue #607).
+      COVERAGE_STU3_SELFPAY_SYSTEM = "http://hl7.org/fhir/coverage-selfpay"
+      COVERAGE_PAY_SELF_PAY_SYSTEMS = [
+        COVERAGE_SELFPAY_SYSTEM,
+        COVERAGE_STU3_SELFPAY_SYSTEM
+      ].freeze
+      # X12 claim filing indicator. Code "09" with this system, or with
+      # no system, is self-pay (issue #607).
+      COVERAGE_X12_SELF_PAY_CODE = "09"
+      COVERAGE_X12_CLAIM_FILING_INDICATOR_SYSTEM =
+        "https://x12.org/codes/claim-filing-indicator-codes"
+      # type.text matching this value, case-insensitively after strip, is
+      # self-pay when Coverage.type has no coding (issue #607).
+      COVERAGE_SELF_PAY_TEXT = "self pay"
+      # PHDSC Source of Payment Typology (issue #607). On either system
+      # below, a coding is insurance only when its code is digits whose
+      # first digit is in COVERAGE_SOP_INSURER_FIRST_DIGITS. A first digit
+      # of 3 (IHS/Tribe incl. PRC), 8 (no payment), or 9 (miscellaneous),
+      # or a non-digit code, is not insurance. Any such coding excludes
+      # the Coverage even when another coding is an insurer code.
       COVERAGE_SOP_SYSTEM = "urn:oid:2.16.840.1.113883.3.221.5"
+      COVERAGE_SOP_BARE_OID = "2.16.840.1.113883.3.221.5"
+      COVERAGE_SOP_SYSTEMS = [ COVERAGE_SOP_SYSTEM, COVERAGE_SOP_BARE_OID ].freeze
+      COVERAGE_SOP_INSURER_FIRST_DIGITS = "124567"
+      # Digits whose first digit is an insurer family (issue #607).
+      COVERAGE_SOP_INSURER_CODE_RE =
+        /\A[#{COVERAGE_SOP_INSURER_FIRST_DIGITS}]\d*\z/
       COVERAGE_REFERENCE_ID_RE = %r{\A[^/?#]+\z}
 
       def initialize(base_url:, bearer_token: nil, headers: {},
@@ -298,10 +325,22 @@ module Corvid
       # Insurance is an allowlist. A Coverage is included only when every
       # payor is a Hash whose reference is "Organization/<id>" or exactly
       # "#{base_url}/Organization/<id>", and there is at least one payor.
-      # No type.coding, in any position, may be self-pay: code "pay" with
-      # system http://terminology.hl7.org/CodeSystem/coverage-selfpay or
-      # with no system, or code "81" with system
-      # urn:oid:2.16.840.1.113883.3.221.5. When kind is present it must be
+      # No type.coding, in any position, may be self-pay or a non-insurer
+      # PHDSC code (issue #607). Self-pay is code "pay" with system
+      # http://terminology.hl7.org/CodeSystem/coverage-selfpay, system
+      # http://hl7.org/fhir/coverage-selfpay (STU3), or no system; or
+      # code "09" with system
+      # https://x12.org/codes/claim-filing-indicator-codes or no system.
+      # On PHDSC Source of Payment Typology system
+      # urn:oid:2.16.840.1.113883.3.221.5 or bare OID
+      # 2.16.840.1.113883.3.221.5, a coding is insurance only when its
+      # code is digits whose first digit is 1, 2, 4, 5, 6, or 7. A first
+      # digit of 3 (IHS/Tribe incl. PRC), 8 (no payment), or 9
+      # (miscellaneous), or a non-digit code, is not insurance; any such
+      # coding excludes the Coverage even when another coding is an
+      # insurer code. Codes in other systems keep the prior rules.
+      # type.text equal to "self pay", case-insensitively after strip, is
+      # self-pay when there is no coding. When kind is present it must be
       # "insurance". Coverages excluded by this allowlist still count
       # toward the total check.
       #
@@ -922,8 +961,9 @@ module Corvid
       def insurance_allowlisted?(resource, codings, payors)
         return false unless coverage_kind_allows?(resource)
         return false unless organization_payors?(payors)
+        return false if self_pay_type_text?(resource, codings)
 
-        codings.none? { |coding| self_pay_coding?(coding) }
+        codings.all? { |coding| insurance_type_coding?(coding) }
       end
 
       def coverage_kind_allows?(resource)
@@ -977,9 +1017,56 @@ module Corvid
       def self_pay_coding?(coding)
         code = coding["code"]
         system = coding["system"]
-        return true if code == "pay" && (system.nil? || system == COVERAGE_SELFPAY_SYSTEM)
+        pay_self_pay?(code, system) || x12_self_pay?(code, system)
+      end
 
-        code == "81" && system == COVERAGE_SOP_SYSTEM
+      def pay_self_pay?(code, system)
+        code == COVERAGE_SELF_PAY_CODE && pay_self_pay_system?(system)
+      end
+
+      def pay_self_pay_system?(system)
+        system.nil? || COVERAGE_PAY_SELF_PAY_SYSTEMS.include?(system)
+      end
+
+      def x12_self_pay?(code, system)
+        code == COVERAGE_X12_SELF_PAY_CODE && x12_self_pay_system?(system)
+      end
+
+      def x12_self_pay_system?(system)
+        system.nil? || system == COVERAGE_X12_CLAIM_FILING_INDICATOR_SYSTEM
+      end
+
+      # Issue #607. A PHDSC SOP coding that is not an insurer family
+      # excludes the Coverage, including when another coding is insurance.
+      def sop_non_insurer_coding?(coding)
+        return false unless sop_system?(coding["system"])
+
+        !sop_insurer_code?(coding["code"])
+      end
+
+      def sop_system?(system)
+        COVERAGE_SOP_SYSTEMS.include?(system)
+      end
+
+      def sop_insurer_code?(code)
+        code.is_a?(String) && COVERAGE_SOP_INSURER_CODE_RE.match?(code)
+      end
+
+      def insurance_type_coding?(coding)
+        !self_pay_coding?(coding) && !sop_non_insurer_coding?(coding)
+      end
+
+      # Issue #607. type.text "self pay" applies only when there is no coding.
+      def self_pay_type_text?(resource, codings)
+        return false unless codings.empty?
+
+        text = coverage_type_text(resource)
+        text.is_a?(String) && text.strip.casecmp?(COVERAGE_SELF_PAY_TEXT)
+      end
+
+      def coverage_type_text(resource)
+        type = resource["type"]
+        type.is_a?(Hash) ? type["text"] : nil
       end
 
       def coverage_beneficiary_matches?(resource, patient_identifier)
