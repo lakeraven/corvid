@@ -78,6 +78,13 @@ module Corvid
       COVERAGE_DATE_RE = /\A\d{4}-\d{2}-\d{2}\z/
       COVERAGE_DATETIME_RE =
         /\A\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})\z/
+      # Coverage.status. Any other value fails the search closed.
+      COVERAGE_STATUSES = %w[active cancelled draft entered-in-error].freeze
+      # "pay" is self-pay with this system, or when the coding has no system.
+      COVERAGE_SELFPAY_SYSTEM = "http://terminology.hl7.org/CodeSystem/coverage-selfpay"
+      # PHDSC Source of Payment Typology. Code "81" with this system is self-pay.
+      COVERAGE_SOP_SYSTEM = "urn:oid:2.16.840.1.113883.3.221.5"
+      COVERAGE_REFERENCE_ID_RE = %r{\A[^/?#]+\z}
 
       def initialize(base_url:, bearer_token: nil, headers: {},
                      open_timeout: DEFAULT_OPEN_TIMEOUT,
@@ -288,10 +295,15 @@ module Corvid
       # "#{base_url}/Patient/<id>". Any other reference, including an
       # absolute URL on another server, makes the whole result nil.
       #
-      # Self-pay is not insurance and is left out of the array: type
-      # coding[0].code "pay", or payor[0].reference starting with
-      # "Patient/" or "RelatedPerson/". Those resources still count as
-      # Coverages received.
+      # Insurance is an allowlist. A Coverage is included only when every
+      # payor is a Hash whose reference is "Organization/<id>" or exactly
+      # "#{base_url}/Organization/<id>", and there is at least one payor.
+      # No type.coding, in any position, may be self-pay: code "pay" with
+      # system http://terminology.hl7.org/CodeSystem/coverage-selfpay or
+      # with no system, or code "81" with system
+      # urn:oid:2.16.840.1.113883.3.221.5. When kind is present it must be
+      # "insurance". Coverages excluded by this allowlist still count
+      # toward the total check.
       #
       # The array is active coverages whose period covers now. A missing
       # start or end is an open bound. A present bound must match strict
@@ -304,24 +316,30 @@ module Corvid
       # with Time.current; the stored value is the UTC calendar date of
       # that instant. One parser feeds both the filter and the mapping.
       #
-      # A Coverage with no status, or with "period" present but not an
-      # object, is nil. Every Coverage resource is counted across all
-      # pages before the active and self-pay filters. When the first page
-      # has a numeric total, that count must equal it or the result is
-      # nil. An entry whose resource is an OperationOutcome with an issue
-      # severity "error" or "fatal" is nil. A Bundle with no entry is []
-      # only when total is absent or 0; a positive total with no entries
-      # is nil. plan_name is the class entry typed "plan": its name,
-      # otherwise its value.
+      # status must be active, cancelled, draft, or entered-in-error;
+      # any other value, including a missing status, is nil. A Coverage
+      # with "period" present but not an object is nil. A malformed shape
+      # (type, payor, beneficiary, class, or coding that is not the Hash,
+      # Array, or String that element requires) is nil and does not raise.
+      # Every Coverage resource is counted across all pages before the
+      # active and insurance filters. When total is present it must be an
+      # Integer >= 0 equal to that count, or the result is nil. An entry
+      # whose resource is an OperationOutcome with an issue severity
+      # "error" or "fatal" is nil. A Bundle with no entry is [] only when
+      # total is absent or 0; any other total with no entries is nil.
+      # plan_name is the class entry typed "plan": its name, otherwise
+      # its value.
       #
       # An Array means the search finished ([] when nothing matched). nil
       # means unknown — a non-2xx page, bad JSON, a non-Bundle body, an
-      # untrusted beneficiary or period, a total that does not match the
-      # Coverage count, a fatal OperationOutcome, an off-origin / cyclic /
-      # over-limit next link, or a transport error (Timeout::Error,
-      # including Net::ReadTimeout and Net::OpenTimeout, SocketError,
-      # SystemCallError, OpenSSL::SSL::SSLError, IOError,
-      # Net::HTTPBadResponse, Net::HTTPHeaderSyntaxError, Zlib::Error).
+      # untrusted beneficiary or period, a malformed Coverage, a status
+      # outside the FHIR set, a total that is not an Integer >= 0 or does
+      # not match the Coverage count, a fatal OperationOutcome, an
+      # off-origin / cyclic / over-limit next link, or a transport error
+      # (Timeout::Error, including Net::ReadTimeout and Net::OpenTimeout,
+      # SocketError, SystemCallError, OpenSSL::SSL::SSLError, IOError,
+      # Net::ProtocolError, Net::HTTPBadResponse,
+      # Net::HTTPHeaderSyntaxError, Zlib::Error).
       # Callers fail closed; a partial page list is never returned.
       # ----------------------------------------------------------------------
 
@@ -329,8 +347,8 @@ module Corvid
         query = URI.encode_www_form(beneficiary: "Patient/#{patient_identifier}")
         collect_coverage_pages("#{@base_url}/Coverage?#{query}", patient_identifier)
       rescue Timeout::Error, SocketError, SystemCallError,
-             OpenSSL::SSL::SSLError, IOError, Net::HTTPBadResponse,
-             Net::HTTPHeaderSyntaxError, Zlib::Error
+             OpenSSL::SSL::SSLError, IOError, Net::ProtocolError,
+             Net::HTTPBadResponse, Net::HTTPHeaderSyntaxError, Zlib::Error
         nil
       end
 
@@ -730,9 +748,20 @@ module Corvid
       end
 
       def coverage_search_result(found, received, stated_total)
-        return nil if stated_total.is_a?(Numeric) && stated_total != received
+        return nil unless coverage_total_matches?(stated_total, received)
 
         found
+      end
+
+      def coverage_total_matches?(stated_total, received)
+        return true if stated_total.nil?
+        return false unless non_negative_coverage_total?(stated_total)
+
+        stated_total == received
+      end
+
+      def non_negative_coverage_total?(total)
+        total.is_a?(Integer) && total >= 0
       end
 
       def read_coverage_page(url, seen, patient_identifier)
@@ -797,11 +826,11 @@ module Corvid
         fold_coverage_entries(entries, patient_identifier)
       end
 
-      # No entry array: an omitted or zero total is an empty search. A
-      # positive total with nothing inline means the page is incomplete.
+      # No entry array: an omitted or zero Integer total is an empty
+      # search. Any other total with nothing inline is incomplete.
       def empty_coverage_page(bundle)
         total = bundle["total"]
-        return nil unless total.nil? || total == 0
+        return nil unless total.nil? || (non_negative_coverage_total?(total) && total.zero?)
 
         { coverages: [], coverage_count: 0 }
       end
@@ -829,6 +858,8 @@ module Corvid
 
         rows << row if row
         1
+      rescue TypeError, NoMethodError
+        nil
       end
 
       def bundle_entry_resource(entry)
@@ -860,30 +891,102 @@ module Corvid
 
         period_state = coverage_period_current?(resource)
         return :unknown_coverage if period_state == :unknown_coverage
-        return nil unless period_state && insurable_coverage?(resource)
+        insurance = insurance_coverage_state(resource)
+        return :unknown_coverage if insurance == :unknown_coverage
+        plan_name = coverage_plan_name(resource)
+        return :unknown_coverage if plan_name == :unknown_coverage
+        return nil unless period_state && resource["status"] == "active" && insurance
 
-        coverage_attributes(resource)
+        coverage_attributes(resource, plan_name)
       end
 
       def trusted_coverage?(resource, patient_identifier)
-        return false unless coverage_beneficiary_matches?(resource, patient_identifier)
-
-        resource["status"].is_a?(String)
+        coverage_beneficiary_matches?(resource, patient_identifier) &&
+          known_coverage_status?(resource["status"])
       end
 
-      def insurable_coverage?(resource)
-        resource["status"] == "active" && !self_pay_coverage?(resource)
+      def known_coverage_status?(status)
+        status.is_a?(String) && COVERAGE_STATUSES.include?(status)
       end
 
-      def self_pay_coverage?(resource)
-        return true if resource.dig("type", "coding", 0, "code") == "pay"
+      def insurance_coverage_state(resource)
+        codings = coverage_type_codings(resource)
+        return :unknown_coverage if codings == :unknown_coverage
 
-        reference = resource.dig("payor", 0, "reference")
-        reference.is_a?(String) && reference.start_with?("Patient/", "RelatedPerson/")
+        payors = coverage_payors(resource)
+        return :unknown_coverage if payors == :unknown_coverage
+
+        insurance_allowlisted?(resource, codings, payors)
+      end
+
+      def insurance_allowlisted?(resource, codings, payors)
+        return false unless coverage_kind_allows?(resource)
+        return false unless organization_payors?(payors)
+
+        codings.none? { |coding| self_pay_coding?(coding) }
+      end
+
+      def coverage_kind_allows?(resource)
+        !resource.key?("kind") || resource["kind"] == "insurance"
+      end
+
+      def coverage_type_codings(resource)
+        type = resource["type"]
+        return [] if type.nil?
+        return :unknown_coverage unless type.is_a?(Hash)
+
+        coding_entries(type["coding"])
+      end
+
+      def coding_entries(coding)
+        return [] if coding.nil?
+        return :unknown_coverage unless coding.is_a?(Array)
+        return :unknown_coverage unless coding.all? { |row| row.is_a?(Hash) }
+
+        coding
+      end
+
+      def coverage_payors(resource)
+        payors = resource["payor"]
+        return [] if payors.nil?
+        return :unknown_coverage unless payors.is_a?(Array)
+        return :unknown_coverage unless payors.all? { |payor| payor.is_a?(Hash) }
+
+        payors
+      end
+
+      def organization_payors?(payors)
+        return false if payors.empty?
+
+        payors.all? { |payor| organization_reference?(payor["reference"]) }
+      end
+
+      def organization_reference?(reference)
+        return false unless reference.is_a?(String)
+
+        organization_prefixed?(reference, "Organization/") ||
+          organization_prefixed?(reference, "#{@base_url}/Organization/")
+      end
+
+      def organization_prefixed?(reference, prefix)
+        return false unless reference.start_with?(prefix)
+
+        COVERAGE_REFERENCE_ID_RE.match?(reference.delete_prefix(prefix))
+      end
+
+      def self_pay_coding?(coding)
+        code = coding["code"]
+        system = coding["system"]
+        return true if code == "pay" && (system.nil? || system == COVERAGE_SELFPAY_SYSTEM)
+
+        code == "81" && system == COVERAGE_SOP_SYSTEM
       end
 
       def coverage_beneficiary_matches?(resource, patient_identifier)
-        reference = resource.dig("beneficiary", "reference")
+        beneficiary = resource["beneficiary"]
+        return false unless beneficiary.is_a?(Hash)
+
+        reference = beneficiary["reference"]
         return false unless reference.is_a?(String)
 
         relative = "Patient/#{patient_identifier}"
@@ -976,28 +1079,76 @@ module Corvid
         :unknown_coverage
       end
 
-      def coverage_attributes(resource)
+      def coverage_attributes(resource, plan_name)
         {
-          payer_name: resource.dig("payor", 0, "display"),
-          plan_name: coverage_plan_name(resource),
-          coverage_type: resource.dig("type", "coding", 0, "code"),
+          payer_name: coverage_payor_display(resource),
+          plan_name: plan_name,
+          coverage_type: coverage_primary_type_code(resource),
           policy_number: resource["subscriberId"],
-          coverage_start: coverage_bound_date(resource.dig("period", "start"), :start),
-          coverage_end: coverage_bound_date(resource.dig("period", "end"), :end),
+          coverage_start: coverage_bound_date(coverage_period_bound(resource, "start"), :start),
+          coverage_end: coverage_bound_date(coverage_period_bound(resource, "end"), :end),
           status: resource["status"]
         }
+      end
+
+      def coverage_payor_display(resource)
+        payors = resource["payor"]
+        return nil unless payors.is_a?(Array)
+
+        first = payors.first
+        first.is_a?(Hash) ? first["display"] : nil
+      end
+
+      def coverage_primary_type_code(resource)
+        codings = coverage_type_codings(resource)
+        return nil unless codings.is_a?(Array) && !codings.empty?
+
+        codings.first["code"]
+      end
+
+      def coverage_period_bound(resource, key)
+        period = resource["period"]
+        period.is_a?(Hash) ? period[key] : nil
       end
 
       def coverage_plan_name(resource)
         classes = resource["class"]
         return nil unless classes.is_a?(Array)
 
-        plan = classes.find do |row|
-          row.is_a?(Hash) && row.dig("type", "coding", 0, "code") == "plan"
-        end
-        return nil unless plan
+        plan = coverage_plan_class(classes)
+        return :unknown_coverage if plan == :unknown_coverage
+        return nil unless plan.is_a?(Hash)
 
         [ plan["name"], plan["value"] ].find { |item| item.is_a?(String) && !item.empty? }
+      end
+
+      def coverage_plan_class(classes)
+        plan = nil
+        classes.each do |row|
+          code = coverage_class_code(row)
+          return :unknown_coverage if code == :unknown_coverage
+
+          plan = row if plan.nil? && code == "plan"
+        end
+        plan
+      end
+
+      def coverage_class_code(row)
+        return :unknown_coverage unless row.is_a?(Hash)
+
+        type = row["type"]
+        return nil if type.nil?
+        return :unknown_coverage unless type.is_a?(Hash)
+
+        first_coding_code(type["coding"])
+      end
+
+      def first_coding_code(coding)
+        rows = coding_entries(coding)
+        return rows if rows == :unknown_coverage
+        return nil if rows.empty?
+
+        rows.first["code"]
       end
 
       def bundle_next_url(bundle)
