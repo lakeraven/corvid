@@ -459,6 +459,8 @@ module Corvid
       end
 
       def get_conditions(patient_identifier)
+        return nil if blank_patient_identifier?(patient_identifier)
+
         (@conditions[patient_identifier.to_s] || []).dup
       end
 
@@ -471,6 +473,8 @@ module Corvid
       end
 
       def get_medications(patient_identifier)
+        return nil if blank_patient_identifier?(patient_identifier)
+
         (@medications[patient_identifier.to_s] || []).dup
       end
 
@@ -491,6 +495,10 @@ module Corvid
       end
 
       private
+
+      def blank_patient_identifier?(patient_identifier)
+        patient_identifier.nil? || patient_identifier.to_s.strip.empty?
+      end
 
       def build_referral_reference(identifier, attrs)
         Corvid::ReferralReference.new(

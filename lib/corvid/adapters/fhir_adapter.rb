@@ -54,7 +54,6 @@ module Corvid
       CONDITION_CATEGORY_SYSTEM = "http://terminology.hl7.org/CodeSystem/condition-category"
       US_CORE_CONDITION_CATEGORIES = %w[problem-list-item encounter-diagnosis].freeze
       CONDITION_CLINICAL_SYSTEM = "http://terminology.hl7.org/CodeSystem/condition-clinical"
-      CONDITION_VER_STATUS_SYSTEM = "http://terminology.hl7.org/CodeSystem/condition-ver-status"
       # Full condition-clinical value set. An in-set code outside
       # INCLUDED_CLINICAL_STATUSES is dropped; a code outside this set makes
       # the page unknown.
@@ -75,6 +74,8 @@ module Corvid
         (?:-(?<month>#{FHIR_MONTH})(?:-(?<day>#{FHIR_DAY})(?:#{FHIR_TIME})?)?)?
         \z
       /x
+      # FHIR R4 id. Checked before a Medication read so a bad id is not requested.
+      FHIR_ID = /\A[A-Za-z0-9\-\.]{1,64}\z/
 
       # Maps Corvid resource types to FHIR Coverage.type codes (HL7 v3 ActCode).
       # Real servers vary; align with deployment ValueSet.
@@ -262,22 +263,31 @@ module Corvid
 
       # One Condition search page (no Bundle.link follow). Array of
       # ConditionReference, or nil when the page is unknown. [] means none.
-      # US Core problem-list-item and encounter-diagnosis; clinical status
-      # active, recurrence, relapse, or resolved. Refuted and entered-in-error
-      # are excluded. In memory only — never persisted or logged (ADR 0003).
+      # Requires a condition-category coding and a condition-clinical or
+      # system-less status of active, recurrence, relapse, or resolved.
+      # Refuted and entered-in-error are excluded in any system. Entered-in-error
+      # is dropped even when clinical status is unusable. Never raises.
+      # In memory only — never persisted or logged (ADR 0003).
       def get_conditions(patient_identifier)
         clinical_search("Condition", patient_identifier) do |bundle|
           map_condition_entries(bundle, patient_identifier)
         end
+      rescue StandardError
+        nil
       end
 
       # One MedicationRequest search page. Resolves contained, bundle-included,
-      # or same-server Medication references. Array of MedicationReference, or
-      # nil when unknown. In memory only — never persisted or logged (ADR 0003).
+      # or same-server Medication references. doNotPerform is excluded. A
+      # referenced Medication with no code text or coding is unknown. Invalid
+      # Medication ids are not requested. Never raises. Array of
+      # MedicationReference, or nil when unknown. In memory only — never
+      # persisted or logged (ADR 0003).
       def get_medications(patient_identifier)
         clinical_search("MedicationRequest", patient_identifier) do |bundle|
           map_medication_entries(bundle, patient_identifier)
         end
+      rescue StandardError
+        nil
       end
 
       # ----------------------------------------------------------------------
@@ -481,18 +491,40 @@ module Corvid
       # FHIR REST primitives ------------------------------------------------
 
       def fhir_read(resource_type, id)
-        response = http_get("#{@base_url}/#{resource_type}/#{id}")
-        return nil unless response.is_a?(Net::HTTPSuccess)
+        return nil if unreadable_medication_id?(resource_type, id)
 
-        JSON.parse(response.body)
+        response = http_get("#{@base_url}/#{resource_type}/#{id}")
+        parse_success_json(response)
       end
 
       def fhir_search(resource_type, params = {})
         query_string = URI.encode_www_form(params)
         response = http_get("#{@base_url}/#{resource_type}?#{query_string}")
+        parse_success_json(response)
+      end
+
+      # 204 and an empty body are not a resource. Parsing nil raises, and
+      # that message must not escape with a URL or payload.
+      def parse_success_json(response)
         return nil unless response.is_a?(Net::HTTPSuccess)
+        return nil if empty_response?(response)
 
         JSON.parse(response.body)
+      end
+
+      def empty_response?(response)
+        return true if response.code == "204"
+
+        body = response.body
+        body.nil? || body.empty?
+      end
+
+      def unreadable_medication_id?(resource_type, id)
+        resource_type == "Medication" && !fhir_id?(id)
+      end
+
+      def fhir_id?(id)
+        id.is_a?(String) && FHIR_ID.match?(id)
       end
 
       def fhir_create(resource_type, body)
@@ -869,9 +901,23 @@ module Corvid
         parts = codeable_parts(resource["code"])
         onset = onset_date_for(resource)
         return :unknown if unknown_value?(category, status, parts, onset)
+        return :unknown if unusable_clinical_status?(resource, status)
         return nil unless include_condition?(category, status)
 
         condition_reference(parts, status, category, onset)
+      end
+
+      # Missing, text-only, or non-condition-clinical status makes the page
+      # unknown. entered-in-error still drops the row.
+      def unusable_clinical_status?(resource, status)
+        status.nil? && !entered_in_error?(resource)
+      end
+
+      def entered_in_error?(resource)
+        codings = status_codings(resource["verificationStatus"])
+        return false unless codings.is_a?(Array)
+
+        codings.any? { |coding| coding["code"] == "entered-in-error" }
       end
 
       def verification_marker(resource)
@@ -883,15 +929,10 @@ module Corvid
         :ok
       end
 
+      # refuted and entered-in-error exclude the row in any code system.
       def excluded_verification_coding?(coding)
-        return false unless verification_system?(coding)
-
         code = coding["code"]
         code.is_a?(String) && EXCLUDED_VERIFICATION_STATUSES.include?(code)
-      end
-
-      def verification_system?(coding)
-        coding["system"] == CONDITION_VER_STATUS_SYSTEM || absent_system?(coding)
       end
 
       def include_condition?(category, status)
@@ -910,18 +951,27 @@ module Corvid
         )
       end
 
+      # nil: condition-category system is present, but not a US Core code (skip).
+      # :unknown: no condition-category coding, or the element is malformed.
       def us_core_category(resource)
         categories = resource["category"]
-        return nil if categories.nil?
-        return :unknown unless categories.is_a?(Array)
+        return :unknown if categories.nil? || !categories.is_a?(Array) || categories.empty?
 
+        scan_categories(categories)
+      end
+
+      def scan_categories(categories)
+        saw_system = false
         match = nil
         categories.each do |category|
           code = category_match(category)
           return :unknown if code == :unknown
 
-          match ||= code
+          saw_system ||= category_system_code?(code)
+          match ||= code if code.is_a?(String)
         end
+        return :unknown unless saw_system
+
         match
       end
 
@@ -932,23 +982,39 @@ module Corvid
         return nil if codings.nil?
         return :unknown unless codings.is_a?(Array)
 
+        scan_category_codings(codings)
+      end
+
+      def scan_category_codings(codings)
+        saw_system = false
         match = nil
         codings.each do |coding|
           code = matching_category_code(coding)
           return :unknown if code == :unknown
 
-          match ||= code
+          saw_system ||= category_system_code?(code)
+          match ||= code if code.is_a?(String)
         end
+        return :excluded if saw_system && match.nil?
+
         match
+      end
+
+      def category_system_code?(code)
+        code == :excluded || code.is_a?(String)
       end
 
       def matching_category_code(coding)
         return :unknown unless coding.is_a?(Hash)
         return nil unless coding["system"] == CONDITION_CATEGORY_SYSTEM
 
-        code = optional_string(coding["code"])
+        category_code_value(coding["code"])
+      end
+
+      def category_code_value(raw)
+        code = optional_string(raw)
         return :unknown if code == :unknown
-        return nil unless US_CORE_CONDITION_CATEGORIES.include?(code)
+        return :excluded unless US_CORE_CONDITION_CATEGORIES.include?(code)
 
         code
       end
@@ -1101,11 +1167,17 @@ module Corvid
 
       def medication_references(requests, patient_identifier, index)
         requests.each_with_object([]) do |request, results|
+          next if do_not_perform?(request)
+
           mapped = build_medication_reference(request, patient_identifier, index)
           return nil if mapped.nil?
 
           results << mapped
         end
+      end
+
+      def do_not_perform?(request)
+        request["doNotPerform"] == true
       end
 
       def build_medication_reference(request, patient_identifier, index)
@@ -1175,11 +1247,17 @@ module Corvid
       def referenced_code_parts(request, index)
         medication = resolve_medication(request, index)
         return nil if medication.nil? || medication == :unknown
+        return nil unless medication_has_code?(medication)
 
         parts = codeable_parts(medication["code"])
         return nil if parts == :unknown
 
         parts
+      end
+
+      def medication_has_code?(medication)
+        code = medication["code"]
+        code.is_a?(Hash) && codeable_content?(code)
       end
 
       def resolve_medication(request, index)
