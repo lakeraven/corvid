@@ -114,4 +114,26 @@ class Corvid::ConfigurationTest < Minitest::Test
     result = Corvid.configuration.fetch_provenance.call(target_type: "x", target_id: "y")
     assert_equal [ { activity: "CREATE" } ], result
   end
+
+  # -- verification snapshot keys (ADR 0008) ---------------------------------
+
+  def test_verification_snapshot_keys_defaults_to_empty_hash
+    assert_equal({}, Corvid.configuration.verification_snapshot_keys)
+  end
+
+  def test_verification_snapshot_key_version_defaults_to_nil
+    assert_nil Corvid.configuration.verification_snapshot_key_version
+  end
+
+  def test_configuration_inspect_does_not_reveal_snapshot_key_material
+    key = "test-snapshot-key-0001-xxxxxxxxxxxxxxxx"
+    Corvid.configure do |c|
+      c.verification_snapshot_keys = { "v1-test" => key }
+      c.verification_snapshot_key_version = "v1-test"
+    end
+
+    inspected = Corvid.configuration.inspect
+    refute_includes inspected, key
+    refute_includes inspected, "test-snapshot-key-0001"
+  end
 end

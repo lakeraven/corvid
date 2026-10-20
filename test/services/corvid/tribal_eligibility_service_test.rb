@@ -1,6 +1,8 @@
 # frozen_string_literal: true
 
 require "test_helper"
+require "digest"
+require "json"
 
 # Tests the four eligibility-matrix scenarios against MockAdapter:
 #   - True positive       (enrolled in contracted tribe, all checks pass)
@@ -44,8 +46,41 @@ class Corvid::TribalEligibilityServiceTest < ActiveSupport::TestCase
     @adapter = Corvid.adapter
   end
 
+  SNAPSHOT_VERSION_V1 = "v1-test"
+  SNAPSHOT_VERSION_V2 = "v2-test"
+  SNAPSHOT_KEY_V1 = "test-snapshot-key-0001-xxxxxxxxxxxxxxxx"
+  SNAPSHOT_KEY_V2 = "test-snapshot-key-0002-yyyyyyyyyyyyyyyy"
+
   teardown do
     Corvid::TenantContext.reset!
+    Corvid.reset_configuration!
+  end
+
+  def configure_snapshot_keys!(version:, keys:)
+    Corvid.configure do |c|
+      c.verification_snapshot_keys = keys
+      c.verification_snapshot_key_version = version
+    end
+  end
+
+  def fixed_adapter_responses_for(person_id)
+    @adapter.add_enrollment(person_id,
+                            enrolled: true, tribe_code: "DEMO", tribe_name: "Demo Tribe",
+                            member_status: "enrolled", confidence: :verified)
+    @adapter.add_patient(person_id, ssn_last4: "1234", dob: Date.new(1980, 1, 1), birthplace: "Springfield")
+    @adapter.define_singleton_method(:verify_residency) do |pid|
+      if pid == person_id
+        { on_reservation: true, address: "Rd", verified_at: Time.parse("2026-05-16T12:00:00Z") }
+      end
+    end
+  end
+
+  def adapter_snapshot_payload(person_id)
+    {
+      enrollment: @adapter.verify_tribal_enrollment(person_id),
+      identity: @adapter.verify_identity_documents(person_id),
+      residency: @adapter.verify_residency(person_id)
+    }
   end
 
   # ---- True positive --------------------------------------------------------
@@ -181,5 +216,121 @@ class Corvid::TribalEligibilityServiceTest < ActiveSupport::TestCase
     # matters — same inputs → same eligible? result.
     assert_equal row1.eligible, row2.eligible
     assert_equal row1.reason_codes, row2.reason_codes
+  end
+
+  # ---- Keyed verification snapshot fingerprint (issue #629 / ADR 0008) ------
+
+  test "decide stores keyed verification_snapshot_hash and verification_snapshot_key_version" do
+    configure_snapshot_keys!(
+      version: SNAPSHOT_VERSION_V1,
+      keys: { SNAPSHOT_VERSION_V1 => SNAPSHOT_KEY_V1 }
+    )
+    fixed_adapter_responses_for("pt_keyed")
+
+    Corvid::TribalEligibilityService.decide(
+      person_identifier: "pt_keyed",
+      facility: @facility,
+      tenant_identifier: TENANT
+    )
+
+    row = Corvid::PrcEligibilityDecision.last
+    payload = adapter_snapshot_payload("pt_keyed")
+    expected_digest, expected_version = Corvid::SnapshotFingerprint.compute(payload)
+
+    assert_equal expected_digest, row.verification_snapshot_hash
+    assert_equal expected_version, row.verification_snapshot_key_version
+  end
+
+  test "decide produces identical snapshot fingerprint for identical adapter responses and key" do
+    configure_snapshot_keys!(
+      version: SNAPSHOT_VERSION_V1,
+      keys: { SNAPSHOT_VERSION_V1 => SNAPSHOT_KEY_V1 }
+    )
+    fixed_adapter_responses_for("pt_same")
+
+    Corvid::TribalEligibilityService.decide(
+      person_identifier: "pt_same",
+      facility: @facility,
+      tenant_identifier: TENANT
+    )
+    hash1 = Corvid::PrcEligibilityDecision.last.verification_snapshot_hash
+    version1 = Corvid::PrcEligibilityDecision.last.verification_snapshot_key_version
+
+    Corvid::TribalEligibilityService.decide(
+      person_identifier: "pt_same",
+      facility: @facility,
+      tenant_identifier: TENANT
+    )
+    hash2 = Corvid::PrcEligibilityDecision.last.verification_snapshot_hash
+    version2 = Corvid::PrcEligibilityDecision.last.verification_snapshot_key_version
+
+    assert_equal hash1, hash2
+    assert_equal version1, version2
+  end
+
+  test "decide snapshot fingerprint changes when verification_snapshot_key_version changes" do
+    fixed_adapter_responses_for("pt_ver")
+
+    configure_snapshot_keys!(
+      version: SNAPSHOT_VERSION_V1,
+      keys: { SNAPSHOT_VERSION_V1 => SNAPSHOT_KEY_V1, SNAPSHOT_VERSION_V2 => SNAPSHOT_KEY_V2 }
+    )
+    Corvid::TribalEligibilityService.decide(
+      person_identifier: "pt_ver",
+      facility: @facility,
+      tenant_identifier: TENANT
+    )
+    hash_v1 = Corvid::PrcEligibilityDecision.last.verification_snapshot_hash
+
+    configure_snapshot_keys!(
+      version: SNAPSHOT_VERSION_V2,
+      keys: { SNAPSHOT_VERSION_V1 => SNAPSHOT_KEY_V1, SNAPSHOT_VERSION_V2 => SNAPSHOT_KEY_V2 }
+    )
+    Corvid::TribalEligibilityService.decide(
+      person_identifier: "pt_ver",
+      facility: @facility,
+      tenant_identifier: TENANT
+    )
+    hash_v2 = Corvid::PrcEligibilityDecision.last.verification_snapshot_hash
+
+    refute_equal hash_v1, hash_v2
+  end
+
+  test "decide leaves snapshot hash and key version nil when no snapshot key is configured" do
+    Corvid.reset_configuration!
+    Corvid.configure { |c| c.adapter = @adapter }
+
+    fixed_adapter_responses_for("pt_nokey")
+
+    decision = Corvid::TribalEligibilityService.decide(
+      person_identifier: "pt_nokey",
+      facility: @facility,
+      tenant_identifier: TENANT
+    )
+
+    row = Corvid::PrcEligibilityDecision.find(decision.decision_id)
+    assert decision.eligible?
+    assert_nil row.verification_snapshot_hash
+    assert_nil row.verification_snapshot_key_version
+  end
+
+  test "decide snapshot hash is not a plain SHA256 of adapter responses" do
+    configure_snapshot_keys!(
+      version: SNAPSHOT_VERSION_V1,
+      keys: { SNAPSHOT_VERSION_V1 => SNAPSHOT_KEY_V1 }
+    )
+    fixed_adapter_responses_for("pt_not_plain")
+
+    Corvid::TribalEligibilityService.decide(
+      person_identifier: "pt_not_plain",
+      facility: @facility,
+      tenant_identifier: TENANT
+    )
+
+    row = Corvid::PrcEligibilityDecision.last
+    payload = adapter_snapshot_payload("pt_not_plain")
+    plain_sha = Digest::SHA256.hexdigest(JSON.generate(payload))
+
+    refute_equal plain_sha, row.verification_snapshot_hash
   end
 end
