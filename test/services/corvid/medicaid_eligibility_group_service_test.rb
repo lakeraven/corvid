@@ -620,13 +620,11 @@ class Corvid::MedicaidEligibilityGroupServiceTest < ActiveSupport::TestCase
   test "record! inference replaces prior unknown recorded with eligibility_response source" do
     with_tenant(TENANT) do
       check = medicaid_check_for(patient_id: "pt_mcd_unk_stmt_005", dob: Date.new(1996, 6, 15))
-      stated_unknown = {
-        state: "XA",
-        plan_name: "TEST REGULAR PLAN",
+      check.update_columns(
         eligibility_group: "unknown",
-        eligibility_group_source: "eligibility_response"
-      }
-      @service.record!(check, coverage: stated_unknown, date_of_service: DOS)
+        eligibility_group_source: "eligibility_response",
+        eligibility_group_set_at: Time.current
+      )
       assert_group_fields(check, "unknown", "eligibility_response")
 
       result = record!(check, state: "XA", plan_name: "TEST REGULAR PLAN")
