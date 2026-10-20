@@ -241,7 +241,7 @@ class Corvid::MedicaidEligibilityGroupServiceTest < ActiveSupport::TestCase
     end
   end
 
-  test "record! maps unrecognised stated group to unknown without inferring" do
+  test "record! ignores unrecognised stated eligibility_group and infers" do
     with_tenant(TENANT) do
       check = medicaid_check_for(patient_id: "pt_mcd_020", dob: Date.new(1996, 6, 15))
       coverage = {
@@ -252,8 +252,8 @@ class Corvid::MedicaidEligibilityGroupServiceTest < ActiveSupport::TestCase
       }
       result = @service.record!(check, coverage: coverage, date_of_service: DOS)
 
-      assert_equal "unknown", result
-      assert_group_fields(check, "unknown", "registration")
+      assert_equal "expansion_adult", result
+      assert_group_fields(check, "expansion_adult", "inferred")
     end
   end
 
@@ -635,6 +635,318 @@ class Corvid::MedicaidEligibilityGroupServiceTest < ActiveSupport::TestCase
     assert_group_fields_under_tenant(check, TENANT, nil, nil)
   end
 
+  # -- Issue #646 round 2: locked row, adapter outside lock, coverage edge cases -------
+
+  test "record! uses locked row referral not caller prc_referral_id swap and writes nothing" do
+    other_referral = nil
+    with_tenant(OTHER_TENANT) do
+      other_referral = create_referral(patient_id: "pt_mcd_lock_ref_001")
+    end
+
+    with_tenant(TENANT) do
+      check = medicaid_check_for(patient_id: "pt_mcd_lock_001", dob: Date.new(1996, 6, 15))
+      decoy_referral = create_referral(patient_id: "pt_mcd_lock_decoy_001")
+      check.update_column(:prc_referral_id, other_referral.id)
+
+      caller = Corvid::AlternateResourceCheck.find(check.id)
+      caller.prc_referral_id = decoy_referral.id
+
+      result = @service.record!(
+        caller,
+        coverage: { state: "XA", plan_name: "TEST REGULAR PLAN" },
+        date_of_service: DOS
+      )
+
+      assert_nil result
+      reloaded = Corvid::AlternateResourceCheck.find(check.id)
+      assert_nil reloaded.eligibility_group
+      assert_nil reloaded.eligibility_group_source
+      assert_nil reloaded.eligibility_group_set_at
+    end
+  end
+
+  test "record_staff_entry! uses locked row referral not caller prc_referral_id swap" do
+    other_referral = nil
+    with_tenant(OTHER_TENANT) do
+      other_referral = create_referral(patient_id: "pt_mcd_lock_ref_002")
+    end
+
+    with_tenant(TENANT) do
+      check = medicaid_check_for(patient_id: "pt_mcd_lock_002", dob: Date.new(1996, 6, 15))
+      decoy_referral = create_referral(patient_id: "pt_mcd_lock_decoy_002")
+      check.update_column(:prc_referral_id, other_referral.id)
+
+      caller = Corvid::AlternateResourceCheck.find(check.id)
+      caller.prc_referral_id = decoy_referral.id
+
+      assert_raises(ArgumentError) do
+        @service.record_staff_entry!(caller, eligibility_group: "other")
+      end
+
+      reloaded = Corvid::AlternateResourceCheck.find(check.id)
+      assert_nil reloaded.eligibility_group
+      assert_nil reloaded.eligibility_group_source
+      assert_nil reloaded.eligibility_group_set_at
+    end
+  end
+
+  test "record! uses locked row resource_type not caller medicare_a copy and infers" do
+    with_tenant(TENANT) do
+      check = medicaid_check_for(patient_id: "pt_mcd_lock_003", dob: Date.new(1996, 6, 15))
+      caller = Corvid::AlternateResourceCheck.find(check.id)
+      caller.resource_type = "medicare_a"
+
+      result = @service.record!(
+        caller,
+        coverage: { state: "XA", plan_name: "TEST REGULAR PLAN" },
+        date_of_service: DOS
+      )
+
+      assert_equal "expansion_adult", result
+      assert_group_fields(check, "expansion_adult", "inferred")
+    end
+  end
+
+  test "record! calls adapter find_patient outside the row lock" do
+    with_tenant(TENANT) do
+      observing = LockObservingAdapterDelegate.new(@adapter)
+      service = Corvid::MedicaidEligibilityGroupService.new(adapter: observing)
+      check = medicaid_check_for(patient_id: "pt_mcd_lock_004", dob: Date.new(1996, 6, 15))
+
+      observing.baseline = ActiveRecord::Base.connection.open_transactions
+      result = service.record!(
+        check,
+        coverage: { state: "XA", plan_name: "TEST REGULAR PLAN" },
+        date_of_service: DOS
+      )
+
+      assert_equal "expansion_adult", result
+      assert observing.find_patient_outside_lock?, "find_patient must run outside the row lock"
+      assert_group_fields(check, "expansion_adult", "inferred")
+    end
+  end
+
+  test "record! ignores wrong-case stated eligibility_group and infers" do
+    with_tenant(TENANT) do
+      check = medicaid_check_for(patient_id: "pt_mcd_stmt_001", dob: Date.new(1996, 6, 15))
+      coverage = {
+        state: "XA",
+        plan_name: "TEST REGULAR PLAN",
+        eligibility_group: "WAIVER_ADULT",
+        eligibility_group_source: "registration"
+      }
+      result = @service.record!(check, coverage: coverage, date_of_service: DOS)
+
+      assert_equal "expansion_adult", result
+      assert_group_fields(check, "expansion_adult", "inferred")
+    end
+  end
+
+  test "record! ignores bogus string stated eligibility_group and infers" do
+    with_tenant(TENANT) do
+      check = medicaid_check_for(patient_id: "pt_mcd_stmt_bogus", dob: Date.new(1996, 6, 15))
+      coverage = {
+        state: "XA",
+        plan_name: "TEST REGULAR PLAN",
+        eligibility_group: "bogus",
+        eligibility_group_source: "registration"
+      }
+      result = @service.record!(check, coverage: coverage, date_of_service: DOS)
+
+      assert_equal "expansion_adult", result
+      assert_group_fields(check, "expansion_adult", "inferred")
+    end
+  end
+
+  test "record! ignores empty-symbol stated eligibility_group and infers" do
+    with_tenant(TENANT) do
+      check = medicaid_check_for(patient_id: "pt_mcd_stmt_empty_sym", dob: Date.new(1996, 6, 15))
+      coverage = {
+        state: "XA",
+        plan_name: "TEST REGULAR PLAN",
+        eligibility_group: :"",
+        eligibility_group_source: "registration"
+      }
+      result = @service.record!(check, coverage: coverage, date_of_service: DOS)
+
+      assert_equal "expansion_adult", result
+      assert_group_fields(check, "expansion_adult", "inferred")
+    end
+  end
+
+  test "record! ignores false stated eligibility_group and infers" do
+    with_tenant(TENANT) do
+      check = medicaid_check_for(patient_id: "pt_mcd_stmt_false", dob: Date.new(1996, 6, 15))
+      coverage = {
+        state: "XA",
+        plan_name: "TEST REGULAR PLAN",
+        eligibility_group: false,
+        eligibility_group_source: "registration"
+      }
+      result = @service.record!(check, coverage: coverage, date_of_service: DOS)
+
+      assert_equal "expansion_adult", result
+      assert_group_fields(check, "expansion_adult", "inferred")
+    end
+  end
+
+  test "record! ignores integer stated eligibility_group and infers" do
+    with_tenant(TENANT) do
+      check = medicaid_check_for(patient_id: "pt_mcd_stmt_42", dob: Date.new(1996, 6, 15))
+      coverage = {
+        state: "XA",
+        plan_name: "TEST REGULAR PLAN",
+        eligibility_group: 42,
+        eligibility_group_source: "registration"
+      }
+      result = @service.record!(check, coverage: coverage, date_of_service: DOS)
+
+      assert_equal "expansion_adult", result
+      assert_group_fields(check, "expansion_adult", "inferred")
+    end
+  end
+
+  test "record! does not overwrite state_case_data group when stated value is unrecognised" do
+    with_tenant(TENANT) do
+      check = medicaid_check_for(patient_id: "pt_mcd_stmt_preserve", dob: Date.new(1996, 6, 15))
+      stated = {
+        state: "XA",
+        eligibility_group: "waiver_adult",
+        eligibility_group_source: "state_case_data"
+      }
+      @service.record!(check, coverage: stated, date_of_service: DOS)
+
+      coverage = {
+        state: "XA",
+        plan_name: "TEST REGULAR PLAN",
+        eligibility_group: "WAIVER_ADULT",
+        eligibility_group_source: "registration"
+      }
+      result = @service.record!(check, coverage: coverage, date_of_service: DOS)
+
+      assert_equal "waiver_adult", result
+      assert_group_fields(check, "waiver_adult", "state_case_data")
+    end
+  end
+
+  test "record! infers after unrecognised stated value when prior state_case_data group cleared" do
+    with_tenant(TENANT) do
+      check = medicaid_check_for(patient_id: "pt_mcd_stmt_later", dob: Date.new(1996, 6, 15))
+      bogus = {
+        state: "XA",
+        plan_name: "TEST REGULAR PLAN",
+        eligibility_group: "bogus",
+        eligibility_group_source: "registration"
+      }
+      @service.record!(check, coverage: bogus, date_of_service: DOS)
+      assert_group_fields(check, "expansion_adult", "inferred")
+
+      clean = { state: "XA", plan_name: "TEST REGULAR PLAN" }
+      result = @service.record!(check, coverage: clean, date_of_service: DOS)
+
+      assert_equal "expansion_adult", result
+      assert_group_fields(check, "expansion_adult", "inferred")
+    end
+  end
+
+  test "record! uses Denver business date for Time date_of_service before 65th birthday" do
+    original_zone = Time.zone
+    Time.zone = "America/Denver"
+    with_tenant(TENANT) do
+      check = medicaid_check_for(patient_id: "pt_mcd_tz_001", dob: Date.new(1961, 6, 15))
+      dos = Time.utc(2026, 6, 15, 2, 0)
+      result = @service.record!(
+        check,
+        coverage: { state: "XA", plan_name: "TEST REGULAR PLAN" },
+        date_of_service: dos
+      )
+
+      assert_equal "expansion_adult", result
+      assert_group_fields(check, "expansion_adult", "inferred")
+    end
+  ensure
+    Time.zone = original_zone
+  end
+
+  test "record! matches Denver TimeWithZone date_of_service to UTC instant for age" do
+    original_zone = Time.zone
+    Time.zone = "America/Denver"
+    with_tenant(TENANT) do
+      check_utc = medicaid_check_for(patient_id: "pt_mcd_tz_002a", dob: Date.new(1961, 6, 15))
+      check_local = medicaid_check_for(patient_id: "pt_mcd_tz_002b", dob: Date.new(1961, 6, 15))
+      instant = Time.utc(2026, 6, 15, 2, 0)
+      local_dos = instant.in_time_zone("America/Denver")
+
+      utc_result = @service.record!(
+        check_utc,
+        coverage: { state: "XA", plan_name: "TEST REGULAR PLAN" },
+        date_of_service: instant
+      )
+      local_result = @service.record!(
+        check_local,
+        coverage: { state: "XA", plan_name: "TEST REGULAR PLAN" },
+        date_of_service: local_dos
+      )
+
+      assert_equal "expansion_adult", utc_result
+      assert_equal "expansion_adult", local_result
+      assert_group_fields(check_utc, "expansion_adult", "inferred")
+      assert_group_fields(check_local, "expansion_adult", "inferred")
+    end
+  ensure
+    Time.zone = original_zone
+  end
+
+  test "record! reads string-keyed eligibility_group when symbol key is nil" do
+    with_tenant(TENANT) do
+      check = medicaid_check_for(patient_id: "pt_mcd_mixed_001", dob: Date.new(1996, 6, 15))
+      coverage = {
+        eligibility_group: nil,
+        "eligibility_group" => "waiver_adult",
+        state: "XB",
+        plan_name: "TEST SYNTHETIC WAIVER PLAN"
+      }
+      result = @service.record!(check, coverage: coverage, date_of_service: DOS)
+
+      assert_equal "waiver_adult", result
+      assert_group_fields(check, "waiver_adult", "eligibility_response")
+    end
+  end
+
+  test "record! infers expansion_adult for XA age 30 without plan_name" do
+    with_tenant(TENANT) do
+      check = medicaid_check_for(patient_id: "pt_mcd_xa_noplan_001", dob: Date.new(1996, 6, 15))
+      result = @service.record!(check, coverage: { state: "XA" }, date_of_service: DOS)
+
+      assert_equal "expansion_adult", result
+      assert_group_fields(check, "expansion_adult", "inferred")
+    end
+  end
+
+  test "record! infers expansion_adult for XA age 30 with whitespace-only plan_name" do
+    with_tenant(TENANT) do
+      check = medicaid_check_for(patient_id: "pt_mcd_xa_noplan_002", dob: Date.new(1996, 6, 15))
+      result = @service.record!(
+        check,
+        coverage: { state: "XA", plan_name: "   " },
+        date_of_service: DOS
+      )
+
+      assert_equal "expansion_adult", result
+      assert_group_fields(check, "expansion_adult", "inferred")
+    end
+  end
+
+  test "record! infers other for XA age 70 without plan_name" do
+    with_tenant(TENANT) do
+      check = medicaid_check_for(patient_id: "pt_mcd_xa_noplan_003", dob: Date.new(1956, 6, 15))
+      result = @service.record!(check, coverage: { state: "XA" }, date_of_service: DOS)
+
+      assert_equal "other", result
+      assert_group_fields(check, "other", "inferred")
+    end
+  end
+
   # -- ADR 0003: date of birth never persisted or logged ------------------------------
 
   test "record! does not write or log synthetic date of birth" do
@@ -675,6 +987,37 @@ class Corvid::MedicaidEligibilityGroupServiceTest < ActiveSupport::TestCase
     ensure
       Rails.logger = original_rails_logger
       ActiveRecord::Base.logger = original_ar_logger
+    end
+  end
+
+  # Delegates to the test adapter and records whether find_patient ran without
+  # an extra transaction opened by the service (e.g. row with_lock).
+  class LockObservingAdapterDelegate
+    attr_accessor :baseline
+    attr_reader :find_patient_outside_lock
+
+    def initialize(inner)
+      @inner = inner
+      @baseline = nil
+      @find_patient_outside_lock = false
+    end
+
+    def find_patient_outside_lock?
+      @find_patient_outside_lock
+    end
+
+    def find_patient(patient_id)
+      @find_patient_outside_lock =
+        ActiveRecord::Base.connection.open_transactions == @baseline
+      @inner.find_patient(patient_id)
+    end
+
+    def respond_to_missing?(method, include_private = false)
+      @inner.respond_to?(method, include_private) || super
+    end
+
+    def method_missing(method, *args, **kwargs, &block)
+      @inner.public_send(method, *args, **kwargs, &block)
     end
   end
 

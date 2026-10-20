@@ -676,6 +676,7 @@ class Corvid::AlternateResourceCheckTest < ActiveSupport::TestCase
   ELIGIBILITY_GROUP_SOURCE_CHECK = "corvid_arc_eligibility_group_source_check"
   ELIGIBILITY_GROUP_MEDICAID_ONLY_CHECK = "corvid_arc_eligibility_group_medicaid_only_check"
   ELIGIBILITY_GROUP_PAIR_CHECK = "corvid_arc_eligibility_group_pair_check"
+  ELIGIBILITY_GROUP_SET_AT_CHECK = "corvid_arc_eligibility_group_set_at_check"
 
   test "medicaid check accepts valid eligibility_group and source" do
     with_tenant(TENANT) do
@@ -792,6 +793,53 @@ class Corvid::AlternateResourceCheckTest < ActiveSupport::TestCase
     end
   end
 
+  test "model rejects medicaid row with eligibility_group and source but nil set_at" do
+    with_tenant(TENANT) do
+      check = build_check(resource_type: "medicaid")
+      check.eligibility_group = "other"
+      check.eligibility_group_source = "inferred"
+      check.eligibility_group_set_at = nil
+      refute check.valid?
+      assert check.errors[:eligibility_group_set_at].present?
+    end
+  end
+
+  test "model rejects medicaid row with set_at but no eligibility_group" do
+    with_tenant(TENANT) do
+      check = build_check(resource_type: "medicaid")
+      check.eligibility_group = nil
+      check.eligibility_group_source = nil
+      check.eligibility_group_set_at = Time.current
+      refute check.valid?
+      assert check.errors[:eligibility_group_set_at].present?
+    end
+  end
+
+  test "database enforces eligibility_group_set_at paired with group via check constraint" do
+    with_tenant(TENANT) do
+      assert check_constraint_exists?(ELIGIBILITY_GROUP_SET_AT_CHECK)
+
+      check = create_medicaid_check!
+      assert_raises(ActiveRecord::StatementInvalid) do
+        update_eligibility_group_columns!(
+          check,
+          eligibility_group: "other",
+          eligibility_group_source: "inferred",
+          eligibility_group_set_at: nil
+        )
+      end
+
+      assert_raises(ActiveRecord::StatementInvalid) do
+        update_eligibility_group_columns!(
+          check,
+          eligibility_group: nil,
+          eligibility_group_source: nil,
+          eligibility_group_set_at: Time.current
+        )
+      end
+    end
+  end
+
   private
 
   def create_case
@@ -850,15 +898,26 @@ class Corvid::AlternateResourceCheckTest < ActiveSupport::TestCase
     ActiveRecord::Base.connection.select_value(sql).present?
   end
 
-  def update_eligibility_group_columns!(check, eligibility_group:, eligibility_group_source:)
+  def update_eligibility_group_columns!(
+    check,
+    eligibility_group:,
+    eligibility_group_source:,
+    eligibility_group_set_at: :unchanged
+  )
     conn = ActiveRecord::Base.connection
     group_sql = eligibility_group.nil? ? "NULL" : conn.quote(eligibility_group)
     source_sql = eligibility_group_source.nil? ? "NULL" : conn.quote(eligibility_group_source)
+    set_at_sql =
+      case eligibility_group_set_at
+      when :unchanged then "NOW()"
+      when nil then "NULL"
+      else conn.quote(eligibility_group_set_at)
+      end
     conn.execute(<<~SQL.squish)
       UPDATE corvid_alternate_resource_checks
       SET eligibility_group = #{group_sql},
           eligibility_group_source = #{source_sql},
-          eligibility_group_set_at = NOW()
+          eligibility_group_set_at = #{set_at_sql}
       WHERE id = #{check.id}
     SQL
   end
