@@ -1645,6 +1645,274 @@ class Corvid::Adapters::FhirAdapterTest < Minitest::Test
     end
   end
 
+  # S1 (round 3) — insurance allowlist: Organization payors only, no self-pay codings, kind insurance
+
+  PHDSC_SOP_SYSTEM = "urn:oid:2.16.840.1.113883.3.221.5"
+  COVERAGE_SELFPAY_SYSTEM = "http://terminology.hl7.org/CodeSystem/coverage-selfpay"
+
+  def test_get_coverages_returns_empty_when_only_coverage_is_phscd_sop_81_with_organization_payor
+    resource = coverage_fhir_resource(
+      id: "cov_s1_sop81",
+      for_patient: "pt_s1_sop81",
+      status: "active",
+      payer_display: "TEST PAYER SOP81",
+      type_codings: [ { "system" => PHDSC_SOP_SYSTEM, "code" => "81" } ],
+      subscriber_id: "POL_SOP81",
+      payor_reference: "Organization/org_sop81",
+      period_start: Date.new(2026, 1, 1),
+      period_end: Date.new(2026, 12, 31)
+    )
+    assert_single_excluded_coverage_returns_empty("pt_s1_sop81", resource)
+  end
+
+  def test_get_coverages_returns_empty_when_type_coding_includes_self_pay_pay_in_any_position
+    resource = coverage_fhir_resource(
+      id: "cov_s1_dual_coding",
+      for_patient: "pt_s1_dual",
+      status: "active",
+      payer_display: "TEST PAYER DUAL",
+      type_codings: [
+        { "system" => "http://local.test/coverage", "code" => "SP" },
+        { "system" => COVERAGE_SELFPAY_SYSTEM, "code" => "pay" }
+      ],
+      subscriber_id: "POL_DUAL",
+      payor_reference: "Organization/org_dual",
+      period_start: Date.new(2026, 1, 1),
+      period_end: Date.new(2026, 12, 31)
+    )
+    assert_single_excluded_coverage_returns_empty("pt_s1_dual", resource)
+  end
+
+  def test_get_coverages_returns_empty_when_payor_is_absolute_patient_reference
+    resource = coverage_fhir_resource(
+      id: "cov_s1_abs_pt",
+      for_patient: "pt_s1_abs_pt",
+      status: "active",
+      payer_display: "TEST PATIENT ABS",
+      type_code: "EHCPOL",
+      subscriber_id: "POL_ABS_PT",
+      payor_reference: "#{@adapter.base_url}/Patient/pt_001",
+      period_start: Date.new(2026, 1, 1),
+      period_end: Date.new(2026, 12, 31)
+    )
+    assert_single_excluded_coverage_returns_empty("pt_s1_abs_pt", resource)
+  end
+
+  def test_get_coverages_returns_empty_when_payor_is_logical_patient_without_organization_reference
+    resource = coverage_fhir_resource(
+      id: "cov_s1_logical_pt",
+      for_patient: "pt_s1_logical",
+      status: "active",
+      payer_display: "TEST LOGICAL PT",
+      type_code: "EHCPOL",
+      subscriber_id: "POL_LOGICAL",
+      payors: [
+        {
+          "type" => "Patient",
+          "identifier" => { "system" => "http://test.local/patient", "value" => "pt_001" }
+        }
+      ],
+      period_start: Date.new(2026, 1, 1),
+      period_end: Date.new(2026, 12, 31)
+    )
+    assert_single_excluded_coverage_returns_empty("pt_s1_logical", resource)
+  end
+
+  def test_get_coverages_returns_empty_when_payor_is_display_only_without_organization_reference
+    resource = coverage_fhir_resource(
+      id: "cov_s1_display",
+      for_patient: "pt_s1_display",
+      status: "active",
+      payer_display: "TEST SELF PAY",
+      type_code: "EHCPOL",
+      subscriber_id: "POL_DISPLAY",
+      payors: [ { "display" => "TEST SELF PAY" } ],
+      period_start: Date.new(2026, 1, 1),
+      period_end: Date.new(2026, 12, 31)
+    )
+    assert_single_excluded_coverage_returns_empty("pt_s1_display", resource)
+  end
+
+  def test_get_coverages_returns_empty_when_coverage_kind_is_self_pay_with_payment_by_and_no_payor
+    resource = coverage_fhir_resource(
+      id: "cov_s1_r5_kind",
+      for_patient: "pt_s1_r5_kind",
+      status: "active",
+      payer_display: "UNUSED",
+      type_code: "EHCPOL",
+      subscriber_id: "POL_R5K",
+      skip_payor: true,
+      kind: "self-pay",
+      payment_by: [ { "party" => { "reference" => "Patient/pt_001" }, "amount" => { "value" => 0, "currency" => "USD" } } ],
+      period_start: Date.new(2026, 1, 1),
+      period_end: Date.new(2026, 12, 31)
+    )
+    assert_single_excluded_coverage_returns_empty("pt_s1_r5_kind", resource)
+  end
+
+  def test_get_coverages_returns_empty_when_payor_is_related_person_reference
+    resource = coverage_fhir_resource(
+      id: "cov_s1_rp",
+      for_patient: "pt_s1_rp",
+      status: "active",
+      payer_display: "GUARANTOR",
+      type_code: "EHCPOL",
+      subscriber_id: "POL_RP",
+      payor_reference: "RelatedPerson/rp_1",
+      period_start: Date.new(2026, 1, 1),
+      period_end: Date.new(2026, 12, 31)
+    )
+    assert_single_excluded_coverage_returns_empty("pt_s1_rp", resource)
+  end
+
+  def test_get_coverages_returns_empty_when_one_payor_is_organization_and_second_is_patient
+    resource = coverage_fhir_resource(
+      id: "cov_s1_mixed_payor",
+      for_patient: "pt_s1_mixed",
+      status: "active",
+      payer_display: "TEST MIXED",
+      type_code: "EHCPOL",
+      subscriber_id: "POL_MIXED",
+      payors: [
+        { "reference" => "Organization/org_1", "display" => "TEST ORG" },
+        { "reference" => "Patient/pt_001", "display" => "TEST PATIENT" }
+      ],
+      period_start: Date.new(2026, 1, 1),
+      period_end: Date.new(2026, 12, 31)
+    )
+    assert_single_excluded_coverage_returns_empty("pt_s1_mixed", resource)
+  end
+
+  def test_get_coverages_includes_active_coverage_with_organization_payor_and_ehcpol_type
+    bundle = coverage_bundle_total_one(
+      coverage_fhir_resource(
+        id: "cov_s1_pos_rel",
+        for_patient: "pt_s1_pos_rel",
+        status: "active",
+        payer_display: "TEST PAYER POS REL",
+        type_code: "EHCPOL",
+        subscriber_id: "POL_POS_REL",
+        payor_reference: "Organization/org_1",
+        period_start: Date.new(2026, 1, 1),
+        period_end: Date.new(2026, 12, 31)
+      )
+    )
+    with_stubbed_coverage_http({ coverage_search_url("pt_s1_pos_rel") => http_ok_json(bundle) }) do
+      result = @adapter.get_coverages("pt_s1_pos_rel")
+      assert_equal 1, result.size
+      assert_equal "EHCPOL", result.first[:coverage_type]
+      assert_equal "TEST PAYER POS REL", result.first[:payer_name]
+    end
+  end
+
+  def test_get_coverages_includes_active_coverage_with_absolute_organization_payor_reference
+    bundle = coverage_bundle_total_one(
+      coverage_fhir_resource(
+        id: "cov_s1_pos_abs",
+        for_patient: "pt_s1_pos_abs",
+        status: "active",
+        payer_display: "TEST PAYER POS ABS",
+        type_code: "EHCPOL",
+        subscriber_id: "POL_POS_ABS",
+        payor_reference: "#{@adapter.base_url}/Organization/org_1",
+        period_start: Date.new(2026, 1, 1),
+        period_end: Date.new(2026, 12, 31)
+      )
+    )
+    with_stubbed_coverage_http({ coverage_search_url("pt_s1_pos_abs") => http_ok_json(bundle) }) do
+      result = @adapter.get_coverages("pt_s1_pos_abs")
+      assert_equal 1, result.size
+      assert_equal "TEST PAYER POS ABS", result.first[:payer_name]
+    end
+  end
+
+  # S2 — malformed Coverage shapes => nil (never raise)
+
+  MALFORMED_COVERAGE_SHAPE_CASES = [
+    [ "type is string", ->(r) { r["type"] = "pay" } ],
+    [ "payor is array of strings", ->(r) { r["payor"] = [ "Organization/o" ] } ],
+    [ "beneficiary is string", ->(r) { r["beneficiary"] = "Patient/pt_001" } ],
+    [ "class entry type is string", ->(r) { r["class"] = [ { "type" => "plan" } ] } ],
+    [ "type.coding is string", ->(r) { r["type"] = { "coding" => "x" } } ],
+    [ "period.start is integer", ->(r) { r["period"] = { "start" => 5 } } ]
+  ].freeze
+
+  def test_get_coverages_returns_nil_for_malformed_coverage_shapes_without_raising
+    MALFORMED_COVERAGE_SHAPE_CASES.each do |label, mutate|
+      resource = coverage_fhir_resource(
+        id: "cov_s2_shape",
+        for_patient: "pt_s2_shape",
+        status: "active",
+        payer_display: "TEST PAYER SHAPE",
+        type_code: "EHCPOL",
+        subscriber_id: "POL_SHAPE",
+        period_start: Date.new(2026, 1, 1),
+        period_end: Date.new(2026, 12, 31)
+      )
+      mutate.call(resource)
+      bundle = coverage_bundle_total_one(resource)
+      with_stubbed_coverage_http({ coverage_search_url("pt_s2_shape") => http_ok_json(bundle) }) do
+        assert_nil @adapter.get_coverages("pt_s2_shape"), "expected nil for malformed shape: #{label}"
+      end
+    end
+  end
+
+  # S3 — Bundle.total must be a non-negative Integer when present
+
+  INVALID_COVERAGE_BUNDLE_TOTALS = [ "5", 1.5, -1 ].freeze
+
+  def test_get_coverages_returns_nil_when_bundle_total_is_not_a_non_negative_integer
+    base = coverage_fhir_resource(
+      id: "cov_s3_total",
+      for_patient: "pt_s3_total",
+      status: "active",
+      payer_display: "TEST PAYER TOTAL",
+      type_code: "EHCPOL",
+      subscriber_id: "POL_S3",
+      period_start: Date.new(2026, 1, 1),
+      period_end: Date.new(2026, 12, 31)
+    )
+    INVALID_COVERAGE_BUNDLE_TOTALS.each do |bad_total|
+      bundle = coverage_bundle(entries: [ base ], total: bad_total)
+      with_stubbed_coverage_http({ coverage_search_url("pt_s3_total") => http_ok_json(bundle) }) do
+        assert_nil @adapter.get_coverages("pt_s3_total"),
+                   "expected nil when bundle total is #{bad_total.inspect}"
+      end
+    end
+  end
+
+  # S4 — Coverage.status must be a known FHIR code (case-sensitive)
+
+  INVALID_COVERAGE_STATUS_VALUES = [ "Active", "unknown" ].freeze
+
+  def test_get_coverages_returns_nil_when_coverage_status_is_not_a_known_fhir_code
+    INVALID_COVERAGE_STATUS_VALUES.each do |bad_status|
+      resource = coverage_fhir_resource(
+        id: "cov_s4_status",
+        for_patient: "pt_s4_status",
+        status: bad_status,
+        payer_display: "TEST PAYER STATUS",
+        type_code: "EHCPOL",
+        subscriber_id: "POL_S4",
+        period_start: Date.new(2026, 1, 1),
+        period_end: Date.new(2026, 12, 31)
+      )
+      bundle = coverage_bundle_total_one(resource)
+      with_stubbed_coverage_http({ coverage_search_url("pt_s4_status") => http_ok_json(bundle) }) do
+        assert_nil @adapter.get_coverages("pt_s4_status"),
+                   "expected nil for invalid status #{bad_status.inspect}"
+      end
+    end
+  end
+
+  # S5 — Net::ProtocolError (base class) => nil
+
+  def test_get_coverages_returns_nil_when_http_get_raises_net_protocol_error
+    with_stubbed_coverage_http(lambda { |_url| raise Net::ProtocolError, "protocol error" }) do
+      assert_nil @adapter.get_coverages("pt_s5_protocol")
+    end
+  end
+
   def test_get_coverages_follows_next_link_when_relation_is_capitalized_next
     page1_url = coverage_search_url("pt_next_case")
     page2_url = "#{@adapter.base_url}/Coverage?#{URI.encode_www_form(page: "2", beneficiary: "Patient/pt_next_case")}"
@@ -1704,22 +1972,49 @@ class Corvid::Adapters::FhirAdapterTest < Minitest::Test
     bundle
   end
 
-  def coverage_fhir_resource(id:, payer_display:, type_code:, subscriber_id:,
+  def coverage_bundle_total_one(resource, total: 1)
+    coverage_bundle(entries: [ resource ], total: total)
+  end
+
+  def assert_single_excluded_coverage_returns_empty(patient_id, resource)
+    bundle = coverage_bundle_total_one(resource)
+    with_stubbed_coverage_http({ coverage_search_url(patient_id) => http_ok_json(bundle) }) do
+      assert_equal [], @adapter.get_coverages(patient_id),
+                   "single Coverage with total 1 must return [] when excluded from insurance allowlist"
+    end
+  end
+
+  def coverage_fhir_resource(id:, payer_display:, type_code: nil, subscriber_id:,
                              status: "active",
                              period_start: nil, period_end: nil, period: nil,
                              plan_name: nil, plan_value: nil,
                              for_patient: nil, beneficiary_reference: nil,
-                             payor_reference: nil)
-    payor = { "display" => payer_display }
-    payor["reference"] = payor_reference if payor_reference
+                             payor_reference: :auto,
+                             payors: nil, type_codings: nil,
+                             kind: nil, payment_by: nil, skip_payor: false)
     resource = {
       "resourceType" => "Coverage",
       "id" => id,
       "status" => status,
-      "payor" => [ payor ],
-      "subscriberId" => subscriber_id,
-      "type" => { "coding" => [ { "code" => type_code } ] }
+      "subscriberId" => subscriber_id
     }
+    unless skip_payor
+      resource["payor"] = if payors
+        payors
+      else
+        payor = { "display" => payer_display }
+        ref = payor_reference == :auto ? "Organization/#{id}" : payor_reference
+        payor["reference"] = ref if ref
+        [ payor ]
+      end
+    end
+    if type_codings
+      resource["type"] = { "coding" => type_codings }
+    elsif type_code
+      resource["type"] = { "coding" => [ { "code" => type_code } ] }
+    end
+    resource["kind"] = kind if kind
+    resource["paymentBy"] = payment_by if payment_by
     if beneficiary_reference
       resource["beneficiary"] = { "reference" => beneficiary_reference }
     elsif for_patient
