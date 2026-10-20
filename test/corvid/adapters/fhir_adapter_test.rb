@@ -144,6 +144,15 @@ class Corvid::Adapters::FhirAdapterTest < Minitest::Test
     assert_equal "TEST PROVIDER DISPLAY", line.provider_identifier
   end
 
+  def test_list_claims_skips_empty_provider_reference_id_for_display
+    line = list_claim_with_provider(
+      "identifier" => { "value" => "" },
+      "reference" => "Practitioner/",
+      "display" => "TEST PROVIDER DISPLAY"
+    )
+    assert_equal "TEST PROVIDER DISPLAY", line.provider_identifier
+  end
+
   def test_list_claims_provider_identifier_nil_when_all_provider_fields_blank
     line = list_claim_with_provider(
       "identifier" => { "value" => "" },
