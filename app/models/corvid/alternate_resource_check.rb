@@ -26,6 +26,19 @@ module Corvid
     validates :resource_type, inclusion: { in: RESOURCE_TYPES }
     validates :resource_type, uniqueness: { scope: :prc_referral_id }
 
+    # ADR 0002: string values, same sets the Postgres CHECKs allow.
+    # Not an integer enum. Null on a non-medicaid row; group and source
+    # are stored together or not at all.
+    ELIGIBILITY_GROUPS = %w[expansion_adult waiver_adult other unknown].freeze
+    ELIGIBILITY_GROUP_SOURCES = %w[
+      eligibility_response state_case_data registration staff_entry inferred
+    ].freeze
+
+    validates :eligibility_group, inclusion: { in: ELIGIBILITY_GROUPS }, allow_nil: true
+    validates :eligibility_group_source, inclusion: { in: ELIGIBILITY_GROUP_SOURCES }, allow_nil: true
+    validate :eligibility_group_only_on_medicaid
+    validate :eligibility_group_paired_with_source
+
     RESOURCE_NAMES = {
       "medicare_a" => "Medicare Part A", "medicare_b" => "Medicare Part B",
       "medicare_d" => "Medicare Part D", "medicaid" => "Medicaid",
@@ -190,6 +203,22 @@ module Corvid
 
     def same_coordinated_policy?(token)
       coordinated? && token.present? && token == policy_token
+    end
+
+    def eligibility_group_only_on_medicaid
+      return if eligibility_group.nil? || resource_type == "medicaid"
+
+      errors.add(:eligibility_group, "is only recorded for medicaid")
+    end
+
+    def eligibility_group_paired_with_source
+      return if eligibility_group.nil? == eligibility_group_source.nil?
+
+      if eligibility_group.nil?
+        errors.add(:eligibility_group, "must be set when eligibility_group_source is set")
+      else
+        errors.add(:eligibility_group_source, "must be set when eligibility_group is set")
+      end
     end
   end
 end
