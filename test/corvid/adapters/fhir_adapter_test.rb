@@ -1649,6 +1649,7 @@ class Corvid::Adapters::FhirAdapterTest < Minitest::Test
 
   PHDSC_SOP_SYSTEM = "urn:oid:2.16.840.1.113883.3.221.5"
   PHDSC_SOP_SYSTEM_BARE_OID = "2.16.840.1.113883.3.221.5"
+  PHDSC_SOP_SYSTEM_NAHDO = "https://nahdo.org/sopt"
   COVERAGE_SELFPAY_SYSTEM = "http://terminology.hl7.org/CodeSystem/coverage-selfpay"
   FHIR_STU3_COVERAGE_SELFPAY_SYSTEM = "http://hl7.org/fhir/coverage-selfpay"
   X12_CLAIM_FILING_INDICATOR_SYSTEM = "https://x12.org/codes/claim-filing-indicator-codes"
@@ -1933,6 +1934,115 @@ class Corvid::Adapters::FhirAdapterTest < Minitest::Test
       assert_single_excluded_issue_607_coverage(patient_id, resource,
                                                 "type.text #{label.inspect} without coding")
     end
+  end
+
+  # G1 — PHDSC SOP on HL7 THO canonical URL https://nahdo.org/sopt (issue #607)
+
+  ISSUE_607_SOP_EXCLUDED_ON_NAHDO = %w[333 81 82 95].freeze
+  ISSUE_607_SOP_INCLUDED_ON_NAHDO = %w[511 21].freeze
+
+  def test_get_coverages_excludes_active_coverage_for_phscd_sop_non_insurer_on_nahdo_sopt_system
+    ISSUE_607_SOP_EXCLUDED_ON_NAHDO.each do |sop_code|
+      patient_id = "pt_g1_exc_#{sop_code}"
+      resource = issue_607_organization_coverage(
+        id: "cov_g1_exc_#{sop_code}",
+        for_patient: patient_id,
+        type_codings: [ { "system" => PHDSC_SOP_SYSTEM_NAHDO, "code" => sop_code } ]
+      )
+      assert_single_excluded_issue_607_coverage(
+        patient_id, resource,
+        "PHDSC SOP #{sop_code.inspect} on #{PHDSC_SOP_SYSTEM_NAHDO}"
+      )
+    end
+  end
+
+  def test_get_coverages_includes_active_coverage_for_phscd_sop_insurer_family_on_nahdo_sopt_system
+    ISSUE_607_SOP_INCLUDED_ON_NAHDO.each do |sop_code|
+      patient_id = "pt_g1_inc_#{sop_code}"
+      resource = issue_607_organization_coverage(
+        id: "cov_g1_inc_#{sop_code}",
+        for_patient: patient_id,
+        type_codings: [ { "system" => PHDSC_SOP_SYSTEM_NAHDO, "code" => sop_code } ]
+      )
+      assert_single_included_issue_607_coverage(
+        patient_id, resource,
+        "PHDSC SOP #{sop_code.inspect} on #{PHDSC_SOP_SYSTEM_NAHDO}"
+      )
+    end
+  end
+
+  # G2 — type.text self-pay normalisation (issue #607)
+
+  ISSUE_607_SELF_PAY_TYPE_TEXT_EXCLUDED = [
+    "Self-Pay",
+    "SELFPAY",
+    "self  pay",
+    " Self pay "
+  ].freeze
+
+  def test_get_coverages_excludes_active_coverage_when_type_text_normalises_to_self_pay_without_coding
+    ISSUE_607_SELF_PAY_TYPE_TEXT_EXCLUDED.each do |label|
+      patient_id = "pt_g2_text_#{label.gsub(/\s+/, '_').tr('-', '_').downcase}"
+      resource = issue_607_organization_coverage(
+        id: "cov_g2_text",
+        for_patient: patient_id,
+        type_text: label
+      )
+      assert_single_excluded_issue_607_coverage(
+        patient_id, resource,
+        "type.text #{label.inspect} without coding (normalised self-pay)"
+      )
+    end
+  end
+
+  def test_get_coverages_includes_active_coverage_when_type_text_is_self_pay_plus_insurance_without_coding
+    resource = issue_607_organization_coverage(
+      id: "cov_g2_plus",
+      for_patient: "pt_g2_plus",
+      type_text: "Self Pay Plus Insurance"
+    )
+    assert_single_included_issue_607_coverage(
+      "pt_g2_plus", resource,
+      "type.text Self Pay Plus Insurance is not exact normalised self-pay"
+    )
+  end
+
+  # G3 — X12 claim-filing-indicator code 9 vs 09 (issue #607)
+
+  def test_get_coverages_excludes_active_coverage_with_x12_claim_filing_indicator_9_string_with_system
+    resource = issue_607_organization_coverage(
+      id: "cov_g3_x12_9_str",
+      for_patient: "pt_g3_x12_9_str",
+      type_codings: [ { "system" => X12_CLAIM_FILING_INDICATOR_SYSTEM, "code" => "9" } ]
+    )
+    assert_single_excluded_issue_607_coverage(
+      "pt_g3_x12_9_str", resource,
+      "X12 9 (string) with claim-filing-indicator system"
+    )
+  end
+
+  def test_get_coverages_excludes_active_coverage_with_x12_claim_filing_indicator_9_number_with_system
+    resource = issue_607_organization_coverage(
+      id: "cov_g3_x12_9_num",
+      for_patient: "pt_g3_x12_9_num",
+      type_codings: [ { "system" => X12_CLAIM_FILING_INDICATOR_SYSTEM, "code" => 9 } ]
+    )
+    assert_single_excluded_issue_607_coverage(
+      "pt_g3_x12_9_num", resource,
+      "X12 9 (JSON number) with claim-filing-indicator system"
+    )
+  end
+
+  def test_get_coverages_includes_active_coverage_with_bare_x12_code_9_without_system
+    resource = issue_607_organization_coverage(
+      id: "cov_g3_bare_9",
+      for_patient: "pt_g3_bare_9",
+      type_codings: [ { "code" => "9" } ]
+    )
+    assert_single_included_issue_607_coverage(
+      "pt_g3_bare_9", resource,
+      "bare code 9 without system is not self-pay (only bare 09 is)"
+    )
   end
 
   # D3 — non-SOP codings keep prior insurance rules (issue #607)
