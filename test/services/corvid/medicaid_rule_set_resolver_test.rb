@@ -357,7 +357,7 @@ class Corvid::MedicaidRuleSetResolverTest < ActiveSupport::TestCase
         error = assert_raises(ArgumentError) do
           resolve(eligibility_group: bad_group, state: "XA", indian_exemption: "not_eligible")
         end
-        refute_includes error.message, bad_group.to_s if bad_group
+        refute_includes error.message, bad_group.to_s unless bad_group.to_s.empty?
       end
     end
   end
@@ -368,7 +368,7 @@ class Corvid::MedicaidRuleSetResolverTest < ActiveSupport::TestCase
         error = assert_raises(ArgumentError) do
           resolve(eligibility_group: "other", state: "XA", indian_exemption: bad_exemption)
         end
-        refute_includes error.message, bad_exemption.to_s if bad_exemption
+        refute_includes error.message, bad_exemption.to_s unless bad_exemption.to_s.empty?
       end
     end
   end
