@@ -3,12 +3,21 @@
 module Corvid
   # Records the Medicaid eligibility group on a medicaid alternate-resource
   # check. A group stated on the coverage hash is kept with its source.
-  # Otherwise the group is inferred from state rules, age on the date of
-  # service, and a waiver plan description. Ambiguity is recorded as
-  # "unknown" — never a guess.
+  # A nil or blank group is not a statement; the group is then inferred
+  # from state rules, age on the date of service, and a waiver plan
+  # description. Ambiguity is recorded as "unknown" — never a guess.
   #
-  # Age is computed in memory from the adapter patient. The date of birth
-  # is never stored, logged, or placed in an error message (ADR 0003).
+  # Precedence is decided under a row lock on a fresh read. A stale
+  # in-memory copy cannot overwrite a staff entry, and an inference
+  # cannot overwrite a stated group.
+  #
+  # Coverage may state only eligibility_response, state_case_data, or
+  # registration. Any other source is recorded as eligibility_response.
+  #
+  # The check's referral must be visible in the current tenant (ADR 0002)
+  # or nothing is written. Age is computed in memory from the adapter
+  # patient. The date of birth is never stored, logged, or placed in an
+  # error message (ADR 0003).
   class MedicaidEligibilityGroupService
     # Whole years on the date of service. 19 through 64 with no waiver
     # match in an expansion state is expansion_adult. A waiver-program
@@ -17,34 +26,69 @@ module Corvid
     ADULT_MIN_AGE = 19
     ADULT_MAX_AGE = 64
 
+    # Adapter coverage cannot claim staff_entry or inferred.
+    STATED_SOURCES = %w[eligibility_response state_case_data registration].freeze
+
     def initialize(adapter:)
       @adapter = adapter
     end
 
     def record!(check, coverage:, date_of_service:)
       return unless medicaid?(check)
-      return current_group(check) if staff_entry?(check)
+      return unless referral_visible?(check)
 
-      coverage = {} unless coverage.is_a?(Hash)
-      return write_stated!(check, coverage) if stated?(coverage)
-      return current_group(check) if preserved?(check)
-
-      write!(check, inferred_group(check, coverage, date_of_service), "inferred")
+      # Fresh instance: with_lock refuses a row that already has unsaved
+      # changes, and those changes are the stale copy we must ignore.
+      row = check.class.find(check.id)
+      row.with_lock { apply_precedence(row, coverage_hash(coverage), date_of_service) }
     end
 
     def record_staff_entry!(check, eligibility_group:)
-      raise ArgumentError, "eligibility group is only recorded for medicaid" unless medicaid?(check)
-
-      group = recognized(eligibility_group, AlternateResourceCheck::ELIGIBILITY_GROUPS)
-      raise ArgumentError, "eligibility_group is not recognized" unless group
-
-      write!(check, group, "staff_entry")
+      ensure_staff_writable!(check)
+      group = required_group(eligibility_group)
+      row = check.class.find(check.id)
+      row.with_lock { write!(row, group, "staff_entry") }
     end
 
     private
 
     def medicaid?(check)
       check.resource_type == "medicaid"
+    end
+
+    def ensure_staff_writable!(check)
+      raise ArgumentError, "eligibility group is only recorded for medicaid" unless medicaid?(check)
+      raise ArgumentError, "eligibility group cannot be recorded" unless referral_visible?(check)
+    end
+
+    def required_group(value)
+      group = recognized(value, AlternateResourceCheck::ELIGIBILITY_GROUPS)
+      raise ArgumentError, "eligibility_group is not recognized" unless group
+
+      group
+    end
+
+    # TenantScoped default scope hides other tenants and raises when no
+    # tenant is set. Either result means the referral is not visible.
+    def referral_visible?(check)
+      Corvid::PrcReferral.where(id: check.prc_referral_id).exists?
+    rescue Corvid::MissingTenantContextError
+      false
+    end
+
+    def coverage_hash(coverage)
+      coverage.is_a?(Hash) ? coverage : {}
+    end
+
+    # with_lock has reloaded this row. Decide from that read, then write
+    # before the lock is released.
+    def apply_precedence(row, coverage, date_of_service)
+      return unless medicaid?(row)
+      return current_group(row) if staff_entry?(row)
+      return write_stated!(row, coverage) if stated?(coverage)
+      return current_group(row) if preserved?(row)
+
+      write!(row, inferred_group(row, coverage, date_of_service), "inferred")
     end
 
     def staff_entry?(check)
@@ -61,7 +105,12 @@ module Corvid
     end
 
     def stated?(coverage)
-      coverage.key?(:eligibility_group) || coverage.key?("eligibility_group")
+      value = coverage_value(coverage, :eligibility_group)
+      !value.nil? && !blank_string?(value)
+    end
+
+    def blank_string?(value)
+      value.is_a?(String) && value.blank?
     end
 
     def write_stated!(check, coverage)
@@ -71,19 +120,8 @@ module Corvid
     end
 
     def stated_source(coverage)
-      return "eligibility_response" unless source_key?(coverage)
-
-      raw = coverage_value(coverage, :eligibility_group_source)
-      return "eligibility_response" if raw.nil?
-
-      source = recognized(raw, AlternateResourceCheck::ELIGIBILITY_GROUP_SOURCES)
-      raise ArgumentError, "eligibility_group_source is not recognized" unless source
-
-      source
-    end
-
-    def source_key?(coverage)
-      coverage.key?(:eligibility_group_source) || coverage.key?("eligibility_group_source")
+      source = recognized(coverage_value(coverage, :eligibility_group_source), STATED_SOURCES)
+      source || "eligibility_response"
     end
 
     def inferred_group(check, coverage, date_of_service)
