@@ -8,12 +8,23 @@ module Corvid
   #     c.phi_sanitizer = ->(msg) { PhiSanitizer.redact(msg) }
   #     c.on_provenance = ->(**attrs) { Provenance.create!(**attrs) }
   #     c.fetch_provenance = ->(**attrs) { Provenance.where(**attrs).to_a }
+  #     # HMAC keys for verification snapshot fingerprints (ADR 0008).
+  #     # Hosts load these from a secret store. The database records only
+  #     # the key version, never the key bytes.
+  #     c.verification_snapshot_keys = {
+  #       "2026-10" => secret_store.fetch("corvid/verification-snapshot/2026-10")
+  #     }
+  #     c.verification_snapshot_key_version = "2026-10"
   #   end
   #
   # Per ADR 0003, phi_sanitizer defaults to fail-safe redact-all so that
   # forgetting to configure it does not increase PHI exposure.
+  #
+  # #inspect lists verification snapshot key versions and does not reveal
+  # key material.
   class Configuration
     attr_accessor :adapter, :edi_adapter, :phi_sanitizer, :on_provenance, :fetch_provenance
+    attr_accessor :verification_snapshot_keys, :verification_snapshot_key_version
 
     def initialize
       @adapter = nil
@@ -23,6 +34,22 @@ module Corvid
       @phi_sanitizer = ->(_msg) { "[REDACTED]" }
       @on_provenance = nil
       @fetch_provenance = ->(**) { [] }
+      @verification_snapshot_keys = {}
+      @verification_snapshot_key_version = nil
+    end
+
+    def inspect
+      "#<#{self.class.name} verification_snapshot_key_versions=#{snapshot_key_versions.inspect} " \
+        "verification_snapshot_key_version=#{verification_snapshot_key_version.inspect}>"
+    end
+
+    private
+
+    def snapshot_key_versions
+      keys = verification_snapshot_keys
+      return [] unless keys.respond_to?(:keys)
+
+      keys.keys
     end
   end
 

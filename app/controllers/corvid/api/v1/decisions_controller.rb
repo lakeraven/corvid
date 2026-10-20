@@ -51,7 +51,8 @@ module Corvid
             decided_by_identifier: d.decided_by_identifier,
             as_of_date: d.as_of_date.iso8601,
             provider_source: d.provider_source,
-            verification_snapshot_hash: d.verification_snapshot_hash
+            verification_snapshot_hash: d.verification_snapshot_hash,
+            verification_snapshot_key_version: d.verification_snapshot_key_version
           )
         end
       end

@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_10_19_000001) do
+ActiveRecord::Schema[8.1].define(version: 2026_10_20_000001) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
@@ -431,6 +431,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_19_000001) do
     t.string "verification_snapshot_hash"
     t.datetime "created_at", null: false
     t.datetime "updated_at", null: false
+    t.string "verification_snapshot_key_version"
     t.index ["tenant_identifier", "decided_at"], name: "idx_corvid_prc_eligibility_decisions_tenant_decided_at"
     t.index ["tenant_identifier", "facility_identifier", "decided_at"], name: "idx_corvid_prc_elig_decisions_tenant_facility_decided"
     t.index ["tenant_identifier", "person_identifier", "decided_at"], name: "idx_corvid_prc_elig_decisions_tenant_person_decided"
