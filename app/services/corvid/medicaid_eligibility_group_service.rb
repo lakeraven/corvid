@@ -25,9 +25,13 @@ module Corvid
   # registration. Any other source is recorded as eligibility_response.
   #
   # The check's referral must be visible in the current tenant (ADR 0002)
-  # or nothing is written. Age is computed in memory from the adapter
-  # patient. The date of birth is never stored, logged, or placed in an
-  # error message (ADR 0003).
+  # or nothing is written. Staff entry checks that visibility before
+  # resource type, under the lock when the row exists. A missing row, a
+  # referral outside this tenant, and any resource type in that case
+  # raise one ArgumentError that names no identifiers. Only a visible
+  # row may be rejected as non-medicaid. Age is computed in memory from
+  # the adapter patient. The date of birth is never stored, logged, or
+  # placed in an error message (ADR 0003).
   class MedicaidEligibilityGroupService
     # Whole years on the date of service. 19 through 64 with no waiver
     # match in an expansion state is expansion_adult. A waiver-program
@@ -38,6 +42,11 @@ module Corvid
 
     # Adapter coverage cannot claim staff_entry or inferred.
     STATED_SOURCES = %w[eligibility_response state_case_data registration].freeze
+
+    # A missing row and a referral outside the current tenant. The text
+    # names no identifiers, and it does not depend on resource type.
+    NOT_VISIBLE_MESSAGE = "eligibility group cannot be recorded"
+    private_constant :NOT_VISIBLE_MESSAGE
 
     def initialize(adapter:)
       @adapter = adapter
@@ -54,6 +63,10 @@ module Corvid
       group = required_group(eligibility_group)
       row = persisted_check(check)
       row.with_lock { write_staff!(row, group) }
+    rescue ActiveRecord::RecordNotFound
+      # RecordNotFound names the id. Raise the same not-visible error
+      # instead, with that exception cleared off the cause chain.
+      raise ArgumentError, NOT_VISIBLE_MESSAGE, cause: nil
     end
 
     private
@@ -66,9 +79,12 @@ module Corvid
       check.resource_type == "medicaid"
     end
 
+    # Visibility before resource type. A hidden referral is rejected for
+    # every resource type with NOT_VISIBLE_MESSAGE, and nothing is written.
+    # The medicaid-only message is only for a row visible in this tenant.
     def ensure_staff_writable!(check)
+      raise ArgumentError, NOT_VISIBLE_MESSAGE unless referral_visible?(check)
       raise ArgumentError, "eligibility group is only recorded for medicaid" unless medicaid?(check)
-      raise ArgumentError, "eligibility group cannot be recorded" unless referral_visible?(check)
     end
 
     def required_group(value)
