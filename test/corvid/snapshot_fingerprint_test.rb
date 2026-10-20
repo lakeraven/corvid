@@ -375,4 +375,241 @@ class Corvid::SnapshotFingerprintTest < ActiveSupport::TestCase
       payload: { enrollment: { value: Float::NAN } }
     )
   end
+
+  # ---- Issue #629 gate round 3 (failing until implemented) ------------------
+
+  def capture_snapshot_fingerprint_logs
+    log_io = StringIO.new
+    original_logger = Rails.logger
+    Rails.logger = ActiveSupport::Logger.new(log_io)
+    yield log_io
+  ensure
+    Rails.logger = original_logger
+  end
+
+  test "compute logs snapshot warning when configured version key is missing from keys hash" do
+    Corvid.configure do |c|
+      c.verification_snapshot_keys = {}
+      c.verification_snapshot_key_version = VERSION_V1
+    end
+
+    capture_snapshot_fingerprint_logs do |log_io|
+      digest, version = Corvid::SnapshotFingerprint.compute({ sample: true })
+      assert_nil digest
+      assert_nil version
+
+      log_message = log_io.string
+      assert_includes log_message.downcase, "snapshot"
+      refute_includes log_message, KEY_V1
+      refute_includes log_message, VERSION_V1
+    end
+  end
+
+  test "compute logs snapshot warning when configured version key is shorter than 32 bytes" do
+    short_key = "too-short-key"
+    Corvid.configure do |c|
+      c.verification_snapshot_keys = { VERSION_V1 => short_key }
+      c.verification_snapshot_key_version = VERSION_V1
+    end
+
+    capture_snapshot_fingerprint_logs do |log_io|
+      digest, version = Corvid::SnapshotFingerprint.compute({ sample: true })
+      assert_nil digest
+      assert_nil version
+
+      log_message = log_io.string
+      assert_includes log_message.downcase, "snapshot"
+      refute_includes log_message, short_key
+      refute_includes log_message, VERSION_V1
+    end
+  end
+
+  test "compute logs snapshot warning when configured version has trailing newline" do
+    version_with_newline = "#{VERSION_V1}\n"
+    Corvid.configure do |c|
+      c.verification_snapshot_keys = { VERSION_V1 => KEY_V1 }
+      c.verification_snapshot_key_version = version_with_newline
+    end
+
+    capture_snapshot_fingerprint_logs do |log_io|
+      digest, version = Corvid::SnapshotFingerprint.compute({ sample: true })
+      assert_nil digest
+      assert_nil version
+
+      log_message = log_io.string
+      assert_includes log_message.downcase, "snapshot"
+      refute_includes log_message, KEY_V1
+      refute_includes log_message, version_with_newline
+    end
+  end
+
+  test "compute logs snapshot warning when configured version exceeds 64 characters" do
+    long_version = "v" * 65
+    Corvid.configure do |c|
+      c.verification_snapshot_keys = { long_version => KEY_V1 }
+      c.verification_snapshot_key_version = long_version
+    end
+
+    capture_snapshot_fingerprint_logs do |log_io|
+      digest, version = Corvid::SnapshotFingerprint.compute({ sample: true })
+      assert_nil digest
+      assert_nil version
+
+      log_message = log_io.string
+      assert_includes log_message.downcase, "snapshot"
+      refute_includes log_message, KEY_V1
+      refute_includes log_message, long_version
+    end
+  end
+
+  test "compute logs nothing when no key version is configured and keys are empty" do
+    Corvid.reset_configuration!
+
+    capture_snapshot_fingerprint_logs do |log_io|
+      digest, version = Corvid::SnapshotFingerprint.compute({ sample: true })
+      assert_nil digest
+      assert_nil version
+      assert_empty log_io.string
+    end
+  end
+
+  test "compute returns nil pair for single-byte zero key material of 32 bytes" do
+    Corvid.configure do |c|
+      c.verification_snapshot_keys = { VERSION_V1 => "\0" * 32 }
+      c.verification_snapshot_key_version = VERSION_V1
+    end
+
+    capture_snapshot_fingerprint_logs do |log_io|
+      digest, version = Corvid::SnapshotFingerprint.compute({ sample: true })
+      assert_nil digest
+      assert_nil version
+
+      log_message = log_io.string
+      assert_includes log_message.downcase, "snapshot"
+      refute_includes log_message, VERSION_V1
+    end
+  end
+
+  test "compute returns nil pair for single-byte ascii zero key material of 32 bytes" do
+    Corvid.configure do |c|
+      c.verification_snapshot_keys = { VERSION_V1 => "0" * 32 }
+      c.verification_snapshot_key_version = VERSION_V1
+    end
+
+    capture_snapshot_fingerprint_logs do |log_io|
+      digest, version = Corvid::SnapshotFingerprint.compute({ sample: true })
+      assert_nil digest
+      assert_nil version
+
+      log_message = log_io.string
+      assert_includes log_message.downcase, "snapshot"
+      refute_includes log_message, VERSION_V1
+    end
+  end
+
+  test "compute returns nil pair for single-byte space key material of 32 bytes" do
+    Corvid.configure do |c|
+      c.verification_snapshot_keys = { VERSION_V1 => " " * 32 }
+      c.verification_snapshot_key_version = VERSION_V1
+    end
+
+    capture_snapshot_fingerprint_logs do |log_io|
+      digest, version = Corvid::SnapshotFingerprint.compute({ sample: true })
+      assert_nil digest
+      assert_nil version
+
+      log_message = log_io.string
+      assert_includes log_message.downcase, "snapshot"
+      refute_includes log_message, VERSION_V1
+    end
+  end
+
+  test "matches returns nil when key material is a single repeated byte of length 32" do
+    payload = { enrollment: { enrolled: true }, identity: {}, residency: {} }
+    repeated_key = "0" * 32
+
+    Corvid.configure do |c|
+      c.verification_snapshot_keys = { VERSION_V1 => repeated_key }
+    end
+
+    digest = OpenSSL::HMAC.hexdigest("SHA256", repeated_key, JSON.generate(payload))
+
+    assert_nil Corvid::SnapshotFingerprint.matches?(
+      hash: digest,
+      version: VERSION_V1,
+      payload: payload
+    )
+  end
+
+  test "compute returns nil pair and logs snapshot warning for Object leaf in payload" do
+    Corvid.configure do |c|
+      c.verification_snapshot_keys = { VERSION_V1 => KEY_V1 }
+      c.verification_snapshot_key_version = VERSION_V1
+    end
+
+    capture_snapshot_fingerprint_logs do |log_io|
+      digest, version = Corvid::SnapshotFingerprint.compute({ enrollment: Object.new })
+      assert_nil digest
+      assert_nil version
+
+      log_message = log_io.string
+      assert_includes log_message.downcase, "snapshot"
+    end
+  end
+
+  test "compute returns nil pair and logs snapshot warning for Struct leaf in payload" do
+    snapshot_struct = Struct.new(:marker)
+    Corvid.configure do |c|
+      c.verification_snapshot_keys = { VERSION_V1 => KEY_V1 }
+      c.verification_snapshot_key_version = VERSION_V1
+    end
+
+    capture_snapshot_fingerprint_logs do |log_io|
+      digest, version = Corvid::SnapshotFingerprint.compute({ enrollment: snapshot_struct.new("x") })
+      assert_nil digest
+      assert_nil version
+
+      log_message = log_io.string
+      assert_includes log_message.downcase, "snapshot"
+    end
+  end
+
+  test "matches returns nil for Object leaf in payload" do
+    Corvid.configure do |c|
+      c.verification_snapshot_keys = { VERSION_V1 => KEY_V1 }
+    end
+
+    digest = OpenSSL::HMAC.hexdigest("SHA256", KEY_V1, JSON.generate({ ok: true }))
+
+    assert_nil Corvid::SnapshotFingerprint.matches?(
+      hash: digest,
+      version: VERSION_V1,
+      payload: { enrollment: Object.new }
+    )
+  end
+
+  test "compute returns nil pair for hash keys that collide after stringification" do
+    Corvid.configure do |c|
+      c.verification_snapshot_keys = { VERSION_V1 => KEY_V1 }
+      c.verification_snapshot_key_version = VERSION_V1
+    end
+
+    digest, version = Corvid::SnapshotFingerprint.compute({ a: 1, "a" => 2 })
+    assert_nil digest
+    assert_nil version
+  end
+
+  test "matches returns nil for hash keys that collide after stringification" do
+    Corvid.configure do |c|
+      c.verification_snapshot_keys = { VERSION_V1 => KEY_V1 }
+    end
+
+    digest = OpenSSL::HMAC.hexdigest("SHA256", KEY_V1, JSON.generate({ canonical: true }))
+
+    assert_nil Corvid::SnapshotFingerprint.matches?(
+      hash: digest,
+      version: VERSION_V1,
+      payload: { a: 1, "a" => 2 }
+    )
+  end
 end

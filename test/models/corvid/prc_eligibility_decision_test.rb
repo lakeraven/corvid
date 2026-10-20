@@ -105,4 +105,30 @@ class Corvid::PrcEligibilityDecisionTest < ActiveSupport::TestCase
       assert_includes row.errors[:verification_snapshot_key_version], "can't be blank"
     end
   end
+
+  # ---- Issue #629 gate round 3 (failing until implemented) ------------------
+
+  test "legacy row rejects verification_snapshot_key_version change without verification_snapshot_hash change" do
+    with_tenant(TENANT) do
+      row = Corvid::PrcEligibilityDecision.create!(
+        tenant_identifier: TENANT,
+        person_identifier: "pt_legacy_version_only",
+        facility_identifier: "fac_demo",
+        decided_at: Time.current,
+        as_of_date: Date.current,
+        eligible: false,
+        reason_codes: [ "not_enrolled" ]
+      )
+
+      legacy_hash = "d" * 64
+      row.update_columns(
+        verification_snapshot_hash: legacy_hash,
+        verification_snapshot_key_version: nil
+      )
+
+      row.reload
+      refute row.update(verification_snapshot_key_version: "v1-test")
+      assert row.errors[:verification_snapshot_key_version].present?
+    end
+  end
 end
