@@ -37,6 +37,28 @@ module Corvid
 
   CareTeamMemberReference = Data.define(:practitioner_identifier, :role, :name, :status)
 
+  # US Core problem-list or encounter diagnosis. In memory only; never
+  # persisted or logged (ADR 0003).
+  ConditionReference = Data.define(
+    :code,
+    :code_system,
+    :display,
+    :clinical_status,
+    :category,
+    :onset_date
+  )
+
+  # US Core medication request. In memory only; never persisted or logged
+  # (ADR 0003).
+  MedicationReference = Data.define(
+    :code,
+    :code_system,
+    :display,
+    :status,
+    :authored_on,
+    :dosage_text
+  )
+
   # One billed line item from a stock FHIR R4 `Claim` (or ExplanationOfBenefit)
   # resource. This is the EHR-agnostic shape the generic FhirAdapter emits for
   # purchased/referred-care charges so PRC ingest can create a PrcObligation

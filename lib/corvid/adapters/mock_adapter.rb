@@ -450,6 +450,22 @@ module Corvid
         @coverages[patient_identifier.to_s] || []
       end
 
+      def add_condition(patient_identifier, reference)
+        (@conditions[patient_identifier.to_s] ||= []) << reference
+      end
+
+      def get_conditions(patient_identifier)
+        @conditions[patient_identifier.to_s] || []
+      end
+
+      def add_medication(patient_identifier, reference)
+        (@medications[patient_identifier.to_s] ||= []) << reference
+      end
+
+      def get_medications(patient_identifier)
+        @medications[patient_identifier.to_s] || []
+      end
+
       def reset!
         @patients = {}
         @practitioners = {}
@@ -459,6 +475,8 @@ module Corvid
         @enrollments = {}
         @residencies = {}
         @coverages = {}
+        @conditions = {}
+        @medications = {}
         @claims = {}
         @remittances = {}
         @payments_store = {}

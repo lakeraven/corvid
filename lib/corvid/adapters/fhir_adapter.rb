@@ -5,6 +5,7 @@ require "json"
 require "uri"
 require "date"
 require "bigdecimal"
+require "openssl"
 require "corvid/adapters/base"
 require "corvid/value_objects"
 
@@ -47,8 +48,30 @@ module Corvid
         appeal_deadline defer_reason modification_note
       ].freeze
 
+      # US Core Condition.category
+      # (http://terminology.hl7.org/CodeSystem/condition-category).
+      CONDITION_CATEGORY_SYSTEM = "http://terminology.hl7.org/CodeSystem/condition-category"
+      US_CORE_CONDITION_CATEGORIES = %w[problem-list-item encounter-diagnosis].freeze
+      INCLUDED_CLINICAL_STATUSES = %w[active resolved].freeze
+      BLOCKING_OUTCOME_SEVERITIES = %w[error fatal].freeze
+
       # Maps Corvid resource types to FHIR Coverage.type codes (HL7 v3 ActCode).
       # Real servers vary; align with deployment ValueSet.
+
+      # A search that cannot be trusted is unknown (nil), never a partial list.
+      # ArgumentError covers Date::Error while mapping an unparseable date.
+      CLINICAL_READ_ERRORS = [
+        Timeout::Error,
+        SocketError,
+        SystemCallError,
+        OpenSSL::SSL::SSLError,
+        IOError,
+        Net::ProtocolError,
+        EncodingError,
+        ArgumentError,
+        JSON::ParserError
+      ].freeze
+
       COVERAGE_TYPE_MAP = {
         "medicare_a"        => "MCRSC",
         "medicare_b"        => "MCRSC",
@@ -209,6 +232,25 @@ module Corvid
       def list_claims(patient_identifier)
         bundle = fhir_search("Claim", patient: patient_identifier)
         extract_entries(bundle).flat_map { |claim| build_claim_line_references(claim) }
+      end
+
+      # One Condition search page (no Bundle.link follow). Array of
+      # ConditionReference, or nil when the page is unknown. [] means none.
+      # US Core problem-list-item and encounter-diagnosis, active or resolved.
+      # In memory only — never persisted or logged (ADR 0003).
+      def get_conditions(patient_identifier)
+        clinical_search("Condition", patient_identifier) do |bundle|
+          map_condition_entries(bundle, patient_identifier)
+        end
+      end
+
+      # One MedicationRequest search page. Resolves contained or bundle-included
+      # Medication resources. Array of MedicationReference, or nil when unknown.
+      # In memory only — never persisted or logged (ADR 0003).
+      def get_medications(patient_identifier)
+        clinical_search("MedicationRequest", patient_identifier) do |bundle|
+          map_medication_entries(bundle, patient_identifier)
+        end
       end
 
       # ----------------------------------------------------------------------
@@ -634,6 +676,458 @@ module Corvid
         Date.parse(value.to_s)
       rescue ArgumentError
         nil
+      end
+
+      # Clinical search -------------------------------------------------------
+      # One page. nil means unknown; never a partial list. Response bodies are
+      # not logged (ADR 0003).
+
+      def clinical_search(resource_type, patient_identifier)
+        response = http_get(clinical_search_url(resource_type, patient_identifier))
+        bundle = parse_search_bundle(response)
+        return nil if bundle.nil?
+
+        yield bundle
+      rescue *CLINICAL_READ_ERRORS
+        nil
+      end
+
+      def clinical_search_url(resource_type, patient_identifier)
+        query = URI.encode_www_form(patient: patient_identifier)
+        "#{@base_url}/#{resource_type}?#{query}"
+      end
+
+      def parse_search_bundle(response)
+        body = clinical_response_body(response)
+        return nil if body.nil?
+
+        parsed = JSON.parse(body)
+        parsed if search_bundle?(parsed)
+      rescue JSON::ParserError
+        nil
+      end
+
+      def clinical_response_body(response)
+        return nil unless response.is_a?(Net::HTTPSuccess)
+
+        utf8_body(response.body)
+      end
+
+      def utf8_body(body)
+        return nil unless body.is_a?(String)
+
+        utf8 = body.dup.force_encoding(Encoding::UTF_8)
+        utf8 if utf8.valid_encoding?
+      end
+
+      def search_bundle?(parsed)
+        parsed.is_a?(Hash) && parsed["resourceType"] == "Bundle"
+      end
+
+      def bundle_entries(bundle)
+        entries = bundle["entry"]
+        return [] if entries.nil?
+        return nil unless entries.is_a?(Array)
+
+        entries
+      end
+
+      def entry_resource(entry)
+        return :unknown unless entry.is_a?(Hash)
+
+        resource = entry["resource"]
+        return :unknown unless resource.is_a?(Hash)
+
+        resource
+      end
+
+      def blocking_outcome?(resource)
+        issues = resource["issue"]
+        return false if issues.nil?
+        return true unless issues.is_a?(Array)
+
+        issues.any? { |issue| blocking_issue?(issue) }
+      end
+
+      def blocking_issue?(issue)
+        return true unless issue.is_a?(Hash)
+
+        severity = issue["severity"]
+        severity.is_a?(String) && BLOCKING_OUTCOME_SEVERITIES.include?(severity.downcase)
+      end
+
+      def unknown_value?(*values)
+        values.any? { |value| value == :unknown }
+      end
+
+      def optional_string(value)
+        return nil if value.nil?
+        return :unknown unless value.is_a?(String)
+        return nil if value.blank?
+
+        value
+      end
+
+      def strict_date(value)
+        Date.parse(value)
+      rescue ArgumentError
+        :unknown
+      end
+
+      def subject_matches?(resource, patient_identifier)
+        subject = resource["subject"]
+        return false unless subject.is_a?(Hash)
+
+        patient_reference?(subject["reference"], patient_identifier)
+      end
+
+      def patient_reference?(reference, patient_identifier)
+        return false unless reference.is_a?(String)
+
+        segments = reference.split("/")
+        segments[-2] == "Patient" && segments[-1] == patient_identifier.to_s
+      end
+
+      # Conditions ------------------------------------------------------------
+
+      def map_condition_entries(bundle, patient_identifier)
+        entries = bundle_entries(bundle)
+        return nil if entries.nil?
+
+        entries.each_with_object([]) do |entry, results|
+          mapped = condition_from_entry(entry, patient_identifier)
+          return nil if mapped == :unknown
+
+          results << mapped if mapped.is_a?(Corvid::ConditionReference)
+        end
+      end
+
+      def condition_from_entry(entry, patient_identifier)
+        resource = entry_resource(entry)
+        return :unknown if resource == :unknown
+
+        map_condition_resource(resource, patient_identifier)
+      end
+
+      def map_condition_resource(resource, patient_identifier)
+        case resource["resourceType"]
+        when "OperationOutcome"
+          blocking_outcome?(resource) ? :unknown : nil
+        when "Condition"
+          build_condition_reference(resource, patient_identifier)
+        else
+          :unknown
+        end
+      end
+
+      def build_condition_reference(resource, patient_identifier)
+        return :unknown unless subject_matches?(resource, patient_identifier)
+
+        category = us_core_category(resource)
+        status = clinical_status_code(resource)
+        parts = codeable_parts(resource["code"])
+        onset = onset_date_for(resource)
+        return :unknown if unknown_value?(category, status, parts, onset)
+        return nil unless include_condition?(category, status)
+
+        condition_reference(parts, status, category, onset)
+      end
+
+      def include_condition?(category, status)
+        US_CORE_CONDITION_CATEGORIES.include?(category) &&
+          INCLUDED_CLINICAL_STATUSES.include?(status)
+      end
+
+      def condition_reference(parts, status, category, onset)
+        Corvid::ConditionReference.new(
+          code: parts[0],
+          code_system: parts[1],
+          display: parts[2],
+          clinical_status: status,
+          category: category,
+          onset_date: onset
+        )
+      end
+
+      def us_core_category(resource)
+        categories = resource["category"]
+        return nil if categories.nil?
+        return :unknown unless categories.is_a?(Array)
+
+        match = nil
+        categories.each do |category|
+          code = category_match(category)
+          return :unknown if code == :unknown
+
+          match ||= code
+        end
+        match
+      end
+
+      def category_match(category)
+        return :unknown unless category.is_a?(Hash)
+
+        codings = category["coding"]
+        return nil if codings.nil?
+        return :unknown unless codings.is_a?(Array)
+
+        match = nil
+        codings.each do |coding|
+          code = matching_category_code(coding)
+          return :unknown if code == :unknown
+
+          match ||= code
+        end
+        match
+      end
+
+      def matching_category_code(coding)
+        return :unknown unless coding.is_a?(Hash)
+        return nil unless coding["system"] == CONDITION_CATEGORY_SYSTEM
+
+        code = optional_string(coding["code"])
+        return :unknown if code == :unknown
+        return nil unless US_CORE_CONDITION_CATEGORIES.include?(code)
+
+        code
+      end
+
+      def clinical_status_code(resource)
+        codings = status_codings(resource["clinicalStatus"])
+        return codings if codings.nil? || codings == :unknown
+        return nil if codings.empty?
+
+        optional_string(codings.first["code"])
+      end
+
+      def status_codings(status)
+        return nil if status.nil?
+        return :unknown unless status.is_a?(Hash)
+
+        codings = status["coding"]
+        return nil if codings.nil?
+        return :unknown unless codings.is_a?(Array) && codings.all? { |coding| coding.is_a?(Hash) }
+
+        codings
+      end
+
+      def onset_date_for(resource)
+        primary = optional_string(resource["onsetDateTime"])
+        fallback = period_start(resource["onsetPeriod"])
+        return :unknown if unknown_value?(primary, fallback)
+
+        raw = primary || fallback
+        return nil if raw.nil?
+
+        strict_date(raw)
+      end
+
+      def period_start(period)
+        return nil if period.nil?
+        return :unknown unless period.is_a?(Hash)
+
+        start = period["start"]
+        return nil if start.nil? || (start.is_a?(String) && start.blank?)
+        return :unknown unless start.is_a?(String)
+
+        start
+      end
+
+      def codeable_parts(codeable)
+        return [ nil, nil, nil ] if codeable.nil?
+        return :unknown unless codeable.is_a?(Hash)
+
+        coding = first_coding(codeable["coding"])
+        return :unknown if coding == :unknown
+
+        assemble_codeable(coding, codeable["text"])
+      end
+
+      def assemble_codeable(coding, text)
+        coding ||= {}
+        code = optional_string(coding["code"])
+        system = optional_string(coding["system"])
+        display = optional_string(coding["display"])
+        fallback = optional_string(text)
+        return :unknown if unknown_value?(code, system, display, fallback)
+
+        [ code, system, display || fallback ]
+      end
+
+      def first_coding(codings)
+        return nil if codings.nil?
+        return :unknown unless codings.is_a?(Array)
+        return nil if codings.empty?
+        return :unknown unless codings.all? { |coding| coding.is_a?(Hash) }
+
+        codings.first
+      end
+
+      # Medications -----------------------------------------------------------
+
+      def map_medication_entries(bundle, patient_identifier)
+        entries = bundle_entries(bundle)
+        return nil if entries.nil?
+
+        collected = partition_medication_entries(entries)
+        return nil if collected.nil?
+
+        medication_references(collected[0], patient_identifier, collected[1])
+      end
+
+      def partition_medication_entries(entries)
+        index = {}
+        requests = []
+        entries.each do |entry|
+          classified = classify_medication_entry(entry, index)
+          return nil if classified == :unknown
+
+          requests << classified if medication_request?(classified)
+        end
+        [ requests, index ]
+      end
+
+      def medication_request?(resource)
+        resource.is_a?(Hash) && resource["resourceType"] == "MedicationRequest"
+      end
+
+      def classify_medication_entry(entry, index)
+        resource = entry_resource(entry)
+        return :unknown if resource == :unknown
+
+        case resource["resourceType"]
+        when "OperationOutcome"
+          blocking_outcome?(resource) ? :unknown : nil
+        when "Medication"
+          index_medication(index, resource)
+        when "MedicationRequest"
+          resource
+        else
+          :unknown
+        end
+      end
+
+      def index_medication(index, resource)
+        id = resource["id"]
+        return :unknown unless id.is_a?(String) && id.present?
+
+        index[id] ||= resource
+        nil
+      end
+
+      def medication_references(requests, patient_identifier, index)
+        requests.each_with_object([]) do |request, results|
+          mapped = build_medication_reference(request, patient_identifier, index)
+          return nil if mapped.nil?
+
+          results << mapped
+        end
+      end
+
+      def build_medication_reference(request, patient_identifier, index)
+        return nil unless subject_matches?(request, patient_identifier)
+
+        parts = medication_code_parts(request, index)
+        authored = authored_on_for(request)
+        dosage = dosage_text_for(request)
+        status = optional_string(request["status"])
+        return nil if medication_unknown?(parts, authored, dosage, status)
+
+        medication_reference(parts, status, authored, dosage)
+      end
+
+      def medication_unknown?(parts, authored, dosage, status)
+        parts.nil? || unknown_value?(parts, authored, dosage, status)
+      end
+
+      def medication_reference(parts, status, authored, dosage)
+        Corvid::MedicationReference.new(
+          code: parts[0],
+          code_system: parts[1],
+          display: parts[2],
+          status: status,
+          authored_on: authored,
+          dosage_text: dosage
+        )
+      end
+
+      def medication_code_parts(request, index)
+        if concept_present?(request)
+          parts = codeable_parts(request["medicationCodeableConcept"])
+          return nil if parts == :unknown
+
+          return parts
+        end
+
+        referenced_code_parts(request, index)
+      end
+
+      def concept_present?(request)
+        value = request["medicationCodeableConcept"]
+        request.key?("medicationCodeableConcept") && !value.nil?
+      end
+
+      def referenced_code_parts(request, index)
+        medication = resolve_medication(request, index)
+        return nil if medication.nil? || medication == :unknown
+
+        parts = codeable_parts(medication["code"])
+        return nil if parts == :unknown
+
+        parts
+      end
+
+      def resolve_medication(request, index)
+        reference = medication_reference_string(request["medicationReference"])
+        return reference if reference.nil? || reference == :unknown
+
+        if reference.start_with?("#")
+          contained_medication(request, reference.delete_prefix("#"))
+        else
+          bundled_medication(index, reference)
+        end
+      end
+
+      def medication_reference_string(reference)
+        return nil unless reference.is_a?(Hash)
+
+        optional_string(reference["reference"])
+      end
+
+      def contained_medication(request, id)
+        contained = request["contained"]
+        return nil if contained.nil?
+        return :unknown unless contained.is_a?(Array)
+        return :unknown if contained.any? { |resource| !resource.is_a?(Hash) }
+
+        contained.find { |resource| medication_id?(resource, id) }
+      end
+
+      def medication_id?(resource, id)
+        resource["resourceType"] == "Medication" && resource["id"] == id
+      end
+
+      def bundled_medication(index, reference)
+        segments = reference.split("?").first.split("/")
+        return nil unless segments[-2] == "Medication"
+
+        index[segments[-1]]
+      end
+
+      def authored_on_for(request)
+        raw = optional_string(request["authoredOn"])
+        return raw if raw.nil? || raw == :unknown
+
+        strict_date(raw)
+      end
+
+      def dosage_text_for(request)
+        instructions = request["dosageInstruction"]
+        return nil if instructions.nil?
+        return :unknown unless instructions.is_a?(Array) && instructions.all? { |item| item.is_a?(Hash) }
+        return nil if instructions.empty?
+
+        optional_string(instructions.first["text"])
       end
     end
   end
