@@ -3,22 +3,23 @@
 module Corvid
   # Records the Medicaid eligibility group on a medicaid alternate-resource
   # check. A stated group is kept with its source only when it is exactly
-  # one of the four eligibility groups, as a String or a Symbol name.
-  # Anything else — nil, blank, wrong case, or an unrecognised value — is
-  # not a statement; the group is then inferred from state rules and age
-  # on the date of service. A waiver plan description is consulted only
-  # when the state has work-requirement programs. Ambiguity is recorded
-  # as "unknown" — never a guess.
+  # expansion_adult, waiver_adult, or other, as a String or a Symbol name.
+  # "unknown", nil, blank, wrong case, or an unrecognised value is not a
+  # statement; the group is then inferred from state rules and age on the
+  # date of service. A waiver plan description is consulted only when the
+  # state has work-requirement programs. Ambiguity is recorded as
+  # "unknown" — never a guess.
   #
   # The caller is used only for its id. Eligibility fields are
   # snapshotted before an inference is computed, and the adapter runs
-  # before any lock. Coverage that states a recognised group, or a
-  # fresh unlocked read that already has staff_entry or another stated
-  # source, does not call the adapter. Tenant visibility, resource
-  # type, and precedence are decided under the lock after reload. A
-  # stated or staff value is never overwritten. When the stored
-  # inferred group changed during the lookup and disagrees with the
-  # new inference, the recorded group is unknown.
+  # before any lock. A non-medicaid row, coverage that states a real
+  # group, or a fresh unlocked read that already has staff_entry or a
+  # stated real group does not call the adapter. Tenant visibility,
+  # resource type, and precedence are decided under the lock after
+  # reload. A stated real group or a staff entry is never overwritten.
+  # A stored "unknown" with a stated source may be replaced by an
+  # inference. When the stored inferred group changed during the lookup
+  # and disagrees with the new inference, the recorded group is unknown.
   #
   # Coverage may state only eligibility_response, state_case_data, or
   # registration. Any other source is recorded as eligibility_response.
@@ -89,9 +90,10 @@ module Corvid
       coverage.is_a?(Hash) ? coverage : {}
     end
 
-    # The row was just loaded and is not locked. A recognised group on
-    # the coverage, a staff entry, or any other stated source does not
-    # need the patient, so a failing lookup cannot block that write.
+    # The row was just loaded and is not locked. A non-medicaid row, a
+    # real group on the coverage, a staff entry, or a stated real group
+    # does not need the patient, so a failing lookup cannot block that
+    # write. Stored unknown with a stated source still needs one.
     def prepare_inference(row, coverage, date_of_service)
       return unless adapter_needed?(row, coverage)
 
@@ -100,6 +102,7 @@ module Corvid
     end
 
     def adapter_needed?(row, coverage)
+      return false unless medicaid?(row)
       return false if stated?(coverage)
 
       !preserved?(row)
@@ -165,23 +168,35 @@ module Corvid
       check.eligibility_group_source == "staff_entry"
     end
 
+    # A staff entry or a stated real group blocks inference. Stored
+    # unknown from a stated source does not: inference may replace it.
     def preserved?(check)
+      return false if stated_unknown?(check)
+
       source = check.eligibility_group_source
       source.present? && source != "inferred"
+    end
+
+    def stated_unknown?(check)
+      check.eligibility_group == "unknown" && STATED_SOURCES.include?(check.eligibility_group_source)
     end
 
     def current_group(check)
       check.eligibility_group
     end
 
-    # Exactly one of the four groups, as a String or a Symbol name.
-    # Wrong case, blanks, and other types are not a statement.
+    # expansion_adult, waiver_adult, or other, as a String or a Symbol
+    # name. "unknown", wrong case, blanks, and other types are not a
+    # statement.
     def stated?(coverage)
       stated_group(coverage).present?
     end
 
     def stated_group(coverage)
-      recognized(coverage_value(coverage, :eligibility_group), AlternateResourceCheck::ELIGIBILITY_GROUPS)
+      group = recognized(coverage_value(coverage, :eligibility_group), AlternateResourceCheck::ELIGIBILITY_GROUPS)
+      return if group.nil? || group == "unknown"
+
+      group
     end
 
     def write_stated!(check, coverage)
@@ -244,6 +259,8 @@ module Corvid
     end
 
     def patient_for(check)
+      return unless medicaid?(check)
+
       patient_id = patient_identifier_for(check)
       return if patient_id.blank?
 
