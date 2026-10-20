@@ -612,4 +612,147 @@ class Corvid::SnapshotFingerprintTest < ActiveSupport::TestCase
       payload: { a: 1, "a" => 2 }
     )
   end
+
+  # ---- Issue #629 gate round 4 (failing until implemented) ------------------
+
+  test "compute returns nil pair for configured version with invalid UTF-8 encoding" do
+    bad_version = "\xFFv1".dup.force_encoding("UTF-8")
+    Corvid.configure do |c|
+      c.verification_snapshot_keys = { bad_version => KEY_V1 }
+      c.verification_snapshot_key_version = bad_version
+    end
+
+    capture_snapshot_fingerprint_logs do |log_io|
+      digest = version = nil
+      begin
+        digest, version = Corvid::SnapshotFingerprint.compute({ sample: true })
+      rescue StandardError => error
+        flunk "expected compute not to raise, got #{error.class}"
+      end
+      assert_nil digest
+      assert_nil version
+
+      log_message = log_io.string
+      assert_match(/snapshot/i, log_message)
+      refute_includes log_message, KEY_V1
+    end
+  end
+
+  test "compute returns nil pair for configured version containing null control character" do
+    version_with_nul = "#{VERSION_V1}\0"
+    Corvid.configure do |c|
+      c.verification_snapshot_keys = { version_with_nul => KEY_V1 }
+      c.verification_snapshot_key_version = version_with_nul
+    end
+
+    capture_snapshot_fingerprint_logs do |log_io|
+      digest, version = nil
+      assert_nothing_raised do
+        digest, version = Corvid::SnapshotFingerprint.compute({ sample: true })
+      end
+      assert_nil digest
+      assert_nil version
+
+      log_message = log_io.string
+      assert_includes log_message.downcase, "snapshot"
+      refute_includes log_message, KEY_V1
+      refute_includes log_message, version_with_nul
+    end
+  end
+
+  test "compute returns nil pair for configured version containing tab control character" do
+    version_with_tab = "#{VERSION_V1}\t"
+    Corvid.configure do |c|
+      c.verification_snapshot_keys = { version_with_tab => KEY_V1 }
+      c.verification_snapshot_key_version = version_with_tab
+    end
+
+    capture_snapshot_fingerprint_logs do |log_io|
+      digest, version = nil
+      assert_nothing_raised do
+        digest, version = Corvid::SnapshotFingerprint.compute({ sample: true })
+      end
+      assert_nil digest
+      assert_nil version
+
+      log_message = log_io.string
+      assert_includes log_message.downcase, "snapshot"
+      refute_includes log_message, KEY_V1
+    end
+  end
+
+  test "matches returns nil when version string contains a control character" do
+    version_with_nul = "#{VERSION_V1}\0"
+    payload = { enrollment: { enrolled: true }, identity: {}, residency: {} }
+
+    Corvid.configure do |c|
+      c.verification_snapshot_keys = { version_with_nul => KEY_V1 }
+    end
+
+    digest = OpenSSL::HMAC.hexdigest("SHA256", KEY_V1, JSON.generate(payload))
+
+    assert_nil Corvid::SnapshotFingerprint.matches?(
+      hash: digest,
+      version: version_with_nul,
+      payload: payload
+    )
+  end
+
+  test "matches returns nil when hash is nil and version is usable" do
+    Corvid.configure do |c|
+      c.verification_snapshot_keys = { VERSION_V1 => KEY_V1 }
+    end
+
+    assert_nil Corvid::SnapshotFingerprint.matches?(
+      hash: nil,
+      version: VERSION_V1,
+      payload: { enrollment: {} }
+    )
+  end
+
+  test "matches returns nil when hash is empty string and version is usable" do
+    Corvid.configure do |c|
+      c.verification_snapshot_keys = { VERSION_V1 => KEY_V1 }
+    end
+
+    assert_nil Corvid::SnapshotFingerprint.matches?(
+      hash: "",
+      version: VERSION_V1,
+      payload: { enrollment: {} }
+    )
+  end
+
+  test "compute returns nil pair when symbol and string keys collide after to_s" do
+    Corvid.configure do |c|
+      c.verification_snapshot_keys = { "v1-test": KEY_V1, "v1-test" => KEY_V2 }
+      c.verification_snapshot_key_version = "v1-test"
+    end
+
+    capture_snapshot_fingerprint_logs do |log_io|
+      digest, version = Corvid::SnapshotFingerprint.compute({ sample: true })
+      assert_nil digest
+      assert_nil version
+
+      log_message = log_io.string
+      assert_includes log_message.downcase, "snapshot"
+      refute_includes log_message, KEY_V1
+      refute_includes log_message, KEY_V2
+    end
+  end
+
+  test "matches returns nil when symbol and string version keys collide after to_s" do
+    payload = { enrollment: { enrolled: true }, identity: {}, residency: {} }
+
+    Corvid.configure do |c|
+      c.verification_snapshot_keys = { "v1-test": KEY_V1, "v1-test" => KEY_V2 }
+    end
+
+    digest = OpenSSL::HMAC.hexdigest("SHA256", KEY_V1, JSON.generate(payload))
+
+    assert_nil Corvid::SnapshotFingerprint.matches?(
+      hash: digest,
+      version: "v1-test",
+      payload: payload
+    )
+  end
 end

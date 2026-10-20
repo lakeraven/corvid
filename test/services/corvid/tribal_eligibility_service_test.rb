@@ -353,4 +353,76 @@ class Corvid::TribalEligibilityServiceTest < ActiveSupport::TestCase
     assert_nil row.verification_snapshot_hash
     assert_nil row.verification_snapshot_key_version
   end
+
+  # ---- Issue #629 gate round 4 (failing until implemented) ------------------
+
+  test "decide saves nil snapshot hash and version when configured version contains null byte" do
+    version_with_nul = "#{SNAPSHOT_VERSION_V1}\0"
+    configure_snapshot_keys!(
+      version: version_with_nul,
+      keys: { version_with_nul => SNAPSHOT_KEY_V1 }
+    )
+    fixed_adapter_responses_for("pt_nul_ver")
+
+    decision = nil
+    begin
+      decision = Corvid::TribalEligibilityService.decide(
+        person_identifier: "pt_nul_ver",
+        facility: @facility,
+        tenant_identifier: TENANT
+      )
+    rescue StandardError => error
+      flunk "expected decide not to raise, got #{error.class}"
+    end
+
+    row = Corvid::PrcEligibilityDecision.find(decision.decision_id)
+    assert decision.eligible?
+    assert_nil row.verification_snapshot_hash
+    assert_nil row.verification_snapshot_key_version
+  end
+
+  test "decide saves nil snapshot hash and version when configured version contains tab control character" do
+    version_with_tab = "#{SNAPSHOT_VERSION_V1}\t"
+    configure_snapshot_keys!(
+      version: version_with_tab,
+      keys: { version_with_tab => SNAPSHOT_KEY_V1 }
+    )
+    fixed_adapter_responses_for("pt_tab_ver")
+
+    decision = Corvid::TribalEligibilityService.decide(
+      person_identifier: "pt_tab_ver",
+      facility: @facility,
+      tenant_identifier: TENANT
+    )
+
+    row = Corvid::PrcEligibilityDecision.find(decision.decision_id)
+    assert decision.eligible?
+    assert_nil row.verification_snapshot_hash
+    assert_nil row.verification_snapshot_key_version
+  end
+
+  test "decide saves nil snapshot hash and version when configured version has invalid UTF-8 encoding" do
+    bad_version = "\xFFv1".dup.force_encoding("UTF-8")
+    configure_snapshot_keys!(
+      version: bad_version,
+      keys: { bad_version => SNAPSHOT_KEY_V1 }
+    )
+    fixed_adapter_responses_for("pt_bad_utf8_ver")
+
+    decision = nil
+    begin
+      decision = Corvid::TribalEligibilityService.decide(
+        person_identifier: "pt_bad_utf8_ver",
+        facility: @facility,
+        tenant_identifier: TENANT
+      )
+    rescue StandardError => error
+      flunk "expected decide not to raise, got #{error.class}"
+    end
+
+    row = Corvid::PrcEligibilityDecision.find(decision.decision_id)
+    assert decision.eligible?
+    assert_nil row.verification_snapshot_hash
+    assert_nil row.verification_snapshot_key_version
+  end
 end
