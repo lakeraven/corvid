@@ -11,7 +11,8 @@ module Corvid
   # responses under a host-supplied key (ADR 0008). The key version is stored
   # beside it. The presence check on verification_snapshot_key_version applies
   # only when the hash is being set or changed, so legacy rows (hash, nil
-  # version) can be updated.
+  # version) can be updated. On a persisted row the version may be set or
+  # changed only in the same save that sets or changes the hash.
   class PrcEligibilityDecision < ::ActiveRecord::Base
     self.table_name = "corvid_prc_eligibility_decisions"
 
@@ -28,11 +29,24 @@ module Corvid
     validates :verification_snapshot_key_version,
               length: { maximum: SnapshotFingerprint::MAX_VERSION_LENGTH },
               allow_nil: true
+    validate :verification_snapshot_key_version_changes_with_hash, if: :persisted?
 
     scope :recent, -> { order(decided_at: :desc) }
     scope :for_person, ->(identifier) { where(person_identifier: identifier) }
     scope :eligible, -> { where(eligible: true) }
     scope :ineligible, -> { where(eligible: false) }
     scope :with_reason, ->(code) { where("reason_codes @> ?", [ code.to_s ].to_json) }
+
+    private
+
+    def verification_snapshot_key_version_changes_with_hash
+      return unless will_save_change_to_verification_snapshot_key_version?
+      return if will_save_change_to_verification_snapshot_hash?
+
+      errors.add(
+        :verification_snapshot_key_version,
+        "can only be set or changed when the verification snapshot hash changes"
+      )
+    end
   end
 end

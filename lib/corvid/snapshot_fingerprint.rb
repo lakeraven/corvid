@@ -8,23 +8,34 @@ module Corvid
   # HMAC-SHA256 fingerprint of an eligibility verification snapshot (ADR 0008).
   #
   # The key comes from Corvid.configuration, which hosts load from a secret
-  # store. A plain SHA256 is never produced. The HMAC input is canonical JSON.
-  # A usable version is a String or Symbol, non-blank after strip, at most
-  # MAX_VERSION_LENGTH characters. When no usable key is configured, or the
-  # digest cannot be computed, compute returns [nil, nil] so callers persist
-  # no fingerprint.
+  # store. A plain SHA256 is never produced. The HMAC input is canonical JSON
+  # of the allowed leaf types. A usable version is a String or Symbol,
+  # non-blank after strip, at most MAX_VERSION_LENGTH characters. A usable
+  # key is a String of at least MIN_KEY_BYTES whose bytes are not all the
+  # same byte. When the configured version is non-nil and no usable key
+  # backs it, compute logs a warning and returns [nil, nil]. A nil version
+  # logs nothing. When the digest cannot be computed, compute returns
+  # [nil, nil] so callers persist no fingerprint.
   module SnapshotFingerprint
     MIN_KEY_BYTES = 32
     MAX_VERSION_LENGTH = 64
+    UNUSABLE_KEY_MESSAGE =
+      "corvid.snapshot_fingerprint: verification snapshot key version is configured but has no usable key"
+
+    # Payload leaf or hash key that cannot be canonicalized. The message is
+    # the class name only, so a log of the class never includes payload values.
+    class CanonicalizationError < StandardError; end
 
     class << self
       # Returns [hex_digest, key_version], or [nil, nil] when no usable key
       # is configured or the digest cannot be computed. key_version is the
-      # configured version as a String.
+      # configured version as a String. A non-nil version with no usable key
+      # logs a warning that omits the key and the version.
       def compute(payload)
-        version = normalized_version(Corvid.configuration.verification_snapshot_key_version)
+        configured = Corvid.configuration.verification_snapshot_key_version
+        version = normalized_version(configured)
         key = usable_key(version)
-        return [ nil, nil ] if key.nil?
+        return unavailable_fingerprint(configured) if key.nil?
 
         begin
           [ hex_digest(key, payload), version ]
@@ -35,9 +46,9 @@ module Corvid
       end
 
       # True or false when the row's key version can be checked. nil when
-      # the version is blank, that key is missing or invalid, or the digest
-      # cannot be computed (legacy and unknown versions are unverifiable,
-      # not mismatches).
+      # the version is blank, that key is missing or invalid (including a
+      # repeated-byte key), or the digest cannot be computed (legacy and
+      # unknown versions are unverifiable, not mismatches).
       def matches?(hash:, version:, payload:)
         key = usable_key(version)
         return nil if key.nil?
@@ -50,14 +61,32 @@ module Corvid
 
       private
 
+      def unavailable_fingerprint(configured)
+        log_unusable_configured_key unless configured.nil?
+        [ nil, nil ]
+      end
+
       def usable_key(version)
         name = normalized_version(version)
         return if name.nil?
 
         key = key_named(name)
-        key if key.is_a?(String) && key.bytesize >= MIN_KEY_BYTES
+        return unless usable_key_material?(key)
+
+        key
       rescue StandardError
         nil
+      end
+
+      def usable_key_material?(key)
+        key.is_a?(String) && key.bytesize >= MIN_KEY_BYTES && !repeated_byte_key?(key)
+      end
+
+      # Every byte equal to the first byte, including a run of a single ASCII
+      # character. Empty strings never reach this check.
+      def repeated_byte_key?(key)
+        sample = key.getbyte(0)
+        key.each_byte.all? { |byte| byte == sample }
       end
 
       def normalized_version(version)
@@ -103,16 +132,30 @@ module Corvid
       def canonical_hash(hash)
         string_keyed = {}
         hash.each_pair do |key, nested|
-          string_keyed[key.to_s] = canonicalize(nested)
+          name = key.to_s
+          raise CanonicalizationError if string_keyed.key?(name)
+
+          string_keyed[name] = canonicalize(nested)
         end
         string_keyed.sort.to_h
       end
 
+      # String, Symbol (to_s), Integer, Float, true, false, and nil.
+      # Time-like values and Date are handled first. NaN and Infinity stay
+      # Floats so JSON.generate rejects them.
       def canonical_leaf(value)
         return canonical_time(value) if time_like?(value)
         return value.iso8601 if date_like?(value)
+        return value.to_s if value.is_a?(Symbol)
+        return value if json_primitive?(value)
 
-        value
+        raise CanonicalizationError
+      end
+
+      def json_primitive?(value)
+        return true if [ nil, true, false ].include?(value)
+
+        value.is_a?(String) || value.is_a?(Integer) || value.is_a?(Float)
       end
 
       def canonical_time(value)
@@ -136,11 +179,19 @@ module Corvid
         defined?(Date) && value.is_a?(Date) && !time_like?(value)
       end
 
+      def log_unusable_configured_key
+        log_warning(UNUSABLE_KEY_MESSAGE)
+      end
+
       def log_fingerprint_failure(error)
+        log_warning(fingerprint_failure_message(error))
+      end
+
+      def log_warning(message)
         return unless defined?(Rails)
         return unless Rails.respond_to?(:logger)
 
-        Rails.logger&.warn(fingerprint_failure_message(error))
+        Rails.logger&.warn(message)
       rescue StandardError
         nil
       end
