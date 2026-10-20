@@ -12,6 +12,7 @@ class Corvid::MedicaidEligibilityGroupServiceTest < ActiveSupport::TestCase
   setup do
     @adapter = Corvid.adapter
     @service = Corvid::MedicaidEligibilityGroupService.new(adapter: @adapter)
+    Corvid::PrcFacilityDictionary.reset!
   end
 
   # -- Inference: expansion state XA -------------------------------------------------
@@ -103,6 +104,25 @@ class Corvid::MedicaidEligibilityGroupServiceTest < ActiveSupport::TestCase
   test "record! infers unknown when coverage omits state" do
     with_tenant(TENANT) do
       check = medicaid_check_for(patient_id: "pt_mcd_009", dob: Date.new(1996, 6, 15))
+      result = record!(check, plan_name: "TEST REGULAR PLAN")
+
+      assert_equal "unknown", result
+      assert_group_fields(check, "unknown", "inferred")
+    end
+  end
+
+  test "record! infers unknown when coverage omits state even if referral facility maps to XA" do
+    with_tenant(TENANT) do
+      Corvid::PrcFacilityDictionary.register(
+        "fac_mcd_xa_646",
+        name: "Synthetic XA facility",
+        state: "XA"
+      )
+      check = medicaid_check_for(
+        patient_id: "pt_mcd_fac_state_001",
+        dob: Date.new(1996, 6, 15),
+        facility_identifier: "fac_mcd_xa_646"
+      )
       result = record!(check, plan_name: "TEST REGULAR PLAN")
 
       assert_equal "unknown", result
@@ -372,9 +392,17 @@ class Corvid::MedicaidEligibilityGroupServiceTest < ActiveSupport::TestCase
         status: "checking"
       )
 
-      result = record!(check, state: "XA", plan_name: "TEST REGULAR PLAN")
+      counting = CountingAdapterDelegate.new(@adapter, find_patient_raises: Timeout::Error)
+      service = Corvid::MedicaidEligibilityGroupService.new(adapter: counting)
+
+      result = service.record!(
+        check,
+        coverage: { state: "XA", plan_name: "TEST REGULAR PLAN" },
+        date_of_service: DOS
+      )
 
       assert_nil result
+      assert_equal 0, counting.find_patient_calls
       check.reload
       assert_nil check.eligibility_group
       assert_nil check.eligibility_group_source
@@ -492,7 +520,7 @@ class Corvid::MedicaidEligibilityGroupServiceTest < ActiveSupport::TestCase
     end
   end
 
-  # -- Issue #646 P3: nil or blank eligibility_group is not a statement ----------------
+  # -- Issue #646 P3: nil, blank, or unknown eligibility_group is not a statement ------
 
   test "record! infers when eligibility_group key is present but nil" do
     with_tenant(TENANT) do
@@ -510,6 +538,98 @@ class Corvid::MedicaidEligibilityGroupServiceTest < ActiveSupport::TestCase
       check = medicaid_check_for(patient_id: "pt_mcd_nil_grp_002", dob: Date.new(1996, 6, 15))
       coverage = { eligibility_group: "", state: "XA", plan_name: "TEST REGULAR PLAN" }
       result = @service.record!(check, coverage: coverage, date_of_service: DOS)
+
+      assert_equal "expansion_adult", result
+      assert_group_fields(check, "expansion_adult", "inferred")
+    end
+  end
+
+  test "record! infers expansion_adult when stated eligibility_group is unknown string" do
+    with_tenant(TENANT) do
+      check = medicaid_check_for(patient_id: "pt_mcd_unk_stmt_001", dob: Date.new(1996, 6, 15))
+      coverage = {
+        state: "XA",
+        plan_name: "TEST REGULAR PLAN",
+        eligibility_group: "unknown",
+        eligibility_group_source: "eligibility_response"
+      }
+      result = @service.record!(check, coverage: coverage, date_of_service: DOS)
+
+      assert_equal "expansion_adult", result
+      assert_group_fields(check, "expansion_adult", "inferred")
+    end
+  end
+
+  test "record! infers expansion_adult when stated eligibility_group is unknown symbol" do
+    with_tenant(TENANT) do
+      check = medicaid_check_for(patient_id: "pt_mcd_unk_stmt_002", dob: Date.new(1996, 6, 15))
+      coverage = {
+        state: "XA",
+        plan_name: "TEST REGULAR PLAN",
+        eligibility_group: :unknown,
+        eligibility_group_source: "eligibility_response"
+      }
+      result = @service.record!(check, coverage: coverage, date_of_service: DOS)
+
+      assert_equal "expansion_adult", result
+      assert_group_fields(check, "expansion_adult", "inferred")
+    end
+  end
+
+  test "record! does not overwrite registration-sourced group when coverage states unknown" do
+    with_tenant(TENANT) do
+      check = medicaid_check_for(patient_id: "pt_mcd_unk_stmt_003", dob: Date.new(1996, 6, 15))
+      stated = {
+        state: "XA",
+        eligibility_group: "waiver_adult",
+        eligibility_group_source: "registration"
+      }
+      @service.record!(check, coverage: stated, date_of_service: DOS)
+
+      coverage = {
+        state: "XA",
+        plan_name: "TEST REGULAR PLAN",
+        eligibility_group: "unknown",
+        eligibility_group_source: "eligibility_response"
+      }
+      result = @service.record!(check, coverage: coverage, date_of_service: DOS)
+
+      assert_equal "waiver_adult", result
+      assert_group_fields(check, "waiver_adult", "registration")
+    end
+  end
+
+  test "record! does not overwrite staff_entry when coverage states unknown" do
+    with_tenant(TENANT) do
+      check = medicaid_check_for(patient_id: "pt_mcd_unk_stmt_004", dob: Date.new(1996, 6, 15))
+      @service.record_staff_entry!(check, eligibility_group: "other")
+
+      coverage = {
+        state: "XA",
+        plan_name: "TEST REGULAR PLAN",
+        eligibility_group: "unknown",
+        eligibility_group_source: "eligibility_response"
+      }
+      result = @service.record!(check, coverage: coverage, date_of_service: DOS)
+
+      assert_equal "other", result
+      assert_group_fields(check, "other", "staff_entry")
+    end
+  end
+
+  test "record! inference replaces prior unknown recorded with eligibility_response source" do
+    with_tenant(TENANT) do
+      check = medicaid_check_for(patient_id: "pt_mcd_unk_stmt_005", dob: Date.new(1996, 6, 15))
+      stated_unknown = {
+        state: "XA",
+        plan_name: "TEST REGULAR PLAN",
+        eligibility_group: "unknown",
+        eligibility_group_source: "eligibility_response"
+      }
+      @service.record!(check, coverage: stated_unknown, date_of_service: DOS)
+      assert_group_fields(check, "unknown", "eligibility_response")
+
+      result = record!(check, state: "XA", plan_name: "TEST REGULAR PLAN")
 
       assert_equal "expansion_adult", result
       assert_group_fields(check, "expansion_adult", "inferred")
@@ -1332,7 +1452,7 @@ class Corvid::MedicaidEligibilityGroupServiceTest < ActiveSupport::TestCase
     stale
   end
 
-  def medicaid_check_for(patient_id:, dob: Date.new(1996, 6, 15), register_patient: true)
+  def medicaid_check_for(patient_id:, dob: Date.new(1996, 6, 15), register_patient: true, facility_identifier: "fac_test")
     if register_patient
       @adapter.add_patient(
         patient_id,
@@ -1343,17 +1463,17 @@ class Corvid::MedicaidEligibilityGroupServiceTest < ActiveSupport::TestCase
       )
     end
     Corvid::AlternateResourceCheck.create!(
-      prc_referral: create_referral(patient_id: patient_id),
+      prc_referral: create_referral(patient_id: patient_id, facility_identifier: facility_identifier),
       resource_type: "medicaid",
       status: "checking"
     )
   end
 
-  def create_referral(patient_id:)
+  def create_referral(patient_id:, facility_identifier: "fac_test")
     kase = Corvid::Case.create!(
       patient_identifier: patient_id,
       lifecycle_status: "intake",
-      facility_identifier: "fac_test"
+      facility_identifier: facility_identifier
     )
     Corvid::PrcReferral.create!(case: kase, referral_identifier: "ref_#{SecureRandom.hex(4)}")
   end
