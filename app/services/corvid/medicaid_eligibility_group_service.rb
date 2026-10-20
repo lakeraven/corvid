@@ -2,14 +2,19 @@
 
 module Corvid
   # Records the Medicaid eligibility group on a medicaid alternate-resource
-  # check. A group stated on the coverage hash is kept with its source.
-  # A nil or blank group is not a statement; the group is then inferred
-  # from state rules, age on the date of service, and a waiver plan
-  # description. Ambiguity is recorded as "unknown" — never a guess.
+  # check. A stated group is kept with its source only when it is exactly
+  # one of the four eligibility groups, as a String or a Symbol name.
+  # Anything else — nil, blank, wrong case, or an unrecognised value — is
+  # not a statement; the group is then inferred from state rules and age
+  # on the date of service. A waiver plan description is consulted only
+  # when the state has work-requirement programs. Ambiguity is recorded
+  # as "unknown" — never a guess.
   #
-  # Precedence is decided under a row lock on a fresh read. A stale
-  # in-memory copy cannot overwrite a staff entry, and an inference
-  # cannot overwrite a stated group.
+  # The caller is used only for its id. The adapter is called and the
+  # inferred group is computed before any lock. Tenant visibility,
+  # resource type, and precedence are decided under that lock after
+  # reload. A stale in-memory copy cannot overwrite a staff entry, and
+  # an inference cannot overwrite a stated group.
   #
   # Coverage may state only eligibility_response, state_case_data, or
   # registration. Any other source is recorded as eligibility_response.
@@ -34,23 +39,25 @@ module Corvid
     end
 
     def record!(check, coverage:, date_of_service:)
-      return unless medicaid?(check)
-      return unless referral_visible?(check)
-
-      # Fresh instance: with_lock refuses a row that already has unsaved
-      # changes, and those changes are the stale copy we must ignore.
-      row = check.class.find(check.id)
-      row.with_lock { apply_precedence(row, coverage_hash(coverage), date_of_service) }
+      coverage = coverage_hash(coverage)
+      row = persisted_check(check)
+      # Age comes from the adapter. Compute it before the lock so the
+      # patient lookup is not held inside the row transaction.
+      inferred = inferred_group(row, coverage, date_of_service)
+      row.with_lock { apply_locked(row, coverage, inferred) }
     end
 
     def record_staff_entry!(check, eligibility_group:)
-      ensure_staff_writable!(check)
       group = required_group(eligibility_group)
-      row = check.class.find(check.id)
-      row.with_lock { write!(row, group, "staff_entry") }
+      row = persisted_check(check)
+      row.with_lock { write_staff!(row, group) }
     end
 
     private
+
+    def persisted_check(check)
+      AlternateResourceCheck.find(check.id)
+    end
 
     def medicaid?(check)
       check.resource_type == "medicaid"
@@ -80,15 +87,22 @@ module Corvid
       coverage.is_a?(Hash) ? coverage : {}
     end
 
-    # with_lock has reloaded this row. Decide from that read, then write
-    # before the lock is released.
-    def apply_precedence(row, coverage, date_of_service)
+    # with_lock has reloaded this row. Visibility, resource type, and
+    # precedence come from that read. The inferred group was computed
+    # before the lock was taken.
+    def apply_locked(row, coverage, inferred)
       return unless medicaid?(row)
+      return unless referral_visible?(row)
       return current_group(row) if staff_entry?(row)
       return write_stated!(row, coverage) if stated?(coverage)
       return current_group(row) if preserved?(row)
 
-      write!(row, inferred_group(row, coverage, date_of_service), "inferred")
+      write!(row, inferred, "inferred")
+    end
+
+    def write_staff!(row, group)
+      ensure_staff_writable!(row)
+      write!(row, group, "staff_entry")
     end
 
     def staff_entry?(check)
@@ -104,19 +118,18 @@ module Corvid
       check.eligibility_group
     end
 
+    # Exactly one of the four groups, as a String or a Symbol name.
+    # Wrong case, blanks, and other types are not a statement.
     def stated?(coverage)
-      value = coverage_value(coverage, :eligibility_group)
-      !value.nil? && !blank_string?(value)
+      stated_group(coverage).present?
     end
 
-    def blank_string?(value)
-      value.is_a?(String) && value.blank?
+    def stated_group(coverage)
+      recognized(coverage_value(coverage, :eligibility_group), AlternateResourceCheck::ELIGIBILITY_GROUPS)
     end
 
     def write_stated!(check, coverage)
-      raw = coverage_value(coverage, :eligibility_group)
-      group = recognized(raw, AlternateResourceCheck::ELIGIBILITY_GROUPS) || "unknown"
-      write!(check, group, stated_source(coverage))
+      write!(check, stated_group(coverage), stated_source(coverage))
     end
 
     def stated_source(coverage)
@@ -157,7 +170,11 @@ module Corvid
       age.between?(ADULT_MIN_AGE, ADULT_MAX_AGE)
     end
 
+    # No programs means no waiver match is possible. Skip the plan
+    # description so a missing description is not treated as undetermined.
     def waiver_match(rules, coverage)
+      return if rules.work_requirement_programs.empty?
+
       rules.waiver_program_for(coverage_value(coverage, :plan_name))
     rescue ArgumentError
       :undetermined
@@ -171,10 +188,18 @@ module Corvid
     end
 
     def patient_for(check)
-      patient_id = check.prc_referral&.case&.patient_identifier
+      patient_id = patient_identifier_for(check)
       return if patient_id.blank?
 
       @adapter.find_patient(patient_id)
+    end
+
+    # The referral is tenant-scoped. No tenant is the same as no patient:
+    # do not raise, and do not read a date of birth.
+    def patient_identifier_for(check)
+      check.prc_referral&.case&.patient_identifier
+    rescue Corvid::MissingTenantContextError
+      nil
     end
 
     def age_in_whole_years(dob, on_date)
@@ -197,12 +222,14 @@ module Corvid
       dob.month == 2 && dob.day == 29
     end
 
+    # Time and TimeWithZone are the business date in Time.zone. A Date
+    # is already a calendar day and is not shifted.
     def calendar_date(value)
       case value
+      when Time, ActiveSupport::TimeWithZone
+        value.in_time_zone(Time.zone).to_date
       when Date
         Date.new(value.year, value.month, value.day)
-      when Time
-        value.to_date
       end
     end
 
@@ -231,11 +258,15 @@ module Corvid
       nil
     end
 
+    # A missing or nil symbol key falls through to the string key.
+    # Any other symbol value, including false and "", is kept.
     def coverage_value(coverage, key)
-      return coverage[key] if coverage.key?(key)
+      if coverage.key?(key)
+        value = coverage[key]
+        return value unless value.nil?
+      end
 
-      string_key = key.to_s
-      coverage[string_key] if coverage.key?(string_key)
+      coverage[key.to_s]
     end
   end
 end

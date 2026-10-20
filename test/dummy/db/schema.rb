@@ -32,6 +32,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_20_000001) do
     t.datetime "eligibility_group_set_at"
     t.index ["prc_referral_id", "resource_type"], name: "idx_corvid_arc_referral_type", unique: true
     t.index ["prc_referral_id"], name: "index_corvid_alternate_resource_checks_on_prc_referral_id"
+    t.check_constraint "eligibility_group IS NULL AND eligibility_group_set_at IS NULL OR eligibility_group IS NOT NULL AND eligibility_group_set_at IS NOT NULL", name: "corvid_arc_eligibility_group_set_at_check"
     t.check_constraint "eligibility_group IS NULL AND eligibility_group_source IS NULL OR eligibility_group IS NOT NULL AND eligibility_group_source IS NOT NULL", name: "corvid_arc_eligibility_group_pair_check"
     t.check_constraint "eligibility_group IS NULL OR (eligibility_group::text = ANY (ARRAY['expansion_adult'::character varying, 'waiver_adult'::character varying, 'other'::character varying, 'unknown'::character varying]::text[]))", name: "corvid_arc_eligibility_group_check"
     t.check_constraint "eligibility_group IS NULL OR resource_type::text = 'medicaid'::text", name: "corvid_arc_eligibility_group_medicaid_only_check"

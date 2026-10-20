@@ -2,8 +2,9 @@
 
 # ADR 0002 stores the Medicaid eligibility group, and the source of that
 # determination, as strings and rejects any other value with a CHECK
-# constraint. The group is meaningful only on a medicaid row, and the
-# group and its source are recorded together or not at all.
+# constraint. The group is meaningful only on a medicaid row. The group
+# and its source are recorded together or not at all, and
+# eligibility_group_set_at is present exactly when the group is present.
 class AddEligibilityGroupToAlternateResourceChecks < ActiveRecord::Migration[8.1]
   ELIGIBILITY_GROUPS = %w[expansion_adult waiver_adult other unknown].freeze
   ELIGIBILITY_GROUP_SOURCES = %w[
@@ -47,10 +48,14 @@ class AddEligibilityGroupToAlternateResourceChecks < ActiveRecord::Migration[8.1
     add_check_constraint :corvid_alternate_resource_checks,
       pair_sql,
       name: "corvid_arc_eligibility_group_pair_check"
+    add_check_constraint :corvid_alternate_resource_checks,
+      set_at_sql,
+      name: "corvid_arc_eligibility_group_set_at_check"
   end
 
   def remove_eligibility_group_checks
     %w[
+      corvid_arc_eligibility_group_set_at_check
       corvid_arc_eligibility_group_pair_check
       corvid_arc_eligibility_group_medicaid_only_check
       corvid_arc_eligibility_group_source_check
@@ -76,6 +81,13 @@ class AddEligibilityGroupToAlternateResourceChecks < ActiveRecord::Migration[8.1
     <<~SQL.squish
       (eligibility_group IS NULL AND eligibility_group_source IS NULL) OR
       (eligibility_group IS NOT NULL AND eligibility_group_source IS NOT NULL)
+    SQL
+  end
+
+  def set_at_sql
+    <<~SQL.squish
+      (eligibility_group IS NULL AND eligibility_group_set_at IS NULL) OR
+      (eligibility_group IS NOT NULL AND eligibility_group_set_at IS NOT NULL)
     SQL
   end
 

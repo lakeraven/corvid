@@ -28,7 +28,8 @@ module Corvid
 
     # ADR 0002: string values, same sets the Postgres CHECKs allow.
     # Not an integer enum. Null on a non-medicaid row; group and source
-    # are stored together or not at all.
+    # are stored together or not at all, and eligibility_group_set_at is
+    # present exactly when the group is present.
     ELIGIBILITY_GROUPS = %w[expansion_adult waiver_adult other unknown].freeze
     ELIGIBILITY_GROUP_SOURCES = %w[
       eligibility_response state_case_data registration staff_entry inferred
@@ -38,6 +39,7 @@ module Corvid
     validates :eligibility_group_source, inclusion: { in: ELIGIBILITY_GROUP_SOURCES }, allow_nil: true
     validate :eligibility_group_only_on_medicaid
     validate :eligibility_group_paired_with_source
+    validate :eligibility_group_set_at_paired_with_group
 
     RESOURCE_NAMES = {
       "medicare_a" => "Medicare Part A", "medicare_b" => "Medicare Part B",
@@ -219,6 +221,12 @@ module Corvid
       else
         errors.add(:eligibility_group_source, "must be set when eligibility_group is set")
       end
+    end
+
+    def eligibility_group_set_at_paired_with_group
+      return if eligibility_group.nil? == eligibility_group_set_at.nil?
+
+      errors.add(:eligibility_group_set_at, "must be present exactly when eligibility group is present")
     end
   end
 end
