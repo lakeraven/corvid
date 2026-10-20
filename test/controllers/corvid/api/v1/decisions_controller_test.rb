@@ -95,4 +95,19 @@ class Corvid::Api::V1::DecisionsControllerTest < ActionDispatch::IntegrationTest
     get "/corvid/api/v1/decisions", headers: {}
     assert_response :bad_request
   end
+
+  test "show returns nil verification_snapshot_hash for legacy row with hash and nil key version" do
+    legacy_hash = "d" * 64
+    @d1.update_columns(
+      verification_snapshot_hash: legacy_hash,
+      verification_snapshot_key_version: nil
+    )
+
+    get "/corvid/api/v1/decisions/#{@d1.id}", headers: headers
+    assert_response :success
+    body = JSON.parse(response.body)
+
+    assert_nil body["verification_snapshot_hash"]
+    assert_nil body["verification_snapshot_key_version"]
+  end
 end

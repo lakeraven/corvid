@@ -52,4 +52,57 @@ class Corvid::PrcEligibilityDecisionTest < ActiveSupport::TestCase
       assert_equal "pt_legacy", reloaded.person_identifier
     end
   end
+
+  test "legacy row with hash and nil key version can be updated through validations" do
+    with_tenant(TENANT) do
+      row = Corvid::PrcEligibilityDecision.create!(
+        tenant_identifier: TENANT,
+        person_identifier: "pt_legacy_upd",
+        facility_identifier: "fac_demo",
+        decided_at: Time.current,
+        as_of_date: Date.current,
+        eligible: false,
+        reason_codes: [ "not_enrolled" ]
+      )
+
+      row.update_columns(
+        verification_snapshot_hash: "d" * 64,
+        verification_snapshot_key_version: nil
+      )
+
+      row.reload
+      row.update!(decided_by_identifier: "usr_demo")
+
+      reloaded = Corvid::PrcEligibilityDecision.find(row.id)
+      assert_equal "usr_demo", reloaded.decided_by_identifier
+      assert_equal "d" * 64, reloaded.verification_snapshot_hash
+      assert_nil reloaded.verification_snapshot_key_version
+    end
+  end
+
+  test "legacy row rejects assigning a new hash without key version" do
+    with_tenant(TENANT) do
+      row = Corvid::PrcEligibilityDecision.create!(
+        tenant_identifier: TENANT,
+        person_identifier: "pt_legacy_newhash",
+        facility_identifier: "fac_demo",
+        decided_at: Time.current,
+        as_of_date: Date.current,
+        eligible: false,
+        reason_codes: [ "not_enrolled" ]
+      )
+
+      row.update_columns(
+        verification_snapshot_hash: "d" * 64,
+        verification_snapshot_key_version: nil
+      )
+
+      row.reload
+      row.verification_snapshot_hash = "f" * 64
+      row.verification_snapshot_key_version = nil
+
+      refute row.valid?
+      assert_includes row.errors[:verification_snapshot_key_version], "can't be blank"
+    end
+  end
 end

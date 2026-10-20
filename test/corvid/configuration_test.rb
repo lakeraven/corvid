@@ -1,6 +1,8 @@
 # frozen_string_literal: true
 
 require "minitest/autorun"
+require "active_support/core_ext/object/json"
+require "yaml"
 require "corvid/configuration"
 
 class Corvid::ConfigurationTest < Minitest::Test
@@ -135,5 +137,25 @@ class Corvid::ConfigurationTest < Minitest::Test
     inspected = Corvid.configuration.inspect
     refute_includes inspected, key
     refute_includes inspected, "test-snapshot-key-0001"
+  end
+
+  def test_configuration_as_json_to_json_and_to_yaml_never_reveal_snapshot_key_material
+    key = "test-snapshot-key-0001-xxxxxxxxxxxxxxxx"
+    Corvid.configure do |c|
+      c.verification_snapshot_keys = { "v1-test" => key }
+      c.verification_snapshot_key_version = "v1-test"
+    end
+
+    config = Corvid.configuration
+    serialized_forms = [
+      config.as_json,
+      JSON.parse(config.to_json),
+      config.to_yaml
+    ]
+
+    serialized_forms.each do |serialized|
+      refute_includes serialized.to_s, key
+      refute_includes serialized.to_s, "test-snapshot-key-0001"
+    end
   end
 end

@@ -333,4 +333,24 @@ class Corvid::TribalEligibilityServiceTest < ActiveSupport::TestCase
 
     refute_equal plain_sha, row.verification_snapshot_hash
   end
+
+  test "decide saves nil snapshot hash and version when configured key version exceeds 64 characters" do
+    long_version = "v" * 65
+    configure_snapshot_keys!(
+      version: long_version,
+      keys: { long_version => SNAPSHOT_KEY_V1 }
+    )
+    fixed_adapter_responses_for("pt_longver")
+
+    decision = Corvid::TribalEligibilityService.decide(
+      person_identifier: "pt_longver",
+      facility: @facility,
+      tenant_identifier: TENANT
+    )
+
+    row = Corvid::PrcEligibilityDecision.find(decision.decision_id)
+    assert decision.eligible?
+    assert_nil row.verification_snapshot_hash
+    assert_nil row.verification_snapshot_key_version
+  end
 end
