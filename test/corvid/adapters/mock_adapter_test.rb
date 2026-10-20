@@ -103,6 +103,24 @@ class Corvid::Adapters::MockAdapterTest < Minitest::Test
     assert result[:payer_name]
   end
 
+  def test_get_coverages_returns_eligibility_group_state_and_source_from_add_coverage
+    @adapter.add_coverage(
+      "pt_mcd_001",
+      state: "XA",
+      plan_name: "TEST SYNTHETIC PLAN",
+      eligibility_group: "expansion_adult",
+      eligibility_group_source: "eligibility_response"
+    )
+
+    coverages = @adapter.get_coverages("pt_mcd_001")
+    assert_equal 1, coverages.size
+    row = coverages.first
+    assert_equal "XA", row[:state]
+    assert_equal "TEST SYNTHETIC PLAN", row[:plan_name]
+    assert_equal "expansion_adult", row[:eligibility_group]
+    assert_equal "eligibility_response", row[:eligibility_group_source]
+  end
+
   # -- Budget -----------------------------------------------------------------
 
   def test_get_budget_summary_returns_total_obligated_remaining

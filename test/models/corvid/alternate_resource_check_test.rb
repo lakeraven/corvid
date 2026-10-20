@@ -670,6 +670,128 @@ class Corvid::AlternateResourceCheckTest < ActiveSupport::TestCase
     end
   end
 
+  # -- Medicaid eligibility group (issue #646) ---------------------------------
+
+  ELIGIBILITY_GROUP_CHECK = "corvid_arc_eligibility_group_check"
+  ELIGIBILITY_GROUP_SOURCE_CHECK = "corvid_arc_eligibility_group_source_check"
+  ELIGIBILITY_GROUP_MEDICAID_ONLY_CHECK = "corvid_arc_eligibility_group_medicaid_only_check"
+  ELIGIBILITY_GROUP_PAIR_CHECK = "corvid_arc_eligibility_group_pair_check"
+
+  test "medicaid check accepts valid eligibility_group and source" do
+    with_tenant(TENANT) do
+      check = build_check(resource_type: "medicaid")
+      check.eligibility_group = "expansion_adult"
+      check.eligibility_group_source = "inferred"
+      check.eligibility_group_set_at = Time.current
+      assert check.valid?
+    end
+  end
+
+  test "rejects invalid eligibility_group on model" do
+    with_tenant(TENANT) do
+      check = build_check(resource_type: "medicaid")
+      check.eligibility_group = "not_a_group"
+      check.eligibility_group_source = "inferred"
+      check.eligibility_group_set_at = Time.current
+      refute check.valid?
+      assert check.errors[:eligibility_group].present?
+    end
+  end
+
+  test "rejects invalid eligibility_group_source on model" do
+    with_tenant(TENANT) do
+      check = build_check(resource_type: "medicaid")
+      check.eligibility_group = "other"
+      check.eligibility_group_source = "guesswork"
+      check.eligibility_group_set_at = Time.current
+      refute check.valid?
+      assert check.errors[:eligibility_group_source].present?
+    end
+  end
+
+  test "rejects eligibility_group on non-medicaid resource types" do
+    with_tenant(TENANT) do
+      check = build_check(resource_type: "medicare_a")
+      check.eligibility_group = "other"
+      check.eligibility_group_source = "inferred"
+      check.eligibility_group_set_at = Time.current
+      refute check.valid?
+      assert check.errors[:eligibility_group].present?
+    end
+  end
+
+  test "requires eligibility_group and source to be both present or both absent" do
+    with_tenant(TENANT) do
+      group_only = build_check(resource_type: "medicaid")
+      group_only.eligibility_group = "other"
+      refute group_only.valid?
+
+      source_only = build_check(resource_type: "medicaid")
+      source_only.eligibility_group_source = "inferred"
+      refute source_only.valid?
+    end
+  end
+
+  test "database enforces eligibility_group enum check constraint" do
+    with_tenant(TENANT) do
+      assert check_constraint_exists?(ELIGIBILITY_GROUP_CHECK)
+
+      check = create_medicaid_check!
+      assert_raises(ActiveRecord::StatementInvalid) do
+        update_eligibility_group_columns!(
+          check,
+          eligibility_group: "bogus_group",
+          eligibility_group_source: "inferred"
+        )
+      end
+    end
+  end
+
+  test "database enforces eligibility_group_source enum check constraint" do
+    with_tenant(TENANT) do
+      assert check_constraint_exists?(ELIGIBILITY_GROUP_SOURCE_CHECK)
+
+      check = create_medicaid_check!
+      assert_raises(ActiveRecord::StatementInvalid) do
+        update_eligibility_group_columns!(
+          check,
+          eligibility_group: "other",
+          eligibility_group_source: "bogus_source"
+        )
+      end
+    end
+  end
+
+  test "database enforces medicaid-only eligibility_group check constraint" do
+    with_tenant(TENANT) do
+      assert check_constraint_exists?(ELIGIBILITY_GROUP_MEDICAID_ONLY_CHECK)
+
+      check = Corvid::AlternateResourceCheck.create!(
+        prc_referral: create_referral,
+        resource_type: "medicare_a",
+        status: "checking"
+      )
+      assert_raises(ActiveRecord::StatementInvalid) do
+        update_eligibility_group_columns!(
+          check,
+          eligibility_group: "other",
+          eligibility_group_source: "inferred"
+        )
+      end
+    end
+  end
+
+  test "database enforces paired eligibility_group columns check constraint" do
+    with_tenant(TENANT) do
+      assert check_constraint_exists?(ELIGIBILITY_GROUP_PAIR_CHECK)
+
+      check = create_medicaid_check!
+      assert_raises(ActiveRecord::StatementInvalid) do
+        update_eligibility_group_columns!(check, eligibility_group: "other", eligibility_group_source: nil)
+      end
+    end
+  end
+
   private
 
   def create_case
@@ -705,5 +827,39 @@ class Corvid::AlternateResourceCheckTest < ActiveSupport::TestCase
     service = Corvid::AlternateResourceService.all_exhausted?(referral)
     model = Corvid::AlternateResourceCheck.all_exhausted?(referral)
     assert_equal service, model, "AlternateResourceService and AlternateResourceCheck must agree"
+  end
+
+  def create_medicaid_check!
+    Corvid::AlternateResourceCheck.create!(
+      prc_referral: create_referral,
+      resource_type: "medicaid",
+      status: "checking"
+    )
+  end
+
+  def check_constraint_exists?(name)
+    sql = <<~SQL.squish
+      SELECT 1
+      FROM pg_constraint c
+      INNER JOIN pg_class t ON c.conrelid = t.oid
+      WHERE t.relname = 'corvid_alternate_resource_checks'
+        AND c.conname = #{ActiveRecord::Base.connection.quote(name)}
+        AND c.contype = 'c'
+      LIMIT 1
+    SQL
+    ActiveRecord::Base.connection.select_value(sql).present?
+  end
+
+  def update_eligibility_group_columns!(check, eligibility_group:, eligibility_group_source:)
+    conn = ActiveRecord::Base.connection
+    group_sql = eligibility_group.nil? ? "NULL" : conn.quote(eligibility_group)
+    source_sql = eligibility_group_source.nil? ? "NULL" : conn.quote(eligibility_group_source)
+    conn.execute(<<~SQL.squish)
+      UPDATE corvid_alternate_resource_checks
+      SET eligibility_group = #{group_sql},
+          eligibility_group_source = #{source_sql},
+          eligibility_group_set_at = NOW()
+      WHERE id = #{check.id}
+    SQL
   end
 end
