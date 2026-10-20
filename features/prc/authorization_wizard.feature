@@ -133,6 +133,14 @@ Feature: PRC Authorization Wizard
     Then enrollment verification should run for all resources
     And I should see updated status for each resource
 
+  Scenario: A payer-source outage leaves alternate resources unverified
+    Given I am on the alternate resources step
+    And every payer eligibility lookup is unavailable
+    When I click "Verify All Enrollment"
+    Then no alternate resource should be marked not enrolled
+    And the alternate resources summary should not read "Verified"
+    And I should see a warning containing "could not be determined"
+
   # =============================================================================
   # STEP 4: REVIEW & SUBMIT
   # =============================================================================

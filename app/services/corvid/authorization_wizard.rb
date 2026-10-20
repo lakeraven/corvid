@@ -22,6 +22,9 @@ module Corvid
 
     PRIVATE_INSURANCE_FIELDS = %i[payer_name policy_number group_number coverage_start coverage_end].freeze
 
+    # Prefix only: the warning names a count of resource types, never a patient (ADR 0003).
+    UNDETERMINED_ELIGIBILITY_WARNING_PREFIX = "Eligibility could not be determined"
+
     attr_reader :tenant_identifier, :facility_identifier,
                 :current_step, :data, :errors, :warnings, :messages,
                 :field_errors, :prc_referral, :alternate_resources
@@ -51,6 +54,7 @@ module Corvid
       @data = { patient_identifier: patient_identifier }
       @errors = []
       @warnings = []
+      @undetermined_resource_types = Set.new
       @messages = []
       @field_errors = {}
       @alternate_resources = initialize_alternate_resources
@@ -199,6 +203,8 @@ module Corvid
         checked_at: Time.current
       }
       @warnings << "Active coverage found - coordination of benefits required" if status_sym == :enrolled
+      @undetermined_resource_types.delete(resource_type) unless status_sym == :not_checked
+      refresh_undetermined_warning
     end
 
     def alternate_resources_exhausted?
@@ -213,14 +219,27 @@ module Corvid
       "Bill primary payer first. IHS is payer of last resort per 42 CFR 136.61."
     end
 
+    # A failed or malformed lookup is not a determination of no coverage
+    # (42 CFR 136.61). Only an explicit boolean :eligible enrolls or
+    # refuses; anything else stays :not_checked so an unanswered payer
+    # lookup cannot be treated as a refusal. The warning count is the
+    # number of resource types whose latest lookup was undetermined.
     def verify_all_enrollment!
       @enrollment_verification_run = true
       @alternate_resources.each do |type, resource|
         next unless resource[:status] == :not_checked
-        result = Corvid.adapter.verify_eligibility(patient_identifier, type)
-        @alternate_resources[type][:status] = result&.dig(:eligible) ? :enrolled : :not_enrolled
-        @alternate_resources[type][:checked_at] = Time.current
+
+        status = enrollment_status_from(Corvid.adapter.verify_eligibility(patient_identifier, type))
+        if status
+          resource[:status] = status
+          resource[:checked_at] = Time.current
+          @undetermined_resource_types.delete(type)
+        else
+          @undetermined_resource_types.add(type)
+        end
       end
+    ensure
+      refresh_undetermined_warning
     end
 
     def enrollment_verification_run?
@@ -401,6 +420,25 @@ module Corvid
     def initialize_alternate_resources
       Corvid::AlternateResourceCheck::RESOURCE_TYPES.each_with_object({}) do |type, hash|
         hash[type] = { status: :not_checked, requires_coordination: false, checked_at: nil }
+      end
+    end
+
+    # Count only, never a patient identifier (ADR 0003).
+    def refresh_undetermined_warning
+      @warnings.delete_if { |warning| warning.start_with?(UNDETERMINED_ELIGIBILITY_WARNING_PREFIX) }
+      return if @undetermined_resource_types.empty?
+
+      count = @undetermined_resource_types.size
+      @warnings << "#{UNDETERMINED_ELIGIBILITY_WARNING_PREFIX} for #{count} alternate resource(s); they remain unverified"
+    end
+
+    # Symbol key only: a string-keyed or error hash is an unanswered lookup.
+    def enrollment_status_from(result)
+      return unless result.is_a?(Hash)
+
+      case result[:eligible]
+      when true then :enrolled
+      when false then :not_enrolled
       end
     end
 
