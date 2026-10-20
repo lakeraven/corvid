@@ -1648,7 +1648,13 @@ class Corvid::Adapters::FhirAdapterTest < Minitest::Test
   # S1 (round 3) — insurance allowlist: Organization payors only, no self-pay codings, kind insurance
 
   PHDSC_SOP_SYSTEM = "urn:oid:2.16.840.1.113883.3.221.5"
+  PHDSC_SOP_SYSTEM_BARE_OID = "2.16.840.1.113883.3.221.5"
   COVERAGE_SELFPAY_SYSTEM = "http://terminology.hl7.org/CodeSystem/coverage-selfpay"
+  FHIR_STU3_COVERAGE_SELFPAY_SYSTEM = "http://hl7.org/fhir/coverage-selfpay"
+  X12_CLAIM_FILING_INDICATOR_SYSTEM = "https://x12.org/codes/claim-filing-indicator-codes"
+
+  ISSUE_607_SOP_INCLUDED_ON_URN = %w[2 21 5 511 1].freeze
+  ISSUE_607_SOP_EXCLUDED_ON_URN = %w[33 331 3 8 82 89 9 95].freeze
 
   def test_get_coverages_returns_empty_when_only_coverage_is_phscd_sop_81_with_organization_payor
     resource = coverage_fhir_resource(
@@ -1826,6 +1832,120 @@ class Corvid::Adapters::FhirAdapterTest < Minitest::Test
     end
   end
 
+  # D1 — PHDSC Source of Payment Typology insurer families (issue #607)
+
+  def test_get_coverages_includes_active_coverage_for_phscd_sop_insurer_family_on_urn_system
+    ISSUE_607_SOP_INCLUDED_ON_URN.each do |sop_code|
+      patient_id = "pt_d1_inc_#{sop_code}"
+      resource = issue_607_organization_coverage(
+        id: "cov_d1_inc_#{sop_code}",
+        for_patient: patient_id,
+        type_codings: [ { "system" => PHDSC_SOP_SYSTEM, "code" => sop_code } ]
+      )
+      assert_single_included_issue_607_coverage(patient_id, resource,
+                                                "PHDSC SOP #{sop_code.inspect} on urn system")
+    end
+  end
+
+  def test_get_coverages_excludes_active_coverage_for_phscd_sop_non_insurer_family_on_urn_system
+    ISSUE_607_SOP_EXCLUDED_ON_URN.each do |sop_code|
+      patient_id = "pt_d1_exc_#{sop_code}"
+      resource = issue_607_organization_coverage(
+        id: "cov_d1_exc_#{sop_code}",
+        for_patient: patient_id,
+        type_codings: [ { "system" => PHDSC_SOP_SYSTEM, "code" => sop_code } ]
+      )
+      assert_single_excluded_issue_607_coverage(patient_id, resource,
+                                                "PHDSC SOP #{sop_code.inspect} on urn system")
+    end
+  end
+
+  def test_get_coverages_includes_active_coverage_for_phscd_sop_insurer_family_on_bare_oid_system
+    resource = issue_607_organization_coverage(
+      id: "cov_d1_bare_inc",
+      for_patient: "pt_d1_bare_inc",
+      type_codings: [ { "system" => PHDSC_SOP_SYSTEM_BARE_OID, "code" => "21" } ]
+    )
+    assert_single_included_issue_607_coverage("pt_d1_bare_inc", resource,
+                                              "PHDSC SOP 21 on bare OID system")
+  end
+
+  def test_get_coverages_excludes_active_coverage_for_phscd_sop_non_insurer_on_bare_oid_system
+    resource = issue_607_organization_coverage(
+      id: "cov_d1_bare_exc",
+      for_patient: "pt_d1_bare_exc",
+      type_codings: [ { "system" => PHDSC_SOP_SYSTEM_BARE_OID, "code" => "82" } ]
+    )
+    assert_single_excluded_issue_607_coverage("pt_d1_bare_exc", resource,
+                                              "PHDSC SOP 82 on bare OID system")
+  end
+
+  def test_get_coverages_excludes_active_coverage_when_sop_non_insurer_coding_alongside_ehcpol
+    resource = issue_607_organization_coverage(
+      id: "cov_d1_mixed",
+      for_patient: "pt_d1_mixed",
+      type_codings: [
+        { "system" => PHDSC_SOP_SYSTEM, "code" => "82" },
+        { "code" => "EHCPOL" }
+      ]
+    )
+    assert_single_excluded_issue_607_coverage("pt_d1_mixed", resource,
+                                                "SOP 82 with EHCPOL must exclude")
+  end
+
+  # D2 — additional self-pay signals (issue #607)
+
+  def test_get_coverages_excludes_active_coverage_with_stu3_self_pay_coding_pay
+    resource = issue_607_organization_coverage(
+      id: "cov_d2_stu3_pay",
+      for_patient: "pt_d2_stu3_pay",
+      type_codings: [ { "system" => FHIR_STU3_COVERAGE_SELFPAY_SYSTEM, "code" => "pay" } ]
+    )
+    assert_single_excluded_issue_607_coverage("pt_d2_stu3_pay", resource, "STU3 coverage-selfpay pay")
+  end
+
+  def test_get_coverages_excludes_active_coverage_with_x12_claim_filing_indicator_09_with_system
+    resource = issue_607_organization_coverage(
+      id: "cov_d2_x12_sys",
+      for_patient: "pt_d2_x12_sys",
+      type_codings: [ { "system" => X12_CLAIM_FILING_INDICATOR_SYSTEM, "code" => "09" } ]
+    )
+    assert_single_excluded_issue_607_coverage("pt_d2_x12_sys", resource, "X12 09 with system")
+  end
+
+  def test_get_coverages_excludes_active_coverage_with_x12_claim_filing_indicator_09_without_system
+    resource = issue_607_organization_coverage(
+      id: "cov_d2_x12_nosys",
+      for_patient: "pt_d2_x12_nosys",
+      type_codings: [ { "code" => "09" } ]
+    )
+    assert_single_excluded_issue_607_coverage("pt_d2_x12_nosys", resource, "X12 09 without system")
+  end
+
+  def test_get_coverages_excludes_active_coverage_when_type_text_is_self_pay_without_coding
+    [ "Self Pay", "self pay", "SELF PAY", "  self pay  " ].each do |label|
+      patient_id = "pt_d2_text_#{label.gsub(/\s+/, '_').downcase}"
+      resource = issue_607_organization_coverage(
+        id: "cov_d2_text",
+        for_patient: patient_id,
+        type_text: label
+      )
+      assert_single_excluded_issue_607_coverage(patient_id, resource,
+                                                "type.text #{label.inspect} without coding")
+    end
+  end
+
+  # D3 — non-SOP codings keep prior insurance rules (issue #607)
+
+  def test_get_coverages_includes_active_coverage_with_ehcpol_type_and_organization_org_1_payor
+    resource = issue_607_organization_coverage(
+      id: "cov_d3_ehcpol",
+      for_patient: "pt_d3_ehcpol",
+      type_code: "EHCPOL"
+    )
+    assert_single_included_issue_607_coverage("pt_d3_ehcpol", resource, "EHCPOL with Organization/org_1")
+  end
+
   # S2 — malformed Coverage shapes => nil (never raise)
 
   MALFORMED_COVERAGE_SHAPE_CASES = [
@@ -1984,13 +2104,45 @@ class Corvid::Adapters::FhirAdapterTest < Minitest::Test
     end
   end
 
+  def issue_607_organization_coverage(id:, for_patient:, type_codings: nil, type_code: nil, type_text: nil)
+    coverage_fhir_resource(
+      id: id,
+      for_patient: for_patient,
+      status: "active",
+      payer_display: "TEST PAYER #{id.upcase}",
+      subscriber_id: "POL_#{id.upcase}",
+      payor_reference: "Organization/org_1",
+      period_start: Date.new(2026, 1, 1),
+      period_end: Date.new(2026, 12, 31),
+      type_codings: type_codings,
+      type_code: type_code,
+      type_text: type_text
+    )
+  end
+
+  def assert_single_included_issue_607_coverage(patient_id, resource, context)
+    bundle = coverage_bundle_total_one(resource)
+    with_stubbed_coverage_http({ coverage_search_url(patient_id) => http_ok_json(bundle) }) do
+      result = @adapter.get_coverages(patient_id)
+      assert_equal 1, result.size, "expected included coverage for #{context}"
+    end
+  end
+
+  def assert_single_excluded_issue_607_coverage(patient_id, resource, context)
+    bundle = coverage_bundle_total_one(resource)
+    with_stubbed_coverage_http({ coverage_search_url(patient_id) => http_ok_json(bundle) }) do
+      result = @adapter.get_coverages(patient_id)
+      assert_equal [], result, "expected [] for excluded coverage: #{context}"
+    end
+  end
+
   def coverage_fhir_resource(id:, payer_display:, type_code: nil, subscriber_id:,
                              status: "active",
                              period_start: nil, period_end: nil, period: nil,
                              plan_name: nil, plan_value: nil,
                              for_patient: nil, beneficiary_reference: nil,
                              payor_reference: :auto,
-                             payors: nil, type_codings: nil,
+                             payors: nil, type_codings: nil, type_text: nil,
                              kind: nil, payment_by: nil, skip_payor: false)
     resource = {
       "resourceType" => "Coverage",
@@ -2010,8 +2162,12 @@ class Corvid::Adapters::FhirAdapterTest < Minitest::Test
     end
     if type_codings
       resource["type"] = { "coding" => type_codings }
+      resource["type"]["text"] = type_text if type_text
     elsif type_code
       resource["type"] = { "coding" => [ { "code" => type_code } ] }
+      resource["type"]["text"] = type_text if type_text
+    elsif type_text
+      resource["type"] = { "text" => type_text }
     end
     resource["kind"] = kind if kind
     resource["paymentBy"] = payment_by if payment_by
