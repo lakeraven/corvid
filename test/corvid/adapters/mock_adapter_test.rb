@@ -243,4 +243,22 @@ class Corvid::Adapters::MockAdapterTest < Minitest::Test
     returned.clear
     assert_equal 1, @adapter.get_medications("pt_001").size
   end
+
+  # -- Issue #611 panel round 2 ------------------------------------------------
+
+  def test_get_conditions_returns_nil_for_nil_patient_identifier
+    assert_nil @adapter.get_conditions(nil)
+  end
+
+  def test_get_conditions_returns_nil_for_blank_patient_identifier
+    assert_nil @adapter.get_conditions("   ")
+  end
+
+  def test_get_medications_returns_nil_for_nil_patient_identifier
+    assert_nil @adapter.get_medications(nil)
+  end
+
+  def test_get_medications_returns_nil_for_blank_patient_identifier
+    assert_nil @adapter.get_medications("")
+  end
 end

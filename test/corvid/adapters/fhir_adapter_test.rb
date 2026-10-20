@@ -1071,7 +1071,144 @@ class Corvid::Adapters::FhirAdapterTest < Minitest::Test
     assert_nil clinical_read_without_http(:get_medications, "   ")
   end
 
+  # -- Issue #611 panel round 2: strict clinical read behaviour (failing until implemented) --
+
+  def test_get_conditions_returns_nil_on_http_204_no_content
+    response = no_content_http_response
+    assert_nil get_conditions_with_http_response(response)
+  end
+
+  def test_get_medications_returns_nil_on_http_204_no_content
+    response = no_content_http_response
+    assert_nil get_medications_with_http_response(response)
+  end
+
+  def test_get_conditions_returns_nil_when_http_get_raises_runtime_error
+    assert_nil clinical_read_with_http_fault(:get_conditions, RuntimeError.new("synthetic fault"))
+  end
+
+  def test_get_medications_returns_nil_when_http_get_raises_runtime_error
+    assert_nil clinical_read_with_http_fault(:get_medications, RuntimeError.new("synthetic fault"))
+  end
+
+  INVALID_MEDICATION_REFERENCE_IDS = {
+    space: "a b",
+    embedded_quote: %(a"b)
+  }.freeze
+
+  INVALID_MEDICATION_REFERENCE_IDS.each do |label, invalid_id|
+    define_method(:"test_get_medications_returns_nil_for_invalid_medication_id_#{label}_without_http_read") do
+      request = build_medication_request_resource(
+        medicationCodeableConcept: nil,
+        medicationReference: { "reference" => "Medication/#{invalid_id}" }
+      )
+      assert_nil get_medications_with_bundle_without_extra_http(medications_bundle([ request ]))
+    end
+  end
+
+  def test_get_medications_excludes_medication_request_with_do_not_perform_true
+    included = build_medication_request_resource("id" => "mr_ok")
+    skipped = build_medication_request_resource("id" => "mr_skip", doNotPerform: true)
+    results = get_medications_with_bundle(medications_bundle([ skipped, included ]))
+
+    assert_equal 1, results.size
+    assert_equal "M001", results.first.code
+  end
+
+  def test_get_medications_returns_nil_when_contained_medication_has_no_code
+    request = build_medication_request_resource(
+      medicationCodeableConcept: nil,
+      medicationReference: { "reference" => "#med_empty" },
+      contained: [ { "resourceType" => "Medication", "id" => "med_empty", "code" => {} } ]
+    )
+    assert_nil get_medications_with_bundle(medications_bundle([ request ]))
+  end
+
+  def test_get_medications_returns_nil_when_bundled_medication_has_no_code
+    request = build_medication_request_resource(
+      medicationCodeableConcept: nil,
+      medicationReference: { "reference" => "Medication/med_empty" }
+    )
+    included = { "resourceType" => "Medication", "id" => "med_empty", "code" => {} }
+    assert_nil get_medications_with_bundle(medications_bundle([ request ], includes: [ included ]))
+  end
+
+  def test_get_conditions_returns_nil_when_clinical_status_missing
+    condition = build_condition_resource.tap { |resource| resource.delete("clinicalStatus") }
+    assert_nil get_conditions_with_bundle(conditions_bundle([ condition ]))
+  end
+
+  def test_get_conditions_returns_nil_when_clinical_status_is_text_only
+    condition = build_condition_resource.tap do |resource|
+      resource["clinicalStatus"] = { "text" => "active" }
+    end
+    assert_nil get_conditions_with_bundle(conditions_bundle([ condition ]))
+  end
+
+  def test_get_conditions_returns_nil_when_no_condition_clinical_system_coding
+    condition = build_condition_resource(
+      clinical_status_codings: [ { "system" => "http://example.test/local", "code" => "active" } ]
+    )
+    assert_nil get_conditions_with_bundle(conditions_bundle([ condition ]))
+  end
+
+  def test_get_conditions_returns_nil_when_category_absent
+    condition = build_condition_resource.tap { |resource| resource.delete("category") }
+    assert_nil get_conditions_with_bundle(conditions_bundle([ condition ]))
+  end
+
+  def test_get_conditions_returns_nil_when_no_us_core_category_coding
+    condition = build_condition_resource(
+      category: [ { "coding" => [ { "system" => "http://example.test/local", "code" => "problem-list-item" } ] } ]
+    )
+    assert_nil get_conditions_with_bundle(conditions_bundle([ condition ]))
+  end
+
+  def test_get_conditions_excludes_entered_in_error_even_when_clinical_status_unusable
+    condition = build_condition_resource.tap { |resource| resource.delete("clinicalStatus") }
+    condition["verificationStatus"] = {
+      "coding" => [ { "system" => CONDITION_VER_STATUS_SYSTEM, "code" => "entered-in-error" } ]
+    }
+    results = get_conditions_with_bundle(conditions_bundle([ condition ]))
+
+    assert_equal [], results
+  end
+
+  %w[refuted entered-in-error].each do |code|
+    define_method(:"test_get_conditions_excludes_verification_status_#{code.tr('-', '_')}_in_foreign_system") do
+      condition = build_condition_resource(
+        verification_status_codings: [
+          { "system" => "http://example.test/foreign-verification", "code" => code }
+        ]
+      )
+      results = get_conditions_with_bundle(conditions_bundle([ condition ]))
+
+      assert_equal [], results
+    end
+  end
+
   private
+
+  def no_content_http_response
+    response = Net::HTTPNoContent.new("1.1", "204", "No Content")
+    response.instance_variable_set(:@body, nil)
+    response.instance_variable_set(:@read, true)
+    response
+  end
+
+  def get_medications_with_bundle_without_extra_http(bundle, patient_id: "pt_001")
+    http_calls = 0
+    response = consumed_http_response(bundle)
+    @adapter.stub(:http_get, ->(url) {
+      http_calls += 1
+      flunk("http_get must not read Medication when reference id is invalid") if url.include?("/Medication/")
+      response
+    }) do
+      result = @adapter.get_medications(patient_id)
+      assert_equal 1, http_calls
+      result
+    end
+  end
 
   def clinical_read_with_http_fault(method, fault)
     @adapter.stub(:http_get, ->(_url) { raise fault }) { @adapter.public_send(method, "pt_001") }
