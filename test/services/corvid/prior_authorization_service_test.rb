@@ -101,6 +101,34 @@ class Corvid::PriorAuthorizationServiceTest < ActiveSupport::TestCase
     end
   end
 
+  test "blank authorization reason above cost threshold uses cost threshold exceeded reason" do
+    with_tenant(TENANT) do
+      sr = build_service_request(
+        urgency: "ROUTINE",
+        authorization_required: true,
+        authorization_reason: "",
+        estimated_cost: 100_000
+      )
+      result = Corvid::PriorAuthorizationService.check(sr)
+
+      assert_includes result.authorization_reason, "cost threshold exceeded"
+    end
+  end
+
+  test "whitespace authorization reason above cost threshold uses cost threshold exceeded reason" do
+    with_tenant(TENANT) do
+      sr = build_service_request(
+        urgency: "ROUTINE",
+        authorization_required: true,
+        authorization_reason: "   ",
+        estimated_cost: 100_000
+      )
+      result = Corvid::PriorAuthorizationService.check(sr)
+
+      assert_includes result.authorization_reason, "cost threshold exceeded"
+    end
+  end
+
   test "service request below cost threshold does not require committee review" do
     with_tenant(TENANT) do
       sr = build_service_request(estimated_cost: 5_000, requires_committee_review: false)

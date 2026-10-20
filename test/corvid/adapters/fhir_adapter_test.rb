@@ -70,6 +70,162 @@ class Corvid::Adapters::FhirAdapterTest < Minitest::Test
     end
   end
 
+  def test_find_referral_falls_back_from_blank_code_text_to_coding_display
+    resource = {
+      "id" => "rf_blank_text",
+      "status" => "active",
+      "subject" => { "reference" => "Patient/pt_001" },
+      "code" => {
+        "text" => "",
+        "coding" => [ { "display" => "TEST,SERVICE 001" } ]
+      }
+    }
+    @adapter.stub(:fhir_read, resource) do
+      result = @adapter.find_referral("rf_blank_text")
+      assert_equal "TEST,SERVICE 001", result.service_requested
+    end
+  end
+
+  def test_list_claims_skips_blank_provider_identifier_value_for_reference_id
+    bundle = {
+      "resourceType" => "Bundle",
+      "entry" => [ { "resource" => {
+        "resourceType" => "Claim",
+        "id" => "clm_pr_blank_id",
+        "patient" => { "reference" => "Patient/pt_pr" },
+        "provider" => {
+          "identifier" => { "value" => "" },
+          "reference" => "Practitioner/pr_001"
+        },
+        "item" => [ {
+          "sequence" => 1,
+          "productOrService" => { "coding" => [ { "system" => "http://www.ama-assn.org/go/cpt", "code" => "99213" } ] },
+          "net" => { "value" => 100.0, "currency" => "USD" }
+        } ]
+      } } ]
+    }
+    @adapter.stub(:fhir_search, bundle) do
+      line = @adapter.list_claims("pt_pr").first
+      assert_equal "pr_001", line.provider_identifier
+    end
+  end
+
+  def test_list_claims_skips_blank_provider_reference_for_display
+    bundle = {
+      "resourceType" => "Bundle",
+      "entry" => [ { "resource" => {
+        "resourceType" => "Claim",
+        "id" => "clm_pr_blank_ref",
+        "patient" => { "reference" => "Patient/pt_pr2" },
+        "provider" => {
+          "identifier" => { "value" => "" },
+          "reference" => "",
+          "display" => "TEST PROVIDER DISPLAY"
+        },
+        "item" => [ {
+          "sequence" => 1,
+          "productOrService" => { "coding" => [ { "system" => "http://www.ama-assn.org/go/cpt", "code" => "99213" } ] },
+          "net" => { "value" => 100.0, "currency" => "USD" }
+        } ]
+      } } ]
+    }
+    @adapter.stub(:fhir_search, bundle) do
+      line = @adapter.list_claims("pt_pr2").first
+      assert_equal "TEST PROVIDER DISPLAY", line.provider_identifier
+    end
+  end
+
+  def test_list_claims_skips_whitespace_provider_reference_id_for_display
+    line = list_claim_with_provider(
+      "identifier" => { "value" => "" },
+      "reference" => "Practitioner/ ",
+      "display" => "TEST PROVIDER DISPLAY"
+    )
+    assert_equal "TEST PROVIDER DISPLAY", line.provider_identifier
+  end
+
+  def test_list_claims_skips_empty_provider_reference_id_for_display
+    line = list_claim_with_provider(
+      "identifier" => { "value" => "" },
+      "reference" => "Practitioner/",
+      "display" => "TEST PROVIDER DISPLAY"
+    )
+    assert_equal "TEST PROVIDER DISPLAY", line.provider_identifier
+  end
+
+  def test_list_claims_provider_identifier_nil_when_all_provider_fields_blank
+    line = list_claim_with_provider(
+      "identifier" => { "value" => "" },
+      "reference" => "",
+      "display" => " "
+    )
+    assert_nil line.provider_identifier
+  end
+
+  def test_list_claims_procedure_display_nil_when_all_label_fallbacks_blank
+    bundle = {
+      "resourceType" => "Bundle",
+      "entry" => [ { "resource" => {
+        "resourceType" => "Claim",
+        "id" => "clm_all_blank_disp",
+        "patient" => { "reference" => "Patient/pt_blank_disp" },
+        "item" => [ {
+          "sequence" => 1,
+          "productOrService" => {
+            "text" => "   ",
+            "coding" => [ { "system" => "http://www.ama-assn.org/go/cpt", "code" => "99213", "display" => "" } ]
+          },
+          "net" => { "value" => 100.0, "currency" => "USD" }
+        } ]
+      } } ]
+    }
+    @adapter.stub(:fhir_search, bundle) do
+      line = @adapter.list_claims("pt_blank_disp").first
+      assert_nil line.procedure_display
+    end
+  end
+
+  def test_find_referral_service_requested_nil_when_code_labels_all_blank
+    resource = {
+      "id" => "rf_all_blank_svc",
+      "status" => "active",
+      "subject" => { "reference" => "Patient/pt_001" },
+      "code" => {
+        "text" => "",
+        "coding" => [ { "display" => "   ", "code" => "" } ]
+      }
+    }
+    @adapter.stub(:fhir_read, resource) do
+      result = @adapter.find_referral("rf_all_blank_svc")
+      assert_nil result.service_requested
+    end
+  end
+
+  def test_list_claims_falls_back_procedure_display_from_product_or_service_text
+    bundle = {
+      "resourceType" => "Bundle",
+      "entry" => [ { "resource" => {
+        "resourceType" => "Claim",
+        "id" => "clm_blank_disp",
+        "patient" => { "reference" => "Patient/pt_disp" },
+        "item" => [ {
+          "sequence" => 1,
+          "productOrService" => {
+            "text" => "TEST,CLAIM LINE 001",
+            "coding" => [
+              { "system" => "http://www.ama-assn.org/go/cpt", "code" => "99213", "display" => "" }
+            ]
+          },
+          "net" => { "value" => 100.0, "currency" => "USD" }
+        } ]
+      } } ]
+    }
+    @adapter.stub(:fhir_search, bundle) do
+      line = @adapter.list_claims("pt_disp").first
+      assert_equal "TEST,CLAIM LINE 001", line.procedure_display
+    end
+  end
+
   def test_update_referral_whitelists_safe_fields
     existing = { "resourceType" => "ServiceRequest", "id" => "rf_001", "status" => "draft", "subject" => { "reference" => "Patient/pt_001" } }
     captured = nil
@@ -207,6 +363,27 @@ class Corvid::Adapters::FhirAdapterTest < Minitest::Test
     end
   end
 
+  def test_list_claims_serviced_date_from_period_when_serviced_date_blank
+    bundle = {
+      "resourceType" => "Bundle",
+      "entry" => [ { "resource" => {
+        "resourceType" => "Claim",
+        "id" => "clm_blank_serviced_date",
+        "patient" => { "reference" => "Patient/pt_serviced" },
+        "item" => [ {
+          "sequence" => 1,
+          "servicedDate" => "",
+          "servicedPeriod" => { "start" => "2026-01-05" },
+          "productOrService" => { "coding" => [ { "system" => "http://www.ama-assn.org/go/cpt", "code" => "99213" } ] }
+        } ]
+      } } ]
+    }
+    @adapter.stub(:fhir_search, bundle) do
+      line = @adapter.list_claims("pt_serviced").first
+      assert_equal Date.new(2026, 1, 5), line.serviced_date
+    end
+  end
+
   def test_coverage_type_map_covers_all_resource_types
     resource_types = %w[
       medicare_a medicare_b medicare_d medicaid va_benefits
@@ -304,5 +481,24 @@ class Corvid::Adapters::FhirAdapterTest < Minitest::Test
       assert_equal "100 Main St, Broken Rock, WA", result[:address]
       assert_equal "Broken Rock Health Center", result[:service_area]
     end
+  end
+  private
+
+  def list_claim_with_provider(provider)
+    bundle = {
+      "resourceType" => "Bundle",
+      "entry" => [ { "resource" => {
+        "resourceType" => "Claim",
+        "id" => "clm_pr_helper",
+        "patient" => { "reference" => "Patient/pt_pr3" },
+        "provider" => provider,
+        "item" => [ {
+          "sequence" => 1,
+          "productOrService" => { "coding" => [ { "system" => "http://www.ama-assn.org/go/cpt", "code" => "99213" } ] },
+          "net" => { "value" => 100.0, "currency" => "USD" }
+        } ]
+      } } ]
+    }
+    @adapter.stub(:fhir_search, bundle) { @adapter.list_claims("pt_pr3").first }
   end
 end

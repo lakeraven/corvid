@@ -51,7 +51,7 @@ module Corvid
       # decided_by_identifier identifies the actor (a user identifier from
       # the host application). May be nil for fully-automated runs.
       def decide(person_identifier:, facility:, as_of_date: Date.current, decided_by_identifier: nil, tenant_identifier: nil)
-        tenant_identifier ||= Corvid::TenantContext.current_tenant_identifier
+        tenant_identifier = tenant_identifier.presence || Corvid::TenantContext.current_tenant_identifier
 
         enrollment = Corvid.adapter.verify_tribal_enrollment(person_identifier)
         identity   = Corvid.adapter.verify_identity_documents(person_identifier)

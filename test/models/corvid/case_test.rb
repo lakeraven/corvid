@@ -195,6 +195,22 @@ class Corvid::CaseTest < ActiveSupport::TestCase
     end
   end
 
+  test "display_name ignores blank adapter display_name and uses Unknown Patient placeholder" do
+    Corvid.adapter.add_patient("pt_blank_name", display_name: "", dob: nil, sex: nil, ssn_last4: nil)
+    with_tenant(TEST_TENANT) do
+      kase = Corvid::Case.create!(patient_identifier: "pt_blank_name")
+      assert_equal "Unknown Patient", kase.display_name
+    end
+  end
+
+  test "display_name ignores whitespace-only adapter display_name and uses Unknown Patient placeholder" do
+    Corvid.adapter.add_patient("pt_ws_name", display_name: "   ", dob: nil, sex: nil, ssn_last4: nil)
+    with_tenant(TEST_TENANT) do
+      kase = Corvid::Case.create!(patient_identifier: "pt_ws_name")
+      assert_equal "Unknown Patient", kase.display_name
+    end
+  end
+
   # -- program_case? ---------------------------------------------------------
   #
   # Program identity lives on CaseProgram, not on Case. A Case is a person's

@@ -127,7 +127,7 @@ module Corvid
           requires_retroactive_authorization: false,
           requires_prior_authorization: auth_required,
           requires_committee_review: needs_committee,
-          authorization_reason: auth_reason || (estimated_cost >= COST_THRESHOLD ? "cost threshold exceeded" : nil),
+          authorization_reason: auth_reason.presence || (estimated_cost >= COST_THRESHOLD ? "cost threshold exceeded" : nil),
           requires_case_manager: needs_case_manager,
           has_case_manager: has_cm,
           message: messages.join("; ")
