@@ -491,8 +491,16 @@ class Corvid::Adapters::FhirAdapterTest < Minitest::Test
   # -- get_conditions / get_medications (issue #611) --------------------------
 
   CONDITION_CATEGORY_SYSTEM = "http://terminology.hl7.org/CodeSystem/condition-category"
+  US_CORE_CONDITION_CATEGORY_SYSTEM = "http://hl7.org/fhir/us/core/CodeSystem/condition-category"
   CONDITION_CLINICAL_SYSTEM = "http://terminology.hl7.org/CodeSystem/condition-clinical"
   CONDITION_VER_STATUS_SYSTEM = "http://terminology.hl7.org/CodeSystem/condition-ver-status"
+
+  LATER_CODED_CONCEPT = {
+    "coding" => [
+      { "system" => "urn:local:ehr" },
+      { "system" => "http://example.test/rx", "code" => "M001", "display" => "TEST MEDICATION 001" }
+    ]
+  }.freeze
 
   CLINICAL_HTTP_FAULTS = [
     Net::HTTPBadResponse.new("bad response"),
@@ -1187,6 +1195,213 @@ class Corvid::Adapters::FhirAdapterTest < Minitest::Test
     end
   end
 
+  # -- Issue #611 panel round 3: strict clinical read behaviour (failing until implemented) --
+
+  def test_get_medications_selects_first_coding_with_code_on_medication_codeable_concept
+    request = build_medication_request_resource(medicationCodeableConcept: LATER_CODED_CONCEPT.dup)
+    results = get_medications_with_bundle(medications_bundle([ request ]))
+
+    assert_equal 1, results.size
+    assert_equal "M001", results.first.code
+    assert_equal "http://example.test/rx", results.first.code_system
+    assert_equal "TEST MEDICATION 001", results.first.display
+  end
+
+  def test_get_medications_selects_first_coding_with_code_on_contained_medication
+    request = build_medication_request_resource(
+      medicationCodeableConcept: nil,
+      medicationReference: { "reference" => "#med1" },
+      contained: [
+        {
+          "resourceType" => "Medication",
+          "id" => "med1",
+          "code" => LATER_CODED_CONCEPT.dup
+        }
+      ]
+    )
+    results = get_medications_with_bundle(medications_bundle([ request ]))
+
+    assert_equal 1, results.size
+    assert_equal "M001", results.first.code
+    assert_equal "http://example.test/rx", results.first.code_system
+    assert_equal "TEST MEDICATION 001", results.first.display
+  end
+
+  def test_get_conditions_selects_first_coding_with_code_on_condition_code
+    condition = build_condition_resource(code: LATER_CODED_CONCEPT.dup)
+    results = get_conditions_with_bundle(conditions_bundle([ condition ]))
+
+    assert_equal 1, results.size
+    assert_equal "M001", results.first.code
+    assert_equal "http://example.test/rx", results.first.code_system
+    assert_equal "TEST MEDICATION 001", results.first.display
+  end
+
+  def test_get_medications_returns_nil_when_no_coding_has_code_and_no_text
+    request = build_medication_request_resource(
+      medicationCodeableConcept: { "coding" => [ { "system" => "urn:local:ehr" }, { "system" => "http://example.test/rx", "display" => "NO CODE" } ] }
+    )
+    assert_nil get_medications_with_bundle(medications_bundle([ request ]))
+  end
+
+  def test_get_conditions_returns_nil_when_no_coding_has_code_and_no_text
+    condition = build_condition_resource(
+      code: { "coding" => [ { "system" => "urn:local:ehr" }, { "system" => "http://example.test/codes", "display" => "NO CODE" } ] }
+    )
+    assert_nil get_conditions_with_bundle(conditions_bundle([ condition ]))
+  end
+
+  def test_get_conditions_display_from_text_when_no_coding_has_code
+    condition = build_condition_resource(
+      code: {
+        "text" => "TEST CONDITION TEXT ONLY",
+        "coding" => [ { "system" => "urn:local:ehr" }, { "system" => "http://example.test/codes", "display" => "" } ]
+      }
+    )
+    results = get_conditions_with_bundle(conditions_bundle([ condition ]))
+
+    assert_equal 1, results.size
+    assert_nil results.first.code
+    assert_equal "TEST CONDITION TEXT ONLY", results.first.display
+  end
+
+  def test_get_conditions_returns_nil_when_code_element_absent
+    condition = build_condition_resource.tap { |resource| resource.delete("code") }
+    assert_nil get_conditions_with_bundle(conditions_bundle([ condition ]))
+  end
+
+  def test_get_medications_excludes_medication_request_with_entered_in_error_status
+    included = build_medication_request_resource("id" => "mr_cancelled", status: "cancelled")
+    draft = build_medication_request_resource("id" => "mr_draft", status: "draft")
+    skipped = build_medication_request_resource("id" => "mr_eie", status: "entered-in-error")
+    results = get_medications_with_bundle(medications_bundle([ skipped, included, draft ]))
+
+    assert_equal 2, results.size
+    statuses = results.map(&:status).sort
+    assert_equal %w[cancelled draft], statuses
+  end
+
+  def test_get_medications_returns_nil_when_bundled_medication_full_url_is_foreign_server
+    request = build_medication_request_resource(
+      medicationCodeableConcept: nil,
+      medicationReference: { "reference" => "Medication/m1" }
+    )
+    included = {
+      "resourceType" => "Medication",
+      "id" => "m1",
+      "code" => { "coding" => [ { "system" => "http://example.test/rxnorm", "code" => "M001" } ] }
+    }
+    bundle = medications_bundle(
+      [ request ],
+      includes: [ [ included, "https://other.example/fhir/Medication/m1" ] ]
+    )
+    assert_nil get_medications_with_bundle(bundle)
+  end
+
+  def test_get_medications_resolves_bundled_medication_when_full_url_matches_base_url
+    request = build_medication_request_resource(
+      medicationCodeableConcept: nil,
+      medicationReference: { "reference" => "Medication/m1" }
+    )
+    included = {
+      "resourceType" => "Medication",
+      "id" => "m1",
+      "code" => { "coding" => [ { "system" => "http://example.test/rxnorm", "code" => "M001" } ] }
+    }
+    bundle = medications_bundle(
+      [ request ],
+      includes: [ [ included, "#{@adapter.base_url}/Medication/m1" ] ]
+    )
+    results = get_medications_with_bundle(bundle)
+
+    assert_equal 1, results.size
+    assert_equal "M001", results.first.code
+  end
+
+  def test_get_medications_resolves_bundled_medication_when_include_entry_has_no_full_url
+    request = build_medication_request_resource(
+      medicationCodeableConcept: nil,
+      medicationReference: { "reference" => "Medication/m1" }
+    )
+    included = {
+      "resourceType" => "Medication",
+      "id" => "m1",
+      "code" => { "coding" => [ { "system" => "http://example.test/rxnorm", "code" => "M001" } ] }
+    }
+    results = get_medications_with_bundle(medications_bundle([ request ], includes: [ included ]))
+
+    assert_equal 1, results.size
+    assert_equal "M001", results.first.code
+  end
+
+  def test_get_conditions_returns_nil_when_bundle_type_is_not_searchset
+    bundle = conditions_bundle([], type: "collection")
+    assert_nil get_conditions_with_bundle(bundle)
+  end
+
+  def test_get_medications_returns_nil_when_bundle_type_is_not_searchset
+    bundle = medications_bundle([], type: "collection")
+    assert_nil get_medications_with_bundle(bundle)
+  end
+
+  def test_get_conditions_returns_nil_when_bundle_total_positive_but_no_entries
+    bundle = conditions_bundle([], type: "searchset", total: 3)
+    assert_nil get_conditions_with_bundle(bundle)
+  end
+
+  def test_get_medications_returns_nil_when_bundle_total_positive_but_no_match_entries
+    bundle = medications_bundle([], type: "searchset", total: 2)
+    assert_nil get_medications_with_bundle(bundle)
+  end
+
+  def test_get_conditions_returns_empty_array_when_bundle_total_zero_and_no_entries
+    bundle = conditions_bundle([], type: "searchset", total: 0)
+    assert_equal [], get_conditions_with_bundle(bundle)
+  end
+
+  def test_get_conditions_returns_empty_array_when_bundle_has_no_total_and_no_entries
+    bundle = conditions_bundle([], type: "searchset", total: :omit)
+    assert_equal [], get_conditions_with_bundle(bundle)
+  end
+
+  def test_get_conditions_skips_us_core_health_concern_category_while_returning_in_scope_rows
+    included = build_condition_resource("id" => "cond_in_scope")
+    skipped = build_condition_resource(
+      "id" => "cond_health_concern",
+      category: [ {
+        "coding" => [ { "system" => US_CORE_CONDITION_CATEGORY_SYSTEM, "code" => "health-concern" } ]
+      } ]
+    )
+    results = get_conditions_with_bundle(conditions_bundle([ skipped, included ]))
+
+    refute_nil results, "page must not be unknown when only out-of-scope US Core categories are skipped"
+    assert_equal 1, results.size
+    assert_equal "problem-list-item", results.first.category
+  end
+
+  def test_get_conditions_returns_nil_when_clinical_status_codings_conflict
+    condition = build_condition_resource(
+      clinical_status_codings: [
+        { "system" => CONDITION_CLINICAL_SYSTEM, "code" => "resolved" },
+        { "system" => CONDITION_CLINICAL_SYSTEM, "code" => "active" }
+      ]
+    )
+    assert_nil get_conditions_with_bundle(conditions_bundle([ condition ]))
+  end
+
+  def test_get_conditions_keeps_row_when_clinical_status_codings_are_identical
+    condition = build_condition_resource(
+      clinical_status_codings: [
+        { "system" => CONDITION_CLINICAL_SYSTEM, "code" => "active" },
+        { "system" => CONDITION_CLINICAL_SYSTEM, "code" => "active" }
+      ]
+    )
+    results = get_conditions_with_bundle(conditions_bundle([ condition ]))
+
+    assert_equal 1, results.size
+    assert_equal "active", results.first.clinical_status
+  end
+
   private
 
   def no_content_http_response
@@ -1232,23 +1447,36 @@ class Corvid::Adapters::FhirAdapterTest < Minitest::Test
     response
   end
 
-  def conditions_bundle(conditions, includes: [])
+  def conditions_bundle(conditions, includes: [], type: "searchset", total: :omit)
     entries = conditions.map { |c| { "resource" => c, "search" => { "mode" => "match" } } }
     includes.each do |inc|
-      entries << { "resource" => inc, "search" => { "mode" => "include" } }
+      resource, full_url = bundle_include_pair(inc)
+      entry = { "resource" => resource, "search" => { "mode" => "include" } }
+      entry["fullUrl"] = full_url if full_url
+      entries << entry
     end
-    {
-      "resourceType" => "Bundle",
-      "entry" => entries
-    }
+    bundle = { "resourceType" => "Bundle", "type" => type, "entry" => entries }
+    bundle["total"] = total unless total == :omit
+    bundle
   end
 
-  def medications_bundle(requests, includes: [])
+  def medications_bundle(requests, includes: [], type: "searchset", total: :omit)
     entries = requests.map { |r| { "resource" => r, "search" => { "mode" => "match" } } }
     includes.each do |inc|
-      entries << { "resource" => inc, "search" => { "mode" => "include" } }
+      resource, full_url = bundle_include_pair(inc)
+      entry = { "resource" => resource, "search" => { "mode" => "include" } }
+      entry["fullUrl"] = full_url if full_url
+      entries << entry
     end
-    { "resourceType" => "Bundle", "entry" => entries }
+    bundle = { "resourceType" => "Bundle", "type" => type, "entry" => entries }
+    bundle["total"] = total unless total == :omit
+    bundle
+  end
+
+  def bundle_include_pair(inc)
+    return [ inc, nil ] unless inc.is_a?(Array)
+
+    [ inc[0], inc[1] ]
   end
 
   def build_condition_resource(overrides = {})

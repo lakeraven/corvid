@@ -39,6 +39,19 @@ class Corvid::Adapters::FhirDemoAdapterTest < Minitest::Test
     assert_equal "active", ref.status
   end
 
+  def test_get_conditions_finds_condition_when_subject_reference_is_absolute_under_demo_base_url
+    condition = synthetic_condition.merge(
+      "subject" => { "reference" => "#{@adapter.base_url}/Patient/pt_demo_001" }
+    )
+    adapter = Corvid::Adapters::FhirDemoAdapter.new(resources: [ condition ])
+
+    results = adapter.get_conditions("pt_demo_001")
+
+    refute_nil results
+    assert_equal 1, results.size
+    assert_equal "C-DEMO-001", results.first.code
+  end
+
   private
 
   def synthetic_condition
