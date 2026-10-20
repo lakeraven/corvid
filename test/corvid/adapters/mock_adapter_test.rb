@@ -157,4 +157,58 @@ class Corvid::Adapters::MockAdapterTest < Minitest::Test
     source = File.read(File.expand_path("../../../lib/corvid/adapters/mock_adapter.rb", __dir__))
     assert_match(/not a security boundary/i, source)
   end
+
+  # -- Conditions / medications (issue #611) ----------------------------------
+
+  def test_add_condition_and_get_conditions_round_trip
+    ref = Corvid::ConditionReference.new(
+      code: "C001", code_system: "http://example.test/codes", display: "TEST CONDITION 001",
+      clinical_status: "active", category: "problem-list-item", onset_date: Date.new(2020, 3, 15)
+    )
+    @adapter.add_condition("pt_001", ref)
+    result = @adapter.get_conditions("pt_001")
+    assert_equal 1, result.size
+    assert_equal ref, result.first
+  end
+
+  def test_get_conditions_returns_empty_when_none_seeded
+    assert_respond_to @adapter, :add_condition
+    assert_equal [], @adapter.get_conditions("pt_001")
+  end
+
+  def test_reset_clears_conditions
+    ref = Corvid::ConditionReference.new(
+      code: "C001", code_system: "http://example.test/codes", display: "TEST CONDITION 001",
+      clinical_status: "resolved", category: "encounter-diagnosis", onset_date: nil
+    )
+    @adapter.add_condition("pt_001", ref)
+    @adapter.reset!
+    assert_equal [], @adapter.get_conditions("pt_001")
+  end
+
+  def test_add_medication_and_get_medications_round_trip
+    ref = Corvid::MedicationReference.new(
+      code: "M001", code_system: "http://example.test/rxnorm", display: "TEST MEDICATION 001",
+      status: "active", authored_on: Date.new(2024, 6, 1), dosage_text: "TEST DOSAGE 001"
+    )
+    @adapter.add_medication("pt_001", ref)
+    result = @adapter.get_medications("pt_001")
+    assert_equal 1, result.size
+    assert_equal ref, result.first
+  end
+
+  def test_get_medications_returns_empty_when_none_seeded
+    assert_respond_to @adapter, :add_medication
+    assert_equal [], @adapter.get_medications("pt_001")
+  end
+
+  def test_reset_clears_medications
+    ref = Corvid::MedicationReference.new(
+      code: "M001", code_system: "http://example.test/rxnorm", display: "TEST MEDICATION 001",
+      status: "stopped", authored_on: nil, dosage_text: nil
+    )
+    @adapter.add_medication("pt_001", ref)
+    @adapter.reset!
+    assert_equal [], @adapter.get_medications("pt_001")
+  end
 end

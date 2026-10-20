@@ -1,6 +1,9 @@
 # frozen_string_literal: true
 
 require "minitest/autorun"
+require "json"
+require "net/http"
+require "uri"
 require "active_support/all" # adapter uses AS ext (Time.current, String#last, present?); loaded by the host app in real use
 require "corvid/adapters/fhir_adapter"
 
@@ -482,7 +485,360 @@ class Corvid::Adapters::FhirAdapterTest < Minitest::Test
       assert_equal "Broken Rock Health Center", result[:service_area]
     end
   end
+
+  # -- get_conditions / get_medications (issue #611) --------------------------
+
+  CONDITION_CATEGORY_SYSTEM = "http://terminology.hl7.org/CodeSystem/condition-category"
+
+  def test_get_conditions_requests_condition_search_with_patient_query
+    bundle = conditions_bundle([])
+    url_seen = nil
+    expected = "#{@adapter.base_url}/Condition?#{URI.encode_www_form(patient: "pt_001")}"
+
+    @adapter.stub(:http_get, ->(url) { url_seen = url; consumed_http_response(bundle) }) do
+      @adapter.get_conditions("pt_001")
+    end
+
+    assert_equal expected, url_seen
+  end
+
+  def test_get_conditions_maps_active_problem_list_item
+    condition = build_condition_resource(
+      code: { "coding" => [ { "system" => "http://example.test/codes", "code" => "C001", "display" => "TEST CONDITION 001" } ] },
+      onsetDateTime: "2020-03-15T10:00:00Z"
+    )
+    results = get_conditions_with_bundle(conditions_bundle([ condition ]))
+
+    assert_equal 1, results.size
+    ref = results.first
+    assert_instance_of Corvid::ConditionReference, ref
+    assert_equal "C001", ref.code
+    assert_equal "http://example.test/codes", ref.code_system
+    assert_equal "TEST CONDITION 001", ref.display
+    assert_equal "active", ref.clinical_status
+    assert_equal "problem-list-item", ref.category
+    assert_equal Date.new(2020, 3, 15), ref.onset_date
+  end
+
+  def test_get_conditions_includes_encounter_diagnosis_category
+    condition = build_condition_resource(
+      category_code: "encounter-diagnosis",
+      clinical_status: "resolved"
+    )
+    results = get_conditions_with_bundle(conditions_bundle([ condition ]))
+
+    assert_equal 1, results.size
+    assert_equal "encounter-diagnosis", results.first.category
+    assert_equal "resolved", results.first.clinical_status
+  end
+
+  def test_get_conditions_skips_non_us_core_category
+    included = build_condition_resource
+    skipped = build_condition_resource(category_code: "health-concern")
+    results = get_conditions_with_bundle(conditions_bundle([ included, skipped ]))
+
+    assert_equal 1, results.size
+    assert_equal "problem-list-item", results.first.category
+  end
+
+  def test_get_conditions_skips_non_active_or_resolved_clinical_status
+    included = build_condition_resource(clinical_status: "resolved")
+    skipped = build_condition_resource(clinical_status: "inactive")
+    results = get_conditions_with_bundle(conditions_bundle([ included, skipped ]))
+
+    assert_equal 1, results.size
+    assert_equal "resolved", results.first.clinical_status
+  end
+
+  def test_get_conditions_display_falls_back_to_code_text
+    condition = build_condition_resource(
+      code: { "text" => "TEST CONDITION 001", "coding" => [ { "system" => "http://example.test/codes", "code" => "C001", "display" => "" } ] }
+    )
+    results = get_conditions_with_bundle(conditions_bundle([ condition ]))
+
+    assert_equal 1, results.size
+    assert_equal "TEST CONDITION 001", results.first.display
+  end
+
+  def test_get_conditions_onset_date_from_onset_period_start
+    condition = build_condition_resource(onsetDateTime: nil, onsetPeriod: { "start" => "2019-07-01" })
+    results = get_conditions_with_bundle(conditions_bundle([ condition ]))
+
+    assert_equal 1, results.size
+    assert_equal Date.new(2019, 7, 1), results.first.onset_date
+  end
+
+  def test_get_conditions_onset_date_nil_when_absent
+    condition = build_condition_resource(onsetDateTime: nil)
+    condition.delete("onsetPeriod")
+    results = get_conditions_with_bundle(conditions_bundle([ condition ]))
+
+    assert_equal 1, results.size
+    assert_nil results.first.onset_date
+  end
+
+  def test_get_conditions_returns_nil_when_subject_reference_mismatches_patient
+    condition = build_condition_resource(subject: { "reference" => "Patient/pt_other" })
+    result = get_conditions_with_bundle(conditions_bundle([ condition ]), patient_id: "pt_001")
+
+    assert_nil result
+  end
+
+  def test_get_conditions_returns_nil_when_onset_unparseable
+    condition = build_condition_resource(onsetDateTime: "not-a-date")
+    result = get_conditions_with_bundle(conditions_bundle([ condition ]))
+
+    assert_nil result
+  end
+
+  def test_get_conditions_returns_empty_array_for_successful_bundle_with_no_entries
+    url_seen = nil
+    bundle = conditions_bundle([])
+    expected = "#{@adapter.base_url}/Condition?#{URI.encode_www_form(patient: "pt_001")}"
+
+    results = @adapter.stub(:http_get, ->(url) { url_seen = url; consumed_http_response(bundle) }) do
+      @adapter.get_conditions("pt_001")
+    end
+
+    assert_equal expected, url_seen
+    assert_equal [], results
+  end
+
+  def test_get_conditions_returns_nil_on_non_success_http
+    result = get_conditions_with_http_response(consumed_http_response("{}", status: 500))
+
+    assert_nil result
+  end
+
+  def test_get_conditions_returns_nil_on_invalid_json
+    result = get_conditions_with_http_response(consumed_http_response("not json"))
+
+    assert_nil result
+  end
+
+  def test_get_conditions_returns_nil_when_response_is_not_a_bundle
+    result = get_conditions_with_http_response(consumed_http_response({ "resourceType" => "Patient", "id" => "pt_001" }))
+
+    assert_nil result
+  end
+
+  def test_get_conditions_returns_nil_when_bundle_contains_fatal_operation_outcome
+    bundle = {
+      "resourceType" => "Bundle",
+      "entry" => [ { "resource" => { "resourceType" => "OperationOutcome", "issue" => [ { "severity" => "fatal", "code" => "processing" } ] } } ]
+    }
+    result = get_conditions_with_http_response(consumed_http_response(bundle))
+
+    assert_nil result
+  end
+
+  def test_get_conditions_returns_nil_on_timeout
+    result = get_conditions_with_http_error(Timeout::Error.new("timeout"))
+    assert_nil result
+  end
+
+  def test_get_conditions_returns_nil_on_socket_error
+    result = get_conditions_with_http_error(SocketError.new("socket"))
+    assert_nil result
+  end
+
+  def test_get_medications_requests_medication_request_search_with_patient_query
+    bundle = medications_bundle([])
+    url_seen = nil
+    expected = "#{@adapter.base_url}/MedicationRequest?#{URI.encode_www_form(patient: "pt_001")}"
+
+    @adapter.stub(:http_get, ->(url) { url_seen = url; consumed_http_response(bundle) }) do
+      @adapter.get_medications("pt_001")
+    end
+
+    assert_equal expected, url_seen
+  end
+
+  def test_get_medications_maps_codeable_concept_on_request
+    request = build_medication_request_resource(
+      medicationCodeableConcept: {
+        "coding" => [ { "system" => "http://example.test/rxnorm", "code" => "M001", "display" => "TEST MEDICATION 001" } ]
+      },
+      status: "active",
+      authoredOn: "2024-06-01",
+      dosageInstruction: [ { "text" => "TEST DOSAGE 001" } ]
+    )
+    results = get_medications_with_bundle(medications_bundle([ request ]))
+
+    assert_equal 1, results.size
+    ref = results.first
+    assert_instance_of Corvid::MedicationReference, ref
+    assert_equal "M001", ref.code
+    assert_equal "http://example.test/rxnorm", ref.code_system
+    assert_equal "TEST MEDICATION 001", ref.display
+    assert_equal "active", ref.status
+    assert_equal Date.new(2024, 6, 1), ref.authored_on
+    assert_equal "TEST DOSAGE 001", ref.dosage_text
+  end
+
+  def test_get_medications_resolves_contained_medication_reference
+    request = build_medication_request_resource(
+      medicationCodeableConcept: nil,
+      medicationReference: { "reference" => "#med1" },
+      contained: [
+        {
+          "resourceType" => "Medication",
+          "id" => "med1",
+          "code" => {
+            "text" => "TEST MEDICATION 001",
+            "coding" => [ { "system" => "http://example.test/rxnorm", "code" => "M001" } ]
+          }
+        }
+      ]
+    )
+    results = get_medications_with_bundle(medications_bundle([ request ]))
+
+    assert_equal 1, results.size
+    assert_equal "M001", results.first.code
+    assert_equal "TEST MEDICATION 001", results.first.display
+  end
+
+  def test_get_medications_resolves_bundle_included_medication_reference
+    request = build_medication_request_resource(
+      medicationCodeableConcept: nil,
+      medicationReference: { "reference" => "Medication/med_inc_001" }
+    )
+    included = {
+      "resourceType" => "Medication",
+      "id" => "med_inc_001",
+      "code" => { "coding" => [ { "system" => "http://example.test/rxnorm", "code" => "M001", "display" => "TEST MEDICATION 001" } ] }
+    }
+    bundle = medications_bundle([ request ], includes: [ included ])
+    results = get_medications_with_bundle(bundle)
+
+    assert_equal 1, results.size
+    assert_equal "M001", results.first.code
+    assert_equal "TEST MEDICATION 001", results.first.display
+  end
+
+  def test_get_medications_returns_nil_when_medication_reference_unresolvable
+    request = build_medication_request_resource(
+      medicationCodeableConcept: nil,
+      medicationReference: { "reference" => "Medication/missing" }
+    )
+    result = get_medications_with_bundle(medications_bundle([ request ]))
+
+    assert_nil result
+  end
+
+  def test_get_medications_returns_nil_when_subject_reference_mismatches_patient
+    request = build_medication_request_resource(subject: { "reference" => "Patient/pt_other" })
+    result = get_medications_with_bundle(medications_bundle([ request ]), patient_id: "pt_001")
+
+    assert_nil result
+  end
+
+  def test_get_medications_returns_nil_when_authored_on_unparseable
+    request = build_medication_request_resource(authoredOn: "not-a-date")
+    result = get_medications_with_bundle(medications_bundle([ request ]))
+
+    assert_nil result
+  end
+
+  def test_get_medications_returns_empty_array_for_successful_bundle_with_no_entries
+    url_seen = nil
+    bundle = medications_bundle([])
+    expected = "#{@adapter.base_url}/MedicationRequest?#{URI.encode_www_form(patient: "pt_001")}"
+
+    results = @adapter.stub(:http_get, ->(url) { url_seen = url; consumed_http_response(bundle) }) do
+      @adapter.get_medications("pt_001")
+    end
+
+    assert_equal expected, url_seen
+    assert_equal [], results
+  end
+
+  def test_get_medications_returns_nil_on_non_success_http
+    result = get_medications_with_http_response(consumed_http_response("{}", status: 503))
+
+    assert_nil result
+  end
+
   private
+
+  def consumed_http_response(body, status: 200)
+    json_body = body.is_a?(String) ? body : JSON.generate(body)
+    response_class = Net::HTTPResponse::CODE_TO_OBJ[status.to_s] || Net::HTTPOK
+    response = response_class.new("1.1", status.to_s, "OK")
+    response.instance_variable_set(:@body, json_body)
+    response.instance_variable_set(:@read, true)
+    response
+  end
+
+  def conditions_bundle(conditions)
+    {
+      "resourceType" => "Bundle",
+      "entry" => conditions.map { |c| { "resource" => c } }
+    }
+  end
+
+  def medications_bundle(requests, includes: [])
+    entries = requests.map { |r| { "resource" => r, "search" => { "mode" => "match" } } }
+    includes.each do |inc|
+      entries << { "resource" => inc, "search" => { "mode" => "include" } }
+    end
+    { "resourceType" => "Bundle", "entry" => entries }
+  end
+
+  def build_condition_resource(overrides = {})
+    category_code = overrides.delete(:category_code) || "problem-list-item"
+    clinical_status = overrides.delete(:clinical_status) || "active"
+    {
+      "resourceType" => "Condition",
+      "id" => "cond_001",
+      "subject" => { "reference" => "Patient/pt_001" },
+      "category" => [ {
+        "coding" => [ { "system" => CONDITION_CATEGORY_SYSTEM, "code" => category_code } ]
+      } ],
+      "clinicalStatus" => { "coding" => [ { "code" => clinical_status } ] },
+      "code" => {
+        "coding" => [ { "system" => "http://example.test/codes", "code" => "C001", "display" => "TEST CONDITION 001" } ]
+      },
+      "onsetDateTime" => "2020-01-01"
+    }.deep_merge(overrides.deep_stringify_keys)
+  end
+
+  def build_medication_request_resource(overrides = {})
+    base = {
+      "resourceType" => "MedicationRequest",
+      "id" => "mr_001",
+      "status" => "active",
+      "subject" => { "reference" => "Patient/pt_001" },
+      "authoredOn" => "2024-06-01",
+      "medicationCodeableConcept" => {
+        "coding" => [ { "system" => "http://example.test/rxnorm", "code" => "M001", "display" => "TEST MEDICATION 001" } ]
+      },
+      "dosageInstruction" => [ { "text" => "TEST DOSAGE 001" } ]
+    }
+    merged = base.deep_merge(overrides.deep_stringify_keys)
+    merged.delete("medicationCodeableConcept") if overrides.key?(:medicationCodeableConcept) && overrides[:medicationCodeableConcept].nil?
+    merged
+  end
+
+  def get_conditions_with_bundle(bundle, patient_id: "pt_001")
+    get_conditions_with_http_response(consumed_http_response(bundle), patient_id: patient_id)
+  end
+
+  def get_conditions_with_http_response(response, patient_id: "pt_001")
+    @adapter.stub(:http_get, response) { @adapter.get_conditions(patient_id) }
+  end
+
+  def get_conditions_with_http_error(error)
+    @adapter.stub(:http_get, ->(_url) { raise error }) { @adapter.get_conditions("pt_001") }
+  end
+
+  def get_medications_with_bundle(bundle, patient_id: "pt_001")
+    get_medications_with_http_response(consumed_http_response(bundle), patient_id: patient_id)
+  end
+
+  def get_medications_with_http_response(response, patient_id: "pt_001")
+    @adapter.stub(:http_get, response) { @adapter.get_medications(patient_id) }
+  end
 
   def list_claim_with_provider(provider)
     bundle = {
