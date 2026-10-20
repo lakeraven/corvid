@@ -508,7 +508,7 @@ module Corvid
       def build_claim_line_references(claim)
         patient_id = claim.dig("patient", "reference")&.sub("Patient/", "")
         provider_id = claim.dig("provider", "identifier", "value").presence ||
-                      claim.dig("provider", "reference")&.split("/")&.last.presence ||
+                      claim.dig("provider", "reference")&.split("/", -1)&.last.presence ||
                       claim.dig("provider", "display").presence
         claim_id = claim["id"]
 
