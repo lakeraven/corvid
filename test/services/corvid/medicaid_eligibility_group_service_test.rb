@@ -707,6 +707,90 @@ class Corvid::MedicaidEligibilityGroupServiceTest < ActiveSupport::TestCase
     assert_group_fields_under_tenant(check, TENANT, nil, nil)
   end
 
+  # -- Issue #646 ADR 0002: record_staff_entry! must not leak via error text -------
+
+  test "record_staff_entry! from another tenant for other tenant medicare_a check raises ArgumentError and does not write" do
+    medicare_check = nil
+    with_tenant(TENANT) do
+      medicare_check = Corvid::AlternateResourceCheck.create!(
+        prc_referral: create_referral(patient_id: "pt_mcd_adr_mca_001"),
+        resource_type: "medicare_a",
+        status: "checking"
+      )
+    end
+
+    with_tenant(OTHER_TENANT) do
+      assert_raises(ArgumentError) do
+        @service.record_staff_entry!(medicare_check, eligibility_group: "other")
+      end
+    end
+
+    assert_group_fields_under_tenant(medicare_check, TENANT, nil, nil)
+  end
+
+  test "record_staff_entry! from another tenant for nonexistent check id raises ArgumentError and does not write" do
+    medicaid_check = nil
+    max_check_id = nil
+    with_tenant(TENANT) do
+      medicaid_check = medicaid_check_for(patient_id: "pt_mcd_adr_missing_001", dob: Date.new(1996, 6, 15))
+      max_check_id = Corvid::AlternateResourceCheck.maximum(:id)
+    end
+    missing_row_check = Corvid::AlternateResourceCheck.new(
+      id: max_check_id + 1000,
+      resource_type: "medicaid"
+    )
+
+    with_tenant(OTHER_TENANT) do
+      assert_raises(ArgumentError) do
+        @service.record_staff_entry!(missing_row_check, eligibility_group: "other")
+      end
+    end
+
+    assert_group_fields_under_tenant(medicaid_check, TENANT, nil, nil)
+  end
+
+  test "record_staff_entry! from another tenant uses identical ArgumentError message for medicaid medicare_a and missing row" do
+    medicaid_check = nil
+    medicare_check = nil
+    max_check_id = nil
+    with_tenant(TENANT) do
+      medicaid_check = medicaid_check_for(patient_id: "pt_mcd_adr_msg_001", dob: Date.new(1996, 6, 15))
+      medicare_check = Corvid::AlternateResourceCheck.create!(
+        prc_referral: create_referral(patient_id: "pt_mcd_adr_msg_002"),
+        resource_type: "medicare_a",
+        status: "checking"
+      )
+      max_check_id = Corvid::AlternateResourceCheck.maximum(:id)
+    end
+    missing_row_check = Corvid::AlternateResourceCheck.new(
+      id: max_check_id + 1000,
+      resource_type: "medicaid"
+    )
+
+    medicaid_message = medicare_message = missing_message = nil
+    with_tenant(OTHER_TENANT) do
+      medicaid_message = staff_entry_argument_error_message do
+        @service.record_staff_entry!(medicaid_check, eligibility_group: "other")
+      end
+      medicare_message = staff_entry_argument_error_message do
+        @service.record_staff_entry!(medicare_check, eligibility_group: "other")
+      end
+    end
+
+    assert_equal medicaid_message, medicare_message
+
+    with_tenant(OTHER_TENANT) do
+      missing_message = staff_entry_argument_error_message do
+        @service.record_staff_entry!(missing_row_check, eligibility_group: "other")
+      end
+    end
+
+    assert_equal medicaid_message, missing_message
+
+    assert_group_fields_under_tenant(medicaid_check, TENANT, nil, nil)
+    assert_group_fields_under_tenant(medicare_check, TENANT, nil, nil)
+  end
+
   test "record! without tenant context does not write stated group" do
     check = nil
     with_tenant(TENANT) do
@@ -1512,5 +1596,10 @@ class Corvid::MedicaidEligibilityGroupServiceTest < ActiveSupport::TestCase
         refute_nil reloaded.eligibility_group_set_at
       end
     end
+  end
+
+  def staff_entry_argument_error_message
+    error = assert_raises(ArgumentError) { yield }
+    error.message
   end
 end
