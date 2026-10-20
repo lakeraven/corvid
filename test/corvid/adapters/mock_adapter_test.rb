@@ -211,4 +211,36 @@ class Corvid::Adapters::MockAdapterTest < Minitest::Test
     @adapter.reset!
     assert_equal [], @adapter.get_medications("pt_001")
   end
+
+  def test_add_condition_raises_unless_given_condition_reference
+    error = assert_raises(ArgumentError) { @adapter.add_condition("pt_001", { code: "C001" }) }
+    assert_match(/ConditionReference/i, error.message)
+  end
+
+  def test_add_medication_raises_unless_given_medication_reference
+    error = assert_raises(ArgumentError) { @adapter.add_medication("pt_001", { code: "M001" }) }
+    assert_match(/MedicationReference/i, error.message)
+  end
+
+  def test_get_conditions_returns_copy_not_internal_storage
+    ref = Corvid::ConditionReference.new(
+      code: "C001", code_system: "http://example.test/codes", display: "TEST CONDITION 001",
+      clinical_status: "active", category: "problem-list-item", onset_date: nil
+    )
+    @adapter.add_condition("pt_001", ref)
+    returned = @adapter.get_conditions("pt_001")
+    returned.clear
+    assert_equal 1, @adapter.get_conditions("pt_001").size
+  end
+
+  def test_get_medications_returns_copy_not_internal_storage
+    ref = Corvid::MedicationReference.new(
+      code: "M001", code_system: "http://example.test/rxnorm", display: "TEST MEDICATION 001",
+      status: "active", authored_on: nil, dosage_text: nil
+    )
+    @adapter.add_medication("pt_001", ref)
+    returned = @adapter.get_medications("pt_001")
+    returned.clear
+    assert_equal 1, @adapter.get_medications("pt_001").size
+  end
 end
