@@ -158,4 +158,21 @@ class Corvid::ConfigurationTest < Minitest::Test
     end
     assert_match(/positive/i, error.message)
   end
+
+  def test_alternate_resource_check_max_age_normalizes_symbol_keys_to_strings
+    Corvid.configure { |c| c.alternate_resource_check_max_age = { medicaid: 7.days } }
+
+    max_age = Corvid.configuration.alternate_resource_check_max_age
+    assert_equal 7.days, max_age.fetch("medicaid")
+  end
+
+  def test_alternate_resource_check_max_age_rejects_unknown_resource_type_keys
+    assert_raises(ArgumentError) do
+      Corvid.configure { |c| c.alternate_resource_check_max_age = { "medicaidd" => 7.days } }
+    end
+
+    assert_raises(ArgumentError) do
+      Corvid.configure { |c| c.alternate_resource_check_max_age = { unknown: 7.days } }
+    end
+  end
 end

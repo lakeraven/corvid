@@ -647,6 +647,44 @@ class Corvid::AlternateResourceCheckTest < ActiveSupport::TestCase
     assert_raises(ArgumentError) { check.current_for?("2025-06-01") }
   end
 
+  test "current_for? raises ArgumentError when as_of is a Date" do
+    check = Corvid::AlternateResourceCheck.new(
+      resource_type: "medicaid",
+      status: "enrolled",
+      checked_at: Time.current,
+      coverage_start: Date.new(2025, 1, 1),
+      coverage_end: Date.new(2025, 12, 31)
+    )
+    dos = Date.new(2025, 6, 1)
+    assert_raises(ArgumentError) { check.current_for?(dos, as_of: Date.new(2025, 6, 15)) }
+  end
+
+  test "current_for? raises ArgumentError when as_of is a String" do
+    check = Corvid::AlternateResourceCheck.new(
+      resource_type: "medicaid",
+      status: "enrolled",
+      checked_at: Time.current,
+      coverage_start: Date.new(2025, 1, 1),
+      coverage_end: Date.new(2025, 12, 31)
+    )
+    dos = Date.new(2025, 6, 1)
+    assert_raises(ArgumentError) { check.current_for?(dos, as_of: "2025-06-15") }
+  end
+
+  test "current_for? is false when checked_at is after as_of" do
+    check = Corvid::AlternateResourceCheck.new(
+      resource_type: "medicaid",
+      status: "enrolled",
+      checked_at: Time.zone.parse("2026-03-01 12:00:00 UTC"),
+      coverage_start: Date.new(2025, 1, 1),
+      coverage_end: Date.new(2026, 12, 31)
+    )
+    dos = Date.new(2025, 6, 1)
+    as_of = Time.zone.parse("2025-03-01 12:00:00 UTC")
+
+    refute check.current_for?(dos, as_of: as_of)
+  end
+
   test "current_for? is false for not_checked and checking regardless of age" do
     with_tenant("tnt_test") do
       dos = Date.new(2025, 6, 1)
@@ -848,18 +886,45 @@ class Corvid::AlternateResourceCheckTest < ActiveSupport::TestCase
     end
   end
 
-  test "mark_coordinated! sets coordinated from enrolled and updates checked_at" do
-    with_tenant(TENANT) do
+  test "mark_coordinated! sets coordinated from enrolled without changing checked_at" do
+    with_tenant("tnt_test") do
+      verification_time = Time.zone.parse("2026-01-01 12:00:00 UTC")
       check = Corvid::AlternateResourceCheck.create!(
         prc_referral: create_referral,
         resource_type: "medicaid",
-        status: "enrolled"
+        status: "enrolled",
+        checked_at: verification_time
       )
-      travel_to 1.hour.from_now do
+      travel_to Time.zone.parse("2026-01-01 13:00:00 UTC") do
         assert check.mark_coordinated!
         check.reload
         assert check.coordinated?
-        assert_in_delta Time.current, check.checked_at, 1.second
+        assert_equal verification_time, check.checked_at
+      end
+    end
+  end
+
+  test "mark_coordinated! does not refresh freshness for coordinated medicaid check" do
+    with_tenant("tnt_test") do
+      verification_time = Time.zone.parse("2026-01-01 12:00:00 UTC")
+      check = Corvid::AlternateResourceCheck.create!(
+        prc_referral: create_referral,
+        resource_type: "medicaid",
+        status: "enrolled",
+        checked_at: verification_time,
+        coverage_start: Date.new(2026, 1, 1),
+        coverage_end: Date.new(2026, 12, 31)
+      )
+
+      travel_to Time.zone.parse("2026-01-30 12:00:00 UTC") do
+        assert check.mark_coordinated!
+        check.reload
+        assert_equal verification_time, check.checked_at
+      end
+
+      travel_to Time.zone.parse("2026-02-25 12:00:00 UTC") do
+        dos = Date.new(2026, 2, 25)
+        refute check.current_for?(dos, as_of: Time.current)
       end
     end
   end
