@@ -1502,6 +1502,107 @@ class Corvid::MedicaidEligibilityGroupServiceTest < ActiveSupport::TestCase
     end
   end
 
+  # -- Issue #646 round 2 chair: row deleted and referral moved during adapter lookup -
+
+  test "record! returns nil without RecordNotFound when row deleted during find_patient" do
+    with_tenant(TENANT) do
+      check = medicaid_check_for(patient_id: "pt_mcd_race_del_001", dob: Date.new(1996, 6, 15))
+      check_id = check.id
+      racing = RaceSimulatingAdapterDelegate.new(
+        @adapter,
+        on_first_find_patient: lambda {
+          Corvid::AlternateResourceCheck.where(id: check_id).delete_all
+        }
+      )
+      service = Corvid::MedicaidEligibilityGroupService.new(adapter: racing)
+
+      result = raised = nil
+      begin
+        result = service.record!(
+          check,
+          coverage: { state: "XA", plan_name: "TEST REGULAR PLAN" },
+          date_of_service: DOS
+        )
+      rescue ActiveRecord::RecordNotFound => e
+        raised = e
+      end
+
+      assert_nil raised, "record! must not raise RecordNotFound when row disappears before lock"
+      assert_nil result
+      assert_equal 0, Corvid::AlternateResourceCheck.where(id: check_id).count
+    end
+  end
+
+  test "record! writes nothing when referral changes to different inference group during find_patient" do
+    with_tenant(TENANT) do
+      check = medicaid_check_for(patient_id: "pt_mcd_race_ref_diff_001", dob: Date.new(1996, 6, 15))
+      other_patient_id = "pt_mcd_race_ref_diff_002"
+      @adapter.add_patient(
+        other_patient_id,
+        display_name: "TEST,PATIENT 002",
+        dob: Date.new(1956, 6, 15),
+        sex: "F",
+        ssn_last4: "0000"
+      )
+      other_referral = create_referral(patient_id: other_patient_id)
+      racing = RaceSimulatingAdapterDelegate.new(
+        @adapter,
+        on_first_find_patient: lambda {
+          check.update_column(:prc_referral_id, other_referral.id)
+        }
+      )
+      service = Corvid::MedicaidEligibilityGroupService.new(adapter: racing)
+
+      result = service.record!(
+        check,
+        coverage: { state: "XA", plan_name: "TEST REGULAR PLAN" },
+        date_of_service: DOS
+      )
+
+      assert_nil result
+      reloaded = Corvid::AlternateResourceCheck.find(check.id)
+      assert_nil reloaded.eligibility_group
+      assert_nil reloaded.eligibility_group_source
+      assert_nil reloaded.eligibility_group_set_at
+      assert_equal other_referral.id, reloaded.prc_referral_id
+    end
+  end
+
+  test "record! writes nothing when referral changes to same inference group during find_patient" do
+    with_tenant(TENANT) do
+      check = medicaid_check_for(patient_id: "pt_mcd_race_ref_same_001", dob: Date.new(1996, 6, 15))
+      other_patient_id = "pt_mcd_race_ref_same_002"
+      @adapter.add_patient(
+        other_patient_id,
+        display_name: "TEST,PATIENT 002",
+        dob: Date.new(1996, 6, 15),
+        sex: "F",
+        ssn_last4: "0000"
+      )
+      other_referral = create_referral(patient_id: other_patient_id)
+      racing = RaceSimulatingAdapterDelegate.new(
+        @adapter,
+        on_first_find_patient: lambda {
+          check.update_column(:prc_referral_id, other_referral.id)
+        }
+      )
+      service = Corvid::MedicaidEligibilityGroupService.new(adapter: racing)
+
+      result = service.record!(
+        check,
+        coverage: { state: "XA", plan_name: "TEST REGULAR PLAN" },
+        date_of_service: DOS
+      )
+
+      assert_nil result
+      reloaded = Corvid::AlternateResourceCheck.find(check.id)
+      assert_nil reloaded.eligibility_group
+      assert_nil reloaded.eligibility_group_source
+      assert_nil reloaded.eligibility_group_set_at
+      assert_equal other_referral.id, reloaded.prc_referral_id
+    end
+  end
+
   test "record! does not call find_patient when coverage states a recognised group" do
     with_tenant(TENANT) do
       counting = CountingAdapterDelegate.new(@adapter)
