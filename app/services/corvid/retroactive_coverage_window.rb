@@ -16,7 +16,7 @@ module Corvid
 
     class << self
       def for_application(application_date:, rule_set:)
-        require_application_date(application_date)
+        application_date = require_application_date(application_date)
         require_rule_set(rule_set)
         return not_applied(rule_set) if application_date.nil?
         return predates_hr1(rule_set) if application_date < HR1_EFFECTIVE_DATE
@@ -28,7 +28,8 @@ module Corvid
       end
 
       def covers?(date_of_service:, application_date:, rule_set:)
-        require_date(date_of_service, "date_of_service")
+        date_of_service = require_date(date_of_service, "date_of_service")
+        application_date = require_application_date(application_date)
         window = for_application(application_date:, rule_set:)
         return unless window.status == "determined" && window.earliest_covered_date
 
@@ -36,12 +37,12 @@ module Corvid
       end
 
       def filing_deadline(date_of_service:, rule_set:)
-        require_date(date_of_service, "date_of_service")
+        date_of_service = require_date(date_of_service, "date_of_service")
         require_rule_set(rule_set)
         months = positive_window_months(rule_set)
         return unless months
 
-        deadline = (date_of_service >> months).end_of_month
+        deadline = (date_of_service >> months).end_of_month.gregorian
         deadline unless deadline < HR1_EFFECTIVE_DATE
       end
 
@@ -82,7 +83,7 @@ module Corvid
 
       def determined(application_date, months, rule_set)
         retroactive_window(
-          earliest_covered_date: (application_date << months).beginning_of_month,
+          earliest_covered_date: (application_date << months).beginning_of_month.gregorian,
           window_months: months,
           status: "determined",
           reasons: merged_reasons(nil, rule_set)
@@ -116,9 +117,10 @@ module Corvid
       end
 
       def require_date(value, label)
-        return if value.instance_of?(Date)
+        raise ArgumentError, "#{label} must be a Date" unless value.instance_of?(Date)
 
-        raise ArgumentError, "#{label} must be a Date"
+        # Julian dates are read as their Gregorian calendar day.
+        value.gregorian
       end
 
       def require_rule_set(rule_set)
