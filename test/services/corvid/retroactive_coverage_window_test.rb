@@ -100,7 +100,7 @@ class Corvid::RetroactiveCoverageWindowTest < ActiveSupport::TestCase
     end
   end
 
-  test "for_application not_applied still reports rule set window months when nil application on undetermined rule set" do
+  test "for_application not_applied merges undetermined window and rule set reasons when application date is nil" do
     with_tenant(TENANT) do
       rule_set = undetermined_rule_set
       result = for_application(application_date: nil, rule_set:)
@@ -110,7 +110,80 @@ class Corvid::RetroactiveCoverageWindowTest < ActiveSupport::TestCase
         earliest_covered_date: nil,
         window_months: nil,
         status: "not_applied",
-        reasons: [ "application_not_filed" ]
+        reasons: [
+          "application_not_filed",
+          "retroactive_window_undetermined",
+          "eligibility_group_not_configured"
+        ]
+      )
+    end
+  end
+
+  test "for_application not_applied on unconfigured state with unknown exemption reports nil window and merged reasons" do
+    with_tenant(TENANT) do
+      rule_set = Corvid::MedicaidRuleSetResolver.resolve(
+        eligibility_group: "expansion_adult",
+        state: "ZZ",
+        indian_exemption: "unknown"
+      )
+      result = for_application(application_date: nil, rule_set:)
+
+      assert_retroactive_window(
+        result,
+        earliest_covered_date: nil,
+        window_months: nil,
+        status: "not_applied",
+        reasons: [
+          "application_not_filed",
+          "retroactive_window_undetermined",
+          "state_not_configured",
+          "indian_exemption_unconfirmed"
+        ]
+      )
+    end
+  end
+
+  test "for_application not_applied reports nil window when rule set months are not a positive Integer" do
+    with_tenant(TENANT) do
+      base = {
+        renewal_cycle_months: 12,
+        work_requirement: "not_applicable",
+        exemption_needs_confirmation: false,
+        reasons: []
+      }
+      invalid_months = [ -2, 0, 1.0, "3" ]
+
+      invalid_months.each do |months|
+        rule_set = Corvid::MedicaidRuleSet.new(
+          retroactive_window_months: months,
+          **base
+        )
+        result = for_application(application_date: nil, rule_set:)
+
+        assert_nil result.earliest_covered_date
+        assert_nil result.window_months
+        assert_equal "not_applied", result.status
+        assert_includes result.reasons, "application_not_filed"
+        assert_includes result.reasons, "retroactive_window_undetermined"
+      end
+    end
+  end
+
+  test "for_application not_applied carries configured rule set reasons such as indian_exemption_unconfirmed" do
+    with_tenant(TENANT) do
+      rule_set = Corvid::MedicaidRuleSetResolver.resolve(
+        eligibility_group: "expansion_adult",
+        state: "XA",
+        indian_exemption: "unknown"
+      )
+      result = for_application(application_date: nil, rule_set:)
+
+      assert_retroactive_window(
+        result,
+        earliest_covered_date: nil,
+        window_months: 3,
+        status: "not_applied",
+        reasons: [ "application_not_filed", "indian_exemption_unconfirmed" ]
       )
     end
   end
@@ -506,8 +579,16 @@ class Corvid::RetroactiveCoverageWindowTest < ActiveSupport::TestCase
 
   def assert_retroactive_window(result, earliest_covered_date:, window_months:, status:, reasons:)
     assert_instance_of Corvid::RetroactiveWindow, result
-    assert_equal earliest_covered_date, result.earliest_covered_date
-    assert_equal window_months, result.window_months
+    if earliest_covered_date.nil?
+      assert_nil result.earliest_covered_date
+    else
+      assert_equal earliest_covered_date, result.earliest_covered_date
+    end
+    if window_months.nil?
+      assert_nil result.window_months
+    else
+      assert_equal window_months, result.window_months
+    end
     assert_equal status, result.status
     assert_equal reasons, result.reasons
   end
