@@ -136,7 +136,13 @@ class Corvid::Demo::FhirOverlayTest < ActiveSupport::TestCase
     bad_patient_ref["patient"] = { "reference" => "Patient/" }
 
     adapter = Corvid::Adapters::FhirDemoAdapter.new(resources: [ patient, bad_patient_ref ])
+    unresolved_lines = adapter.send(:build_claim_line_references, bad_patient_ref)
+    assert unresolved_lines.all? { |line| line.patient_identifier.nil? },
+           "Patient/ claim must map to nil patient_identifier on claim lines"
+
     Corvid.configure { |c| c.adapter = adapter }
+
+    adapter.define_singleton_method(:list_claims) { |_patient_id| unresolved_lines }
 
     with_tenant("tnt_test") do
       Corvid::TenantContext.current_facility_identifier = "fac_unres"
