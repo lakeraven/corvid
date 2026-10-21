@@ -87,28 +87,23 @@ module Corvid
         ].compact.filter_map { |ref| patient_reference_token(ref) }
       end
 
-      # Patient/<id> and <base_url>/Patient/<id> both name this server's
-      # patient. An empty or whitespace id matches nothing. Any other
-      # reference is left intact so a foreign absolute URL cannot match a
-      # local id.
+      # This server's Patient references (relative, versioned, or absolute
+      # under base_url) become the patient id. An empty or whitespace id
+      # matches nothing. Any other reference is left intact so a foreign
+      # absolute URL cannot match a local id.
       def patient_reference_token(reference)
         ref = reference.to_s
-        prefix = patient_reference_prefix(ref)
-        return ref unless prefix
+        id = id_from_reference(ref, type: "Patient")
+        return id if id
+        return nil if server_patient_reference?(ref)
 
-        id = ref.delete_prefix(prefix)
-        id unless blank_patient_id?(id)
+        ref
       end
 
-      def patient_reference_prefix(ref)
-        return "Patient/" if ref.start_with?("Patient/")
+      def server_patient_reference?(ref)
+        return false unless ref.encoding.ascii_compatible? && ref.valid_encoding?
 
-        absolute = "#{@base_url}/Patient/"
-        absolute if ref.start_with?(absolute)
-      end
-
-      def blank_patient_id?(id)
-        id.sub(/\A[ \t\n\v\f\r]+/, "").sub(/[ \t\n\v\f\r]+\z/, "").empty?
+        ref.start_with?("Patient/", "#{@base_url}/Patient/")
       end
 
       def name_matches?(resource, value)

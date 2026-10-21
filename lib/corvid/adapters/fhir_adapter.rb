@@ -1191,10 +1191,10 @@ module Corvid
       end
 
       def patient_reference?(reference, patient_identifier)
-        return false unless reference.is_a?(String)
+        identifier = id_from_reference(reference, type: "Patient")
+        return false if identifier.nil?
 
-        relative = "Patient/#{patient_identifier}"
-        reference == relative || reference == "#{@base_url}/#{relative}"
+        identifier == patient_identifier
       end
 
       # Conditions ------------------------------------------------------------

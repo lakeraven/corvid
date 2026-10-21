@@ -9,8 +9,11 @@ module Corvid
   # the id must match FHIR id syntax plus underscore. +type+ is a resource
   # name or a list of names. nil, blank, a non-String, a missing or invalid
   # id, a contained reference, extra path segments, a foreign absolute URL,
-  # a different type, and a string with invalid encoding are nil. Never
-  # raises, and never returns the raw reference.
+  # a different type, and a string with invalid encoding are nil. A reference
+  # whose encoding is not ASCII-compatible is read as UTF-8 when the bytes
+  # transcode, and is nil when they do not. A base_url that is not
+  # ASCII-compatible is nil. Never raises, and never returns the raw
+  # reference.
   module FhirReference
     RESOURCE_TYPE = /\A[A-Z][A-Za-z0-9]*\z/
     ID_SYNTAX = /\A[A-Za-z0-9._-]{1,64}\z/
@@ -30,19 +33,36 @@ module Corvid
       private
 
       def relative_reference(ref, base_url)
-        return nil unless ref.is_a?(String) && ref.valid_encoding?
-        return ref if base_url.nil?
+        compatible = compatible_reference(ref)
+        return nil unless compatible
+        return compatible if base_url.nil?
 
-        strip_base_url(ref, base_url)
+        strip_base_url(compatible, base_url)
+      end
+
+      # Valid ASCII-compatible text is used as-is. Any other valid encoding
+      # (UTF-16, UTF-32) is transcoded to UTF-8 so the id can be read.
+      # Invalid bytes and a failed transcode are nil.
+      def compatible_reference(ref)
+        return nil unless ref.is_a?(String) && ref.valid_encoding?
+        return ref if ref.encoding.ascii_compatible?
+
+        ref.encode(Encoding::UTF_8)
+      rescue EncodingError
+        nil
       end
 
       def strip_base_url(ref, base_url)
-        return nil unless base_url.is_a?(String) && base_url.valid_encoding?
+        return nil unless compatible_base_url?(base_url)
 
         prefix = "#{base_url.chomp("/")}/"
         return nil unless ref.start_with?(prefix)
 
         ref.delete_prefix(prefix)
+      end
+
+      def compatible_base_url?(base_url)
+        base_url.is_a?(String) && base_url.valid_encoding? && base_url.encoding.ascii_compatible?
       end
 
       def type_allowed?(resource_type, type)
