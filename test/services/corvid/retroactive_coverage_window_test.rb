@@ -527,6 +527,43 @@ class Corvid::RetroactiveCoverageWindowTest < ActiveSupport::TestCase
     end
   end
 
+  # -- non-Gregorian calendar start (Julian): Gregorian day semantics ----------
+
+  test "for_application treats Julian application date as its Gregorian calendar day" do
+    with_tenant(TENANT) do
+      rule_set = xa_other_rule_set
+      application_date = Date.new(2027, 3, 25, Date::JULIAN)
+
+      result = for_application(application_date:, rule_set:)
+
+      assert_equal Date.new(2027, 3, 1), result.earliest_covered_date
+      refute covers?(
+        date_of_service: Date.new(2027, 2, 15),
+        application_date:,
+        rule_set:
+      )
+    end
+  end
+
+  test "filing_deadline treats Julian date of service as its Gregorian calendar day" do
+    with_tenant(TENANT) do
+      rule_set = xa_other_rule_set
+      date_of_service = Date.new(2027, 2, 5, Date::JULIAN)
+
+      assert_equal Date.new(2027, 3, 31), filing_deadline(date_of_service:, rule_set:)
+    end
+  end
+
+  test "covers? compares Julian date of service on its Gregorian calendar day" do
+    with_tenant(TENANT) do
+      rule_set = xa_other_rule_set
+      application_date = Date.new(2027, 3, 25, Date::JULIAN)
+      date_of_service = Date.new(2027, 2, 15, Date::JULIAN)
+
+      refute covers?(date_of_service:, application_date:, rule_set:)
+    end
+  end
+
   private
 
   def for_application(application_date:, rule_set:)
