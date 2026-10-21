@@ -450,6 +450,34 @@ module Corvid
         @coverages[patient_identifier.to_s] || []
       end
 
+      def add_condition(patient_identifier, reference)
+        unless reference.is_a?(Corvid::ConditionReference)
+          raise ArgumentError, "expected ConditionReference"
+        end
+
+        (@conditions[patient_identifier.to_s] ||= []) << reference
+      end
+
+      def get_conditions(patient_identifier)
+        return nil if blank_patient_identifier?(patient_identifier)
+
+        copied_references(@conditions[patient_identifier.to_s])
+      end
+
+      def add_medication(patient_identifier, reference)
+        unless reference.is_a?(Corvid::MedicationReference)
+          raise ArgumentError, "expected MedicationReference"
+        end
+
+        (@medications[patient_identifier.to_s] ||= []) << reference
+      end
+
+      def get_medications(patient_identifier)
+        return nil if blank_patient_identifier?(patient_identifier)
+
+        copied_references(@medications[patient_identifier.to_s])
+      end
+
       def reset!
         @patients = {}
         @practitioners = {}
@@ -459,12 +487,32 @@ module Corvid
         @enrollments = {}
         @residencies = {}
         @coverages = {}
+        @conditions = {}
+        @medications = {}
         @claims = {}
         @remittances = {}
         @payments_store = {}
       end
 
       private
+
+      def blank_patient_identifier?(patient_identifier)
+        patient_identifier.nil? || patient_identifier.to_s.strip.empty?
+      end
+
+      # Frozen string copies so a caller cannot mutate stored clinical data.
+      def copied_references(stored)
+        (stored || []).map { |reference| copied_reference(reference) }
+      end
+
+      def copied_reference(reference)
+        values = reference.to_h.transform_values { |value| frozen_string_copy(value) }
+        reference.class.new(**values)
+      end
+
+      def frozen_string_copy(value)
+        value.is_a?(String) ? value.dup.freeze : value
+      end
 
       def build_referral_reference(identifier, attrs)
         Corvid::ReferralReference.new(
