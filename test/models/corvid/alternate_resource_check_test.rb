@@ -605,34 +605,79 @@ class Corvid::AlternateResourceCheckTest < ActiveSupport::TestCase
     end
   end
 
-  test "verify! stores nil coverage fields when adapter omits or sends non-Date values" do
+  test "verify! stores nil coverage fields when adapter omits coverage date keys" do
     with_tenant("tnt_test") do
       referral = create_referral
       check = Corvid::AlternateResourceCheck.create!(
         prc_referral: referral,
-        resource_type: "medicare_a",
-        status: "enrolled",
-        coverage_start: Date.new(2020, 1, 1),
-        coverage_end: Date.new(2020, 12, 31),
-        renewal_date: Date.new(2020, 6, 1)
+        resource_type: "medicare_a"
       )
 
       Corvid.adapter.define_singleton_method(:verify_eligibility) do |_pid, _type|
-        {
-          eligible: true,
-          policy_token: "TOK-CLEAR",
-          coverage_start: "2025-01-01",
-          coverage_end: nil,
-          renewal_date: 20_250_615
-        }
+        { eligible: true, policy_token: "TOK-OMIT" }
       end
 
       assert check.verify!
       check.reload
 
+      assert_equal "TOK-OMIT", check.policy_token
       assert_nil check.coverage_start
       assert_nil check.coverage_end
       assert_nil check.renewal_date
+    end
+  end
+
+  test "verify! returns false and leaves row unchanged when adapter sends non-Date coverage values" do
+    with_tenant("tnt_test") do
+      referral = create_referral
+      frozen_checked_at = Time.zone.parse("2025-01-15 10:00:00 UTC")
+      stored_start = Date.new(2020, 1, 1)
+      stored_end = Date.new(2020, 12, 31)
+      stored_renewal = Date.new(2020, 6, 1)
+
+      non_date_samples = [
+        [ "medicare_b", { coverage_start: "2025-01-01", coverage_end: nil, renewal_date: nil } ],
+        [ "medicare_d", { coverage_start: nil, coverage_end: Time.utc(2025, 12, 31), renewal_date: nil } ],
+        [
+          "va_benefits",
+          {
+            coverage_start: nil,
+            coverage_end: nil,
+            renewal_date: Time.zone.parse("2025-08-15 00:00:00 UTC")
+          }
+        ],
+        [
+          "private_insurance",
+          { coverage_start: nil, coverage_end: nil, renewal_date: DateTime.new(2025, 8, 15) }
+        ]
+      ]
+
+      non_date_samples.each do |resource_type, adapter_dates|
+        check = Corvid::AlternateResourceCheck.create!(
+          prc_referral: referral,
+          resource_type: resource_type,
+          status: "enrolled",
+          checked_at: frozen_checked_at,
+          policy_token: "TOK-KEEP",
+          coverage_start: stored_start,
+          coverage_end: stored_end,
+          renewal_date: stored_renewal
+        )
+
+        Corvid.adapter.define_singleton_method(:verify_eligibility) do |_pid, _type|
+          { eligible: true, policy_token: "TOK-NEW", **adapter_dates }
+        end
+
+        refute check.verify!
+        check.reload
+
+        assert_equal "enrolled", check.status
+        assert_equal frozen_checked_at, check.checked_at
+        assert_equal "TOK-KEEP", check.policy_token
+        assert_equal stored_start, check.coverage_start
+        assert_equal stored_end, check.coverage_end
+        assert_equal stored_renewal, check.renewal_date
+      end
     end
   end
 
@@ -709,6 +754,46 @@ class Corvid::AlternateResourceCheckTest < ActiveSupport::TestCase
           status: "not_enrolled",
           checked_at: 10.days.ago
         )
+        assert check.current_for?(dos)
+      end
+    end
+  end
+
+  test "current_for? is false for negative status when date of service is inside stored coverage period" do
+    with_tenant("tnt_test") do
+      travel_to Time.zone.parse("2025-06-15 12:00:00 UTC") do
+        dos = Date.new(2025, 6, 1)
+        coverage = {
+          coverage_start: Date.new(2025, 1, 1),
+          coverage_end: Date.new(2025, 12, 31),
+          renewal_date: Date.new(2025, 12, 1)
+        }
+
+        %i[not_enrolled denied exhausted].each do |status|
+          check = Corvid::AlternateResourceCheck.new(
+            resource_type: "medicaid",
+            status: status,
+            checked_at: 1.day.ago,
+            **coverage
+          )
+          refute check.current_for?(dos), "expected #{status} not current inside coverage period"
+        end
+      end
+    end
+  end
+
+  test "current_for? applies freshness for negative status when date of service is outside stored coverage period" do
+    with_tenant("tnt_test") do
+      travel_to Time.zone.parse("2025-06-15 12:00:00 UTC") do
+        dos = Date.new(2025, 6, 1)
+        check = Corvid::AlternateResourceCheck.new(
+          resource_type: "private_insurance",
+          status: "not_enrolled",
+          checked_at: 10.days.ago,
+          coverage_start: Date.new(2025, 1, 1),
+          coverage_end: Date.new(2025, 5, 31)
+        )
+
         assert check.current_for?(dos)
       end
     end
@@ -841,6 +926,28 @@ class Corvid::AlternateResourceCheckTest < ActiveSupport::TestCase
         )
 
         refute check.current_for?(dos, as_of: Time.current)
+      end
+    end
+  end
+
+  test "current_for? renewal check uses application time zone for as_of calendar date" do
+    with_tenant("tnt_test") do
+      travel_to Time.zone.parse("2026-10-22 12:00:00 UTC") do
+        dos = Date.new(2026, 10, 15)
+        check = Corvid::AlternateResourceCheck.new(
+          resource_type: "medicare_a",
+          status: "enrolled",
+          checked_at: 1.day.ago,
+          coverage_start: Date.new(2026, 1, 1),
+          coverage_end: Date.new(2026, 12, 31),
+          renewal_date: Date.new(2026, 10, 21)
+        )
+
+        as_of_utc = Time.utc(2026, 10, 22, 3)
+        as_of_offset = as_of_utc.getlocal("-12:00")
+
+        refute check.current_for?(dos, as_of: as_of_utc)
+        refute check.current_for?(dos, as_of: as_of_offset)
       end
     end
   end
