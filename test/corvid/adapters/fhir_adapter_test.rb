@@ -190,6 +190,42 @@ class Corvid::Adapters::FhirAdapterTest < Minitest::Test
     end
   end
 
+  def test_find_referral_requesting_provider_identifier_from_normal_requester_reference
+    resource = service_request_with_requester("Practitioner/pr_test_001")
+    @adapter.stub(:fhir_read, resource) do
+      result = @adapter.find_referral("rf_req_pr_normal")
+      assert_equal "pr_test_001", result.requesting_provider_identifier
+    end
+  end
+
+  def test_find_referral_requesting_provider_identifier_nil_when_requester_reference_id_empty
+    resource = service_request_with_requester("Practitioner/")
+    @adapter.stub(:fhir_read, resource) do
+      result = @adapter.find_referral("rf_req_pr_empty")
+      assert_nil result.requesting_provider_identifier
+    end
+  end
+
+  def test_find_referral_requesting_provider_identifier_nil_when_requester_reference_id_whitespace
+    resource = service_request_with_requester("Practitioner/ ")
+    @adapter.stub(:fhir_read, resource) do
+      result = @adapter.find_referral("rf_req_pr_ws")
+      assert_nil result.requesting_provider_identifier
+    end
+  end
+
+  def test_find_referral_requesting_provider_identifier_nil_when_requester_missing
+    resource = {
+      "id" => "rf_req_pr_missing",
+      "status" => "active",
+      "subject" => { "reference" => "Patient/pt_test_001" }
+    }
+    @adapter.stub(:fhir_read, resource) do
+      result = @adapter.find_referral("rf_req_pr_missing")
+      assert_nil result.requesting_provider_identifier
+    end
+  end
+
   def test_find_referral_service_requested_nil_when_code_labels_all_blank
     resource = {
       "id" => "rf_all_blank_svc",
@@ -1908,6 +1944,15 @@ class Corvid::Adapters::FhirAdapterTest < Minitest::Test
 
   def get_medications_with_http_response(response, patient_id: "pt_001")
     @adapter.stub(:http_get, response) { @adapter.get_medications(patient_id) }
+  end
+
+  def service_request_with_requester(requester_reference)
+    {
+      "id" => "rf_req_helper",
+      "status" => "active",
+      "subject" => { "reference" => "Patient/pt_test_001" },
+      "requester" => { "reference" => requester_reference }
+    }
   end
 
   def list_claim_with_provider(provider)

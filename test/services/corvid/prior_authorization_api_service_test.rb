@@ -298,6 +298,110 @@ class Corvid::PriorAuthorizationApiServiceTest < ActiveSupport::TestCase
     end
   end
 
+  test "submit_from_claim rejects Claim when patient reference id is empty" do
+    with_tenant(TENANT) do
+      Corvid::TenantContext.current_facility_identifier = FACILITY
+      referral_count = Corvid::PrcReferral.count
+      case_count = Corvid::Case.count
+
+      error = assert_raises(ArgumentError) do
+        Corvid::PriorAuthorizationApiService.submit_from_claim(
+          build_fhir_claim(patient: { reference: "Patient/" })
+        )
+      end
+      assert_match(/patient/i, error.message)
+      assert_equal referral_count, Corvid::PrcReferral.count
+      assert_equal case_count, Corvid::Case.count
+      refute Corvid::Case.exists?(patient_identifier: "Patient")
+    ensure
+      Corvid::TenantContext.reset!
+    end
+  end
+
+  test "submit_from_claim rejects Claim when patient reference id is whitespace" do
+    with_tenant(TENANT) do
+      Corvid::TenantContext.current_facility_identifier = FACILITY
+      referral_count = Corvid::PrcReferral.count
+
+      error = assert_raises(ArgumentError) do
+        Corvid::PriorAuthorizationApiService.submit_from_claim(
+          build_fhir_claim(patient: { reference: "Patient/ " })
+        )
+      end
+      assert_match(/patient/i, error.message)
+      assert_equal referral_count, Corvid::PrcReferral.count
+      refute Corvid::Case.exists?(patient_identifier: "Patient")
+      refute Corvid::Case.exists?(patient_identifier: " ")
+    ensure
+      Corvid::TenantContext.reset!
+    end
+  end
+
+  test "submit_from_claim rejects Claim when patient reference is missing" do
+    with_tenant(TENANT) do
+      Corvid::TenantContext.current_facility_identifier = FACILITY
+      claim = build_fhir_claim.except(:patient)
+      referral_count = Corvid::PrcReferral.count
+
+      error = assert_raises(ArgumentError) do
+        Corvid::PriorAuthorizationApiService.submit_from_claim(claim)
+      end
+      assert_match(/patient/i, error.message)
+      assert_equal referral_count, Corvid::PrcReferral.count
+    ensure
+      Corvid::TenantContext.reset!
+    end
+  end
+
+  test "submit_from_claim stores nil requesting provider for empty practitioner reference id" do
+    with_tenant(TENANT) do
+      Corvid::TenantContext.current_facility_identifier = FACILITY
+      Corvid::PriorAuthorizationApiService.submit_from_claim(
+        build_fhir_claim(
+          patient: { reference: "Patient/pt_pa_ref_empty_pr" },
+          provider: { reference: "Practitioner/" }
+        )
+      )
+      referral = Corvid::PrcReferral.order(created_at: :desc).first
+      stored = Corvid.adapter.find_referral(referral.referral_identifier)
+      assert_nil stored.requesting_provider_identifier
+    ensure
+      Corvid::TenantContext.reset!
+    end
+  end
+
+  test "submit_from_claim stores nil requesting provider for whitespace practitioner reference id" do
+    with_tenant(TENANT) do
+      Corvid::TenantContext.current_facility_identifier = FACILITY
+      Corvid::PriorAuthorizationApiService.submit_from_claim(
+        build_fhir_claim(
+          patient: { reference: "Patient/pt_pa_ref_ws_pr" },
+          provider: { reference: "Practitioner/ " }
+        )
+      )
+      referral = Corvid::PrcReferral.order(created_at: :desc).first
+      stored = Corvid.adapter.find_referral(referral.referral_identifier)
+      assert_nil stored.requesting_provider_identifier
+    ensure
+      Corvid::TenantContext.reset!
+    end
+  end
+
+  test "submit_from_claim stores nil requesting provider when provider reference is missing" do
+    with_tenant(TENANT) do
+      Corvid::TenantContext.current_facility_identifier = FACILITY
+      claim = build_fhir_claim(
+        patient: { reference: "Patient/pt_pa_ref_no_pr" }
+      ).except(:provider)
+      Corvid::PriorAuthorizationApiService.submit_from_claim(claim)
+      referral = Corvid::PrcReferral.order(created_at: :desc).first
+      stored = Corvid.adapter.find_referral(referral.referral_identifier)
+      assert_nil stored.requesting_provider_identifier
+    ensure
+      Corvid::TenantContext.reset!
+    end
+  end
+
   test "submit_from_claim uses Service when CodeableConcept parts are all blank" do
     claim = build_fhir_claim(
       item: [ {

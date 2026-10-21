@@ -22,6 +22,11 @@ Feature: CMS-0057-F Prior Authorization API (Da Vinci PAS)
     Then a PrcReferral should be created
     And the PrcReferral should record the requesting provider as "pr_npi_1234567890"
 
+  Scenario: PA submission rejects Claim with empty patient reference
+    When a provider submits a FHIR PA request with patient reference "Patient/"
+    Then the PA submission should be rejected with a patient reference error
+    And no PrcReferral should be created for patient "Patient"
+
   # =============================================================================
   # PA DECISION (ClaimResponse)
   # =============================================================================
