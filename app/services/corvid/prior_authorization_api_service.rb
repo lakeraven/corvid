@@ -44,6 +44,10 @@ module Corvid
       # CMS-0057-F annual usage metrics (#46) can count distinct apps.
       def submit_from_claim(fhir_claim, app_identifier: nil)
         patient_id = extract_patient_identifier(fhir_claim)
+        # Fail closed before a Case row or an adapter referral exists. The
+        # message names the missing field only — never the reference value.
+        raise ArgumentError, "patient reference must include an identifier" if patient_id.nil?
+
         provider_id = extract_provider_identifier(fhir_claim)
         service_description = extract_service_description(fhir_claim)
         estimated_cost = extract_estimated_cost(fhir_claim)
@@ -221,12 +225,12 @@ module Corvid
 
       def extract_patient_identifier(fhir_claim)
         ref = fhir_claim.dig(:patient, :reference) || fhir_claim.dig("patient", "reference")
-        ref&.split("/")&.last
+        Corvid::FhirReference.id_from(ref)
       end
 
       def extract_provider_identifier(fhir_claim)
         ref = fhir_claim.dig(:provider, :reference) || fhir_claim.dig("provider", "reference")
-        ref&.split("/")&.last
+        Corvid::FhirReference.id_from(ref)
       end
 
       def extract_service_description(fhir_claim)

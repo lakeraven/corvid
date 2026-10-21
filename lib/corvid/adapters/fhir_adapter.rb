@@ -9,6 +9,7 @@ require "openssl"
 require "zlib"
 require "corvid/adapters/base"
 require "corvid/value_objects"
+require "corvid/fhir_reference"
 
 module Corvid
   module Adapters
@@ -875,7 +876,7 @@ module Corvid
       def build_claim_line_references(claim)
         patient_id = claim.dig("patient", "reference")&.sub("Patient/", "")
         provider_id = claim.dig("provider", "identifier", "value").presence ||
-                      claim.dig("provider", "reference")&.split("/", -1)&.last.presence ||
+                      Corvid::FhirReference.id_from(claim.dig("provider", "reference")) ||
                       claim.dig("provider", "display").presence
         claim_id = claim["id"]
 
@@ -930,7 +931,7 @@ module Corvid
           urgent: resource["priority"] == "urgent",
           chs_approval_status: nil,
           service_requested: resource.dig("code", "text").presence || resource.dig("code", "coding", 0, "display").presence,
-          requesting_provider_identifier: resource.dig("requester", "reference")&.split("/")&.last
+          requesting_provider_identifier: Corvid::FhirReference.id_from(resource.dig("requester", "reference"))
         )
       end
 
