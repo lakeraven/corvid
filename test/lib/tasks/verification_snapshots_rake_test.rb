@@ -21,7 +21,7 @@ class VerificationSnapshotsRakeTest < ActiveSupport::TestCase
   def load_scrub_legacy_task!
     flunk "expected rake task at #{RAKE_PATH}" unless File.exist?(RAKE_PATH)
 
-    load RAKE_PATH
+    Rails.application.load_tasks if Rake::Task.tasks.empty?
     Rake::Task[TASK_NAME].reenable
   end
 
