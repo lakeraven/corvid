@@ -94,13 +94,55 @@ class ScrubLegacyVerificationSnapshotHashesTest < ActiveSupport::TestCase
     assert_equal KEYED_VERSION, keyed.verification_snapshot_key_version
   end
 
-  test "migrate down is irreversible" do
+  # Owner decision: the scrub cannot be undone, so down is a documented no-op
+  # rather than raising. It must not restore or touch any hash.
+  test "migrate down is a no-op that restores nothing" do
     require_scrub_migration!
 
-    assert_raises(ActiveRecord::IrreversibleMigration) do
+    scrubbed = nil
+    keyed = nil
+    with_tenant(TENANT_ALPHA) do
+      scrubbed = create_legacy_row!(tenant: TENANT_ALPHA, person_identifier: "pt_scrubbed_down")
+      keyed = create_keyed_row!(tenant: TENANT_ALPHA, person_identifier: "pt_keyed_down")
+    end
+
+    ActiveRecord::Migration.suppress_messages do
+      ScrubLegacyVerificationSnapshotHashes.new.migrate(:up)
+    end
+
+    assert_nothing_raised do
       ActiveRecord::Migration.suppress_messages do
         ScrubLegacyVerificationSnapshotHashes.new.migrate(:down)
       end
     end
+
+    assert_nil scrubbed.reload.verification_snapshot_hash
+    assert_nil scrubbed.verification_snapshot_key_version
+    assert_equal KEYED_HASH, keyed.reload.verification_snapshot_hash
+    assert_equal KEYED_VERSION, keyed.verification_snapshot_key_version
+  end
+
+  test "migrate up leaves rows with no hash unchanged" do
+    require_scrub_migration!
+
+    blank = nil
+    with_tenant(TENANT_ALPHA) do
+      blank = Corvid::PrcEligibilityDecision.create!(
+        tenant_identifier: TENANT_ALPHA,
+        person_identifier: "pt_no_hash",
+        facility_identifier: "fac_demo",
+        decided_at: Time.current,
+        as_of_date: Date.current,
+        eligible: false,
+        reason_codes: [ "not_enrolled" ]
+      )
+    end
+
+    ActiveRecord::Migration.suppress_messages do
+      ScrubLegacyVerificationSnapshotHashes.new.migrate(:up)
+    end
+
+    assert_nil blank.reload.verification_snapshot_hash
+    assert_nil blank.verification_snapshot_key_version
   end
 end

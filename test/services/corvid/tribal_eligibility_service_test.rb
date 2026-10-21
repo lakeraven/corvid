@@ -314,6 +314,31 @@ class Corvid::TribalEligibilityServiceTest < ActiveSupport::TestCase
     assert_nil row.verification_snapshot_key_version
   end
 
+  test "decide logs the fixed warning and saves nil snapshot columns when the configured key is missing" do
+    configure_snapshot_keys!(version: SNAPSHOT_VERSION_V1, keys: {})
+    fixed_adapter_responses_for("pt_missing_key")
+
+    log_io = StringIO.new
+    original_logger = Rails.logger
+    Rails.logger = ActiveSupport::Logger.new(log_io)
+    begin
+      decision = Corvid::TribalEligibilityService.decide(
+        person_identifier: "pt_missing_key",
+        facility: @facility,
+        tenant_identifier: TENANT
+      )
+    ensure
+      Rails.logger = original_logger
+    end
+
+    row = Corvid::PrcEligibilityDecision.find(decision.decision_id)
+    assert decision.eligible?
+    assert_nil row.verification_snapshot_hash
+    assert_nil row.verification_snapshot_key_version
+    assert_includes log_io.string, Corvid::SnapshotFingerprint::UNUSABLE_KEY_MESSAGE
+    refute_includes log_io.string, SNAPSHOT_VERSION_V1
+  end
+
   test "decide snapshot hash is not a plain SHA256 of adapter responses" do
     configure_snapshot_keys!(
       version: SNAPSHOT_VERSION_V1,
@@ -490,6 +515,61 @@ class Corvid::TribalEligibilityServiceTest < ActiveSupport::TestCase
     assert decision.eligible?
     assert_nil row.verification_snapshot_hash
     assert_nil row.verification_snapshot_key_version
+  end
+
+  # Whitespace-only or invisible versions are no usable key: decide must not
+  # raise RecordInvalid from the model's presence check.
+  [
+    [ "ascii space", " " ],
+    [ "no-break space", " " ],
+    [ "em space", " " ],
+    [ "zero-width space", "​" ],
+    [ "byte order mark", "﻿" ],
+    [ "no-break space and zero-width space", " ​" ]
+  ].each do |label, version|
+    test "decide saves nil snapshot hash and version for #{label}-only key version" do
+      person_id = "pt_blank_ver_#{label.tr(' -', '__')}"
+      configure_snapshot_keys!(version: version, keys: { version => SNAPSHOT_KEY_V1 })
+      fixed_adapter_responses_for(person_id)
+
+      decision = nil
+      assert_nothing_raised do
+        decision = Corvid::TribalEligibilityService.decide(
+          person_identifier: person_id,
+          facility: @facility,
+          tenant_identifier: TENANT
+        )
+      end
+
+      row = Corvid::PrcEligibilityDecision.find(decision.decision_id)
+      assert decision.eligible?
+      assert_nil row.verification_snapshot_hash
+      assert_nil row.verification_snapshot_key_version
+    end
+  end
+
+  test "decide stored fingerprint matches a re-check that differs only in verified_at" do
+    configure_snapshot_keys!(
+      version: SNAPSHOT_VERSION_V1,
+      keys: { SNAPSHOT_VERSION_V1 => SNAPSHOT_KEY_V1 }
+    )
+    fixed_adapter_responses_for("pt_recheck")
+
+    decision = Corvid::TribalEligibilityService.decide(
+      person_identifier: "pt_recheck",
+      facility: @facility,
+      tenant_identifier: TENANT
+    )
+    row = Corvid::PrcEligibilityDecision.find(decision.decision_id)
+
+    recheck = travel_to(Time.utc(2026, 9, 1, 8, 30, 0)) { adapter_snapshot_payload("pt_recheck") }
+    recheck[:residency] = recheck[:residency].merge(verified_at: Time.utc(2026, 9, 1, 8, 30, 0))
+
+    assert Corvid::SnapshotFingerprint.matches?(
+      hash: row.verification_snapshot_hash,
+      version: row.verification_snapshot_key_version,
+      payload: recheck
+    )
   end
 
   test "decide saves nil snapshot hash and version for key version with zero-width space format character" do

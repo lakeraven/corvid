@@ -944,7 +944,17 @@ class Corvid::SnapshotFingerprintTest < ActiveSupport::TestCase
     [ "braille blank", "\u2800" ],
     [ "musical symbol null notehead", "\u1D159" ],
     [ "non-ascii letter suffix", "v1-\u00e9" ],
-    [ "inner ascii space", "v1 test" ]
+    [ "inner ascii space", "v1 test" ],
+    [ "single ascii space", " " ],
+    [ "several ascii spaces", "   " ],
+    [ "ascii tab and space", "\t " ],
+    [ "zero-width space only", "​" ],
+    [ "byte order mark only", "﻿" ],
+    [ "word joiner only", "⁠" ],
+    [ "soft hyphen only", "­" ],
+    [ "no-break space and zero-width space", " ​" ],
+    [ "em space and figure space", "  " ],
+    [ "symbol no-break space", :" " ]
   ].freeze
 
   USABLE_PRINTABLE_ASCII_VERSIONS = [
