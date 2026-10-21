@@ -1603,6 +1603,51 @@ class Corvid::MedicaidEligibilityGroupServiceTest < ActiveSupport::TestCase
     end
   end
 
+  # -- PR #657 review: stated coverage after a referral move before the lock ---------
+
+  test "record! writes no stated group when the check moves to another visible referral before the lock" do
+    with_tenant(TENANT) do
+      check = medicaid_check_for(patient_id: "pt_mcd_race_ref_stated_001", dob: Date.new(1996, 6, 15))
+      other_referral = create_referral(patient_id: "pt_mcd_race_ref_stated_002")
+      service = service_moving_check_after_load(check, other_referral)
+
+      result = service.record!(
+        check,
+        coverage: { state: "XA", eligibility_group: "waiver_adult", eligibility_group_source: "registration" },
+        date_of_service: DOS
+      )
+
+      assert_nil result
+      reloaded = Corvid::AlternateResourceCheck.find(check.id)
+      assert_nil reloaded.eligibility_group
+      assert_nil reloaded.eligibility_group_source
+      assert_nil reloaded.eligibility_group_set_at
+      assert_equal other_referral.id, reloaded.prc_referral_id
+    end
+  end
+
+  test "record! keeps the new referral's stored group when the check moves before a stated write" do
+    with_tenant(TENANT) do
+      check = medicaid_check_for(patient_id: "pt_mcd_race_ref_stated_003", dob: Date.new(1996, 6, 15))
+      check.update_columns(
+        eligibility_group: "other",
+        eligibility_group_source: "inferred",
+        eligibility_group_set_at: Time.current
+      )
+      other_referral = create_referral(patient_id: "pt_mcd_race_ref_stated_004")
+      service = service_moving_check_after_load(check, other_referral)
+
+      result = service.record!(
+        check,
+        coverage: { state: "XA", eligibility_group: "expansion_adult" },
+        date_of_service: DOS
+      )
+
+      assert_equal "other", result
+      assert_group_fields(check, "other", "inferred")
+    end
+  end
+
   test "record! does not call find_patient when coverage states a recognised group" do
     with_tenant(TENANT) do
       counting = CountingAdapterDelegate.new(@adapter)
@@ -1899,6 +1944,17 @@ class Corvid::MedicaidEligibilityGroupServiceTest < ActiveSupport::TestCase
       resource_type: "medicaid",
       status: "checking"
     )
+  end
+
+  # Moves the check to another referral right after the service's
+  # unlocked load and before its row lock. A stated group makes no
+  # adapter call, so the move cannot ride on find_patient.
+  def service_moving_check_after_load(check, other_referral)
+    service = Corvid::MedicaidEligibilityGroupService.new(adapter: @adapter)
+    service.define_singleton_method(:persisted_check) do |target|
+      super(target).tap { check.update_column(:prc_referral_id, other_referral.id) }
+    end
+    service
   end
 
   def create_referral(patient_id:, facility_identifier: "fac_test")
