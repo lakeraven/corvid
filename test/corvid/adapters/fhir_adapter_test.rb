@@ -1505,6 +1505,142 @@ class Corvid::Adapters::FhirAdapterTest < Minitest::Test
     assert_equal [], results
   end
 
+  # -- Issue #611 spec amendment: pagination, totals, category, subject order --
+
+  SELF_SEARCHSET_LINK = {
+    "relation" => "self",
+    "url" => "https://fhir.example.com/r4/Condition?patient=pt_001"
+  }.freeze
+
+  NEXT_SEARCHSET_LINK = {
+    "relation" => "next",
+    "url" => "https://fhir.example.com/r4/Condition?patient=pt_001&page=2"
+  }.freeze
+
+  def test_get_conditions_returns_nil_when_searchset_bundle_advertises_next_page_link
+    condition = build_condition_resource
+    bundle = searchset_bundle_with_links(conditions_bundle([ condition ]), [ SELF_SEARCHSET_LINK, NEXT_SEARCHSET_LINK ])
+
+    assert_nil get_conditions_with_bundle(bundle)
+  end
+
+  def test_get_medications_returns_nil_when_searchset_bundle_advertises_next_page_link
+    request = build_medication_request_resource
+    bundle = searchset_bundle_with_links(medications_bundle([ request ]), [ SELF_SEARCHSET_LINK, NEXT_SEARCHSET_LINK ])
+
+    assert_nil get_medications_with_bundle(bundle)
+  end
+
+  def test_get_conditions_returns_results_when_searchset_bundle_has_only_self_link
+    condition = build_condition_resource
+    bundle = searchset_bundle_with_links(conditions_bundle([ condition ]), [ SELF_SEARCHSET_LINK ])
+
+    results = get_conditions_with_bundle(bundle)
+
+    assert_equal 1, results.size
+    assert_equal "C001", results.first.code
+  end
+
+  def test_get_medications_returns_results_when_searchset_bundle_has_only_self_link
+    request = build_medication_request_resource
+    bundle = searchset_bundle_with_links(medications_bundle([ request ]), [ SELF_SEARCHSET_LINK ])
+
+    results = get_medications_with_bundle(bundle)
+
+    assert_equal 1, results.size
+    assert_equal "M001", results.first.code
+  end
+
+  def test_get_conditions_returns_nil_when_positive_total_has_only_informational_operation_outcome_without_search_mode
+    bundle = positive_total_outcome_only_bundle(search_mode: :omit)
+    assert_nil get_conditions_with_bundle(bundle)
+  end
+
+  def test_get_medications_returns_nil_when_positive_total_has_only_informational_operation_outcome_without_search_mode
+    bundle = positive_total_outcome_only_bundle(search_mode: :omit)
+    assert_nil get_medications_with_bundle(bundle)
+  end
+
+  def test_get_conditions_returns_nil_when_positive_total_has_only_informational_operation_outcome_in_outcome_mode
+    bundle = positive_total_outcome_only_bundle(search_mode: "outcome")
+    assert_nil get_conditions_with_bundle(bundle)
+  end
+
+  def test_get_medications_returns_nil_when_positive_total_has_only_informational_operation_outcome_in_outcome_mode
+    bundle = positive_total_outcome_only_bundle(search_mode: "outcome")
+    assert_nil get_medications_with_bundle(bundle)
+  end
+
+  %i[missing nil blank].each do |variant|
+    define_method(:"test_get_conditions_returns_nil_when_us_core_category_code_is_#{variant}") do
+      condition = build_condition_resource(category: [ us_core_category_element(variant) ])
+      assert_nil get_conditions_with_bundle(conditions_bundle([ condition ]))
+    end
+
+    define_method(:"test_get_conditions_returns_nil_when_hl7_category_code_is_#{variant}") do
+      condition = build_condition_resource(category: [ hl7_category_element(variant) ])
+      assert_nil get_conditions_with_bundle(conditions_bundle([ condition ]))
+    end
+  end
+
+  def test_get_conditions_still_skips_known_system_with_explicit_out_of_scope_category_code
+    included = build_condition_resource("id" => "cond_in_scope")
+    skipped = build_condition_resource(
+      "id" => "cond_out_of_scope",
+      category: [ {
+        "coding" => [ { "system" => US_CORE_CONDITION_CATEGORY_SYSTEM, "code" => "health-concern" } ]
+      } ]
+    )
+    results = get_conditions_with_bundle(conditions_bundle([ skipped, included ]))
+
+    refute_nil results
+    assert_equal 1, results.size
+    assert_equal "problem-list-item", results.first.category
+  end
+
+  def test_get_medications_returns_nil_when_other_patient_request_has_do_not_perform_true
+    request = build_medication_request_resource(
+      subject: { "reference" => "Patient/pt_other" },
+      doNotPerform: true
+    )
+    assert_nil get_medications_with_bundle(medications_bundle([ request ]), patient_id: "pt_001")
+  end
+
+  def test_get_medications_returns_nil_when_other_patient_request_has_entered_in_error_status
+    request = build_medication_request_resource(
+      subject: { "reference" => "Patient/pt_other" },
+      status: "entered-in-error"
+    )
+    assert_nil get_medications_with_bundle(medications_bundle([ request ]), patient_id: "pt_001")
+  end
+
+  def test_get_conditions_returns_nil_when_other_patient_condition_would_be_excluded_as_refuted
+    condition = build_condition_resource(
+      subject: { "reference" => "Patient/pt_other" },
+      verification_status: "refuted"
+    )
+    assert_nil get_conditions_with_bundle(conditions_bundle([ condition ]), patient_id: "pt_001")
+  end
+
+  def test_get_conditions_returns_nil_when_other_patient_condition_would_be_excluded_as_entered_in_error
+    condition = build_condition_resource(
+      subject: { "reference" => "Patient/pt_other" },
+      verification_status: "entered-in-error"
+    )
+    assert_nil get_conditions_with_bundle(conditions_bundle([ condition ]), patient_id: "pt_001")
+  end
+
+  def test_get_conditions_returns_nil_when_other_patient_condition_would_be_excluded_by_out_of_scope_category
+    condition = build_condition_resource(
+      "id" => "cond_other_patient_oos",
+      subject: { "reference" => "Patient/pt_other" },
+      category: [ {
+        "coding" => [ { "system" => US_CORE_CONDITION_CATEGORY_SYSTEM, "code" => "health-concern" } ]
+      } ]
+    )
+    assert_nil get_conditions_with_bundle(conditions_bundle([ condition ]), patient_id: "pt_001")
+  end
+
   private
 
   def no_content_http_response
@@ -1601,6 +1737,39 @@ class Corvid::Adapters::FhirAdapterTest < Minitest::Test
         "issue" => [ { "severity" => severity, "code" => issue_code } ]
       }
     }
+  end
+
+  def searchset_bundle_with_links(bundle, links)
+    bundle.merge("link" => links)
+  end
+
+  def positive_total_outcome_only_bundle(search_mode:)
+    entry = operation_outcome_bundle_entry(issue_code: "informational", severity: "information")
+    unless search_mode == :omit
+      entry["search"] = { "mode" => search_mode }
+    end
+    { "resourceType" => "Bundle", "type" => "searchset", "total" => 1, "entry" => [ entry ] }
+  end
+
+  def us_core_category_element(variant)
+    coding = { "system" => US_CORE_CONDITION_CATEGORY_SYSTEM }
+    coding["code"] = category_code_for_variant(variant) unless variant == :missing
+    { "coding" => [ coding ] }
+  end
+
+  def hl7_category_element(variant)
+    coding = { "system" => CONDITION_CATEGORY_SYSTEM }
+    coding["code"] = category_code_for_variant(variant) unless variant == :missing
+    { "coding" => [ coding ] }
+  end
+
+  def category_code_for_variant(variant)
+    case variant
+    when :nil then nil
+    when :blank then "   "
+    else
+      raise ArgumentError, "unknown category code variant: #{variant}"
+    end
   end
 
   def build_condition_resource(overrides = {})
