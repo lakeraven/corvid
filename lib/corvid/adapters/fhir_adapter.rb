@@ -134,9 +134,9 @@ module Corvid
       DEFAULT_READ_TIMEOUT = 30
       # get_coverages follows at most this many Bundle pages, then fails closed.
       MAX_COVERAGE_PAGES = 50
-      # Bundle.link relations followed as the next Coverage page. Any other
+      # Only the exact Bundle.link relation "next" is followed. Any other
       # relation that equals "next" after strip and downcase fails the search.
-      COVERAGE_NEXT_RELATIONS = %w[next Next].freeze
+      COVERAGE_NEXT_RELATIONS = %w[next].freeze
 
       # Strict Coverage.period grammar. Anchored, and applied before any
       # Date or Time parse. Date.parse is never used on these bounds.
@@ -147,6 +147,9 @@ module Corvid
         /\A\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})\z/
       # Coverage.status. Any other value fails the search closed.
       COVERAGE_STATUSES = %w[active cancelled draft entered-in-error].freeze
+      # Exact OperationOutcome.issue.severity on a Coverage search. Any
+      # other value, including a different case, fails the search.
+      COVERAGE_OUTCOME_SEVERITIES = %w[fatal error warning information].freeze
       # Code "pay" is self-pay with either system below, or when the
       # coding has no system (issue #607 adds the STU3 system).
       COVERAGE_SELF_PAY_CODE = "pay"
@@ -438,12 +441,14 @@ module Corvid
       #
       # GET Coverage?beneficiary=Patient/<id>. Bundle.type must equal
       # "searchset" or the search is nil. Follow Bundle.link relation
-      # "next" for up to MAX_COVERAGE_PAGES pages; "Next" is that same
-      # link. When link is present it must be an Array of Hashes, each
-      # with a String relation. An exactly-"next" link must have a String
-      # url. A relation that is not exactly "next" or "Next" but equals
-      # "next" after strip and downcase, a non-String relation, or more
-      # than one "next" link is nil. A relative next URL is resolved with
+      # "next" for up to MAX_COVERAGE_PAGES pages. Only that exact
+      # relation is followed. When link is present it must be an Array
+      # of Hashes, each with a String relation. An exactly-"next" link
+      # must have a String url. A relation that equals "next" after
+      # strip and downcase but is not exactly "next", including "Next"
+      # and "NEXT", is nil and is not requested. A non-String relation,
+      # or more than one "next" link, is nil. A relative next URL is
+      # resolved with
       # URI.join against the URL of the page that contained it. That
       # absolute URL is fetched only when it stays on this origin and
       # under the base path.
@@ -491,13 +496,21 @@ module Corvid
       # with "period" present but not an object is nil. A malformed shape
       # (type, payor, beneficiary, class, or coding that is not the Hash,
       # Array, or String that element requires) is nil and does not raise.
+      # payor[0].display, subscriberId, and type.coding[0].code, when
+      # present but not a String, make the search nil. Integer 9 on the
+      # X12 claim-filing-indicator system remains self-pay.
       # Every Coverage resource is counted across all pages before the
       # active and insurance filters. When a page includes total, it must
       # be an Integer >= 0 and equal to the first page's total; a later
       # page may omit total. The first page's total must equal that count,
-      # or the result is nil. An entry whose resource is an OperationOutcome
-      # with an issue severity "error" or "fatal" is nil. A page with no
-      # entry and total nil or 0 is empty. A first page with no entry, a
+      # or the result is nil. An OperationOutcome entry is nil when issue
+      # is missing, not an Array, contains a non-Hash, or has a severity
+      # other than exactly "fatal", "error", "warning", or "information".
+      # Codes suppressed, incomplete, and too-costly
+      # (UNTRUSTED_OUTCOME_CODES) are nil at any severity. "error" and
+      # "fatal" still block. A well-formed warning or information issue
+      # with another code is ignored. A page with no entry and total nil
+      # or 0 is empty. A first page with no entry, a
       # positive total, and no next link is nil via the count check. A
       # string anywhere in the bundle that fails valid_encoding? is nil
       # and does not raise.
@@ -516,8 +529,10 @@ module Corvid
       # missing or duplicate Coverage id, an untrusted beneficiary or
       # period, a malformed Coverage, a status outside the FHIR set, a
       # total that is not an Integer >= 0, differs from the first page,
-      # or does not match the Coverage count, invalid encoding, a fatal
-      # OperationOutcome, an off-origin / cyclic / over-limit next link,
+      # or does not match the Coverage count, invalid encoding, an
+      # untrusted OperationOutcome, a non-String payor display,
+      # subscriberId, or type code, an off-origin / cyclic / over-limit
+      # next link,
       # or a transport error
       # (Timeout::Error, including Net::ReadTimeout and Net::OpenTimeout,
       # SocketError, SystemCallError, OpenSSL::SSL::SSLError, IOError,
@@ -1083,7 +1098,7 @@ module Corvid
 
       def append_coverage_entry(entry, rows, patient_identifier, seen_ids)
         return nil unless well_formed_coverage_entry?(entry)
-        return nil if fatal_coverage_outcome?(entry)
+        return nil if unknown_coverage_outcome?(entry)
 
         resource = coverage_resource(entry)
         return nil if resource && !remember_coverage_id(resource, seen_ids)
@@ -1126,18 +1141,30 @@ module Corvid
         resource if resource.is_a?(Hash)
       end
 
-      def fatal_coverage_outcome?(entry)
+      # A missing issue, a non-Array, a non-Hash element, or a severity
+      # outside COVERAGE_OUTCOME_SEVERITIES is unknown. error and fatal
+      # still block. UNTRUSTED_OUTCOME_CODES block at any severity. A
+      # well-formed warning or information issue with another code does not.
+      def unknown_coverage_outcome?(entry)
         resource = bundle_entry_resource(entry)
         return false unless resource && resource["resourceType"] == "OperationOutcome"
 
-        issues = resource["issue"]
-        return false unless issues.is_a?(Array)
-
-        issues.any? { |issue| coverage_issue_error?(issue) }
+        unknown_coverage_issues?(resource["issue"])
       end
 
-      def coverage_issue_error?(issue)
-        issue.is_a?(Hash) && %w[error fatal].include?(issue["severity"])
+      def unknown_coverage_issues?(issues)
+        return true unless issues.is_a?(Array)
+
+        issues.any? { |issue| unknown_coverage_issue?(issue) }
+      end
+
+      def unknown_coverage_issue?(issue)
+        return true unless issue.is_a?(Hash)
+
+        severity = issue["severity"]
+        return true unless COVERAGE_OUTCOME_SEVERITIES.include?(severity)
+
+        untrusted_outcome?(issue) || BLOCKING_OUTCOME_SEVERITIES.include?(severity)
       end
 
       def coverage_resource(entry)
@@ -1161,7 +1188,35 @@ module Corvid
 
       def trusted_coverage?(resource, patient_identifier)
         coverage_beneficiary_matches?(resource, patient_identifier) &&
-          known_coverage_status?(resource["status"])
+          known_coverage_status?(resource["status"]) &&
+          trusted_coverage_strings?(resource)
+      end
+
+      def trusted_coverage_strings?(resource)
+        coverage_string_or_nil?(coverage_payor_display(resource)) &&
+          coverage_string_or_nil?(resource["subscriberId"]) &&
+          trusted_primary_type_code?(resource)
+      end
+
+      def coverage_string_or_nil?(value)
+        value.nil? || value.is_a?(String)
+      end
+
+      # nil and String are copied onto the row. Integer 9 on the X12
+      # claim-filing system is the self-pay code. Any other value is unknown.
+      def trusted_primary_type_code?(resource)
+        code = coverage_primary_type_code(resource)
+        return true if coverage_string_or_nil?(code)
+
+        coding = coverage_primary_coding(resource)
+        coding.is_a?(Hash) && x12_self_pay?(code, coding["system"])
+      end
+
+      def coverage_primary_coding(resource)
+        codings = coverage_type_codings(resource)
+        return nil unless codings.is_a?(Array)
+
+        codings.first
       end
 
       def known_coverage_status?(status)
