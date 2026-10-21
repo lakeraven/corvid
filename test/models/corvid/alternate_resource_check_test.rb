@@ -46,7 +46,8 @@ class Corvid::AlternateResourceCheckTest < ActiveSupport::TestCase
       Corvid.adapter.add_coverage(patient_identifier,
                                   coverage_type: "medicare_a",
                                   payer_name: "MOCK MEDICARE A PAYER",
-                                  plan_name: "Mock Medicare A")
+                                  plan_name: "Mock Medicare A",
+                                  eligible: true)
       check = Corvid::AlternateResourceCheck.create!(
         prc_referral: referral, resource_type: "medicare_a"
       )

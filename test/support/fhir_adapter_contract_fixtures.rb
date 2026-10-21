@@ -64,6 +64,21 @@ module FhirAdapterContractFixtures
     }
   end
 
+  # A coverage the payer has ended, so verify_eligibility must answer
+  # eligible: false rather than nil or true.
+  def inactive_coverage_resource(id, patient_id)
+    {
+      "resourceType" => "Coverage",
+      "id" => id,
+      "status" => "cancelled",
+      "beneficiary" => { "reference" => "Patient/#{patient_id}" },
+      "type" => { "coding" => [ { "code" => "VET" } ] },
+      "payor" => [ { "display" => "TEST VA PAYER" } ],
+      "subscriberId" => "TEST-POLICY-002",
+      "period" => { "start" => "2025-01-01", "end" => "2025-12-31" }
+    }
+  end
+
   def care_team_resource(id, patient_id, practitioner_id)
     {
       "resourceType" => "CareTeam",
@@ -147,7 +162,9 @@ FHIR_ADAPTER_CONTRACT_FAIL_CLOSED_STUBS = {
   submit_claim: "Stock FHIR has no clearinghouse; submit_claim returns status unsupported",
   check_claim_status: "Stock FHIR has no remittance read; check_claim_status returns status unsupported",
   process_payment: "Stock FHIR has no payment rail; process_payment returns status unsupported",
-  refund_payment: "Stock FHIR has no payment rail; refund_payment returns status unsupported"
+  refund_payment: "Stock FHIR has no payment rail; refund_payment returns status unsupported",
+  check_eligibility_detailed: "Stock FHIR has no 270/271 exchange; check_eligibility_detailed returns eligible: false",
+  search_payers: "Stock FHIR has no payer directory; search_payers returns []"
 }.freeze
 
 FHIR_ADAPTER_CONTRACT_UNSUPPORTED = {
@@ -158,5 +175,8 @@ FHIR_ADAPTER_CONTRACT_UNSUPPORTED = {
   create_obligation: "Stock FHIR cannot encumber CHS funds without a budget backend",
   release_obligation: "Stock FHIR has no obligation release API on Base/FhirAdapter",
   record_payment: "Stock FHIR has no obligation payment API on Base/FhirAdapter",
-  update_obligation_status: "Stock FHIR has no obligation status API on Base/FhirAdapter"
+  update_obligation_status: "Stock FHIR has no obligation status API on Base/FhirAdapter",
+  get_obligation: "Stock FHIR cannot create obligations, so it has none to read",
+  get_obligation_by_referral: "Stock FHIR cannot create obligations, so it has none to read",
+  get_payments: "Stock FHIR has no obligation payment API, so it has no payments to read"
 }.freeze

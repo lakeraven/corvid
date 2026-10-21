@@ -8,6 +8,10 @@ require "corvid/value_objects"
 # contract_unsupported (Hash of method_name => reason). Optional
 # contract_fail_closed_stubs documents methods that return a fail-closed
 # stub instead of raising (Hash of method_name => reason, default {}).
+#
+# Every seeded check runs for every implemented method. An adapter that
+# cannot serve one lists the method in contract_unsupported (it must then
+# raise NotImplementedError); there are no seed flags that skip checks.
 module AdapterContractTests
   UNKNOWN_QUERY = "zzzz_contract_no_match"
   UNKNOWN_TEXT_TOKEN = "nt_contract_unknown_token"
@@ -33,13 +37,20 @@ module AdapterContractTests
     claim_identifier
     payer_identifier
     unknown_payer_identifier
+    payer_search_query
     coverage_resource_type
     other_resource_type
+    inactive_coverage_resource_type
     dereference_tokens
-    care_team_seeded
-    claims_listable
-    obligation_seeded
   ].freeze
+
+  # Seed keys that used to switch seeded checks off. A seed that still
+  # sends one is rejected: list the method in contract_unsupported instead.
+  RETIRED_SEED_FLAGS = %i[care_team_seeded claims_listable obligation_seeded].freeze
+
+  UPDATED_REFERRAL_STATUS = "on-hold"
+  UPDATED_OBLIGATION_STATUS = "PARTIAL"
+  RECORDED_PAYMENT_AMOUNT = 1.0
 
   REFUND_SUCCESS_STATUSES = %w[refunded succeeded].freeze
 
@@ -126,19 +137,30 @@ module AdapterContractTests
       [ [], { amount_cents: 100, patient_identifier: seed[:patient_identifier], description: "TEST CONTRACT PAYMENT" } ]
     end,
     record_payment: lambda do |seed|
-      [ [], { obligation_id: seed[:obligation_identifier], amount: 1.0, payment_date: Date.new(2026, 1, 1) } ]
+      [
+        [],
+        {
+          obligation_id: seed[:obligation_identifier],
+          amount: AdapterContractTests::RECORDED_PAYMENT_AMOUNT,
+          payment_date: Date.new(2026, 1, 1)
+        }
+      ]
     end,
     refund_payment: ->(seed) { [ [ seed[:payment_identifier] ], {} ] },
     release_obligation: ->(seed) { [ [ seed[:obligation_identifier] ], {} ] },
     search_patients: ->(seed) { [ [ seed[:patient_search_query] ], {} ] },
-    search_payers: ->(_seed) { [ [ "TEST" ], {} ] },
+    search_payers: ->(seed) { [ [ seed[:payer_search_query] ], {} ] },
     search_practitioners: ->(seed) { [ [ seed[:practitioner_search_query] ], {} ] },
     store_text: lambda do |seed|
       [ [], { case_token: seed[:case_token], kind: :note, text: seed[:stored_text] } ]
     end,
     submit_claim: ->(_seed) { [ [ { service_code: "99213", amount: 100.0 } ], {} ] },
-    update_obligation_status: ->(seed) { [ [ seed[:obligation_identifier] ], { status: "PENDING" } ] },
-    update_referral: ->(seed) { [ [ seed[:referral_identifier], { status: "active" } ], {} ] },
+    update_obligation_status: lambda do |seed|
+      [ [ seed[:obligation_identifier] ], { status: AdapterContractTests::UPDATED_OBLIGATION_STATUS } ]
+    end,
+    update_referral: lambda do |seed|
+      [ [ seed[:referral_identifier], { status: AdapterContractTests::UPDATED_REFERRAL_STATUS } ], {} ]
+    end,
     verify_eligibility: lambda do |seed|
       [ [ seed[:patient_identifier], seed[:coverage_resource_type] ], {} ]
     end,
@@ -205,6 +227,12 @@ module AdapterContractTests
     end
 
     def validate_required_seed_keys!(seed)
+      retired = RETIRED_SEED_FLAGS.select { |key| seed.key?(key) }
+      unless retired.empty?
+        flunk("contract seed sends retired flag(s) #{retired.map(&:inspect).join(', ')}; seed flags " \
+              "cannot switch checks off. List the method in contract_unsupported with a reason instead")
+      end
+
       missing = REQUIRED_SEED_KEYS.select { |key| seed[key].nil? }
       return if missing.empty?
 
@@ -270,6 +298,7 @@ module AdapterContractTests
     end
 
     def assert_contract_implemented(method_name, seed)
+      before = contract_state_before(method_name, seed)
       result = invoke_contract(method_name, seed)
 
       assert_implemented_shape(method_name, result, seed)
@@ -277,6 +306,7 @@ module AdapterContractTests
         assert_fail_closed_stub_seeded_outcome(method_name, result)
       else
         assert_documented_seeded_outcome(method_name, result, seed)
+        assert_write_read_back(method_name, result, seed, before)
       end
       assert_seeded_data_for_method(method_name, seed)
       assert_unknown_identifier_behavior(method_name, seed)
@@ -294,6 +324,8 @@ module AdapterContractTests
         assert_check_claim_status_fail_closed(result)
       when :check_eligibility_detailed
         assert_eligibility_detailed_unknown(result)
+      when :search_payers
+        assert_equal [], result, "search_payers fail-closed stub must not invent payers"
       else
         flunk("add assert_fail_closed_stub_seeded_outcome case for #{method_name}")
       end
@@ -335,7 +367,92 @@ module AdapterContractTests
         assert_open_struct_success(result, method_name)
       when :refund_payment
         assert_refund_success(result)
+      when :check_eligibility_detailed
+        assert_equal true, result[:eligible],
+                     "check_eligibility_detailed(seeded patient, seeded payer) must return eligible: true"
+      when :submit_claim
+        assert_billing_mutation_success(result, :claim_identifier, method_name)
+      when :process_payment
+        assert_billing_mutation_success(result, :payment_identifier, method_name)
       end
+    end
+
+    def assert_billing_mutation_success(result, id_key, method_name)
+      assert_token(result[id_key])
+      refute_includes %w[failed rejected denied error unsupported not_found], result[:status].to_s.downcase,
+                      "#{method_name}(seeded) must not report a failure status, got #{result[:status].inspect}"
+    end
+
+    # Snapshot taken before the seeded call, so a write can be shown to
+    # have changed something.
+    def contract_state_before(method_name, seed)
+      case method_name
+      when :release_obligation, :update_obligation_status
+        contract_adapter.get_obligation(seed[:obligation_identifier])&.dup
+      when :record_payment
+        contract_adapter.get_payments(obligation_id: seed[:obligation_identifier]).dup
+      end
+    end
+
+    # A write that reports success must be visible to the matching read.
+    def assert_write_read_back(method_name, result, seed, before)
+      adapter = contract_adapter
+
+      case method_name
+      when :create_referral
+        assert_created_referral_readable(result, seed)
+      when :update_referral
+        ref = adapter.find_referral(seed[:referral_identifier])
+        assert_equal AdapterContractTests::UPDATED_REFERRAL_STATUS, ref&.status,
+                     "update_referral reported success but find_referral does not show the new status"
+      when :create_obligation
+        assert_instance_of Hash, adapter.get_obligation(result.id),
+                           "create_obligation id #{result.id.inspect} must be readable with get_obligation"
+      when :update_obligation_status
+        obligation = adapter.get_obligation(seed[:obligation_identifier])
+        assert_equal AdapterContractTests::UPDATED_OBLIGATION_STATUS, obligation&.dig(:status),
+                     "update_obligation_status reported success but get_obligation shows no change"
+      when :release_obligation
+        assert_obligation_released(seed[:obligation_identifier], before)
+      when :record_payment
+        assert_payment_recorded(seed[:obligation_identifier], before)
+      when :submit_claim
+        status = adapter.check_claim_status(result[:claim_identifier])
+        assert_instance_of Hash, status, "check_claim_status must find the claim submit_claim returned"
+        assert_check_claim_status_shape(status)
+      when :process_payment
+        assert_refund_success(adapter.refund_payment(result[:payment_identifier]))
+      end
+    end
+
+    def assert_created_referral_readable(token, seed)
+      adapter = contract_adapter
+      ref = adapter.find_referral(token)
+      assert_instance_of Corvid::ReferralReference, ref,
+                         "create_referral token #{token.inspect} must be findable with find_referral"
+      assert_equal token, ref.identifier
+      assert_equal seed[:patient_identifier], ref.patient_identifier,
+                   "created referral must belong to the patient it was created for"
+      assert_includes adapter.list_referrals(seed[:patient_identifier]).map(&:identifier), token,
+                      "list_referrals must include the referral create_referral returned"
+    end
+
+    def assert_obligation_released(obligation_identifier, before)
+      adapter = contract_adapter
+      after = adapter.get_obligation(obligation_identifier)
+      assert_instance_of Hash, after, "a released obligation must still be readable"
+      refute_equal before&.dig(:status), after[:status],
+                   "release_obligation reported success but the obligation status did not change"
+      refute_includes adapter.get_outstanding_obligations.map { |o| o[:id] }, obligation_identifier,
+                      "a released obligation must not be outstanding"
+    end
+
+    def assert_payment_recorded(obligation_identifier, before)
+      payments = contract_adapter.get_payments(obligation_id: obligation_identifier)
+      assert_equal before.size + 1, payments.size,
+                   "record_payment reported success but get_payments did not gain a payment"
+      assert payments.any? { |payment| payment[:amount].to_f == AdapterContractTests::RECORDED_PAYMENT_AMOUNT },
+             "get_payments must include the recorded amount"
     end
 
     def assert_open_struct_success(result, method_name)
@@ -381,25 +498,33 @@ module AdapterContractTests
       when :fetch_text
         assert_equal seed[:stored_text], adapter.fetch_text(seed[:text_token])
       when :get_obligation
-        if seed[:obligation_seeded]
-          assert adapter.get_obligation(seed[:obligation_identifier]),
-                 "get_obligation must return seeded obligation for #{seed[:obligation_identifier].inspect}"
-        end
+        obligation = adapter.get_obligation(seed[:obligation_identifier])
+        assert_instance_of Hash, obligation,
+                           "get_obligation must return seeded obligation for #{seed[:obligation_identifier].inspect}"
+        assert_equal seed[:obligation_identifier], obligation[:id],
+                     "get_obligation must return the seeded obligation, not another record"
       when :get_obligation_by_referral
-        if seed[:obligation_seeded]
-          assert adapter.get_obligation_by_referral(seed[:referral_identifier]),
-                 "get_obligation_by_referral must return seeded obligation for #{seed[:referral_identifier].inspect}"
-        end
+        obligation = adapter.get_obligation_by_referral(seed[:referral_identifier])
+        assert_instance_of Hash, obligation,
+                           "get_obligation_by_referral must return seeded obligation for " \
+                           "#{seed[:referral_identifier].inspect}"
+        assert_equal seed[:obligation_identifier], obligation[:id],
+                     "get_obligation_by_referral must return the obligation seeded for that referral"
       when :get_care_team
-        if seed[:care_team_seeded]
-          refute_empty adapter.get_care_team(seed[:patient_identifier]),
-                       "get_care_team must be non-empty when care_team_seeded"
-        end
+        members = adapter.get_care_team(seed[:patient_identifier])
+        assert_includes members.map(&:practitioner_identifier), seed[:practitioner_identifier],
+                        "get_care_team must include the seeded practitioner"
       when :list_claims
-        if seed[:claims_listable]
-          refute_empty adapter.list_claims(seed[:patient_identifier]),
-                       "list_claims must be non-empty when claims_listable"
-        end
+        assert_seeded_claim_lines(seed)
+      when :search_payers
+        # A fail-closed stub has no directory; its seeded outcome is [].
+        return if contract_fail_closed_stubs.key?(:search_payers)
+
+        payers = adapter.search_payers(seed[:payer_search_query])
+        assert_includes payers.map { |payer| payer[:payer_identifier] }, seed[:payer_identifier],
+                        "search_payers(#{seed[:payer_search_query].inspect}) must include the seeded payer"
+      when :dereference
+        assert_patient_dereference(seed)
       when :dereference_many
         known = seed[:dereference_tokens]
         result = adapter.dereference_many(known + [ AdapterContractTests::UNKNOWN_TEXT_TOKEN ])
@@ -407,6 +532,8 @@ module AdapterContractTests
           assert result.key?(token), "dereference_many must include entry for known token #{token.inspect}"
           refute_nil result[token], "dereference_many must resolve known token #{token.inspect}"
           assert_instance_of Hash, result[token], "dereference_many values must be Hashes"
+          assert_equal adapter.dereference(token), result[token],
+                       "dereference_many must return the same record as dereference for #{token.inspect}"
         end
       when :verify_eligibility
         assert_coverage_resource_type_guards(seed) unless eligibility_guards_skipped?
@@ -428,6 +555,25 @@ module AdapterContractTests
       end
     end
 
+    def assert_seeded_claim_lines(seed)
+      lines = contract_adapter.list_claims(seed[:patient_identifier])
+      assert_includes lines.map(&:claim_identifier), seed[:claim_identifier],
+                      "list_claims must include a line from the seeded claim"
+      lines.each do |line|
+        assert_equal seed[:patient_identifier], line.patient_identifier,
+                     "list_claims must return only the requested patient's lines"
+      end
+    end
+
+    def assert_patient_dereference(seed)
+      adapter = contract_adapter
+      record = adapter.dereference(seed[:patient_identifier])
+      assert_instance_of Hash, record
+      display_name = adapter.find_patient(seed[:patient_identifier]).display_name
+      assert_includes record.values, display_name,
+                      "dereference(seeded patient) must return that patient's record"
+    end
+
     def eligibility_guards_skipped?
       unsupported = contract_unsupported
       unsupported.key?(:verify_eligibility) && unsupported.key?(:check_eligibility_detailed)
@@ -442,6 +588,12 @@ module AdapterContractTests
 
       wrong_type = adapter.verify_eligibility(seed[:patient_identifier], seed[:other_resource_type])
       assert_wrong_coverage_ineligible(wrong_type)
+
+      inactive = adapter.verify_eligibility(seed[:patient_identifier], seed[:inactive_coverage_resource_type])
+      assert_instance_of Hash, inactive,
+                         "verify_eligibility(#{seed[:inactive_coverage_resource_type].inspect}) must answer " \
+                         "for the seeded inactive coverage"
+      assert_equal false, inactive[:eligible], "an inactive coverage must return eligible: false"
 
       unknown_payer = adapter.check_eligibility_detailed(
         seed[:patient_identifier],
@@ -634,11 +786,7 @@ module AdapterContractTests
         assert_instance_of Array, result
         result.each { |element| assert_instance_of Hash, element }
       when :get_obligation, :get_obligation_by_referral
-        if seed[:obligation_seeded]
-          assert_instance_of Hash, result
-        else
-          assert result.nil? || result.is_a?(Hash), "obligation lookup must be Hash or nil"
-        end
+        assert_instance_of Hash, result
       when :create_obligation, :release_obligation, :record_payment, :update_obligation_status
         assert_open_struct_result(result)
       when :get_care_team
@@ -719,10 +867,23 @@ module AdapterContractTests
       assert_optional_string(value[:tribe_name])
       assert_optional_string(value[:tribe_code])
       assert_optional_string(value[:member_status])
-      assert value[:blood_quantum].nil? || value[:blood_quantum].is_a?(Hash),
-             "blood_quantum must be Hash or nil per base.rb, got #{value[:blood_quantum].class}"
+      assert_blood_quantum_shape(value[:blood_quantum])
       assert_includes %i[verified stale unavailable], value[:confidence]
       assert_time_like(value[:verified_at])
+    end
+
+    # base.rb: { display: String, decimal: Float|nil } or nil.
+    def assert_blood_quantum_shape(value)
+      return if value.nil?
+
+      assert_instance_of Hash, value, "blood_quantum must be a Hash or nil per base.rb"
+      assert_equal %i[decimal display], value.keys.sort,
+                   "blood_quantum must have exactly :display and :decimal, got #{value.keys.inspect}"
+      assert_instance_of String, value[:display], "blood_quantum[:display] must be a String"
+      refute_empty value[:display].strip, "blood_quantum[:display] must not be blank"
+      decimal = value[:decimal]
+      assert decimal.nil? || decimal.is_a?(Float),
+             "blood_quantum[:decimal] must be a Float or nil, got #{decimal.class}"
     end
 
     def assert_identity_documents_shape(value)
@@ -746,7 +907,8 @@ module AdapterContractTests
     def assert_check_claim_status_shape(value)
       assert_instance_of Hash, value
       assert_keys(value, %i[status paid_amount adjustment_amount paid_date])
-      assert_optional_string(value[:status])
+      assert_instance_of String, value[:status], "check_claim_status must report a String status"
+      refute_empty value[:status].strip, "check_claim_status must not report a blank status"
       assert_optional_numeric(value[:paid_amount])
       assert_optional_numeric(value[:adjustment_amount])
       paid_date = value[:paid_date]

@@ -102,10 +102,69 @@ class Corvid::Adapters::MockAdapterTest < Minitest::Test
     @adapter.add_coverage("pt_001",
                           coverage_type: "medicaid",
                           payer_name: "MOCK MEDICAID PAYER",
-                          plan_name: "Mock Medicaid")
+                          plan_name: "Mock Medicaid",
+                          eligible: true)
     result = @adapter.verify_eligibility("pt_001", "medicaid")
     assert result[:eligible]
     assert result[:payer_name]
+  end
+
+  # A coverage that never says it is eligible does not verify.
+  def test_verify_eligibility_without_an_eligible_flag_is_not_eligible
+    @adapter.add_coverage("pt_001", coverage_type: "medicaid", payer_name: "MOCK MEDICAID PAYER")
+
+    result = @adapter.verify_eligibility("pt_001", "medicaid")
+
+    refute_equal true, result&.dig(:eligible)
+  end
+
+  def test_check_eligibility_detailed_without_an_eligible_flag_is_not_eligible
+    @adapter.add_coverage("pt_001", coverage_type: "medicaid", payer_identifier: "MOCK_PAYER")
+
+    refute_equal true, @adapter.check_eligibility_detailed("pt_001", "MOCK_PAYER")[:eligible]
+  end
+
+  # The requested type is matched against the coverage's own type, never a
+  # payer or plan name that happens to spell the same word.
+  def test_verify_eligibility_ignores_a_payer_identifier_that_names_another_type
+    @adapter.add_coverage("pt_001",
+                          coverage_type: "medicaid",
+                          payer_identifier: "MEDICARE_A",
+                          payer_name: "medicare_a",
+                          plan_name: "medicare_a",
+                          eligible: true)
+
+    assert_nil @adapter.verify_eligibility("pt_001", "medicare_a")
+    assert_equal true, @adapter.verify_eligibility("pt_001", "medicaid")[:eligible]
+  end
+
+  def test_check_eligibility_detailed_matches_the_payer_identifier_not_the_payer_name
+    @adapter.add_coverage("pt_001",
+                          coverage_type: "medicaid",
+                          payer_identifier: "MOCK_PAYER",
+                          payer_name: "OTHER_PAYER",
+                          eligible: true)
+
+    refute_equal true, @adapter.check_eligibility_detailed("pt_001", "OTHER_PAYER")[:eligible]
+    assert_equal true, @adapter.check_eligibility_detailed("pt_001", "MOCK_PAYER")[:eligible]
+  end
+
+  # -- Claim lines --------------------------------------------------------------
+
+  def test_list_claims_returns_seeded_lines_for_that_patient_only
+    line = Corvid::ClaimLineReference.new(
+      claim_identifier: "clm_test_001", patient_identifier: "pt_001", provider_identifier: "pr_001",
+      procedure_code: "99213", procedure_display: "TEST VISIT", serviced_date: Date.new(2026, 1, 1),
+      billed_amount: 100.0, currency: "USD", sequence: 1
+    )
+    @adapter.add_claim_line("pt_001", line)
+
+    assert_equal [ "clm_test_001" ], @adapter.list_claims("pt_001").map(&:claim_identifier)
+    assert_equal [], @adapter.list_claims("pt_002")
+  end
+
+  def test_add_claim_line_rejects_non_claim_line_references
+    assert_raises(ArgumentError) { @adapter.add_claim_line("pt_001", { claim_identifier: "clm_test_001" }) }
   end
 
   # -- Budget -----------------------------------------------------------------

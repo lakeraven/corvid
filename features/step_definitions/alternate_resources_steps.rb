@@ -46,7 +46,8 @@ Given("the adapter has eligible coverage for patient {string} for resource type 
   Corvid.adapter.add_coverage(patient_id,
                               coverage_type: resource_type,
                               payer_name: "MOCK #{resource_type.upcase.tr('_', ' ')} PAYER",
-                              plan_name: "Mock Plan")
+                              plan_name: "Mock Plan",
+                              eligible: true)
 end
 
 Given("the adapter has eligible coverage for all alternate resource types for patient {string}") do |patient_id|
@@ -54,7 +55,8 @@ Given("the adapter has eligible coverage for all alternate resource types for pa
     Corvid.adapter.add_coverage(patient_id,
                                 coverage_type: type,
                                 payer_name: "MOCK #{type.to_s.upcase.tr('_', ' ')} PAYER",
-                                plan_name: "Mock Plan")
+                                plan_name: "Mock Plan",
+                                eligible: true)
   end
 end
 

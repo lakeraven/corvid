@@ -431,7 +431,8 @@ class Corvid::AuthorizationWizardEligibilityTest < ActiveSupport::TestCase
       Corvid.adapter.add_coverage(patient_identifier,
                                   coverage_type: type,
                                   payer_name: "MOCK #{type.to_s.upcase} PAYER",
-                                  plan_name: "Mock Plan")
+                                  plan_name: "Mock Plan",
+                                  eligible: true)
     end
   end
 end
