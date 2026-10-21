@@ -94,14 +94,14 @@ class Corvid::Adapters::BaseTest < Minitest::Test
     assert_raises(NotImplementedError) { @adapter.verify_eligibility("pt_test", "medicaid") }
   end
 
-  # -- Optional clinical reads default to empty arrays -----------------------
+  # -- Optional clinical reads default to undetermined (nil) on Base ----------
 
-  def test_get_conditions_defaults_to_empty
-    assert_equal [], @adapter.get_conditions("pt_test")
+  def test_get_conditions_defaults_to_nil
+    assert_nil @adapter.get_conditions("pt_test_001")
   end
 
-  def test_get_medications_defaults_to_empty
-    assert_equal [], @adapter.get_medications("pt_test")
+  def test_get_medications_defaults_to_nil
+    assert_nil @adapter.get_medications("pt_test_001")
   end
 
   def test_get_coverages_defaults_to_empty
