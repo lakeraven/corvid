@@ -10,13 +10,16 @@ module Corvid
   # state has work-requirement programs. Ambiguity is recorded as
   # "unknown" — never a guess.
   #
-  # The caller is used only for its id. Eligibility fields are
-  # snapshotted before an inference is computed, and the adapter runs
-  # before any lock. A non-medicaid row, coverage that states a real
-  # group, or a fresh unlocked read that already has staff_entry or a
-  # stated real group does not call the adapter. Tenant visibility,
-  # resource type, and precedence are decided under the lock after
-  # reload. A stated real group or a staff entry is never overwritten.
+  # The caller is used only for its id. The row is loaded only when its
+  # referral is visible in the current tenant, so a missing, hidden, or
+  # no-tenant row is never locked. record! returns nil for that row
+  # before the adapter. Eligibility fields are snapshotted before an
+  # inference is computed, and the adapter runs before any lock. A
+  # non-medicaid row, coverage that states a real group, or a fresh
+  # unlocked read that already has staff_entry or a stated real group
+  # does not call the adapter. Visibility is checked again under the
+  # lock, because the referral can change, along with resource type and
+  # precedence. A stated real group or a staff entry is never overwritten.
   # A stored "unknown" with a stated source may be replaced by an
   # inference. When the stored inferred group changed during the lookup
   # and disagrees with the new inference, the recorded group is unknown.
@@ -25,13 +28,13 @@ module Corvid
   # registration. Any other source is recorded as eligibility_response.
   #
   # The check's referral must be visible in the current tenant (ADR 0002)
-  # or nothing is written. Staff entry checks that visibility before
-  # resource type, under the lock when the row exists. A missing row, a
-  # referral outside this tenant, and any resource type in that case
-  # raise one ArgumentError that names no identifiers. Only a visible
-  # row may be rejected as non-medicaid. Age is computed in memory from
-  # the adapter patient. The date of birth is never stored, logged, or
-  # placed in an error message (ADR 0003).
+  # or nothing is written. Staff entry raises one ArgumentError that
+  # names no identifiers for a missing row, a referral outside this
+  # tenant, no tenant, and any resource type in that case, before any
+  # lock. It checks visibility again before resource type under the
+  # lock. Only a visible row may be rejected as non-medicaid. Age is
+  # computed in memory from the adapter patient. The date of birth is
+  # never stored, logged, or placed in an error message (ADR 0003).
   class MedicaidEligibilityGroupService
     # Whole years on the date of service. 19 through 64 with no waiver
     # match in an expansion state is expansion_adult. A waiver-program
@@ -55,6 +58,8 @@ module Corvid
     def record!(check, coverage:, date_of_service:)
       coverage = coverage_hash(coverage)
       row = persisted_check(check)
+      return unless row
+
       inferred, snapshot = prepare_inference(row, coverage, date_of_service)
       row.with_lock { apply_locked(row, coverage, inferred, snapshot) }
     end
@@ -62,8 +67,11 @@ module Corvid
     def record_staff_entry!(check, eligibility_group:)
       group = required_group(eligibility_group)
       row = persisted_check(check)
+      raise ArgumentError, NOT_VISIBLE_MESSAGE, cause: nil unless row
+
       row.with_lock { write_staff!(row, group) }
     rescue ActiveRecord::RecordNotFound
+      # The row can disappear between the unlocked load and the lock.
       # RecordNotFound names the id. Raise the same not-visible error
       # instead, with that exception cleared off the cause chain.
       raise ArgumentError, NOT_VISIBLE_MESSAGE, cause: nil
@@ -71,16 +79,25 @@ module Corvid
 
     private
 
+    # Nil unless this check's referral is in the current tenant. A
+    # missing row, a hidden referral, and no tenant are nil, so no
+    # FOR UPDATE is taken on them.
     def persisted_check(check)
-      AlternateResourceCheck.find(check.id)
+      AlternateResourceCheck.where(
+        id: check.id,
+        prc_referral_id: Corvid::PrcReferral.select(:id)
+      ).first
+    rescue Corvid::MissingTenantContextError
+      nil
     end
 
     def medicaid?(check)
       check.resource_type == "medicaid"
     end
 
-    # Visibility before resource type. A hidden referral is rejected for
-    # every resource type with NOT_VISIBLE_MESSAGE, and nothing is written.
+    # Re-check visibility before resource type. The referral can change
+    # after the unlocked load. A hidden referral is rejected for every
+    # resource type with NOT_VISIBLE_MESSAGE, and nothing is written.
     # The medicaid-only message is only for a row visible in this tenant.
     def ensure_staff_writable!(check)
       raise ArgumentError, NOT_VISIBLE_MESSAGE unless referral_visible?(check)
