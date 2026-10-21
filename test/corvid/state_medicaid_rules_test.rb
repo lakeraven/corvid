@@ -711,6 +711,9 @@ class Corvid::StateMedicaidRulesTest < Minitest::Test
     Corvid::StateMedicaidRules.register(
       "XY",
       expanded: false,
+      work_requirement_programs: [
+        { code: "xy_waiver", description_pattern: /\bTEST PATHWAYS\b/i }
+      ],
       groups: {
         waiver_adult: {
           renewal_months: 12,
