@@ -51,7 +51,8 @@ class Corvid::Api::V1::EligibilityControllerTest < ActionDispatch::IntegrationTe
                                   enrolled: false,
                                   tribe_name: nil,
                                   tribe_code: nil,
-                                  member_status: "denied")
+                                  member_status: "denied",
+                                  confidence: :verified)
 
     post "/corvid/api/v1/eligibility/check", params: check_body("pt_tn"), headers: headers
 

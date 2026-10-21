@@ -136,10 +136,14 @@ class Corvid::Adapters::MockAdapterTest < Minitest::Test
     assert result[:enrolled]
   end
 
-  def test_verify_tribal_enrollment_defaults_confidence_to_verified
-    @adapter.add_enrollment("pt_e2", enrolled: true, tribe_name: "T", tribe_code: "T")
+  def test_verify_tribal_enrollment_returns_seeded_confidence
+    @adapter.add_enrollment("pt_e2", enrolled: true, tribe_name: "T", tribe_code: "T", confidence: :verified)
     result = @adapter.verify_tribal_enrollment("pt_e2")
     assert_equal :verified, result[:confidence]
+
+    @adapter.add_enrollment("pt_e2b", enrolled: true, tribe_name: "T", tribe_code: "T")
+    result_without_confidence = @adapter.verify_tribal_enrollment("pt_e2b")
+    refute_equal :verified, result_without_confidence[:confidence]
   end
 
   def test_verify_tribal_enrollment_propagates_explicit_confidence_stale
@@ -156,7 +160,8 @@ class Corvid::Adapters::MockAdapterTest < Minitest::Test
   end
 
   def test_verify_tribal_enrollment_seeded_not_enrolled_record_returns_verified_confidence
-    @adapter.add_enrollment("pt_ne", enrolled: false, tribe_name: nil, tribe_code: nil, member_status: "denied")
+    @adapter.add_enrollment("pt_ne", enrolled: false, tribe_name: nil, tribe_code: nil, member_status: "denied",
+                            confidence: :verified)
     result = @adapter.verify_tribal_enrollment("pt_ne")
     refute result[:enrolled]
     assert_equal :verified, result[:confidence]

@@ -54,6 +54,7 @@ module AdapterContractTests
   ].freeze
 
   DECLINED_UNKNOWN_IDENTIFIER_CHECKS = {
+    create_obligation: "adapters keep no referral registry; the host owns referrals (same as create_referral)",
     create_referral: "adapters do not hold a patient registry for referral writes",
     process_payment: "adapters do not hold a patient registry for payment writes",
     store_text: "adapters do not hold a case registry for vault writes"
@@ -62,7 +63,6 @@ module AdapterContractTests
   UNKNOWN_IDENTIFIER_RULES = {
     check_claim_status: "unknown claim identifier yields nil status hash",
     check_eligibility_detailed: "unknown patient or payer must not return eligible: true",
-    create_obligation: "unknown referral must not succeed (nil, false, or success? false)",
     dereference: "unknown token yields nil",
     dereference_many: "unknown tokens omitted or empty batch yields {}",
     fetch_text: "unknown text token yields nil",
@@ -497,9 +497,6 @@ module AdapterContractTests
       when :check_claim_status
         result = adapter.check_claim_status(AdapterContractTests::UNKNOWN_CLAIM_IDENTIFIER)
         assert result.nil?, "check_claim_status(unknown) must be nil, got #{result.inspect}"
-      when :create_obligation
-        result = adapter.create_obligation(seed[:unknown_referral_identifier], 100.0)
-        assert_create_obligation_unknown_failure(result)
       when :update_referral
         refute adapter.update_referral(seed[:unknown_referral_identifier], { status: "active" })
       when :release_obligation
@@ -535,13 +532,6 @@ module AdapterContractTests
         result = adapter.verify_residency(seed[:unknown_patient_identifier])
         assert_residency_unknown(result)
       end
-    end
-
-    def assert_create_obligation_unknown_failure(result)
-      return assert_mutation_failure(result) if result == true || result == false || result.respond_to?(:success?)
-
-      assert result.nil? || result == false,
-             "create_obligation(unknown referral) must not succeed, got #{result.inspect}"
     end
 
     def assert_mutation_failure(result)

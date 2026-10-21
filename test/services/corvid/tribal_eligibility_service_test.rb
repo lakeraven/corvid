@@ -78,7 +78,8 @@ class Corvid::TribalEligibilityServiceTest < ActiveSupport::TestCase
                             enrolled: false,
                             tribe_name: nil,
                             tribe_code: nil,
-                            member_status: "denied")
+                            member_status: "denied",
+                            confidence: :verified)
 
     decision = Corvid::TribalEligibilityService.decide(
       person_identifier: "pt_tn",
