@@ -585,7 +585,7 @@ Given("each batch pending claim is registered with the clearinghouse as {string}
 end
 
 Given("each skip polling claim is registered with the clearinghouse as {string}") do |status|
-  [@recent_claim, @old_claim].each do |claim|
+  [ @recent_claim, @old_claim ].each do |claim|
     Corvid.adapter.add_claim(claim.claim_identifier, { status: status.downcase })
   end
 end
