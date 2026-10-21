@@ -169,7 +169,8 @@ module Corvid
     # resource type and any reported period still covers that date (#640).
     # as_of is a Time; a check recorded after that moment is not current.
     # not_enrolled is not current inside its own stored period. Exhausted
-    # and denied are about a covered period and are current when fresh.
+    # and denied describe a benefit period: with a stored period they are
+    # current only inside it, and with none they are current when fresh.
     # Absence never verifies.
     def current_for?(date_of_service, as_of: Time.current)
       raise ArgumentError, "date_of_service must be a Date" unless date_of_service.instance_of?(Date)
@@ -178,6 +179,7 @@ module Corvid
       fresh_for?(as_of) &&
         !negative_inside_coverage?(date_of_service) &&
         coverage_period_covers?(date_of_service) &&
+        benefit_period_covers?(date_of_service) &&
         renewal_current?(date_of_service, as_of)
     end
 
@@ -235,18 +237,26 @@ module Corvid
     end
 
     # Only not_enrolled is not current inside its own stored period.
-    # Exhausted and denied are about a covered period and are current
-    # when fresh.
     def negative_inside_coverage?(date_of_service)
       return false unless not_enrolled?
 
-      not_enrolled_period_covers?(date_of_service)
+      partial_period_covers?(date_of_service)
     end
 
-    # A not_enrolled period covers the date of service when at least one
-    # bound is present, coverage_start is nil or on or before that date,
-    # and coverage_end is nil or on or after it.
-    def not_enrolled_period_covers?(date_of_service)
+    # An exhausted or denied answer is about the benefit period it reports.
+    # A 2026 exhausted period says nothing about a 2027 date of service.
+    # With no stored period the fresh answer stands.
+    def benefit_period_covers?(date_of_service)
+      return true unless exhausted? || denied?
+      return true if coverage_start.nil? && coverage_end.nil?
+
+      partial_period_covers?(date_of_service)
+    end
+
+    # A stored period covers the date of service when at least one bound
+    # is present, coverage_start is nil or on or before that date, and
+    # coverage_end is nil or on or after it.
+    def partial_period_covers?(date_of_service)
       return false if coverage_start.nil? && coverage_end.nil?
 
       (coverage_start.nil? || coverage_start <= date_of_service) &&
