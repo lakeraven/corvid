@@ -91,6 +91,7 @@ Feature: Clearinghouse Claim Status Tracking
   Scenario: Background job skips recently checked claims
     Given a claim was checked 5 minutes ago
     And a claim was checked 2 hours ago
+    And each skip polling claim is registered with the clearinghouse as "accepted"
     When the claim status polling job runs
     Then only the claim checked 2 hours ago should be rechecked
 
