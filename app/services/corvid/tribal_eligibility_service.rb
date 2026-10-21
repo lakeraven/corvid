@@ -13,9 +13,9 @@ module Corvid
   # Reason codes (stable enum strings) returned in EligibilityDecision and
   # persisted on PrcEligibilityDecision.reason_codes:
   #
-  #   :provider_unavailable_fail_closed  — adapter could not reach source
+  #   :provider_unavailable_fail_closed  — confidence is not :verified or :stale
   #   :not_enrolled                      — adapter says not enrolled
-  #   :not_enrolled_in_contracted_tribe  — enrolled in a tribe other than facility.contracted_tribe_code
+  #   :not_enrolled_in_contracted_tribe  — enrolled, but tribe_code is blank or not the contracted tribe
   #   :off_reservation                   — facility requires on-reservation and adapter says off-reservation
   #   :ssn_missing                       — facility requires SSN-on-file and adapter says ssn_present: false
   #   :enrollment_stale                  — informational warning when source flagged data as stale
@@ -100,7 +100,9 @@ module Corvid
       private
 
       def enrollment_reasons(enrollment, facility)
-        return [ :provider_unavailable_fail_closed ] if enrollment[:confidence] == :unavailable
+        confidence = enrollment[:confidence]
+        # Fail closed on anything other than the two usable symbols.
+        return [ :provider_unavailable_fail_closed ] unless %i[verified stale].include?(confidence)
 
         reasons = []
         unless enrollment[:enrolled]
@@ -109,11 +111,13 @@ module Corvid
         end
 
         contracted = facility.contracted_tribe_code
-        if contracted && enrollment[:tribe_code] && enrollment[:tribe_code] != contracted
+        tribe_code = enrollment[:tribe_code]
+        # Nil or blank tribe_code cannot satisfy a contracted tribe.
+        if contracted && (tribe_code.blank? || tribe_code != contracted)
           reasons << :not_enrolled_in_contracted_tribe
         end
 
-        reasons << :enrollment_stale if enrollment[:confidence] == :stale
+        reasons << :enrollment_stale if confidence == :stale
         reasons
       end
 

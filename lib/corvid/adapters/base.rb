@@ -216,7 +216,9 @@ module Corvid
       # positives). `confidence` reflects how fresh the underlying data is —
       # `:verified` is canonical; `:stale` means the source returned data
       # but flagged it as out-of-date; `:unavailable` means the source could
-      # not be reached.
+      # not be reached. `:unavailable` also covers a missing or unrecognised
+      # confidence. Consumers must treat anything other than :verified/:stale
+      # as not verified.
       def verify_tribal_enrollment(patient_identifier)
         raise NotImplementedError, "#{self.class}#verify_tribal_enrollment not implemented"
       end

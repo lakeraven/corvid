@@ -315,7 +315,7 @@ module Corvid
             membership_number: nil,
             tribe_name: nil,
             tribe_code: nil,
-            confidence: :verified,
+            confidence: :unavailable,
             verified_at: verification_timestamp
           }
         end
@@ -327,7 +327,8 @@ module Corvid
           tribe_code: enrollment[:tribe_code],
           blood_quantum: enrollment[:blood_quantum],
           member_status: enrollment[:member_status],
-          confidence: enrollment.fetch(:confidence, :verified),
+          # Missing key is :unavailable. An explicit value, including nil, passes through.
+          confidence: enrollment.fetch(:confidence, :unavailable),
           verified_at: verification_timestamp
         }
       end

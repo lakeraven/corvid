@@ -423,6 +423,8 @@ module Corvid
       TRIBAL_ENROLLMENT_EXTENSION_URL = "#{EXTENSION_BASE_URL}/tribal-enrollment"
       RESIDENCY_EXTENSION_URL = "#{EXTENSION_BASE_URL}/residency"
       US_CORE_BIRTHPLACE_URL = "http://hl7.org/fhir/us/core/StructureDefinition/us-core-birthplace"
+      # Exact Strings only. Anything else, including blank, is :unavailable.
+      ENROLLMENT_CONFIDENCE_VALUES = %w[verified stale unavailable].freeze
 
       def verify_tribal_enrollment(patient_identifier)
         unavailable = {
@@ -441,7 +443,7 @@ module Corvid
           membership_number: sub_extension_value(ext, "membershipNumber"),
           tribe_name: sub_extension_value(ext, "tribeName"),
           tribe_code: sub_extension_value(ext, "tribeCode"),
-          confidence: (sub_extension_value(ext, "confidence") || "unavailable").to_sym,
+          confidence: enrollment_confidence(sub_extension_value(ext, "confidence")),
           verified_at: Time.current
         }
       end
@@ -978,6 +980,13 @@ module Corvid
 
       def find_extension(resource, url)
         Array(resource["extension"]).find { |e| e["url"] == url }
+      end
+
+      # Allow-list. Non-Strings (and any other String) never raise.
+      def enrollment_confidence(value)
+        return value.to_sym if ENROLLMENT_CONFIDENCE_VALUES.include?(value)
+
+        :unavailable
       end
 
       def sub_extension_value(extension, sub_url)

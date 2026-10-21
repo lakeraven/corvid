@@ -412,8 +412,8 @@ module Corvid
     end
 
     def check_patient_eligibility
-      status = patient_eligibility_status
-      return unless status.nil? || status == "pending"
+      # Exact String "verified" only; nil, blank, and any other status warn.
+      return if patient_eligibility_status == "verified"
 
       @warnings << "Patient eligibility verification pending"
     end
