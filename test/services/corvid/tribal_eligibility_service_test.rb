@@ -339,6 +339,35 @@ class Corvid::TribalEligibilityServiceTest < ActiveSupport::TestCase
     refute_includes log_io.string, SNAPSHOT_VERSION_V1
   end
 
+  test "decide saves the decision with nil snapshot columns when an adapter returns a cyclic response" do
+    configure_snapshot_keys!(
+      version: SNAPSHOT_VERSION_V1,
+      keys: { SNAPSHOT_VERSION_V1 => SNAPSHOT_KEY_V1 }
+    )
+    fixed_adapter_responses_for("pt_cyclic")
+    @adapter.define_singleton_method(:verify_residency) do |pid|
+      next unless pid == "pt_cyclic"
+
+      response = { on_reservation: true, address: "Rd", verified_at: Time.current }
+      response[:source] = response
+      response
+    end
+
+    decision = nil
+    assert_nothing_raised do
+      decision = Corvid::TribalEligibilityService.decide(
+        person_identifier: "pt_cyclic",
+        facility: @facility,
+        tenant_identifier: TENANT
+      )
+    end
+
+    row = Corvid::PrcEligibilityDecision.find(decision.decision_id)
+    assert decision.eligible?
+    assert_nil row.verification_snapshot_hash
+    assert_nil row.verification_snapshot_key_version
+  end
+
   test "decide snapshot hash is not a plain SHA256 of adapter responses" do
     configure_snapshot_keys!(
       version: SNAPSHOT_VERSION_V1,

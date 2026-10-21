@@ -1015,4 +1015,55 @@ class Corvid::SnapshotFingerprintTest < ActiveSupport::TestCase
     refute_nil digest
     assert_equal "v1-test", returned_version
   end
+
+  # ---- Copilot review: cyclic payloads -------------------------------------
+
+  def cyclic_hash_payload
+    residency = { on_reservation: true }
+    residency[:self] = residency
+    { enrollment: { tribe_code: "DEMO" }, residency: residency }
+  end
+
+  def cyclic_array_payload
+    entries = [ "DEMO" ]
+    entries << entries
+    { enrollment: { tribe_codes: entries } }
+  end
+
+  { "hash" => :cyclic_hash_payload, "array" => :cyclic_array_payload }.each do |label, builder|
+    test "compute returns nil pair and logs for a cyclic #{label} payload" do
+      Corvid.configure do |c|
+        c.verification_snapshot_keys = { VERSION_V1 => KEY_V1 }
+        c.verification_snapshot_key_version = VERSION_V1
+      end
+
+      capture_snapshot_fingerprint_logs do |log_io|
+        digest, returned_version = Corvid::SnapshotFingerprint.compute(send(builder))
+        assert_nil digest
+        assert_nil returned_version
+        assert_includes log_io.string, "CanonicalizationError"
+        refute_includes log_io.string, "DEMO"
+      end
+    end
+
+    test "matches returns nil for a cyclic #{label} payload" do
+      Corvid.configure { |c| c.verification_snapshot_keys = { VERSION_V1 => KEY_V1 } }
+
+      assert_nil Corvid::SnapshotFingerprint.matches?(hash: "f" * 64, version: VERSION_V1, payload: send(builder))
+    end
+  end
+
+  test "compute accepts the same non-cyclic hash shared by two branches" do
+    Corvid.configure do |c|
+      c.verification_snapshot_keys = { VERSION_V1 => KEY_V1 }
+      c.verification_snapshot_key_version = VERSION_V1
+    end
+    shared = { tribe_code: "DEMO" }
+
+    shared_digest, = Corvid::SnapshotFingerprint.compute({ a: shared, b: shared })
+    copied_digest, = Corvid::SnapshotFingerprint.compute({ a: shared.dup, b: shared.dup })
+
+    refute_nil shared_digest
+    assert_equal copied_digest, shared_digest
+  end
 end
