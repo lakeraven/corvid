@@ -820,23 +820,32 @@ class Corvid::AlternateResourceCheckTest < ActiveSupport::TestCase
       assert check_constraint_exists?(ELIGIBILITY_GROUP_SET_AT_CHECK)
 
       check = create_medicaid_check!
-      assert_raises(ActiveRecord::StatementInvalid) do
-        update_eligibility_group_columns!(
-          check,
-          eligibility_group: "other",
-          eligibility_group_source: "inferred",
-          eligibility_group_set_at: nil
-        )
+      # Each UPDATE runs in its own savepoint. Without one, the first
+      # violation aborts the test transaction and the second assertion
+      # would pass on InFailedSqlTransaction instead of the constraint.
+      group_without_set_at = assert_raises(ActiveRecord::CheckViolation) do
+        Corvid::AlternateResourceCheck.transaction(requires_new: true) do
+          update_eligibility_group_columns!(
+            check,
+            eligibility_group: "other",
+            eligibility_group_source: "inferred",
+            eligibility_group_set_at: nil
+          )
+        end
       end
+      assert_includes group_without_set_at.message, ELIGIBILITY_GROUP_SET_AT_CHECK
 
-      assert_raises(ActiveRecord::StatementInvalid) do
-        update_eligibility_group_columns!(
-          check,
-          eligibility_group: nil,
-          eligibility_group_source: nil,
-          eligibility_group_set_at: Time.current
-        )
+      set_at_without_group = assert_raises(ActiveRecord::CheckViolation) do
+        Corvid::AlternateResourceCheck.transaction(requires_new: true) do
+          update_eligibility_group_columns!(
+            check,
+            eligibility_group: nil,
+            eligibility_group_source: nil,
+            eligibility_group_set_at: Time.current
+          )
+        end
       end
+      assert_includes set_at_without_group.message, ELIGIBILITY_GROUP_SET_AT_CHECK
     end
   end
 
