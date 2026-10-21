@@ -157,15 +157,19 @@ module Corvid
       end
 
       # ----------------------------------------------------------------------
-      # Clinical reads (optional — adapters may return empty arrays)
+      # Clinical reads.
+      # Elements are ConditionReference / MedicationReference.
+      # nil means unknown (the source did not answer). Adapters that cannot
+      # read these return nil. [] means the source answered "none".
+      # In memory only — never persist or log (ADR 0003).
       # ----------------------------------------------------------------------
 
       def get_conditions(patient_identifier)
-        []
+        nil
       end
 
       def get_medications(patient_identifier)
-        []
+        nil
       end
 
       # Active coverages for a patient. Returns an Array of Hashes with
