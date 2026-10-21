@@ -293,13 +293,14 @@ module Corvid
       # ----------------------------------------------------------------------
 
       def verify_eligibility(patient_identifier, resource_type)
-        {
+        result = {
           eligible: true,
           payer_name: "MOCK #{resource_type.to_s.upcase} PAYER",
           policy_token: store_text(case_token: "ct_x", kind: :policy, text: "MOCK-#{resource_type}-#{patient_identifier}"),
           coverage_start: Date.new(Date.current.year, 1, 1),
           coverage_end: Date.new(Date.current.year, 12, 31)
         }
+        apply_recorded_coverage(result, patient_identifier, resource_type)
       end
 
       # ----------------------------------------------------------------------
@@ -465,6 +466,25 @@ module Corvid
       end
 
       private
+
+      # add_coverage may supply the period and renewal date. Other fields
+      # stay on the default eligible response.
+      def apply_recorded_coverage(result, patient_identifier, resource_type)
+        coverage = recorded_coverage(patient_identifier, resource_type)
+        return result unless coverage
+
+        %i[coverage_start coverage_end renewal_date].each do |key|
+          result[key] = coverage[key] if coverage.key?(key)
+        end
+        result
+      end
+
+      def recorded_coverage(patient_identifier, resource_type)
+        type = resource_type.to_s
+        get_coverages(patient_identifier).reverse.find do |coverage|
+          coverage[:resource_type].to_s == type
+        end
+      end
 
       def build_referral_reference(identifier, attrs)
         Corvid::ReferralReference.new(

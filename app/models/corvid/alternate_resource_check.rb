@@ -88,14 +88,15 @@ module Corvid
     end
 
     # Seed checks for a new referral from a previous referral's results.
-    # Copies status and checked_at — stale checks will need re-verification.
-    # Coordination of benefits is per service, so a previous coordinated
-    # determination is copied as enrolled and must be coordinated again.
+    # Copies status and policy_token only. checked_at stays nil and coverage
+    # dates are not copied, so a seeded row is not a current determination
+    # (#640) and must be re-verified. Coordination of benefits is per service,
+    # so a previous coordinated determination is copied as enrolled.
     def self.seed_from_previous!(new_referral, previous_referral)
       previous_referral.alternate_resource_checks.each do |prev_check|
         new_referral.alternate_resource_checks.find_or_create_by!(resource_type: prev_check.resource_type) do |check|
           check.status = prev_check.coordinated? ? "enrolled" : prev_check.status
-          check.checked_at = prev_check.checked_at
+          check.checked_at = nil
           check.policy_token = prev_check.policy_token
         end
       end
@@ -135,11 +136,7 @@ module Corvid
       next_status = status_for_eligibility(result)
       return false if next_status.nil?
 
-      update!(
-        status: next_status,
-        policy_token: result[:policy_token],
-        checked_at: Time.current
-      )
+      update!(verification_attributes(result, next_status))
       true
     end
 
@@ -165,10 +162,56 @@ module Corvid
       checked_at < max_age.ago
     end
 
+    # Current for a date of service only when the check is fresh for its
+    # resource type and any reported period still covers that date (#640).
+    # Absence never verifies.
+    def current_for?(date_of_service, as_of: Time.current)
+      raise ArgumentError, "date_of_service must be a Date" unless date_of_service.instance_of?(Date)
+
+      fresh_for?(as_of) && coverage_period_covers?(date_of_service) && renewal_current?(date_of_service, as_of)
+    end
+
     private
 
     def set_checked_at
       self.checked_at = Time.current if status_previously_was == "not_checked" || status_previously_was == "checking"
+    end
+
+    def verification_attributes(result, next_status)
+      {
+        status: next_status,
+        policy_token: result[:policy_token],
+        checked_at: Time.current,
+        coverage_start: strict_date(result[:coverage_start]),
+        coverage_end: strict_date(result[:coverage_end]),
+        renewal_date: strict_date(result[:renewal_date])
+      }
+    end
+
+    # A Date counts. DateTime is a Date subclass, and Time is not a Date.
+    def strict_date(value)
+      value.instance_of?(Date) ? value : nil
+    end
+
+    def fresh_for?(as_of)
+      return false if not_checked? || checking? || checked_at.nil?
+
+      checked_at >= as_of - configured_max_age
+    end
+
+    def configured_max_age
+      Corvid.configuration.alternate_resource_check_max_age.fetch(resource_type)
+    end
+
+    def coverage_period_covers?(date_of_service)
+      return true unless has_coverage?
+      return false if coverage_start.nil? || coverage_start > date_of_service
+
+      coverage_end.nil? || coverage_end >= date_of_service
+    end
+
+    def renewal_current?(date_of_service, as_of)
+      renewal_date.nil? || (renewal_date >= date_of_service && renewal_date >= as_of.to_date)
     end
 
     # Coordinated sticks only when the adapter's policy token is present
