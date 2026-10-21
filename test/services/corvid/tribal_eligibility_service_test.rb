@@ -425,4 +425,93 @@ class Corvid::TribalEligibilityServiceTest < ActiveSupport::TestCase
     assert_nil row.verification_snapshot_hash
     assert_nil row.verification_snapshot_key_version
   end
+
+  # ---- Issue #629 maintainer decisions (failing until implemented) ----------
+
+  test "decide records same verification_snapshot_hash when only verified_at changes between calls" do
+    configure_snapshot_keys!(
+      version: SNAPSHOT_VERSION_V1,
+      keys: { SNAPSHOT_VERSION_V1 => SNAPSHOT_KEY_V1 }
+    )
+
+    person_id = "pt_verified_at_stable"
+    @adapter.add_enrollment(
+      person_id,
+      enrolled: true,
+      tribe_code: "DEMO",
+      tribe_name: "Demo Tribe",
+      member_status: "enrolled",
+      confidence: :verified
+    )
+    @adapter.add_patient(person_id, ssn_last4: "1234", dob: Date.new(1980, 1, 1), birthplace: "Springfield")
+    @adapter.define_singleton_method(:verify_residency) do |pid|
+      next unless pid == person_id
+
+      { on_reservation: true, address: "Rd", verified_at: Time.current }
+    end
+
+    travel_to Time.utc(2026, 3, 10, 14, 0, 0) do
+      Corvid::TribalEligibilityService.decide(
+        person_identifier: person_id,
+        facility: @facility,
+        tenant_identifier: TENANT
+      )
+    end
+    hash_first = Corvid::PrcEligibilityDecision.last.verification_snapshot_hash
+
+    travel_to Time.utc(2028, 11, 2, 8, 15, 30) do
+      Corvid::TribalEligibilityService.decide(
+        person_identifier: person_id,
+        facility: @facility,
+        tenant_identifier: TENANT
+      )
+    end
+    hash_second = Corvid::PrcEligibilityDecision.last.verification_snapshot_hash
+
+    refute_nil hash_first
+    assert_equal hash_first, hash_second
+  end
+
+  test "decide saves nil snapshot hash and version for ideographic-space-only key version" do
+    version = "\u3000"
+    configure_snapshot_keys!(version: version, keys: { version => SNAPSHOT_KEY_V1 })
+    fixed_adapter_responses_for("pt_ws_ver")
+
+    decision = nil
+    assert_nothing_raised do
+      decision = Corvid::TribalEligibilityService.decide(
+        person_identifier: "pt_ws_ver",
+        facility: @facility,
+        tenant_identifier: TENANT
+      )
+    end
+
+    row = Corvid::PrcEligibilityDecision.find(decision.decision_id)
+    assert decision.eligible?
+    assert_nil row.verification_snapshot_hash
+    assert_nil row.verification_snapshot_key_version
+  end
+
+  test "decide saves nil snapshot hash and version for key version with zero-width space format character" do
+    version_with_zwsp = "#{SNAPSHOT_VERSION_V1}\u200b"
+    configure_snapshot_keys!(
+      version: version_with_zwsp,
+      keys: { version_with_zwsp => SNAPSHOT_KEY_V1 }
+    )
+    fixed_adapter_responses_for("pt_zwsp_ver")
+
+    decision = nil
+    assert_nothing_raised do
+      decision = Corvid::TribalEligibilityService.decide(
+        person_identifier: "pt_zwsp_ver",
+        facility: @facility,
+        tenant_identifier: TENANT
+      )
+    end
+
+    row = Corvid::PrcEligibilityDecision.find(decision.decision_id)
+    assert decision.eligible?
+    assert_nil row.verification_snapshot_hash
+    assert_nil row.verification_snapshot_key_version
+  end
 end

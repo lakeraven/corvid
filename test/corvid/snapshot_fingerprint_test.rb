@@ -755,4 +755,183 @@ class Corvid::SnapshotFingerprintTest < ActiveSupport::TestCase
       payload: payload
     )
   end
+
+  # ---- Issue #629 maintainer decisions (failing until implemented) ----------
+
+  def enrollment_payload_with_verified_at(verified_at)
+    {
+      enrollment: { tribe_code: "DEMO", member_status: "enrolled", verified_at: verified_at },
+      identity: { ssn_present: true, dob_present: false, birthplace_present: false },
+      residency: { on_reservation: true, address: "1 Example Road", verified_at: verified_at }
+    }
+  end
+
+  test "compute digest ignores verified_at at enrollment and residency when times differ" do
+    Corvid.configure do |c|
+      c.verification_snapshot_keys = { "v1-test": KEY_V1 }
+      c.verification_snapshot_key_version = "v1-test"
+    end
+
+    t1 = Time.utc(2026, 5, 16, 12, 0, 0)
+    t2 = Time.utc(2027, 8, 1, 9, 30, 45)
+
+    digest_t1, = Corvid::SnapshotFingerprint.compute(enrollment_payload_with_verified_at(t1))
+    digest_t2, = Corvid::SnapshotFingerprint.compute(enrollment_payload_with_verified_at(t2))
+
+    assert_equal digest_t1, digest_t2
+  end
+
+  test "compute digest ignores nested verified_at with string or symbol keys" do
+    Corvid.configure do |c|
+      c.verification_snapshot_keys = { VERSION_V1 => KEY_V1 }
+      c.verification_snapshot_key_version = VERSION_V1
+    end
+
+    t1 = Time.utc(2026, 1, 1, 0, 0, 0)
+    t2 = Time.utc(2026, 12, 31, 23, 59, 59)
+
+    with_symbol = {
+      enrollment: { tribe_code: "DEMO", audit: { verified_at: t1 } },
+      identity: {},
+      residency: {}
+    }
+    with_string = {
+      "enrollment" => { "tribe_code" => "DEMO", "audit" => { "verified_at" => t2 } },
+      "identity" => {},
+      "residency" => {}
+    }
+
+    digest_symbol, = Corvid::SnapshotFingerprint.compute(with_symbol)
+    digest_string, = Corvid::SnapshotFingerprint.compute(with_string)
+
+    assert_equal digest_symbol, digest_string
+  end
+
+  test "compute digest changes when a non verified_at field changes" do
+    Corvid.configure do |c|
+      c.verification_snapshot_keys = { VERSION_V1 => KEY_V1 }
+      c.verification_snapshot_key_version = VERSION_V1
+    end
+
+    verified_at = Time.utc(2026, 5, 16, 12, 0, 0)
+    base = enrollment_payload_with_verified_at(verified_at)
+    changed = base.merge(
+      enrollment: base[:enrollment].merge(tribe_code: "OTHER")
+    )
+
+    digest_base, = Corvid::SnapshotFingerprint.compute(base)
+    digest_changed, = Corvid::SnapshotFingerprint.compute(changed)
+
+    refute_equal digest_base, digest_changed
+  end
+
+  test "matches returns true when payloads differ only by verified_at" do
+    Corvid.configure do |c|
+      c.verification_snapshot_keys = { "v1-test": KEY_V1 }
+      c.verification_snapshot_key_version = "v1-test"
+    end
+
+    t1 = Time.utc(2026, 5, 16, 12, 0, 0)
+    t2 = Time.utc(2026, 5, 17, 15, 0, 0)
+    payload_t1 = enrollment_payload_with_verified_at(t1)
+    payload_t2 = enrollment_payload_with_verified_at(t2)
+
+    digest, version = Corvid::SnapshotFingerprint.compute(payload_t1)
+
+    assert Corvid::SnapshotFingerprint.matches?(
+      hash: digest,
+      version: version,
+      payload: payload_t2
+    )
+  end
+
+  test "compute returns nil pair for ideographic-space-only key version with matching key" do
+    version = "\u3000"
+    Corvid.configure do |c|
+      c.verification_snapshot_keys = { version => KEY_V1 }
+      c.verification_snapshot_key_version = version
+    end
+
+    capture_snapshot_fingerprint_logs do |log_io|
+      digest, returned_version = Corvid::SnapshotFingerprint.compute({ sample: true })
+      assert_nil digest
+      assert_nil returned_version
+      assert_includes log_io.string, Corvid::SnapshotFingerprint::UNUSABLE_KEY_MESSAGE
+    end
+  end
+
+  test "compute returns nil pair for no-break-space-only key version with matching key" do
+    version = "\u00a0"
+    Corvid.configure do |c|
+      c.verification_snapshot_keys = { version => KEY_V1 }
+      c.verification_snapshot_key_version = version
+    end
+
+    capture_snapshot_fingerprint_logs do |log_io|
+      digest, returned_version = Corvid::SnapshotFingerprint.compute({ sample: true })
+      assert_nil digest
+      assert_nil returned_version
+      assert_includes log_io.string, Corvid::SnapshotFingerprint::UNUSABLE_KEY_MESSAGE
+    end
+  end
+
+  test "compute returns nil pair for em-space-only key version with matching key" do
+    version = "\u2003"
+    Corvid.configure do |c|
+      c.verification_snapshot_keys = { version => KEY_V1 }
+      c.verification_snapshot_key_version = version
+    end
+
+    capture_snapshot_fingerprint_logs do |log_io|
+      digest, returned_version = Corvid::SnapshotFingerprint.compute({ sample: true })
+      assert_nil digest
+      assert_nil returned_version
+      assert_includes log_io.string, Corvid::SnapshotFingerprint::UNUSABLE_KEY_MESSAGE
+    end
+  end
+
+  test "compute returns nil pair for key version that is only a format character" do
+    version = "\u200e"
+    Corvid.configure do |c|
+      c.verification_snapshot_keys = { version => KEY_V1 }
+      c.verification_snapshot_key_version = version
+    end
+
+    capture_snapshot_fingerprint_logs do |log_io|
+      digest, returned_version = Corvid::SnapshotFingerprint.compute({ sample: true })
+      assert_nil digest
+      assert_nil returned_version
+      assert_includes log_io.string, Corvid::SnapshotFingerprint::UNUSABLE_KEY_MESSAGE
+    end
+  end
+
+  test "compute returns nil pair for key version containing zero-width space suffix" do
+    version_with_zwsp = "#{VERSION_V1}\u200b"
+    Corvid.configure do |c|
+      c.verification_snapshot_keys = { version_with_zwsp => KEY_V1 }
+      c.verification_snapshot_key_version = version_with_zwsp
+    end
+
+    capture_snapshot_fingerprint_logs do |log_io|
+      digest, returned_version = Corvid::SnapshotFingerprint.compute({ sample: true })
+      assert_nil digest
+      assert_nil returned_version
+      assert_includes log_io.string, Corvid::SnapshotFingerprint::UNUSABLE_KEY_MESSAGE
+    end
+  end
+
+  test "matches returns nil when version contains zero-width space format character" do
+    version_with_zwsp = "v1-test\u200b"
+    payload = { enrollment: { tribe_code: "DEMO" }, identity: {}, residency: {} }
+
+    Corvid.configure do |c|
+      c.verification_snapshot_keys = { version_with_zwsp => KEY_V1 }
+    end
+
+    assert_nil Corvid::SnapshotFingerprint.matches?(
+      hash: "f" * 64,
+      version: version_with_zwsp,
+      payload: payload
+    )
+  end
 end
