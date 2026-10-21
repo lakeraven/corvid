@@ -141,11 +141,12 @@ module Corvid
     end
 
     # Record that coordination of benefits for this service is done.
-    # Only active enrollment can be coordinated.
+    # Only active enrollment can be coordinated. Coordination is not a new
+    # eligibility answer, so checked_at stays at the verification time.
     def mark_coordinated!
       raise ArgumentError, "coverage is not active" unless enrolled?
 
-      update!(status: :coordinated, checked_at: Time.current)
+      update!(status: :coordinated)
       true
     end
 
@@ -164,17 +165,26 @@ module Corvid
 
     # Current for a date of service only when the check is fresh for its
     # resource type and any reported period still covers that date (#640).
+    # as_of is a Time; a check recorded after that moment is not current.
     # Absence never verifies.
     def current_for?(date_of_service, as_of: Time.current)
       raise ArgumentError, "date_of_service must be a Date" unless date_of_service.instance_of?(Date)
+      raise ArgumentError, "as_of must be a Time" unless as_of.is_a?(Time) || as_of.is_a?(ActiveSupport::TimeWithZone)
 
       fresh_for?(as_of) && coverage_period_covers?(date_of_service) && renewal_current?(date_of_service, as_of)
     end
 
     private
 
+    # checked_at is when eligibility was answered. Only a persisted row
+    # leaving not_checked or checking records one. Coordination is not an
+    # answer, and a row inserted already answered does not earn a timestamp.
+    # status_in_database is the status this save is leaving.
     def set_checked_at
-      self.checked_at = Time.current if status_previously_was == "not_checked" || status_previously_was == "checking"
+      return unless persisted?
+      return unless status_in_database == "not_checked" || status_in_database == "checking"
+
+      self.checked_at = Time.current
     end
 
     def verification_attributes(result, next_status)
@@ -193,8 +203,10 @@ module Corvid
       value.instance_of?(Date) ? value : nil
     end
 
+    # A checked_at later than as_of is a future answer, not a current one.
     def fresh_for?(as_of)
       return false if not_checked? || checking? || checked_at.nil?
+      return false if checked_at > as_of
 
       checked_at >= as_of - configured_max_age
     end

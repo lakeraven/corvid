@@ -467,14 +467,16 @@ module Corvid
 
       private
 
-      # add_coverage may supply the period and renewal date. Other fields
-      # stay on the default eligible response.
+      # add_coverage may supply the period and renewal date. An explicit nil
+      # leaves that field on the default eligible response. Other fields
+      # stay on the default response.
       def apply_recorded_coverage(result, patient_identifier, resource_type)
         coverage = recorded_coverage(patient_identifier, resource_type)
         return result unless coverage
 
         %i[coverage_start coverage_end renewal_date].each do |key|
-          result[key] = coverage[key] if coverage.key?(key)
+          value = coverage[key]
+          result[key] = value unless value.nil?
         end
         result
       end

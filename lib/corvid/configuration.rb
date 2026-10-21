@@ -36,6 +36,7 @@ module Corvid
     end
 
     # Frozen resource_type => Duration. Host overrides merge over the defaults.
+    # Override keys are stored as strings and must be alternate resource types.
     def alternate_resource_check_max_age
       overrides = max_age_overrides
       defaults = self.class.default_alternate_resource_check_max_age
@@ -67,17 +68,23 @@ module Corvid
       @alternate_resource_check_max_age_overrides
     end
 
+    # Symbol keys become strings. Unknown types, non-durations, and
+    # non-positive durations are rejected.
     def validated_max_ages(overrides)
-      overrides.each_value do |value|
+      overrides.to_h { |key, value|
+        type = key.to_s
+        unless ALTERNATE_RESOURCE_TYPES.include?(type)
+          raise ArgumentError, "unknown alternate resource type: #{type}"
+        end
         unless value.is_a?(ActiveSupport::Duration)
           raise ArgumentError, "alternate resource check max age must be a duration"
         end
         unless value.positive?
           raise ArgumentError, "alternate resource check max age must be positive"
         end
-      end
 
-      overrides.dup.freeze
+        [ type, value ]
+      }.freeze
     end
   end
 
