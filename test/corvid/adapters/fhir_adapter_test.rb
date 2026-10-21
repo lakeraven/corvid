@@ -1121,7 +1121,41 @@ class Corvid::Adapters::FhirAdapterTest < Minitest::Test
     end
   end
 
-  # N7 — relation "Next" (any case) follows pagination like "next"
+  # N7 — only Bundle.link relation "next" is followed (#517 exact-relation rule).
+  # "Next", "NEXT", and other case variants fail closed and must not fetch page 2.
+
+  def test_get_coverages_returns_nil_when_next_link_relation_is_capitalized_next_without_fetching_page_two
+    patient = "pt_next_case"
+    page1_url = coverage_search_url(patient)
+    page2_url = "#{@adapter.base_url}/Coverage?#{URI.encode_www_form(page: "2", beneficiary: "Patient/#{patient}")}"
+    page1 = coverage_bundle(
+      entries: [
+        coverage_fhir_resource(
+          id: "cov_nc1",
+          for_patient: patient,
+          status: "active",
+          payer_display: "TEST PAYER NC1",
+          type_code: "MCDSC",
+          subscriber_id: "POL_NC1",
+          period_start: Date.new(2026, 1, 1)
+        )
+      ],
+      next_url: page2_url,
+      next_relation: "Next"
+    )
+    page2_fetched = []
+    with_stubbed_coverage_http({
+      page1_url => http_ok_json(page1),
+      page2_url => lambda {
+        page2_fetched << true
+        http_ok_json(coverage_bundle(entries: []))
+      }
+    }) do
+      assert_nil @adapter.get_coverages(patient)
+      assert_equal [ page1_url ], @requested_urls
+      assert_empty page2_fetched
+    end
+  end
 
   # R1 (round 2) — self-pay is not insurance; definitive empty when only non-insurable
 
@@ -1464,6 +1498,72 @@ class Corvid::Adapters::FhirAdapterTest < Minitest::Test
       result = @adapter.get_coverages("pt_r4_warn")
       assert_equal 1, result.size
       assert_equal "TEST PAYER WARN", result.first[:payer_name]
+    end
+  end
+
+  MALFORMED_COVERAGE_OPERATION_OUTCOME_RESOURCE_CASES = [
+    [ "issue key absent", ->(resource) { resource.delete("issue") } ],
+    [ "issue is not an Array", ->(resource) { resource["issue"] = "not-an-array" } ],
+    [ "issue contains a non-Hash element", ->(resource) { resource["issue"] = [ "not-a-hash" ] } ],
+    [ "issue severity is capitalized Error", ->(resource) {
+      resource["issue"] = [ { "severity" => "Error", "code" => "processing" } ]
+    } ],
+    [ "issue severity is nil", ->(resource) {
+      resource["issue"] = [ { "severity" => nil, "code" => "processing" } ]
+    } ],
+    [ "issue severity is integer", ->(resource) {
+      resource["issue"] = [ { "severity" => 5, "code" => "processing" } ]
+    } ]
+  ].freeze
+
+  def test_get_coverages_returns_nil_for_malformed_operation_outcome_without_raising
+    MALFORMED_COVERAGE_OPERATION_OUTCOME_RESOURCE_CASES.each do |label, mutate|
+      resource = {
+        "resourceType" => "OperationOutcome",
+        "issue" => [ { "severity" => "warning", "code" => "informational" } ]
+      }
+      mutate.call(resource)
+      bundle = coverage_bundle(entries: [ { "resource" => resource } ])
+      with_stubbed_coverage_http({ coverage_search_url("pt_oo_malformed") => http_ok_json(bundle) }) do
+        assert_nil @adapter.get_coverages("pt_oo_malformed"),
+                   "expected nil for malformed OperationOutcome: #{label}"
+      end
+    end
+  end
+
+  COVERAGE_UNTRUSTED_OUTCOME_CODES = %w[suppressed incomplete too-costly].freeze
+
+  COVERAGE_UNTRUSTED_OUTCOME_SEVERITIES = %w[warning information].freeze
+
+  def test_get_coverages_returns_nil_when_operation_outcome_has_untrusted_code_at_warning_or_information_severity
+    coverage = coverage_fhir_resource(
+      id: "cov_untrusted_oo",
+      for_patient: "pt_oo_untrusted",
+      status: "active",
+      payer_display: "TEST PAYER UNTRUSTED OO",
+      type_code: "MCDSC",
+      subscriber_id: "POL_UOO",
+      period_start: Date.new(2026, 1, 1),
+      period_end: Date.new(2026, 12, 31)
+    )
+    COVERAGE_UNTRUSTED_OUTCOME_CODES.each do |code|
+      COVERAGE_UNTRUSTED_OUTCOME_SEVERITIES.each do |severity|
+        bundle = coverage_bundle(
+          entries: [
+            {
+              "resource" => {
+                "resourceType" => "OperationOutcome",
+                "issue" => [ { "severity" => severity, "code" => code, "diagnostics" => "TEST" } ]
+              }
+            },
+            coverage
+          ]
+        )
+        with_stubbed_coverage_http({ coverage_search_url("pt_oo_untrusted") => http_ok_json(bundle) }) do
+          assert_nil @adapter.get_coverages("pt_oo_untrusted"),
+                     "expected nil for OperationOutcome #{severity}/#{code} with active Coverage"
+        end
+      end
     end
   end
 
@@ -2144,45 +2244,6 @@ class Corvid::Adapters::FhirAdapterTest < Minitest::Test
     end
   end
 
-  def test_get_coverages_follows_next_link_when_relation_is_capitalized_next
-    page1_url = coverage_search_url("pt_next_case")
-    page2_url = "#{@adapter.base_url}/Coverage?#{URI.encode_www_form(page: "2", beneficiary: "Patient/pt_next_case")}"
-    page1 = {
-      "resourceType" => "Bundle",
-      "type" => "searchset",
-      "entry" => [
-        { "resource" => coverage_fhir_resource(
-          id: "cov_nc1",
-          for_patient: "pt_next_case",
-          status: "active",
-          payer_display: "TEST PAYER NC1",
-          type_code: "MCDSC",
-          subscriber_id: "POL_NC1",
-          period_start: Date.new(2026, 1, 1)
-        ) }
-      ],
-      "link" => [ { "relation" => "Next", "url" => page2_url } ]
-    }
-    page2 = coverage_bundle(
-      entries: [
-        coverage_fhir_resource(
-          id: "cov_nc2",
-          for_patient: "pt_next_case",
-          status: "active",
-          payer_display: "TEST PAYER NC2",
-          type_code: "EHCPOL",
-          subscriber_id: "POL_NC2",
-          period_start: Date.new(2026, 2, 1)
-        )
-      ]
-    )
-    with_stubbed_coverage_http({ page1_url => http_ok_json(page1), page2_url => http_ok_json(page2) }) do
-      result = @adapter.get_coverages("pt_next_case")
-      assert_equal 2, result.size
-      assert_equal [ page1_url, page2_url ], @requested_urls
-    end
-  end
-
   # Chair round — invalid UTF-8 in Coverage strings must fail closed (nil), never raise
 
   def test_get_coverages_returns_nil_for_invalid_utf8_in_coverage_string_fields_without_raising
@@ -2229,6 +2290,54 @@ class Corvid::Adapters::FhirAdapterTest < Minitest::Test
                 "got #{coverage_error.class}: #{coverage_error.message}"
         end
         assert_nil result, "expected nil for invalid UTF-8 in #{label}"
+      end
+    end
+  end
+
+  def test_get_coverages_returns_nil_when_payor_display_subscriber_id_or_type_code_present_but_not_string
+    patient = "pt_oo_typed_strings"
+    non_string_cases = [
+      [
+        "payor display is integer",
+        { payor_json: '[{"reference":"Organization/org1","display":42}]' }
+      ],
+      [
+        "payor display is Hash",
+        { payor_json: '[{"reference":"Organization/org1","display":{"text":"TEST"}}]' }
+      ],
+      [
+        "payor display is Array",
+        { payor_json: '[{"reference":"Organization/org1","display":["TEST"]}]' }
+      ],
+      [
+        "subscriberId is integer",
+        { subscriber_id_json: "42" }
+      ],
+      [
+        "subscriberId is Hash",
+        { subscriber_id_json: '{"id":"POL"}' }
+      ],
+      [
+        "subscriberId is Array",
+        { subscriber_id_json: '["POL"]' }
+      ],
+      [
+        "type coding code is integer",
+        { type_json: '{"coding":[{"code":2}]}' }
+      ],
+      [
+        "type coding code is Hash",
+        { type_json: '{"coding":[{"code":{"value":"EHCPOL"}}]}' }
+      ],
+      [
+        "type coding code is Array",
+        { type_json: '{"coding":[{"code":["EHCPOL"]}]}' }
+      ]
+    ]
+    non_string_cases.each do |label, fragments|
+      body = issue_607_coverage_bundle_http_body(patient_id: patient, **fragments)
+      with_stubbed_coverage_http({ coverage_search_url(patient) => http_ok_body(body) }) do
+        assert_nil @adapter.get_coverages(patient), "expected nil when #{label}"
       end
     end
   end
@@ -2845,16 +2954,18 @@ class Corvid::Adapters::FhirAdapterTest < Minitest::Test
     "\xFF".b.force_encoding(Encoding::UTF_8)
   end
 
-  def issue_607_coverage_bundle_http_body(patient_id:, type_json: nil, payor_json: nil, period_json: nil, total: 1)
+  def issue_607_coverage_bundle_http_body(patient_id:, type_json: nil, payor_json: nil, period_json: nil,
+                                          subscriber_id_json: nil, total: 1)
     type_json ||= %({"coding":[{"code":"EHCPOL"}]})
     payor_json ||= %([{"reference":"Organization/org1","display":"TEST PAYER"}])
     period_json ||= %({"start":"2026-01-01","end":"2026-12-31"})
+    subscriber_id_json ||= %("POL_UTF8")
     resource = %({
       "resourceType":"Coverage",
       "id":"cov_utf8",
       "status":"active",
       "beneficiary":{"reference":"Patient/#{patient_id}"},
-      "subscriberId":"POL_UTF8",
+      "subscriberId":#{subscriber_id_json},
       "payor":#{payor_json},
       "type":#{type_json},
       "period":#{period_json}
