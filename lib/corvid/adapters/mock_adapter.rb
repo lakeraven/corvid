@@ -321,9 +321,9 @@ module Corvid
           membership_number: enrollment[:membership_number],
           tribe_name: enrollment[:tribe_name],
           tribe_code: enrollment[:tribe_code],
-          blood_quantum: enrollment[:blood_quantum],
+          blood_quantum: normalize_blood_quantum(enrollment[:blood_quantum]),
           member_status: enrollment[:member_status],
-          confidence: enrollment.fetch(:confidence, :verified),
+          confidence: normalize_tribal_confidence(enrollment[:confidence]),
           verified_at: Time.current
         }
       end
@@ -490,7 +490,9 @@ module Corvid
         needle = type_or_payer.to_s.downcase
         return coverages.first if needle.empty?
 
-        coverages.find { |coverage| coverage_matches?(coverage, needle) } || coverages.first
+        # A requested type or payer that matches nothing is unknown.
+        # Never substitute a different coverage.
+        coverages.find { |coverage| coverage_matches?(coverage, needle) }
       end
 
       def coverage_matches?(coverage, needle)

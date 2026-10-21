@@ -26,7 +26,8 @@ module Corvid
           membership_number: "TEST-10042",
           tribe_name: "Test Tribe",
           blood_quantum: "1/4",
-          member_status: "enrolled"
+          member_status: "enrolled",
+          confidence: :verified
         )
         add_residency("pt_demo_enrolled",
           on_reservation: true,
@@ -45,7 +46,8 @@ module Corvid
           enrolled: false,
           membership_number: nil,
           tribe_name: nil,
-          member_status: "denied"
+          member_status: "denied",
+          confidence: :verified
         )
         add_residency("pt_demo_nonenrolled",
           on_reservation: false,
@@ -66,7 +68,8 @@ module Corvid
           membership_number: "TEST-10098",
           tribe_name: "Test Tribe",
           blood_quantum: "1/8",
-          member_status: "enrolled"
+          member_status: "enrolled",
+          confidence: :verified
         )
         add_residency("pt_demo_off_reservation",
           on_reservation: false,

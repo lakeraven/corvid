@@ -267,16 +267,7 @@ module Corvid
 
       def verify_eligibility(patient_identifier, resource_type)
         bundle = fhir_search("Coverage", beneficiary: "Patient/#{patient_identifier}")
-        coverages = extract_entries(bundle)
-
-        coverage = if resource_type.to_s != ""
-          fhir_code = COVERAGE_TYPE_MAP[resource_type.to_s]
-          coverages.find do |c|
-            type_code = c.dig("type", "coding", 0, "code")
-            type_code == fhir_code || type_code == resource_type.to_s
-          end
-        end
-        coverage ||= coverages.first
+        coverage = coverage_for_resource_type(extract_entries(bundle), resource_type)
         return nil unless coverage
 
         {
@@ -300,7 +291,6 @@ module Corvid
       TRIBAL_ENROLLMENT_EXTENSION_URL = "#{EXTENSION_BASE_URL}/tribal-enrollment"
       RESIDENCY_EXTENSION_URL = "#{EXTENSION_BASE_URL}/residency"
       US_CORE_BIRTHPLACE_URL = "http://hl7.org/fhir/us/core/StructureDefinition/us-core-birthplace"
-      TRIBAL_CONFIDENCE_VALUES = %i[verified stale unavailable].freeze
 
       def verify_tribal_enrollment(patient_identifier)
         patient = fhir_read("Patient", patient_identifier)
@@ -620,7 +610,7 @@ module Corvid
           tribe_name: sub_extension_value(ext, "tribeName"),
           tribe_code: sub_extension_value(ext, "tribeCode"),
           member_status: sub_extension_value(ext, "memberStatus"),
-          blood_quantum: sub_extension_value(ext, "bloodQuantum"),
+          blood_quantum: normalize_blood_quantum(blood_quantum_extension_value(ext)),
           confidence: tribal_confidence(ext),
           verified_at: Time.current
         }
@@ -629,8 +619,34 @@ module Corvid
       # A missing or unrecognized confidence sub-extension is not :verified.
       # Only the documented symbols count; anything else fails closed.
       def tribal_confidence(ext)
-        symbol = sub_extension_value(ext, "confidence").to_s.strip.downcase.to_sym
-        TRIBAL_CONFIDENCE_VALUES.include?(symbol) ? symbol : :unavailable
+        normalize_tribal_confidence(sub_extension_value(ext, "confidence"))
+      end
+
+      def blood_quantum_extension_value(extension)
+        sub = Array(extension["extension"]).find { |entry| entry["url"] == "bloodQuantum" }
+        return nil unless sub
+
+        %w[valueDecimal valueInteger valueString].each do |key|
+          return sub[key] if sub.key?(key)
+        end
+
+        nil
+      end
+
+      # Blank resource_type keeps the first coverage. A requested type that
+      # matches nothing is unknown — never another type's coverage.
+      def coverage_for_resource_type(coverages, resource_type)
+        return coverages.first if resource_type.to_s.empty?
+
+        coverages.find { |coverage| coverage_type_matches?(coverage, resource_type) }
+      end
+
+      def coverage_type_matches?(coverage, resource_type)
+        type_code = coverage.dig("type", "coding", 0, "code")
+        return false if type_code.nil? || type_code.to_s.empty?
+
+        requested = resource_type.to_s
+        type_code == requested || type_code == COVERAGE_TYPE_MAP[requested]
       end
 
       def find_extension(resource, url)
