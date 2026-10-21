@@ -310,8 +310,9 @@ module Corvid
       def verify_tribal_enrollment(patient_identifier)
         enrollment = @enrollments[patient_identifier.to_s]
         unless enrollment
+          # Unknown record is not a denial. enrolled stays nil.
           return {
-            enrolled: false,
+            enrolled: nil,
             membership_number: nil,
             tribe_name: nil,
             tribe_code: nil,

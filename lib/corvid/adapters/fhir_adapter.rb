@@ -415,9 +415,9 @@ module Corvid
       # Enrollment verification — FHIR R4 / US Core have no native tribal
       # enrollment concept, so this reads Lakeraven's tribal-enrollment
       # extension on Patient (see TRIBAL_ENROLLMENT_EXTENSION_URL below).
-      # Servers that don't populate the extension fall back to
-      # "unavailable" (fail-closed) exactly as before — this is additive,
-      # not a behavior change for plain-vanilla FHIR servers.
+      # A failed Patient read, or a Patient with no tribal-enrollment
+      # extension, is unknown enrollment: enrolled is nil and confidence
+      # is :unavailable. That is not a recorded denial.
       # ----------------------------------------------------------------------
 
       TRIBAL_ENROLLMENT_EXTENSION_URL = "#{EXTENSION_BASE_URL}/tribal-enrollment"
@@ -428,7 +428,7 @@ module Corvid
 
       def verify_tribal_enrollment(patient_identifier)
         unavailable = {
-          enrolled: false, membership_number: nil, tribe_name: nil, tribe_code: nil,
+          enrolled: nil, membership_number: nil, tribe_name: nil, tribe_code: nil,
           confidence: :unavailable, verified_at: Time.current
         }
 

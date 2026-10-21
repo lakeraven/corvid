@@ -205,12 +205,14 @@ module Corvid
       # Enrollment verification (for PRC eligibility checklist)
       # ----------------------------------------------------------------------
 
-      # Returns { enrolled: bool, membership_number: str|nil,
+      # Returns { enrolled: true|false|nil, membership_number: str|nil,
       #           tribe_name: str|nil, tribe_code: str|nil,
       #           member_status: str|nil, blood_quantum: hash|nil,
       #           confidence: :verified|:stale|:unavailable,
       #           verified_at: datetime }
       #
+      # `enrolled` is nil when the source is unreachable or the record is
+      # unknown. true and false are answers from the source.
       # `tribe_code` lets eligibility services compare the enrollee's tribe
       # against a facility's contracted tribe (preventing wrong-tribe false
       # positives). `confidence` reflects how fresh the underlying data is —
