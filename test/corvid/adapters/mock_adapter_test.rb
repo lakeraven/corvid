@@ -155,6 +155,17 @@ class Corvid::Adapters::MockAdapterTest < Minitest::Test
     assert_equal true, @adapter.check_eligibility_detailed("pt_001", "MOCK_PAYER")[:eligible]
   end
 
+  # A detailed check that names no payer is undetermined; it never answers
+  # from whichever coverage happens to be first.
+  def test_check_eligibility_detailed_with_a_blank_payer_is_not_eligible
+    @adapter.add_coverage("pt_001", coverage_type: "medicaid", payer_identifier: "PAYER_A", eligible: true)
+
+    [ nil, "", "  " ].each do |payer|
+      refute_equal true, @adapter.check_eligibility_detailed("pt_001", payer)[:eligible],
+                   "payer #{payer.inspect} must not verify"
+    end
+  end
+
   # -- Claim lines --------------------------------------------------------------
 
   def test_list_claims_returns_seeded_lines_for_that_patient_only
