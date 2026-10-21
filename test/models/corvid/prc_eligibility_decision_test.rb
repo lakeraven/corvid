@@ -236,7 +236,9 @@ class Corvid::PrcEligibilityDecisionTest < ActiveSupport::TestCase
     end
   end
 
-  test "legacy row can assign verification_snapshot_hash and key version together" do
+  # ---- Issue #629 chair round 2 (failing until implemented) -----------------
+
+  test "legacy row rejects assigning verification_snapshot_hash and key version together" do
     with_tenant(TENANT) do
       row = Corvid::PrcEligibilityDecision.create!(
         tenant_identifier: TENANT,
@@ -254,14 +256,132 @@ class Corvid::PrcEligibilityDecisionTest < ActiveSupport::TestCase
       )
 
       row.reload
-      row.update!(
+      refute row.update(
         verification_snapshot_hash: "e" * 64,
         verification_snapshot_key_version: "v1-test"
       )
+      assert row.errors[:verification_snapshot_hash].present?
+    end
+  end
+
+  test "scrubbed persisted row rejects assigning verification_snapshot_hash and key version together" do
+    with_tenant(TENANT) do
+      row = Corvid::PrcEligibilityDecision.create!(
+        tenant_identifier: TENANT,
+        person_identifier: "pt_scrubbed_keyed",
+        facility_identifier: "fac_demo",
+        decided_at: Time.current,
+        as_of_date: Date.current,
+        eligible: false,
+        reason_codes: [ "not_enrolled" ]
+      )
+
+      row.update_columns(
+        verification_snapshot_hash: nil,
+        verification_snapshot_key_version: nil
+      )
+
+      row.reload
+      refute row.update(
+        verification_snapshot_hash: "e" * 64,
+        verification_snapshot_key_version: "v1-test"
+      )
+      assert row.errors[:verification_snapshot_hash].present?
+    end
+  end
+
+  test "scrubbed persisted row rejects assigning verification_snapshot_hash alone" do
+    with_tenant(TENANT) do
+      row = Corvid::PrcEligibilityDecision.create!(
+        tenant_identifier: TENANT,
+        person_identifier: "pt_scrubbed_hash_only",
+        facility_identifier: "fac_demo",
+        decided_at: Time.current,
+        as_of_date: Date.current,
+        eligible: false,
+        reason_codes: [ "not_enrolled" ]
+      )
+
+      row.update_columns(
+        verification_snapshot_hash: nil,
+        verification_snapshot_key_version: nil
+      )
+
+      row.reload
+      row.verification_snapshot_hash = "f" * 64
+
+      refute row.valid?
+      assert row.errors[:verification_snapshot_hash].present?
+    end
+  end
+
+  test "scrubbed persisted row rejects assigning verification_snapshot_key_version alone" do
+    with_tenant(TENANT) do
+      row = Corvid::PrcEligibilityDecision.create!(
+        tenant_identifier: TENANT,
+        person_identifier: "pt_scrubbed_version_only",
+        facility_identifier: "fac_demo",
+        decided_at: Time.current,
+        as_of_date: Date.current,
+        eligible: false,
+        reason_codes: [ "not_enrolled" ]
+      )
+
+      row.update_columns(
+        verification_snapshot_hash: nil,
+        verification_snapshot_key_version: nil
+      )
+
+      row.reload
+      row.verification_snapshot_key_version = "v1-test"
+
+      refute row.valid?
+      assert row.errors[:verification_snapshot_hash].present?
+    end
+  end
+
+  test "scrubbed persisted row allows updating non-snapshot fields" do
+    with_tenant(TENANT) do
+      row = Corvid::PrcEligibilityDecision.create!(
+        tenant_identifier: TENANT,
+        person_identifier: "pt_scrubbed_other",
+        facility_identifier: "fac_demo",
+        decided_at: Time.current,
+        as_of_date: Date.current,
+        eligible: false,
+        reason_codes: [ "not_enrolled" ]
+      )
+
+      row.update_columns(
+        verification_snapshot_hash: nil,
+        verification_snapshot_key_version: nil
+      )
+
+      row.reload
+      row.update!(decided_by_identifier: "usr_demo")
 
       reloaded = Corvid::PrcEligibilityDecision.find(row.id)
-      assert_equal "e" * 64, reloaded.verification_snapshot_hash
-      assert_equal "v1-test", reloaded.verification_snapshot_key_version
+      assert_equal "usr_demo", reloaded.decided_by_identifier
+      assert_nil reloaded.verification_snapshot_hash
+      assert_nil reloaded.verification_snapshot_key_version
+    end
+  end
+
+  test "new row with verification_snapshot_hash and key version together is valid" do
+    with_tenant(TENANT) do
+      row = Corvid::PrcEligibilityDecision.new(
+        tenant_identifier: TENANT,
+        person_identifier: "pt_new_keyed",
+        facility_identifier: "fac_demo",
+        decided_at: Time.current,
+        as_of_date: Date.current,
+        eligible: true,
+        reason_codes: [],
+        verification_snapshot_hash: "a" * 64,
+        verification_snapshot_key_version: "v1-test"
+      )
+
+      assert row.valid?
     end
   end
 end

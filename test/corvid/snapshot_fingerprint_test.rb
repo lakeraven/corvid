@@ -934,4 +934,75 @@ class Corvid::SnapshotFingerprintTest < ActiveSupport::TestCase
       payload: payload
     )
   end
+
+  # ---- Issue #629 chair round 2 (failing until implemented) -----------------
+
+  UNUSABLE_PRINTABLE_ASCII_VERSIONS = [
+    [ "hangul filler", "\u3164" ],
+    [ "hangul choseong filler", "\u115F" ],
+    [ "halfwidth hangul filler", "\uFFA0" ],
+    [ "braille blank", "\u2800" ],
+    [ "musical symbol null notehead", "\u1D159" ],
+    [ "non-ascii letter suffix", "v1-\u00e9" ],
+    [ "inner ascii space", "v1 test" ]
+  ].freeze
+
+  USABLE_PRINTABLE_ASCII_VERSIONS = [
+    "v1-test",
+    "2026-10",
+    "dummy-v1"
+  ].freeze
+
+  UNUSABLE_PRINTABLE_ASCII_VERSIONS.each do |label, version|
+    test "compute returns nil pair for #{label} key version" do
+      Corvid.configure do |c|
+        c.verification_snapshot_keys = { version => KEY_V1 }
+        c.verification_snapshot_key_version = version
+      end
+
+      digest, returned_version = Corvid::SnapshotFingerprint.compute({ sample: true })
+      assert_nil digest, "expected unusable version #{label}"
+      assert_nil returned_version
+    end
+
+    test "matches returns nil for #{label} key version" do
+      payload = { enrollment: { tribe_code: "DEMO" }, identity: {}, residency: {} }
+
+      Corvid.configure do |c|
+        c.verification_snapshot_keys = { version => KEY_V1 }
+      end
+
+      digest = OpenSSL::HMAC.hexdigest("SHA256", KEY_V1, JSON.generate(payload))
+
+      assert_nil Corvid::SnapshotFingerprint.matches?(
+        hash: digest,
+        version: version,
+        payload: payload
+      )
+    end
+  end
+
+  USABLE_PRINTABLE_ASCII_VERSIONS.each do |version|
+    test "compute accepts printable ascii key version #{version}" do
+      Corvid.configure do |c|
+        c.verification_snapshot_keys = { version => KEY_V1 }
+        c.verification_snapshot_key_version = version
+      end
+
+      digest, returned_version = Corvid::SnapshotFingerprint.compute({ sample: true })
+      refute_nil digest
+      assert_equal version, returned_version
+    end
+  end
+
+  test "compute accepts symbol printable ascii key version" do
+    Corvid.configure do |c|
+      c.verification_snapshot_keys = { "v1-test" => KEY_V1 }
+      c.verification_snapshot_key_version = :"v1-test"
+    end
+
+    digest, returned_version = Corvid::SnapshotFingerprint.compute({ sample: true })
+    refute_nil digest
+    assert_equal "v1-test", returned_version
+  end
 end
