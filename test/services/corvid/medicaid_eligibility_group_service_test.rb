@@ -837,6 +837,255 @@ class Corvid::MedicaidEligibilityGroupServiceTest < ActiveSupport::TestCase
     assert_group_fields_under_tenant(check, TENANT, nil, nil)
   end
 
+  # -- Issue #646 ADR 0002 chair: lock before visibility, missing row, no tenant -------
+
+  test "record! from another tenant does not issue FOR UPDATE before visibility" do
+    check = nil
+    with_tenant(TENANT) do
+      check = medicaid_check_for(patient_id: "pt_mcd_adr_lock_001", dob: Date.new(1996, 6, 15))
+    end
+
+    sql = nil
+    with_tenant(OTHER_TENANT) do
+      sql = capture_sql do
+        @service.record!(
+          check,
+          coverage: { state: "XA", plan_name: "TEST REGULAR PLAN" },
+          date_of_service: DOS
+        )
+      end
+    end
+
+    assert_no_for_update_sql(sql)
+  end
+
+  test "record! for nonexistent check id does not issue FOR UPDATE" do
+    max_check_id = nil
+    with_tenant(TENANT) do
+      medicaid_check_for(patient_id: "pt_mcd_adr_lock_missing_anchor", dob: Date.new(1996, 6, 15))
+      max_check_id = Corvid::AlternateResourceCheck.maximum(:id)
+    end
+    missing_row_check = Corvid::AlternateResourceCheck.new(
+      id: max_check_id + 1000,
+      resource_type: "medicaid"
+    )
+
+    sql = nil
+    with_tenant(TENANT) do
+      sql = capture_sql do
+        invoke_record_ignoring_missing_row do
+          @service.record!(
+            missing_row_check,
+            coverage: { state: "XA", plan_name: "TEST REGULAR PLAN" },
+            date_of_service: DOS
+          )
+        end
+      end
+    end
+
+    assert_no_for_update_sql(sql)
+  end
+
+  test "record_staff_entry! from another tenant does not issue FOR UPDATE before visibility" do
+    check = nil
+    with_tenant(TENANT) do
+      check = medicaid_check_for(patient_id: "pt_mcd_adr_lock_002", dob: Date.new(1996, 6, 15))
+    end
+
+    sql = nil
+    with_tenant(OTHER_TENANT) do
+      sql = capture_sql do
+        assert_raises(ArgumentError) do
+          @service.record_staff_entry!(check, eligibility_group: "other")
+        end
+      end
+    end
+
+    assert_no_for_update_sql(sql)
+  end
+
+  test "record_staff_entry! for nonexistent check id does not issue FOR UPDATE" do
+    max_check_id = nil
+    with_tenant(TENANT) do
+      medicaid_check_for(patient_id: "pt_mcd_adr_lock_missing_staff", dob: Date.new(1996, 6, 15))
+      max_check_id = Corvid::AlternateResourceCheck.maximum(:id)
+    end
+    missing_row_check = Corvid::AlternateResourceCheck.new(
+      id: max_check_id + 1000,
+      resource_type: "medicaid"
+    )
+
+    sql = nil
+    with_tenant(TENANT) do
+      sql = capture_sql do
+        assert_raises(ArgumentError) do
+          @service.record_staff_entry!(missing_row_check, eligibility_group: "other")
+        end
+      end
+    end
+
+    assert_no_for_update_sql(sql)
+  end
+
+  test "record! from another tenant does not call adapter for inference" do
+    check = nil
+    with_tenant(TENANT) do
+      check = medicaid_check_for(patient_id: "pt_mcd_adr_adapter_001", dob: Date.new(1996, 6, 15))
+    end
+
+    counting = CountingAdapterDelegate.new(@adapter)
+    service = Corvid::MedicaidEligibilityGroupService.new(adapter: counting)
+
+    with_tenant(OTHER_TENANT) do
+      service.record!(
+        check,
+        coverage: { state: "XA", plan_name: "TEST REGULAR PLAN" },
+        date_of_service: DOS
+      )
+    end
+
+    assert_equal 0, counting.find_patient_calls
+  end
+
+  test "record! for nonexistent check id does not call adapter for inference" do
+    max_check_id = nil
+    with_tenant(TENANT) do
+      medicaid_check_for(patient_id: "pt_mcd_adr_adapter_missing", dob: Date.new(1996, 6, 15))
+      max_check_id = Corvid::AlternateResourceCheck.maximum(:id)
+    end
+    missing_row_check = Corvid::AlternateResourceCheck.new(
+      id: max_check_id + 1000,
+      resource_type: "medicaid"
+    )
+
+    counting = CountingAdapterDelegate.new(@adapter)
+    service = Corvid::MedicaidEligibilityGroupService.new(adapter: counting)
+
+    with_tenant(TENANT) do
+      invoke_record_ignoring_missing_row do
+        service.record!(
+          missing_row_check,
+          coverage: { state: "XA", plan_name: "TEST REGULAR PLAN" },
+          date_of_service: DOS
+        )
+      end
+    end
+
+    assert_equal 0, counting.find_patient_calls
+  end
+
+  test "record! for nonexistent check id returns nil without RecordNotFound" do
+    max_check_id = nil
+    with_tenant(TENANT) do
+      medicaid_check_for(patient_id: "pt_mcd_adr_nil_missing", dob: Date.new(1996, 6, 15))
+      max_check_id = Corvid::AlternateResourceCheck.maximum(:id)
+    end
+    missing_row_check = Corvid::AlternateResourceCheck.new(
+      id: max_check_id + 1000,
+      resource_type: "medicaid"
+    )
+
+    result = raised = nil
+    with_tenant(TENANT) do
+      begin
+        result = @service.record!(
+          missing_row_check,
+          coverage: { state: "XA", plan_name: "TEST REGULAR PLAN" },
+          date_of_service: DOS
+        )
+      rescue ActiveRecord::RecordNotFound => e
+        raised = e
+      end
+    end
+
+    assert_nil raised, "record! must not raise RecordNotFound for a missing row"
+    assert_nil result
+  end
+
+  test "record_staff_entry! for nonexistent check id raises not-visible ArgumentError without RecordNotFound cause" do
+    max_check_id = nil
+    with_tenant(TENANT) do
+      medicaid_check_for(patient_id: "pt_mcd_adr_cause_missing", dob: Date.new(1996, 6, 15))
+      max_check_id = Corvid::AlternateResourceCheck.maximum(:id)
+    end
+    missing_row_check = Corvid::AlternateResourceCheck.new(
+      id: max_check_id + 1000,
+      resource_type: "medicaid"
+    )
+
+    error = nil
+    with_tenant(TENANT) do
+      error = assert_raises(ArgumentError) do
+        @service.record_staff_entry!(missing_row_check, eligibility_group: "other")
+      end
+    end
+
+    assert_equal "eligibility group cannot be recorded", error.message
+    refute_record_not_found_in_cause_chain(error)
+  end
+
+  test "record_staff_entry! from another tenant raises not-visible ArgumentError without RecordNotFound cause" do
+    check = nil
+    with_tenant(TENANT) do
+      check = medicaid_check_for(patient_id: "pt_mcd_adr_cause_hidden", dob: Date.new(1996, 6, 15))
+    end
+
+    error = nil
+    with_tenant(OTHER_TENANT) do
+      error = assert_raises(ArgumentError) do
+        @service.record_staff_entry!(check, eligibility_group: "other")
+      end
+    end
+
+    assert_equal "eligibility group cannot be recorded", error.message
+    refute_record_not_found_in_cause_chain(error)
+  end
+
+  test "record! without tenant context does not issue FOR UPDATE" do
+    check = nil
+    with_tenant(TENANT) do
+      check = medicaid_check_for(patient_id: "pt_mcd_adr_lock_no_ctx", dob: Date.new(1996, 6, 15))
+    end
+
+    sql = capture_sql do
+      @service.record!(
+        check,
+        coverage: { state: "XA", plan_name: "TEST REGULAR PLAN" },
+        date_of_service: DOS
+      )
+    end
+
+    assert_no_for_update_sql(sql)
+  end
+
+  test "record_staff_entry! without tenant context does not issue FOR UPDATE" do
+    check = nil
+    with_tenant(TENANT) do
+      check = medicaid_check_for(patient_id: "pt_mcd_adr_lock_no_ctx_staff", dob: Date.new(1996, 6, 15))
+    end
+
+    sql = capture_sql do
+      assert_raises(ArgumentError) do
+        @service.record_staff_entry!(check, eligibility_group: "other")
+      end
+    end
+
+    assert_no_for_update_sql(sql)
+  end
+
+  test "record_staff_entry! without tenant context raises not-visible ArgumentError with expected message" do
+    check = nil
+    with_tenant(TENANT) do
+      check = medicaid_check_for(patient_id: "pt_mcd_adr_msg_no_ctx", dob: Date.new(1996, 6, 15))
+    end
+
+    error = assert_raises(ArgumentError) do
+      @service.record_staff_entry!(check, eligibility_group: "other")
+    end
+
+    assert_equal "eligibility group cannot be recorded", error.message
+  end
+
   # -- Issue #646 round 2: locked row, adapter outside lock, coverage edge cases -------
 
   test "record! uses locked row referral not caller prc_referral_id swap and writes nothing" do
@@ -1601,5 +1850,38 @@ class Corvid::MedicaidEligibilityGroupServiceTest < ActiveSupport::TestCase
   def staff_entry_argument_error_message
     error = assert_raises(ArgumentError) { yield }
     error.message
+  end
+
+  def capture_sql
+    statements = []
+    callback = lambda do |_name, _start, _finish, _id, payload|
+      sql = payload[:sql]
+      statements << sql if sql
+    end
+
+    ActiveSupport::Notifications.subscribed(callback, "sql.active_record") do
+      yield
+    end
+
+    statements
+  end
+
+  def assert_no_for_update_sql(statements)
+    for_update = statements.grep(/FOR\s+UPDATE/i)
+    assert_empty for_update, "expected no row lock SQL, got: #{for_update.join('; ')}"
+  end
+
+  def refute_record_not_found_in_cause_chain(error)
+    cause = error
+    while cause
+      refute_kind_of ActiveRecord::RecordNotFound, cause
+      cause = cause.cause
+    end
+  end
+
+  def invoke_record_ignoring_missing_row
+    yield
+  rescue ActiveRecord::RecordNotFound
+    nil
   end
 end
