@@ -52,6 +52,31 @@ class Corvid::Adapters::FhirDemoAdapterTest < Minitest::Test
     assert_equal "C-DEMO-001", results.first.code
   end
 
+  def test_get_conditions_finds_condition_when_subject_reference_includes_history_version
+    [
+      "Patient/pt_demo_001/_history/1",
+      "#{@adapter.base_url}/Patient/pt_demo_001/_history/1"
+    ].each do |reference|
+      condition = synthetic_condition.merge("subject" => { "reference" => reference })
+      adapter = Corvid::Adapters::FhirDemoAdapter.new(resources: [ condition ])
+
+      results = adapter.get_conditions("pt_demo_001")
+
+      refute_nil results, "expected match for #{reference}"
+      assert_equal 1, results.size
+      assert_equal "C-DEMO-001", results.first.code
+    end
+  end
+
+  def test_get_conditions_does_not_match_foreign_absolute_patient_url_for_local_id
+    condition = synthetic_condition.merge(
+      "subject" => { "reference" => "https://other-ehr.example/fhir/Patient/pt_demo_001/_history/1" }
+    )
+    adapter = Corvid::Adapters::FhirDemoAdapter.new(resources: [ condition ])
+
+    refute adapter.get_conditions("pt_demo_001")&.any?
+  end
+
   def test_get_conditions_does_not_match_empty_patient_reference_tokens
     empty_ref_variants = [
       { "reference" => "Patient/" },

@@ -78,6 +78,33 @@ class Corvid::FhirReferenceTest < ActiveSupport::TestCase
     assert_nil Corvid::FhirReference.id_from("RelatedPerson/rp_wrong_prov", type: PROVIDER_TYPES)
   end
 
+  test "id_from never raises for non-ASCII-compatible String encodings" do
+    patient_id = "pt_enc_ref_001"
+    base = "https://fhir.example.com/r4"
+    %w[UTF-16LE UTF-16BE UTF-32LE UTF-32BE].each do |encoding|
+      ref = "Patient/#{patient_id}".encode(encoding)
+      result = nil
+      assert_nothing_raised { result = Corvid::FhirReference.id_from(ref) }
+      assert_equal patient_id, result, "expected id from #{encoding} relative reference"
+
+      versioned = "Patient/#{patient_id}/_history/4".encode(encoding)
+      assert_nothing_raised { result = Corvid::FhirReference.id_from(versioned) }
+      assert_equal patient_id, result, "expected id from #{encoding} versioned reference"
+
+      absolute = "#{base}/Patient/#{patient_id}/_history/4".encode(encoding)
+      assert_nothing_raised do
+        result = Corvid::FhirReference.id_from(absolute, type: "Patient", base_url: base)
+      end
+      assert_equal patient_id, result, "expected id from #{encoding} absolute reference under base_url"
+
+      utf16_base = base.encode("UTF-16LE")
+      assert_nothing_raised do
+        result = Corvid::FhirReference.id_from(ref, type: "Patient", base_url: utf16_base)
+      end
+      assert_nil result, "UTF-16 base_url must yield nil (#{encoding} reference)"
+    end
+  end
+
   test "id_from resolves absolute references under base_url like relative Type/id" do
     base = "https://fhir.example.com/r4"
     assert_equal "pt_base_001", Corvid::FhirReference.id_from(

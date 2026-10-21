@@ -1168,6 +1168,44 @@ class Corvid::Adapters::FhirAdapterTest < Minitest::Test
     assert_equal 1, results.size
   end
 
+  def test_get_medications_matches_versioned_patient_subject_reference_via_shared_reader
+    patient_id = "pt_x"
+    relative = build_medication_request_resource(
+      subject: { "reference" => "Patient/#{patient_id}/_history/7" }
+    )
+    results = get_medications_with_bundle(medications_bundle([ relative ]), patient_id: patient_id)
+    refute_nil results, "relative Patient/id/_history/version must match"
+    assert_equal 1, results.size
+
+    absolute = build_medication_request_resource(
+      subject: { "reference" => "#{@adapter.base_url}/Patient/#{patient_id}/_history/7" }
+    )
+    results = get_medications_with_bundle(medications_bundle([ absolute ]), patient_id: patient_id)
+    refute_nil results, "absolute versioned reference under base_url must match"
+    assert_equal 1, results.size
+  end
+
+  def test_get_medications_rejects_non_matching_versioned_and_invalid_patient_subject_references
+    patient_id = "pt_x"
+    other_patient = build_medication_request_resource(
+      subject: { "reference" => "Patient/pt_other/_history/7" }
+    )
+    assert_nil get_medications_with_bundle(medications_bundle([ other_patient ]), patient_id: patient_id)
+
+    foreign = build_medication_request_resource(
+      subject: { "reference" => "https://other-ehr.example/fhir/Patient/#{patient_id}/_history/7" }
+    )
+    assert_nil get_medications_with_bundle(medications_bundle([ foreign ]), patient_id: patient_id)
+
+    empty_id = build_medication_request_resource(subject: { "reference" => "Patient/" })
+    assert_nil get_medications_with_bundle(medications_bundle([ empty_id ]), patient_id: patient_id)
+
+    wrong_type = build_medication_request_resource(
+      subject: { "reference" => "Practitioner/#{patient_id}/_history/7" }
+    )
+    assert_nil get_medications_with_bundle(medications_bundle([ wrong_type ]), patient_id: patient_id)
+  end
+
   def test_get_medications_returns_nil_when_duplicate_contained_medication_ids
     request = build_medication_request_resource(
       medicationCodeableConcept: nil,
