@@ -187,7 +187,6 @@ module Corvid
         end
 
         fhir_update("ServiceRequest", referral_identifier, existing)
-        true
       end
 
       def list_referrals(patient_identifier)
@@ -301,27 +300,16 @@ module Corvid
       TRIBAL_ENROLLMENT_EXTENSION_URL = "#{EXTENSION_BASE_URL}/tribal-enrollment"
       RESIDENCY_EXTENSION_URL = "#{EXTENSION_BASE_URL}/residency"
       US_CORE_BIRTHPLACE_URL = "http://hl7.org/fhir/us/core/StructureDefinition/us-core-birthplace"
+      TRIBAL_CONFIDENCE_VALUES = %i[verified stale unavailable].freeze
 
       def verify_tribal_enrollment(patient_identifier)
-        unavailable = {
-          enrolled: false, membership_number: nil, tribe_name: nil, tribe_code: nil,
-          confidence: :unavailable, verified_at: Time.current
-        }
-
         patient = fhir_read("Patient", patient_identifier)
-        return unavailable unless patient
+        return tribal_enrollment_unavailable unless patient
 
         ext = find_extension(patient, TRIBAL_ENROLLMENT_EXTENSION_URL)
-        return unavailable unless ext
+        return tribal_enrollment_unavailable unless ext
 
-        {
-          enrolled: sub_extension_value(ext, "enrolled") == true,
-          membership_number: sub_extension_value(ext, "membershipNumber"),
-          tribe_name: sub_extension_value(ext, "tribeName"),
-          tribe_code: sub_extension_value(ext, "tribeCode"),
-          confidence: (sub_extension_value(ext, "confidence") || "verified").to_sym,
-          verified_at: Time.current
-        }
+        tribal_enrollment_from(ext)
       end
 
       def verify_identity_documents(patient_identifier)
@@ -365,8 +353,11 @@ module Corvid
         { claim_identifier: nil, status: "unsupported" }
       end
 
-      def check_claim_status(_claim_identifier)
-        { status: "unsupported" }
+      def check_claim_status(claim_identifier)
+        return nil if claim_identifier.nil? || claim_identifier.to_s.empty?
+        return nil unless fhir_read("Claim", claim_identifier)
+
+        { status: "unsupported", paid_amount: nil, adjustment_amount: nil, paid_date: nil }
       end
 
       def fetch_remittances(date_range: nil)
@@ -607,6 +598,39 @@ module Corvid
       def extract_npi(resource)
         npi = Array(resource["identifier"]).find { |id| id["system"] == "http://hl7.org/fhir/sid/us-npi" }
         npi&.dig("value")
+      end
+
+      def tribal_enrollment_unavailable
+        {
+          enrolled: false,
+          membership_number: nil,
+          tribe_name: nil,
+          tribe_code: nil,
+          member_status: nil,
+          blood_quantum: nil,
+          confidence: :unavailable,
+          verified_at: Time.current
+        }
+      end
+
+      def tribal_enrollment_from(ext)
+        {
+          enrolled: sub_extension_value(ext, "enrolled") == true,
+          membership_number: sub_extension_value(ext, "membershipNumber"),
+          tribe_name: sub_extension_value(ext, "tribeName"),
+          tribe_code: sub_extension_value(ext, "tribeCode"),
+          member_status: sub_extension_value(ext, "memberStatus"),
+          blood_quantum: sub_extension_value(ext, "bloodQuantum"),
+          confidence: tribal_confidence(ext),
+          verified_at: Time.current
+        }
+      end
+
+      # A missing or unrecognized confidence sub-extension is not :verified.
+      # Only the documented symbols count; anything else fails closed.
+      def tribal_confidence(ext)
+        symbol = sub_extension_value(ext, "confidence").to_s.strip.downcase.to_sym
+        TRIBAL_CONFIDENCE_VALUES.include?(symbol) ? symbol : :unavailable
       end
 
       def find_extension(resource, url)

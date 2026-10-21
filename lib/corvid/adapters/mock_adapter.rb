@@ -34,6 +34,12 @@ module Corvid
         determination: "de"
       }.freeze
 
+      # Fixed directory. search_payers filters this; it does not invent a hit
+      # whose name contains the query.
+      SEEDED_PAYERS = [
+        { payer_identifier: "MOCK_PAYER", name: "Mock Payer" }
+      ].freeze
+
       def initialize
         reset!
         seed!
@@ -159,7 +165,10 @@ module Corvid
       end
 
       def dereference_many(tokens)
-        tokens.each_with_object({}) { |t, h| h[t] = dereference(t) }
+        tokens.each_with_object({}) do |token, records|
+          value = dereference(token)
+          records[token] = value unless value.nil?
+        end
       end
 
       # ----------------------------------------------------------------------
@@ -293,13 +302,10 @@ module Corvid
       # ----------------------------------------------------------------------
 
       def verify_eligibility(patient_identifier, resource_type)
-        {
-          eligible: true,
-          payer_name: "MOCK #{resource_type.to_s.upcase} PAYER",
-          policy_token: store_text(case_token: "ct_x", kind: :policy, text: "MOCK-#{resource_type}-#{patient_identifier}"),
-          coverage_start: Date.new(Date.current.year, 1, 1),
-          coverage_end: Date.new(Date.current.year, 12, 31)
-        }
+        coverage = coverage_for(patient_identifier, resource_type)
+        return nil unless coverage
+
+        eligibility_from_coverage(patient_identifier, resource_type, coverage)
       end
 
       # ----------------------------------------------------------------------
@@ -308,16 +314,7 @@ module Corvid
 
       def verify_tribal_enrollment(patient_identifier)
         enrollment = @enrollments[patient_identifier.to_s]
-        unless enrollment
-          return {
-            enrolled: false,
-            membership_number: nil,
-            tribe_name: nil,
-            tribe_code: nil,
-            confidence: :verified,
-            verified_at: Time.current
-          }
-        end
+        return tribal_enrollment_unavailable unless enrollment
 
         {
           enrolled: enrollment[:enrolled],
@@ -367,7 +364,7 @@ module Corvid
 
       def check_claim_status(claim_identifier)
         claim = @claims[claim_identifier]
-        return { status: "unknown" } unless claim
+        return nil unless claim
 
         { status: claim[:status] || "accepted",
           paid_amount: claim[:paid_amount],
@@ -380,13 +377,21 @@ module Corvid
       end
 
       def check_eligibility_detailed(patient_identifier, payer_identifier)
-        { eligible: true, payer_name: "MOCK #{payer_identifier}", plan_name: "Mock Plan",
-          coverage_start: Date.new(Date.current.year, 1, 1),
-          coverage_end: Date.new(Date.current.year, 12, 31) }
+        coverage = coverage_for(patient_identifier, payer_identifier)
+        return undetermined_detailed_eligibility unless coverage
+
+        detailed_eligibility_from_coverage(payer_identifier, coverage)
       end
 
       def search_payers(query)
-        [ { payer_identifier: "MOCK_PAYER", name: "Mock Payer matching '#{query}'" } ]
+        pattern = query.to_s.downcase
+        SEEDED_PAYERS.filter_map do |payer|
+          name = payer[:name].to_s.downcase
+          identifier = payer[:payer_identifier].to_s.downcase
+          next unless name.include?(pattern) || identifier.include?(pattern)
+
+          payer.dup
+        end
       end
 
       def process_payment(amount_cents:, patient_identifier:, description:)
@@ -397,11 +402,10 @@ module Corvid
       end
 
       def refund_payment(payment_identifier)
-        # Track the refund if the payment was created via process_payment,
-        # but also allow refunds for externally-created payments (seeded in tests
-        # or imported from other systems) by key presence.
         payment = @payments_store[payment_identifier]
-        payment[:status] = "refunded" if payment
+        return { refund_identifier: nil, status: "not_found" } unless payment
+
+        payment[:status] = "refunded"
         { refund_identifier: "REF_#{ULID.generate}", status: "refunded" }
       end
 
@@ -465,6 +469,87 @@ module Corvid
       end
 
       private
+
+      def tribal_enrollment_unavailable
+        {
+          enrolled: false,
+          membership_number: nil,
+          tribe_name: nil,
+          tribe_code: nil,
+          member_status: nil,
+          blood_quantum: nil,
+          confidence: :unavailable,
+          verified_at: Time.current
+        }
+      end
+
+      def coverage_for(patient_identifier, type_or_payer)
+        coverages = @coverages[patient_identifier.to_s]
+        return nil if coverages.nil? || coverages.empty?
+
+        needle = type_or_payer.to_s.downcase
+        return coverages.first if needle.empty?
+
+        coverages.find { |coverage| coverage_matches?(coverage, needle) } || coverages.first
+      end
+
+      def coverage_matches?(coverage, needle)
+        %i[coverage_type resource_type payer_identifier payer_name plan_name].any? do |key|
+          coverage[key].to_s.downcase == needle
+        end
+      end
+
+      def eligibility_from_coverage(patient_identifier, resource_type, coverage)
+        eligible = coverage.fetch(:eligible, true)
+        return nil unless eligible == true || eligible == false
+
+        {
+          eligible: eligible,
+          payer_name: coverage[:payer_name] || "MOCK #{resource_type.to_s.upcase} PAYER",
+          policy_token: coverage[:policy_token] || policy_token_for(patient_identifier, resource_type),
+          coverage_start: coverage[:coverage_start] || year_start,
+          coverage_end: coverage[:coverage_end] || year_end
+        }
+      end
+
+      def detailed_eligibility_from_coverage(payer_identifier, coverage)
+        eligible = coverage.fetch(:eligible, true)
+        eligible = false unless eligible == true
+
+        {
+          eligible: eligible,
+          payer_name: coverage[:payer_name] || "MOCK #{payer_identifier}",
+          plan_name: coverage[:plan_name] || "Mock Plan",
+          coverage_start: coverage[:coverage_start] || year_start,
+          coverage_end: coverage[:coverage_end] || year_end
+        }
+      end
+
+      def undetermined_detailed_eligibility
+        {
+          eligible: false,
+          payer_name: nil,
+          plan_name: nil,
+          coverage_start: nil,
+          coverage_end: nil
+        }
+      end
+
+      def policy_token_for(patient_identifier, resource_type)
+        store_text(
+          case_token: "ct_x",
+          kind: :policy,
+          text: "MOCK-#{resource_type}-#{patient_identifier}"
+        )
+      end
+
+      def year_start
+        Date.new(Date.current.year, 1, 1)
+      end
+
+      def year_end
+        Date.new(Date.current.year, 12, 31)
+      end
 
       def build_referral_reference(identifier, attrs)
         Corvid::ReferralReference.new(
