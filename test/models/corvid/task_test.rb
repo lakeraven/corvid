@@ -420,6 +420,28 @@ class Corvid::TaskTest < ActiveSupport::TestCase
     end
   end
 
+  test "from_fhir_attributes returns nil assignee for empty practitioner owner reference id" do
+    with_tenant(TENANT) do
+      fhir_resource = OpenStruct.new(
+        status: "requested", intent: "order",
+        owner: OpenStruct.new(reference: "Practitioner/")
+      )
+      attrs = Corvid::Task.from_fhir_attributes(fhir_resource)
+      assert_nil attrs[:assignee_identifier]
+    end
+  end
+
+  test "from_fhir_attributes returns nil assignee for whitespace practitioner owner reference id" do
+    with_tenant(TENANT) do
+      fhir_resource = OpenStruct.new(
+        status: "requested", intent: "order",
+        owner: OpenStruct.new(reference: "Practitioner/ ")
+      )
+      attrs = Corvid::Task.from_fhir_attributes(fhir_resource)
+      assert_nil attrs[:assignee_identifier]
+    end
+  end
+
   test "from_fhir_attributes parses executionPeriod end as due_at" do
     with_tenant(TENANT) do
       fhir_resource = OpenStruct.new(

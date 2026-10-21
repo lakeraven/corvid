@@ -214,6 +214,112 @@ class Corvid::Adapters::FhirAdapterTest < Minitest::Test
     end
   end
 
+  def test_list_claims_patient_identifier_nil_when_patient_reference_id_empty
+    bundle = {
+      "resourceType" => "Bundle",
+      "entry" => [ { "resource" => {
+        "resourceType" => "Claim",
+        "id" => "clm_pt_blank_ref",
+        "patient" => { "reference" => "Patient/" },
+        "item" => [ {
+          "sequence" => 1,
+          "productOrService" => { "coding" => [ { "system" => "http://www.ama-assn.org/go/cpt", "code" => "99213" } ] },
+          "net" => { "value" => 100.0, "currency" => "USD" }
+        } ]
+      } } ]
+    }
+    @adapter.stub(:fhir_search, bundle) do
+      line = @adapter.list_claims("pt_blank_patient").first
+      assert_nil line.patient_identifier
+    end
+  end
+
+  def test_list_claims_patient_identifier_nil_when_patient_reference_id_whitespace
+    bundle = {
+      "resourceType" => "Bundle",
+      "entry" => [ { "resource" => {
+        "resourceType" => "Claim",
+        "id" => "clm_pt_ws_ref",
+        "patient" => { "reference" => "Patient/ " },
+        "item" => [ {
+          "sequence" => 1,
+          "productOrService" => { "coding" => [ { "system" => "http://www.ama-assn.org/go/cpt", "code" => "99213" } ] },
+          "net" => { "value" => 100.0, "currency" => "USD" }
+        } ]
+      } } ]
+    }
+    @adapter.stub(:fhir_search, bundle) do
+      line = @adapter.list_claims("pt_ws_patient").first
+      assert_nil line.patient_identifier
+    end
+  end
+
+  def test_find_referral_patient_identifier_nil_when_subject_reference_id_whitespace
+    resource = {
+      "id" => "rf_pt_ws_subj",
+      "status" => "active",
+      "subject" => { "reference" => "Patient/ " }
+    }
+    @adapter.stub(:fhir_read, resource) do
+      result = @adapter.find_referral("rf_pt_ws_subj")
+      assert_nil result.patient_identifier
+    end
+  end
+
+  def test_find_referral_patient_identifier_nil_when_subject_reference_id_empty
+    resource = {
+      "id" => "rf_pt_blank_subj",
+      "status" => "active",
+      "subject" => { "reference" => "Patient/" }
+    }
+    @adapter.stub(:fhir_read, resource) do
+      result = @adapter.find_referral("rf_pt_blank_subj")
+      assert_nil result.patient_identifier
+    end
+  end
+
+  def test_find_referral_patient_identifier_from_versioned_subject_reference
+    resource = {
+      "id" => "rf_pt_hist_subj",
+      "status" => "active",
+      "subject" => { "reference" => "Patient/pt_hist_subj_001/_history/3" }
+    }
+    @adapter.stub(:fhir_read, resource) do
+      result = @adapter.find_referral("rf_pt_hist_subj")
+      assert_equal "pt_hist_subj_001", result.patient_identifier
+    end
+  end
+
+  def test_get_care_team_practitioner_identifier_from_normal_member_reference
+    bundle = care_team_search_bundle(
+      [ { "member" => { "reference" => "Practitioner/pr_ct_001" }, "role" => [ { "coding" => [ { "code" => "doctor" } ] } ] } ]
+    )
+    @adapter.stub(:fhir_search, bundle) do
+      member = @adapter.get_care_team("pt_ct_001").first
+      assert_equal "pr_ct_001", member.practitioner_identifier
+    end
+  end
+
+  def test_get_care_team_practitioner_identifier_nil_when_member_reference_id_empty
+    bundle = care_team_search_bundle(
+      [ { "member" => { "reference" => "Practitioner/" }, "role" => [ { "coding" => [ { "code" => "doctor" } ] } ] } ]
+    )
+    @adapter.stub(:fhir_search, bundle) do
+      member = @adapter.get_care_team("pt_ct_blank").first
+      assert_nil member.practitioner_identifier
+    end
+  end
+
+  def test_get_care_team_practitioner_identifier_nil_when_member_reference_id_whitespace
+    bundle = care_team_search_bundle(
+      [ { "member" => { "reference" => "Practitioner/ " }, "role" => [ { "coding" => [ { "code" => "doctor" } ] } ] } ]
+    )
+    @adapter.stub(:fhir_search, bundle) do
+      member = @adapter.get_care_team("pt_ct_ws").first
+      assert_nil member.practitioner_identifier
+    end
+  end
+
   def test_find_referral_requesting_provider_identifier_nil_when_requester_missing
     resource = {
       "id" => "rf_req_pr_missing",
@@ -1952,6 +2058,21 @@ class Corvid::Adapters::FhirAdapterTest < Minitest::Test
       "status" => "active",
       "subject" => { "reference" => "Patient/pt_test_001" },
       "requester" => { "reference" => requester_reference }
+    }
+  end
+
+  def care_team_search_bundle(participants)
+    {
+      "resourceType" => "Bundle",
+      "entry" => [ {
+        "resource" => {
+          "resourceType" => "CareTeam",
+          "id" => "ct_helper",
+          "status" => "active",
+          "name" => "TEST CARE TEAM",
+          "participant" => participants
+        }
+      } ]
     }
   end
 

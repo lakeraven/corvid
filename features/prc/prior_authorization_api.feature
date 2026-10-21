@@ -27,6 +27,26 @@ Feature: CMS-0057-F Prior Authorization API (Da Vinci PAS)
     Then the PA submission should be rejected with a patient reference error
     And no PrcReferral should be created for patient "Patient"
 
+  Scenario: PA submission rejects Claim with patient reference type only
+    When a provider submits a FHIR PA request with patient reference "Patient"
+    Then the PA submission should be rejected with a patient reference error
+    And no PrcReferral should be created for patient "Patient"
+
+  Scenario: PA submission rejects Claim when patient reference is a practitioner
+    When a provider submits a FHIR PA request with patient reference "Practitioner/pr_pa_feat_001"
+    Then the PA submission should be rejected with a patient reference error
+    And no PrcReferral should be created for patient "pr_pa_feat_001"
+
+  Scenario: PA submission accepts versioned patient reference
+    When a provider submits a FHIR PA request with patient reference "Patient/pt_pa_feat_hist/_history/3"
+    Then a PrcReferral should be created in "submitted" status
+    And the created PrcReferral case patient should be "pt_pa_feat_hist"
+
+  Scenario: PA submission stores nil requesting provider for contained provider reference
+    When a provider submits a FHIR PA request with provider reference "#contained1"
+    Then a PrcReferral should be created
+    And the PrcReferral should record the requesting provider as absent
+
   # =============================================================================
   # PA DECISION (ClaimResponse)
   # =============================================================================
