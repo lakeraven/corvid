@@ -134,8 +134,9 @@ module Corvid
       DEFAULT_READ_TIMEOUT = 30
       # get_coverages follows at most this many Bundle pages, then fails closed.
       MAX_COVERAGE_PAGES = 50
-      # Only the exact Bundle.link relation "next" is followed. Any other
-      # relation that equals "next" after strip and downcase fails the search.
+      # Only the exact Bundle.link relation "next" is followed. A relation
+      # that equals "next" after removing [[:space:]] or case-folding, but
+      # is not exactly "next", fails the search and is not requested.
       COVERAGE_NEXT_RELATIONS = %w[next].freeze
 
       # Strict Coverage.period grammar. Anchored, and applied before any
@@ -439,16 +440,17 @@ module Corvid
       # ----------------------------------------------------------------------
       # Coverages
       #
-      # GET Coverage?beneficiary=Patient/<id>. Bundle.type must equal
-      # "searchset" or the search is nil. Follow Bundle.link relation
-      # "next" for up to MAX_COVERAGE_PAGES pages. Only that exact
-      # relation is followed. When link is present it must be an Array
-      # of Hashes, each with a String relation. An exactly-"next" link
-      # must have a String url. A relation that equals "next" after
-      # strip and downcase but is not exactly "next", including "Next"
-      # and "NEXT", is nil and is not requested. A non-String relation,
-      # or more than one "next" link, is nil. A relative next URL is
-      # resolved with
+      # GET Coverage?beneficiary=Patient/<id>. A nil, empty, or
+      # whitespace-only patient identifier is nil and makes no request.
+      # Bundle.type must equal "searchset" or the search is nil. Follow
+      # Bundle.link relation "next" for up to MAX_COVERAGE_PAGES pages.
+      # Only that exact relation is followed. When link is present it
+      # must be an Array of Hashes, each with a String relation. An
+      # exactly-"next" link must have a String url. A relation that
+      # equals "next" after removing Unicode whitespace ([[:space:]])
+      # or case-folding, but is not exactly "next", is nil and is not
+      # requested. A non-String relation, or more than one "next" link,
+      # is nil. A relative next URL is resolved with
       # URI.join against the URL of the page that contained it. That
       # absolute URL is fetched only when it stays on this origin and
       # under the base path.
@@ -504,12 +506,15 @@ module Corvid
       # be an Integer >= 0 and equal to the first page's total; a later
       # page may omit total. The first page's total must equal that count,
       # or the result is nil. An OperationOutcome entry is nil when issue
-      # is missing, not an Array, contains a non-Hash, or has a severity
-      # other than exactly "fatal", "error", "warning", or "information".
+      # is missing, not an Array, empty, contains a non-Hash, or has a
+      # severity other than exactly "fatal", "error", "warning", or
+      # "information". An issue code present but not a String is nil.
       # Codes suppressed, incomplete, and too-costly
       # (UNTRUSTED_OUTCOME_CODES) are nil at any severity. "error" and
       # "fatal" still block. A well-formed warning or information issue
-      # with another code is ignored. A page with no entry and total nil
+      # with another String code is ignored. A resourceType equal to
+      # "OperationOutcome" case-insensitively or after stripping, but
+      # not exactly, is nil. A page with no entry and total nil
       # or 0 is empty. A first page with no entry, a
       # positive total, and no next link is nil via the count check. A
       # string anywhere in the bundle that fails valid_encoding? is nil
@@ -517,9 +522,11 @@ module Corvid
       # An entry that is not a Hash, an entry without a Hash resource, or
       # a resource without a String resourceType is nil. A resourceType
       # equal to "Coverage" case-insensitively but not exactly is nil.
-      # Other well-formed resource types keep the prior handling. Each
-      # Coverage id is tracked across all pages. A Coverage without a
-      # non-empty String id, or a repeated id, is nil.
+      # An entry whose resourceType is neither Coverage nor
+      # OperationOutcome is nil unless search.mode is exactly "include"
+      # (that entry is skipped). Each Coverage id is tracked across all
+      # pages. A Coverage without a non-empty String id, or a repeated
+      # id, is nil.
       # plan_name is the class entry typed "plan": its name, otherwise
       # its value.
       #
@@ -530,9 +537,12 @@ module Corvid
       # period, a malformed Coverage, a status outside the FHIR set, a
       # total that is not an Integer >= 0, differs from the first page,
       # or does not match the Coverage count, invalid encoding, an
-      # untrusted OperationOutcome, a non-String payor display,
-      # subscriberId, or type code, an off-origin / cyclic / over-limit
-      # next link,
+      # untrusted or inexact OperationOutcome, an empty issue array, a
+      # non-String issue code, an unexpected resource without
+      # search.mode "include", a blank patient identifier, a non-String
+      # payor display, subscriberId, or type code, an off-origin /
+      # cyclic / over-limit next link, or a next relation that matches
+      # only after removing [[:space:]] or case-folding,
       # or a transport error
       # (Timeout::Error, including Net::ReadTimeout and Net::OpenTimeout,
       # SocketError, SystemCallError, OpenSSL::SSL::SSLError, IOError,
@@ -542,6 +552,8 @@ module Corvid
       # ----------------------------------------------------------------------
 
       def get_coverages(patient_identifier)
+        return nil if patient_identifier.blank?
+
         query = URI.encode_www_form(beneficiary: "Patient/#{patient_identifier}")
         collect_coverage_pages("#{@base_url}/Coverage?#{query}", patient_identifier)
       rescue Timeout::Error, SocketError, SystemCallError,
@@ -1102,7 +1114,7 @@ module Corvid
 
         resource = coverage_resource(entry)
         return nil if resource && !remember_coverage_id(resource, seen_ids)
-        return 0 unless resource
+        return non_coverage_entry(entry) unless resource
 
         row = coverage_row(resource, patient_identifier)
         return nil if row == :unknown_coverage
@@ -1113,17 +1125,25 @@ module Corvid
         nil
       end
 
-      # false fails the search. Other resource types stay on the prior path.
+      # false fails the search. Inexact Coverage and OperationOutcome
+      # types fail here. Any other String type is judged later.
       def well_formed_coverage_entry?(entry)
         resource = bundle_entry_resource(entry)
         return false unless resource
 
-        type = resource["resourceType"]
-        type.is_a?(String) && !inexact_coverage_type?(type)
+        accepted_resource_type?(resource["resourceType"])
+      end
+
+      def accepted_resource_type?(type)
+        type.is_a?(String) && !inexact_coverage_type?(type) && !inexact_outcome_type?(type)
       end
 
       def inexact_coverage_type?(type)
         type != "Coverage" && type.casecmp?("Coverage")
+      end
+
+      def inexact_outcome_type?(type)
+        type != "OperationOutcome" && type.strip.casecmp?("OperationOutcome")
       end
 
       # false fails the search. The id is a non-empty String, unique across
@@ -1141,30 +1161,55 @@ module Corvid
         resource if resource.is_a?(Hash)
       end
 
-      # A missing issue, a non-Array, a non-Hash element, or a severity
-      # outside COVERAGE_OUTCOME_SEVERITIES is unknown. error and fatal
-      # still block. UNTRUSTED_OUTCOME_CODES block at any severity. A
-      # well-formed warning or information issue with another code does not.
+      # A missing issue, an empty Array, a non-Array, a non-Hash element,
+      # a non-String code, or a severity outside COVERAGE_OUTCOME_SEVERITIES
+      # is unknown. error and fatal still block. UNTRUSTED_OUTCOME_CODES
+      # block at any severity. A well-formed warning or information issue
+      # with another String code does not.
       def unknown_coverage_outcome?(entry)
-        resource = bundle_entry_resource(entry)
-        return false unless resource && resource["resourceType"] == "OperationOutcome"
+        resource = operation_outcome_resource(entry)
+        return false unless resource
 
         unknown_coverage_issues?(resource["issue"])
       end
 
+      def operation_outcome_resource(entry)
+        resource = bundle_entry_resource(entry)
+        resource if resource && resource["resourceType"] == "OperationOutcome"
+      end
+
       def unknown_coverage_issues?(issues)
         return true unless issues.is_a?(Array)
+        return true if issues.empty?
 
         issues.any? { |issue| unknown_coverage_issue?(issue) }
       end
 
       def unknown_coverage_issue?(issue)
         return true unless issue.is_a?(Hash)
+        return true unless COVERAGE_OUTCOME_SEVERITIES.include?(issue["severity"])
+        return true if non_string_issue_code?(issue["code"])
 
-        severity = issue["severity"]
-        return true unless COVERAGE_OUTCOME_SEVERITIES.include?(severity)
+        untrusted_outcome?(issue) || BLOCKING_OUTCOME_SEVERITIES.include?(issue["severity"])
+      end
 
-        untrusted_outcome?(issue) || BLOCKING_OUTCOME_SEVERITIES.include?(severity)
+      def non_string_issue_code?(code)
+        !code.nil? && !code.is_a?(String)
+      end
+
+      # 0 skips the entry. nil fails the search. Exact OperationOutcome
+      # was already accepted. search.mode "include" may carry other types.
+      def non_coverage_entry(entry)
+        return 0 if operation_outcome_resource(entry) || included_other_resource?(entry)
+
+        nil
+      end
+
+      def included_other_resource?(entry)
+        resource = bundle_entry_resource(entry)
+        return false unless resource
+
+        ignorable_include?(entry, resource, "Coverage")
       end
 
       def coverage_resource(entry)
@@ -1717,7 +1762,12 @@ module Corvid
       end
 
       def rejected_next_relation?(relation)
-        relation.strip.downcase == "next" && !followed_next_relation?(relation)
+        folded_next_relation?(relation) && !followed_next_relation?(relation)
+      end
+
+      # Equals "next" once [[:space:]] is removed and case is folded.
+      def folded_next_relation?(relation)
+        relation.gsub(/[[:space:]]/, "").casecmp?("next")
       end
 
       def followed_next_relation?(relation)
