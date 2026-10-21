@@ -430,8 +430,16 @@ module Corvid
       # Follows `link` entries with relation exactly "next", resolving each
       # URL with URI.join against the current page. Fail closed: returns nil
       # (never a partial Bundle) when any page is non-2xx, invalid JSON, or
-      # not a Bundle Hash; when a next URL's scheme, host, or port differs
-      # from @base_url (that URL is not requested); when a next URL was
+      # not a Bundle Hash; when `entry` is present and not an Array (absent
+      # or null is an empty page); when `link` is present and not an Array;
+      # when a Hash link's relation is a String equal to "next" only after
+      # strip and case-insensitive compare (that URL is not requested); when
+      # more than one exactly-"next" link is present (neither URL is
+      # requested); when a next URL's scheme, host, or port differs from
+      # @base_url, or its path does not start with @base_url's path at a
+      # segment boundary (that URL is not requested); when the first page's
+      # Integer `total` differs from the merged entry count (an equal total
+      # is kept and an absent total stays absent); when a next URL was
       # already visited; or when the chain is longer than MAX_SEARCH_PAGES.
       def fhir_search(resource_type, params = {})
         query = URI.encode_www_form(params)
@@ -445,7 +453,7 @@ module Corvid
 
         while url && pages.size < MAX_SEARCH_PAGES && !seen[url]
           page = fetch_bundle_page(url)
-          return unless page
+          return unless page && acceptable_entries?(page)
 
           seen[url] = true
           pages << page
@@ -481,11 +489,25 @@ module Corvid
       end
 
       def next_link_href(bundle)
-        link = bundle_links(bundle).find { |item| next_relation?(item) }
-        return if link.nil?
+        links = bundle_links(bundle)
+        return SEARCH_REJECTED if links == SEARCH_REJECTED
+        return SEARCH_REJECTED if links.any? { |link| inexact_next_relation?(link) }
 
-        href = link["url"]
+        next_links = links.select { |link| next_relation?(link) }
+        return SEARCH_REJECTED if next_links.size > 1
+        return if next_links.empty?
+
+        href = next_links.first["url"]
         href.is_a?(String) && !href.empty? ? href : SEARCH_REJECTED
+      end
+
+      def inexact_next_relation?(link)
+        return false unless link.is_a?(Hash)
+
+        relation = link["relation"]
+        return false unless relation.is_a?(String) && relation != "next"
+
+        relation.strip.casecmp?("next")
       end
 
       def next_relation?(link)
@@ -494,7 +516,10 @@ module Corvid
 
       def bundle_links(bundle)
         links = bundle["link"]
-        links.is_a?(Array) ? links : []
+        return links if links.is_a?(Array)
+        return [] if links.nil?
+
+        SEARCH_REJECTED
       end
 
       def resolve_search_url(current_url, href)
@@ -508,16 +533,41 @@ module Corvid
 
         origin = URI.parse(@base_url)
         other = URI.parse(url)
-        origin.scheme == other.scheme && origin.host == other.host && origin.port == other.port
+        return false unless origin.scheme == other.scheme && origin.host == other.host && origin.port == other.port
+
+        path_under_base?(origin.path, other.path)
       rescue URI::InvalidURIError
         false
       end
 
+      def path_under_base?(base_path, other_path)
+        base = base_path.to_s.chomp("/")
+        base = "/" if base.empty?
+        other = other_path.to_s
+        other = "/" if other.empty?
+        base == "/" || other == base || other.start_with?("#{base}/")
+      end
+
       def merge_search_pages(pages)
+        entries = pages.flat_map { |page| bundle_entries(page) }
+        return if total_mismatch?(pages.first, entries)
+
         merged = pages.first.dup
-        merged["entry"] = pages.flat_map { |page| bundle_entries(page) }
+        merged["entry"] = entries
         strip_next_links(merged)
         merged
+      end
+
+      def total_mismatch?(page, entries)
+        total = page["total"]
+        total.is_a?(Integer) && total != entries.length
+      end
+
+      def acceptable_entries?(page)
+        return true unless page.key?("entry")
+
+        entry = page["entry"]
+        entry.nil? || entry.is_a?(Array)
       end
 
       def bundle_entries(page)
