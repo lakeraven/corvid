@@ -9,14 +9,15 @@ module Corvid
   # the canonical list). Provider source + confidence are captured for
   # provenance. verification_snapshot_hash is an HMAC-SHA256 of the adapter
   # responses under a host-supplied key (ADR 0008). The key version is stored
-  # beside it. A key version requires a hash. The presence check on
-  # verification_snapshot_key_version applies only when the hash is being set
-  # or changed, so legacy rows (hash, nil version) can be updated. On a
-  # persisted row the version may be set or changed only in the same save
-  # that sets or changes the hash. Once a keyed fingerprint is recorded (the
-  # stored key version is present), neither the hash nor the key version may
-  # change. Legacy rows (stored version nil) may still gain a new hash and
-  # version together.
+  # beside it. Both columns are write-once at create: on a persisted row, any
+  # change to either is invalid, with the error on verification_snapshot_hash.
+  # A just-inserted object whose stored columns are both blank may still
+  # receive them before it is reloaded. Changing the key version without the
+  # hash also errors on verification_snapshot_key_version. A key version
+  # requires a hash. The presence check on the version applies only when the
+  # hash is being set or changed, so a legacy row can still be updated on
+  # other columns. The version is at most
+  # SnapshotFingerprint::MAX_VERSION_LENGTH characters.
   class PrcEligibilityDecision < ::ActiveRecord::Base
     self.table_name = "corvid_prc_eligibility_decisions"
 
@@ -34,8 +35,7 @@ module Corvid
               length: { maximum: SnapshotFingerprint::MAX_VERSION_LENGTH },
               allow_nil: true
     validate :verification_snapshot_key_version_requires_hash
-    validate :verification_snapshot_key_version_changes_with_hash, if: :persisted?
-    validate :verification_snapshot_fingerprint_immutable_once_keyed, if: :persisted?
+    validate :verification_snapshot_fingerprint_write_once, if: :persisted?
 
     scope :recent, -> { order(decided_at: :desc) }
     scope :for_person, ->(identifier) { where(person_identifier: identifier) }
@@ -52,8 +52,11 @@ module Corvid
       errors.add(:verification_snapshot_key_version, "requires a verification snapshot hash")
     end
 
-    def verification_snapshot_key_version_changes_with_hash
-      return unless will_save_change_to_verification_snapshot_key_version?
+    def verification_snapshot_fingerprint_write_once
+      return unless verification_snapshot_fingerprint_changing?
+      return if initial_fingerprint_on_just_created_row?
+
+      errors.add(:verification_snapshot_hash, "cannot change once recorded")
       return if will_save_change_to_verification_snapshot_hash?
 
       errors.add(
@@ -62,14 +65,13 @@ module Corvid
       )
     end
 
-    def verification_snapshot_fingerprint_immutable_once_keyed
-      return if verification_snapshot_key_version_in_database.blank?
-      return unless verification_snapshot_fingerprint_changing?
-
-      errors.add(
-        :verification_snapshot_hash,
-        "cannot change once a keyed fingerprint is recorded"
-      )
+    # create! leaves previously_new_record? set until reload or the next save.
+    # That object may still be given its first fingerprint. A reloaded row,
+    # or one that already stored either column, may not.
+    def initial_fingerprint_on_just_created_row?
+      previously_new_record? &&
+        verification_snapshot_hash_in_database.blank? &&
+        verification_snapshot_key_version_in_database.blank?
     end
 
     def verification_snapshot_fingerprint_changing?

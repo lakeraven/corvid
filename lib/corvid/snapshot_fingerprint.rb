@@ -11,8 +11,7 @@ module Corvid
   # store. A plain SHA256 is never produced. The HMAC input is canonical JSON
   # of the allowed leaf types, with EXCLUDED_KEYS removed at every level.
   # A usable version is a String or Symbol whose to_s has a valid encoding,
-  # contains no control characters and no format characters, is non-blank
-  # after strip, is not blank by Unicode whitespace rules, and is at most
+  # matches printable ASCII with no spaces (/\A[!-~]+\z/), and is at most
   # MAX_VERSION_LENGTH characters. normalized_version does not raise. A usable
   # key is a String of at least MIN_KEY_BYTES whose bytes are not all the
   # same byte. More than one configured name matching the version after to_s
@@ -27,6 +26,14 @@ module Corvid
     # Dropped at every level before the HMAC. Adapters stamp call time here;
     # the fingerprint identifies upstream data.
     EXCLUDED_KEYS = %w[verified_at].freeze
+    # Shared by ScrubLegacyVerificationSnapshotHashes and
+    # corvid:verification_snapshots:scrub_legacy.
+    LEGACY_SNAPSHOT_HASH_SCRUB_SQL = <<~SQL.freeze
+      UPDATE corvid_prc_eligibility_decisions
+      SET verification_snapshot_hash = NULL
+      WHERE verification_snapshot_key_version IS NULL
+        AND verification_snapshot_hash IS NOT NULL
+    SQL
     UNUSABLE_KEY_MESSAGE =
       "corvid.snapshot_fingerprint: verification snapshot key version is configured but has no usable key"
 
@@ -101,8 +108,7 @@ module Corvid
       end
 
       # String or Symbol only. to_s must be valid_encoding? before the
-      # control-character, Unicode-blank, and format-character checks.
-      # Never raises.
+      # printable-ASCII check. Never raises.
       def normalized_version(version)
         return unless version.is_a?(String) || version.is_a?(Symbol)
 
@@ -117,10 +123,7 @@ module Corvid
       def acceptable_version_name?(name)
         name.is_a?(String) &&
           name.valid_encoding? &&
-          !name.match?(/[[:cntrl:]]/) &&
-          !name.match?(/\A[[:space:]]*\z/) &&
-          !name.match?(/\p{Cf}/) &&
-          !name.strip.empty? &&
+          name.match?(/\A[!-~]+\z/) &&
           name.length <= MAX_VERSION_LENGTH
       end
 
