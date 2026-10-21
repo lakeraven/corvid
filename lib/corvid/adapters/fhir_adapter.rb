@@ -439,7 +439,7 @@ module Corvid
         return unavailable unless ext
 
         {
-          enrolled: sub_extension_value(ext, "enrolled") == true,
+          enrolled: enrolled_value(ext),
           membership_number: sub_extension_value(ext, "membershipNumber"),
           tribe_name: sub_extension_value(ext, "tribeName"),
           tribe_code: sub_extension_value(ext, "tribeCode"),
@@ -980,6 +980,16 @@ module Corvid
 
       def find_extension(resource, url)
         Array(resource["extension"]).find { |e| e["url"] == url }
+      end
+
+      # Exact boolean valueBoolean only. A missing enrolled sub-extension, or
+      # any other FHIR value, is nil rather than a denial.
+      def enrolled_value(extension)
+        sub = Array(extension["extension"]).find { |entry| entry.is_a?(Hash) && entry["url"] == "enrolled" }
+        return nil unless sub
+
+        value = sub["valueBoolean"]
+        value if value == true || value == false
       end
 
       # Allow-list. Non-Strings (and any other String) never raise.

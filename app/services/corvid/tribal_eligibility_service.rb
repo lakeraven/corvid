@@ -13,8 +13,9 @@ module Corvid
   # Reason codes (stable enum strings) returned in EligibilityDecision and
   # persisted on PrcEligibilityDecision.reason_codes:
   #
-  #   :provider_unavailable_fail_closed  — confidence is not :verified or :stale
-  #   :not_enrolled                      — adapter says not enrolled
+  #   :provider_unavailable_fail_closed  — enrollment is not a Hash, enrolled is not exactly true or false,
+  #                                        or enrolled is true without confidence :verified or :stale
+  #   :not_enrolled                      — enrolled is exactly false; confidence is not consulted
   #   :not_enrolled_in_contracted_tribe  — enrolled, but tribe_code is blank or not the contracted tribe
   #   :off_reservation                   — facility requires on-reservation and adapter says off-reservation
   #   :ssn_missing                       — facility requires SSN-on-file and adapter says ssn_present: false
@@ -79,7 +80,7 @@ module Corvid
           eligible: eligible,
           reason_codes: reasons.map(&:to_s),
           provider_source: provider_source_for(Corvid.adapter),
-          provider_confidence: enrollment[:confidence]&.to_s,
+          provider_confidence: enrollment.is_a?(Hash) ? enrollment[:confidence]&.to_s : nil,
           verification_snapshot_hash: snapshot_hash,
           verification_snapshot_key_version: snapshot_key_version
         )
@@ -100,16 +101,16 @@ module Corvid
       private
 
       def enrollment_reasons(enrollment, facility)
+        # nil, a non-Hash, or enrolled other than exactly true/false (nil, "true", 1)
+        # is an unusable response. An explicit false is :not_enrolled even when
+        # confidence is missing or :unavailable. true still needs :verified or :stale.
+        return [ :provider_unavailable_fail_closed ] unless canonical_enrolled_flag?(enrollment)
+        return [ :not_enrolled ] if enrollment[:enrolled] == false
+
         confidence = enrollment[:confidence]
-        # Fail closed on anything other than the two usable symbols.
         return [ :provider_unavailable_fail_closed ] unless %i[verified stale].include?(confidence)
 
         reasons = []
-        unless enrollment[:enrolled]
-          reasons << :not_enrolled
-          return reasons
-        end
-
         contracted = facility.contracted_tribe_code
         tribe_code = enrollment[:tribe_code]
         # Nil or blank tribe_code cannot satisfy a contracted tribe.
@@ -119,6 +120,13 @@ module Corvid
 
         reasons << :enrollment_stale if confidence == :stale
         reasons
+      end
+
+      def canonical_enrolled_flag?(enrollment)
+        return false unless enrollment.is_a?(Hash)
+
+        value = enrollment[:enrolled]
+        value == true || value == false
       end
 
       def identity_reasons(identity, facility)
