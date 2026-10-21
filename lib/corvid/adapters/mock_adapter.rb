@@ -376,7 +376,10 @@ module Corvid
         @remittances.values
       end
 
+      # A check that names no payer is undetermined, never the first coverage.
       def check_eligibility_detailed(patient_identifier, payer_identifier)
+        return undetermined_detailed_eligibility if payer_identifier.to_s.strip.empty?
+
         coverage = coverage_for(patient_identifier, payer_identifier, :payer_identifier)
         return undetermined_detailed_eligibility unless coverage
 

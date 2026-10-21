@@ -81,9 +81,9 @@ module AdapterContractTests
     find_practitioner: "unknown practitioner token yields nil",
     find_referral: "unknown referral token yields nil",
     get_care_team: "unknown patient yields empty array",
-    get_conditions: "unknown patient yields empty array",
+    get_conditions: "unknown patient yields empty array, or nil when the source cannot answer",
     get_coverages: "unknown patient yields empty array",
-    get_medications: "unknown patient yields empty array",
+    get_medications: "unknown patient yields empty array, or nil when the source cannot answer",
     get_obligation: "unknown obligation id yields nil",
     get_obligation_by_referral: "unknown referral yields nil obligation",
     get_payments: "unknown obligation id yields empty array",
@@ -401,6 +401,9 @@ module AdapterContractTests
       case method_name
       when :create_referral
         assert_created_referral_readable(result, seed)
+      when :store_text
+        assert_equal seed[:stored_text], adapter.fetch_text(result),
+                     "fetch_text must return the text store_text stored under the returned token"
       when :update_referral
         ref = adapter.find_referral(seed[:referral_identifier])
         assert_equal AdapterContractTests::UPDATED_REFERRAL_STATUS, ref&.status,
@@ -536,15 +539,13 @@ module AdapterContractTests
                        "dereference_many must return the same record as dereference for #{token.inspect}"
         end
       when :verify_eligibility
-        assert_coverage_resource_type_guards(seed) unless eligibility_guards_skipped?
+        assert_coverage_resource_type_guards(seed)
       when :check_eligibility_detailed
-        unless eligibility_guards_skipped?
-          wrong_payer = adapter.check_eligibility_detailed(
-            seed[:patient_identifier],
-            seed[:unknown_payer_identifier]
-          )
-          assert_eligibility_detailed_unknown(wrong_payer)
-        end
+        wrong_payer = adapter.check_eligibility_detailed(
+          seed[:patient_identifier],
+          seed[:unknown_payer_identifier]
+        )
+        assert_eligibility_detailed_unknown(wrong_payer)
       when :verify_tribal_enrollment
         if seed[:patient_identifier_tribal_no_confidence]
           result = adapter.verify_tribal_enrollment(seed[:patient_identifier_tribal_no_confidence])
@@ -574,11 +575,6 @@ module AdapterContractTests
                       "dereference(seeded patient) must return that patient's record"
     end
 
-    def eligibility_guards_skipped?
-      unsupported = contract_unsupported
-      unsupported.key?(:verify_eligibility) && unsupported.key?(:check_eligibility_detailed)
-    end
-
     def assert_coverage_resource_type_guards(seed)
       adapter = contract_adapter
       match = adapter.verify_eligibility(seed[:patient_identifier], seed[:coverage_resource_type])
@@ -594,12 +590,6 @@ module AdapterContractTests
                          "verify_eligibility(#{seed[:inactive_coverage_resource_type].inspect}) must answer " \
                          "for the seeded inactive coverage"
       assert_equal false, inactive[:eligible], "an inactive coverage must return eligible: false"
-
-      unknown_payer = adapter.check_eligibility_detailed(
-        seed[:patient_identifier],
-        seed[:unknown_payer_identifier]
-      )
-      assert_eligibility_detailed_unknown(unknown_payer)
     end
 
     def assert_wrong_coverage_ineligible(result)
@@ -631,8 +621,12 @@ module AdapterContractTests
         assert_equal [], empty
       when :list_referrals, :list_claims
         assert_equal [], adapter.public_send(method_name, seed[:unknown_patient_identifier])
-      when :get_care_team, :get_conditions, :get_medications, :get_coverages
+      when :get_care_team, :get_coverages
         assert_equal [], adapter.public_send(method_name, seed[:unknown_patient_identifier])
+      when :get_conditions, :get_medications
+        # base.rb: nil is "unknown", [] is "none"; both fail closed.
+        result = adapter.public_send(method_name, seed[:unknown_patient_identifier])
+        assert result.nil? || result == [], "#{method_name}(unknown) must be nil or [], got #{result.inspect}"
       when :get_obligation
         assert_nil adapter.get_obligation(seed[:unknown_obligation_identifier])
       when :get_obligation_by_referral
@@ -791,8 +785,12 @@ module AdapterContractTests
         assert_open_struct_result(result)
       when :get_care_team
         assert_array_of(result, Corvid::CareTeamMemberReference)
-      when :get_conditions, :get_medications, :get_coverages
+      when :get_coverages
         assert_instance_of Array, result
+      when :get_conditions
+        assert_clinical_read_shape(result, Corvid::ConditionReference)
+      when :get_medications
+        assert_clinical_read_shape(result, Corvid::MedicationReference)
       when :verify_eligibility
         assert_verify_eligibility_shape(result)
       when :verify_tribal_enrollment
@@ -815,6 +813,13 @@ module AdapterContractTests
       else
         flunk("no shape assertion for implemented method #{method_name}")
       end
+    end
+
+    # base.rb: an Array of references, or nil when the source cannot answer.
+    def assert_clinical_read_shape(value, element_class)
+      return if value.nil?
+
+      assert_array_of(value, element_class)
     end
 
     def assert_array_of(value, element_class)
@@ -923,7 +928,9 @@ module AdapterContractTests
       status = value[:status]
       assert identifier.nil? || identifier.is_a?(String),
              "#{id_key} must be String or nil"
-      assert status.nil? || status.is_a?(String), "status must be String or nil"
+      # base.rb documents status: str, and callers persist it.
+      assert_instance_of String, status, "#{id_key} result status must be a String"
+      refute_empty status.strip, "#{id_key} result status must not be blank"
       if identifier.nil?
         refute_includes %w[accepted succeeded processing refunded], status.to_s.downcase,
                         "non-success status required when #{id_key} is nil"
