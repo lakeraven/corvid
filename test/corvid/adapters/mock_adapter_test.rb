@@ -98,6 +98,11 @@ class Corvid::Adapters::MockAdapterTest < Minitest::Test
   # -- Eligibility ------------------------------------------------------------
 
   def test_verify_eligibility_returns_eligible_for_seeded_resource_type
+    @adapter.add_patient("pt_001", display_name: "TEST,PATIENT", dob: Date.new(1980, 1, 1), sex: "F", ssn_last4: "0000")
+    @adapter.add_coverage("pt_001",
+                          coverage_type: "medicaid",
+                          payer_name: "MOCK MEDICAID PAYER",
+                          plan_name: "Mock Medicaid")
     result = @adapter.verify_eligibility("pt_001", "medicaid")
     assert result[:eligible]
     assert result[:payer_name]
@@ -143,10 +148,17 @@ class Corvid::Adapters::MockAdapterTest < Minitest::Test
     assert_equal :stale, result[:confidence]
   end
 
-  def test_verify_tribal_enrollment_unknown_patient_returns_not_enrolled_with_verified_confidence
+  def test_verify_tribal_enrollment_unknown_patient_returns_not_enrolled_with_unavailable_confidence
     result = @adapter.verify_tribal_enrollment("pt_unknown")
     refute result[:enrolled]
     assert_nil result[:tribe_code]
+    assert_equal :unavailable, result[:confidence]
+  end
+
+  def test_verify_tribal_enrollment_seeded_not_enrolled_record_returns_verified_confidence
+    @adapter.add_enrollment("pt_ne", enrolled: false, tribe_name: nil, tribe_code: nil, member_status: "denied")
+    result = @adapter.verify_tribal_enrollment("pt_ne")
+    refute result[:enrolled]
     assert_equal :verified, result[:confidence]
   end
 

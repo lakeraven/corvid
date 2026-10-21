@@ -40,6 +40,7 @@ class Corvid::AuthorizationWizardEligibilityTest < ActiveSupport::TestCase
   end
 
   test "eligible true sets enrolled with checked_at" do
+    seed_eligible_coverage_for_all_resource_types!(PATIENT)
     with_tenant(TENANT) do
       wizard = build_wizard
       wizard.verify_all_enrollment!
@@ -422,6 +423,15 @@ class Corvid::AuthorizationWizardEligibilityTest < ActiveSupport::TestCase
       resource = wizard.alternate_resources[type]
       assert_equal :not_checked, resource[:status], type
       assert_nil resource[:checked_at]
+    end
+  end
+
+  def seed_eligible_coverage_for_all_resource_types!(patient_identifier)
+    Corvid::AlternateResourceCheck::RESOURCE_TYPES.each do |type|
+      Corvid.adapter.add_coverage(patient_identifier,
+                                  coverage_type: type,
+                                  payer_name: "MOCK #{type.to_s.upcase} PAYER",
+                                  plan_name: "Mock Plan")
     end
   end
 end

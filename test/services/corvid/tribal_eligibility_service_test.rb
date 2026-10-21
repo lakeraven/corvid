@@ -74,7 +74,11 @@ class Corvid::TribalEligibilityServiceTest < ActiveSupport::TestCase
   # ---- True negative --------------------------------------------------------
 
   test "decide denies a not-enrolled person with reason :not_enrolled" do
-    # No add_enrollment — MockAdapter returns enrolled: false
+    @adapter.add_enrollment("pt_tn",
+                            enrolled: false,
+                            tribe_name: nil,
+                            tribe_code: nil,
+                            member_status: "denied")
 
     decision = Corvid::TribalEligibilityService.decide(
       person_identifier: "pt_tn",

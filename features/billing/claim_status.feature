@@ -58,10 +58,10 @@ Feature: Clearinghouse Claim Status Tracking
 
   Scenario: Check status of all pending claims
     Given the following claims are pending:
-      | clearinghouse_id      | current_status |
-      | CLM-2025-010  | submitted      |
-      | CLM-2025-011  | submitted      |
-      | CLM-2025-012  | accepted       |
+      | clearinghouse_id      | current_status | clearinghouse_reports |
+      | CLM-2025-010  | submitted      | accepted              |
+      | CLM-2025-011  | submitted      | accepted              |
+      | CLM-2025-012  | accepted       | accepted              |
     When I check the status of all pending claims
     Then each claim should be checked with Clearinghouse
     And claim statuses should be updated accordingly
@@ -83,6 +83,7 @@ Feature: Clearinghouse Claim Status Tracking
 
   Scenario: Background job polls pending claims
     Given there are 5 pending claims older than 1 hour
+    And each poll claim is registered with the clearinghouse as "accepted"
     When the claim status polling job runs
     Then all 5 claims should be checked
     And the job should log its completion
@@ -95,6 +96,7 @@ Feature: Clearinghouse Claim Status Tracking
 
   Scenario: Background job handles Clearinghouse API errors gracefully
     Given there are 3 pending claims
+    And each batch pending claim is registered with the clearinghouse as "accepted"
     And the Clearinghouse API returns an error for the second claim
     When the claim status polling job runs
     Then the first claim should be updated

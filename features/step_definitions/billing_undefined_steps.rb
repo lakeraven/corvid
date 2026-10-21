@@ -572,6 +572,18 @@ Given("there are {int} pending claims older than {int} hour") do |count, _hours|
   end
 end
 
+Given("each poll claim is registered with the clearinghouse as {string}") do |status|
+  Corvid::ClaimSubmission.where("claim_identifier LIKE ?", "CLM_POLL_%").find_each do |claim|
+    Corvid.adapter.add_claim(claim.claim_identifier, { status: status.downcase })
+  end
+end
+
+Given("each batch pending claim is registered with the clearinghouse as {string}") do |status|
+  Corvid::ClaimSubmission.where("claim_identifier LIKE ?", "CLM_PC_%").find_each do |claim|
+    Corvid.adapter.add_claim(claim.claim_identifier, { status: status.downcase })
+  end
+end
+
 Given("there are {int} pending claims") do |count|
   count.times do |i|
     Corvid::ClaimSubmission.create!(
@@ -825,6 +837,17 @@ Given("a succeeded payment of {string} exists with Stripe ID {string}") do |amou
     payment_identifier: stripe_id,
     description: "Succeeded payment"
   )
+end
+
+Given("the payment is stored in the billing adapter") do
+  raise "payment must be created first" unless @payment&.payment_identifier
+
+  Corvid.adapter.instance_variable_get(:@payments_store)[@payment.payment_identifier] = {
+    amount_cents: @payment.amount_cents,
+    patient_identifier: @payment.patient_identifier,
+    description: @payment.description,
+    status: "succeeded"
+  }
 end
 
 When("I attempt to refund the payment") do

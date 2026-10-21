@@ -37,6 +37,15 @@ Given("person {string} is enrolled in tribe {string} with confidence {word}") do
                                 confidence: confidence.to_sym)
 end
 
+Given("person {string} is recorded as not enrolled with verified confidence") do |person_id|
+  Corvid.adapter.add_enrollment(person_id,
+                                enrolled: false,
+                                tribe_name: nil,
+                                tribe_code: nil,
+                                member_status: "denied",
+                                confidence: :verified)
+end
+
 When("I decide eligibility for person {string} at facility {string}") do |person_id, facility_id|
   facility = @facility_objects[facility_id]
   @decision = Corvid::TribalEligibilityService.decide(
