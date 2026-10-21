@@ -442,9 +442,10 @@ module Corvid
         @remittances[reference] = attrs
       end
 
-      def add_coverage(patient_identifier, attrs)
+      def add_coverage(patient_identifier, attrs = {}, **extra)
+        row = attrs.is_a?(Hash) ? attrs.merge(extra) : extra
         @coverages[patient_identifier.to_s] ||= []
-        @coverages[patient_identifier.to_s] << attrs
+        @coverages[patient_identifier.to_s] << row
       end
 
       def get_coverages(patient_identifier)

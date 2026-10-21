@@ -555,7 +555,7 @@ class Corvid::Adapters::FhirAdapterTest < Minitest::Test
 
   def test_get_conditions_skips_non_us_core_category
     included = build_condition_resource
-    skipped = build_condition_resource(category_code: "health-concern")
+    skipped = build_condition_resource(id: "cond_skipped", category_code: "health-concern")
     results = get_conditions_with_bundle(conditions_bundle([ included, skipped ]))
 
     assert_equal 1, results.size
@@ -564,7 +564,7 @@ class Corvid::Adapters::FhirAdapterTest < Minitest::Test
 
   def test_get_conditions_skips_non_active_or_resolved_clinical_status
     included = build_condition_resource(clinical_status: "resolved")
-    skipped = build_condition_resource(clinical_status: "inactive")
+    skipped = build_condition_resource(id: "cond_skipped", clinical_status: "inactive")
     results = get_conditions_with_bundle(conditions_bundle([ included, skipped ]))
 
     assert_equal 1, results.size
