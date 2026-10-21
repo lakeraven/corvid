@@ -15,7 +15,7 @@ module Corvid
   class Configuration
     # Alternate-resource types whose check freshness is configurable (#640).
     # Duplicated so configuration can boot without loading app models.
-    # test/corvid/configuration_test.rb keeps this aligned with
+    # test/models/corvid/alternate_resource_check_test.rb keeps this aligned with
     # AlternateResourceCheck::RESOURCE_TYPES.
     ALTERNATE_RESOURCE_TYPES = %w[
       medicare_a medicare_b medicare_d medicaid va_benefits
