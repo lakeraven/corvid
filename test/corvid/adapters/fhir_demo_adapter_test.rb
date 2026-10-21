@@ -52,6 +52,26 @@ class Corvid::Adapters::FhirDemoAdapterTest < Minitest::Test
     assert_equal "C-DEMO-001", results.first.code
   end
 
+  def test_get_conditions_does_not_match_empty_patient_reference_tokens
+    empty_ref_variants = [
+      { "reference" => "Patient/" },
+      { "reference" => "Patient/ " },
+      { "reference" => "#{@adapter.base_url}/Patient/" },
+      { "reference" => "#{@adapter.base_url}/Patient/ " }
+    ]
+    empty_ref_variants.each do |subject|
+      condition = synthetic_condition.merge("subject" => subject)
+      adapter = Corvid::Adapters::FhirDemoAdapter.new(resources: [ condition ])
+
+      refute adapter.get_conditions("pt_demo_001")&.any?,
+             "Patient/ reference must not match patient pt_demo_001 (#{subject.inspect})"
+
+      bundle = adapter.send(:fhir_search, "Condition", { "patient" => "" })
+      assert_equal 0, bundle["total"],
+                   "Patient/ reference must not match blank patient search (#{subject.inspect})"
+    end
+  end
+
   private
 
   def synthetic_condition

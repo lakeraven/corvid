@@ -290,6 +290,81 @@ class Corvid::Adapters::FhirAdapterTest < Minitest::Test
     end
   end
 
+  def test_list_claims_patient_identifier_from_absolute_patient_under_base_url
+    bundle = {
+      "resourceType" => "Bundle",
+      "entry" => [ { "resource" => {
+        "resourceType" => "Claim",
+        "id" => "clm_pt_base_url",
+        "patient" => { "reference" => "#{@adapter.base_url}/Patient/pt_base_claim" },
+        "item" => [ {
+          "sequence" => 1,
+          "productOrService" => { "coding" => [ { "system" => "http://www.ama-assn.org/go/cpt", "code" => "99213" } ] },
+          "net" => { "value" => 100.0, "currency" => "USD" }
+        } ]
+      } } ]
+    }
+    @adapter.stub(:fhir_search, bundle) do
+      line = @adapter.list_claims("pt_base_claim").first
+      assert_equal "pt_base_claim", line.patient_identifier
+    end
+  end
+
+  def test_list_claims_patient_identifier_nil_for_foreign_absolute_patient_url
+    bundle = {
+      "resourceType" => "Bundle",
+      "entry" => [ { "resource" => {
+        "resourceType" => "Claim",
+        "id" => "clm_pt_foreign",
+        "patient" => { "reference" => "https://other.example/fhir/Patient/pt_foreign_claim" },
+        "item" => [ {
+          "sequence" => 1,
+          "productOrService" => { "coding" => [ { "system" => "http://www.ama-assn.org/go/cpt", "code" => "99213" } ] },
+          "net" => { "value" => 100.0, "currency" => "USD" }
+        } ]
+      } } ]
+    }
+    @adapter.stub(:fhir_search, bundle) do
+      line = @adapter.list_claims("pt_foreign_claim").first
+      assert_nil line.patient_identifier
+    end
+  end
+
+  def test_list_claims_provider_identifier_nil_when_provider_reference_is_patient
+    line = list_claim_with_provider(
+      { "reference" => "Patient/pt_not_provider" }
+    )
+    assert_nil line.provider_identifier
+  end
+
+  def test_find_referral_requesting_provider_identifier_from_practitioner_role_requester
+    resource = service_request_with_requester("PractitionerRole/rol_req_001")
+    @adapter.stub(:fhir_read, resource) do
+      result = @adapter.find_referral("rf_req_pr_role")
+      assert_equal "rol_req_001", result.requesting_provider_identifier
+    end
+  end
+
+  def test_find_referral_requesting_provider_identifier_nil_when_requester_is_patient
+    resource = service_request_with_requester("Patient/pt_not_requester")
+    @adapter.stub(:fhir_read, resource) do
+      result = @adapter.find_referral("rf_req_patient")
+      assert_nil result.requesting_provider_identifier
+    end
+  end
+
+  def test_find_referral_patient_identifier_from_absolute_subject_under_base_url
+    resource = {
+      "id" => "rf_pt_base_subj",
+      "status" => "active",
+      "subject" => { "reference" => "#{@adapter.base_url}/Patient/pt_base_sr" }
+    }
+    @adapter.stub(:fhir_read, resource) do
+      result = @adapter.find_referral("rf_pt_base_subj")
+      assert_equal "pt_base_sr", result.patient_identifier
+    end
+  end
+
   def test_get_care_team_practitioner_identifier_from_normal_member_reference
     bundle = care_team_search_bundle(
       [ { "member" => { "reference" => "Practitioner/pr_ct_001" }, "role" => [ { "coding" => [ { "code" => "doctor" } ] } ] } ]

@@ -427,7 +427,7 @@ class Corvid::TaskTest < ActiveSupport::TestCase
         owner: OpenStruct.new(reference: "Practitioner/")
       )
       attrs = Corvid::Task.from_fhir_attributes(fhir_resource)
-      assert_nil attrs[:assignee_identifier]
+      refute attrs.key?(:assignee_identifier)
     end
   end
 
@@ -438,7 +438,7 @@ class Corvid::TaskTest < ActiveSupport::TestCase
         owner: OpenStruct.new(reference: "Practitioner/ ")
       )
       attrs = Corvid::Task.from_fhir_attributes(fhir_resource)
-      assert_nil attrs[:assignee_identifier]
+      refute attrs.key?(:assignee_identifier)
     end
   end
 
@@ -637,7 +637,29 @@ class Corvid::TaskTest < ActiveSupport::TestCase
         owner: OpenStruct.new(reference: "Organization/ORG1")
       )
       attrs = Corvid::Task.from_fhir_attributes(fhir_resource)
-      assert_nil attrs[:assignee_identifier]
+      refute attrs.key?(:assignee_identifier)
+    end
+  end
+
+  test "from_fhir_attributes omits assignee when owner is PractitionerRole reference" do
+    with_tenant(TENANT) do
+      fhir_resource = OpenStruct.new(
+        status: "requested", intent: "order",
+        owner: OpenStruct.new(reference: "PractitionerRole/rol_task_001")
+      )
+      attrs = Corvid::Task.from_fhir_attributes(fhir_resource)
+      refute attrs.key?(:assignee_identifier)
+    end
+  end
+
+  test "from_fhir_attributes omits assignee when owner is display-only" do
+    with_tenant(TENANT) do
+      fhir_resource = OpenStruct.new(
+        status: "requested", intent: "order",
+        owner: OpenStruct.new(display: "Dr. Display Only")
+      )
+      attrs = Corvid::Task.from_fhir_attributes(fhir_resource)
+      refute attrs.key?(:assignee_identifier)
     end
   end
 

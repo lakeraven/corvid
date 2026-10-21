@@ -45,7 +45,7 @@ end
 
 Then("the PA submission should be rejected with a patient reference error") do
   refute_nil @submission_error, "expected submit_from_claim to raise ArgumentError"
-  assert_match(/patient/i, @submission_error.message)
+  assert_match(%r{relative Patient/<id> reference}i, @submission_error.message)
   assert_nil @claim_response, "expected no ClaimResponse when submission is rejected"
 end
 

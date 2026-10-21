@@ -129,6 +129,31 @@ class Corvid::Demo::FhirOverlayTest < ActiveSupport::TestCase
     assert_equal [ "Broken Rock Clinic", "Tallgrass Clinic" ], Data.clinics.map(&:name)
   end
 
+  test "ingest skips claim lines with unresolved patient identifier" do
+    patient = Data.patient("pt_unres_1", "OVERLAY", "PATIENT UNRES", "1980-01-01", "F", "UR-1")
+    bad_patient_ref = Data.claim("clm_unres", "pt_unres_1", "V1", "Vendor One",
+                                  "99213", "2026-02-10", 240.00, Data::CPT_SYSTEM, "Office visit")
+    bad_patient_ref["patient"] = { "reference" => "Patient/" }
+
+    adapter = Corvid::Adapters::FhirDemoAdapter.new(resources: [ patient, bad_patient_ref ])
+    Corvid.configure { |c| c.adapter = adapter }
+
+    with_tenant("tnt_test") do
+      Corvid::TenantContext.current_facility_identifier = "fac_unres"
+      counts = Ingest.ingest(
+        facility: "fac_unres",
+        patient_identifiers: [ "pt_unres_1" ],
+        adapter: adapter
+      )
+
+      assert_equal 0, counts[:obligations_created]
+      assert_equal 1, counts[:skipped]
+      assert counts[:skipped_reasons].any? { |s| s[:reason].to_s.match?(/patient_unresolved/i) },
+             "expected skipped_reasons to include patient_unresolved"
+      refute Corvid::PrcObligation.exists?(source_file: "fhir:clm_unres")
+    end
+  end
+
   test "ingest surfaces silently-skipped lines instead of dropping them" do
     patient = Data.patient("pt_skip_1", "OVERLAY", "PATIENT SKIP", "1980-01-01", "F", "SK-1")
     priceable = Data.claim("clm_ok", "pt_skip_1", "V1", "Vendor One",

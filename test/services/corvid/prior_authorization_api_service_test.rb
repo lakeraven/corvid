@@ -309,7 +309,7 @@ class Corvid::PriorAuthorizationApiServiceTest < ActiveSupport::TestCase
           build_fhir_claim(patient: { reference: "Patient/" })
         )
       end
-      assert_match(/patient/i, error.message)
+      assert_match(%r{relative Patient/<id> reference}i, error.message)
       assert_equal referral_count, Corvid::PrcReferral.count
       assert_equal case_count, Corvid::Case.count
       refute Corvid::Case.exists?(patient_identifier: "Patient")
@@ -328,7 +328,7 @@ class Corvid::PriorAuthorizationApiServiceTest < ActiveSupport::TestCase
           build_fhir_claim(patient: { reference: "Patient/ " })
         )
       end
-      assert_match(/patient/i, error.message)
+      assert_match(%r{relative Patient/<id> reference}i, error.message)
       assert_equal referral_count, Corvid::PrcReferral.count
       refute Corvid::Case.exists?(patient_identifier: "Patient")
       refute Corvid::Case.exists?(patient_identifier: " ")
@@ -346,7 +346,7 @@ class Corvid::PriorAuthorizationApiServiceTest < ActiveSupport::TestCase
       error = assert_raises(ArgumentError) do
         Corvid::PriorAuthorizationApiService.submit_from_claim(claim)
       end
-      assert_match(/patient/i, error.message)
+      assert_match(%r{relative Patient/<id> reference}i, error.message)
       assert_equal referral_count, Corvid::PrcReferral.count
     ensure
       Corvid::TenantContext.reset!
@@ -512,6 +512,23 @@ class Corvid::PriorAuthorizationApiServiceTest < ActiveSupport::TestCase
     end
   end
 
+  test "submit_from_claim stores nil requesting provider when provider reference is a patient" do
+    with_tenant(TENANT) do
+      Corvid::TenantContext.current_facility_identifier = FACILITY
+      Corvid::PriorAuthorizationApiService.submit_from_claim(
+        build_fhir_claim(
+          patient: { reference: "Patient/pt_pa_patient_pr" },
+          provider: { reference: "Patient/pt_pa_patient_pr" }
+        )
+      )
+      referral = Corvid::PrcReferral.order(created_at: :desc).first
+      stored = Corvid.adapter.find_referral(referral.referral_identifier)
+      assert_nil stored.requesting_provider_identifier
+    ensure
+      Corvid::TenantContext.reset!
+    end
+  end
+
   def assert_submit_rejects_invalid_patient(patient:)
     with_tenant(TENANT) do
       Corvid::TenantContext.current_facility_identifier = FACILITY
@@ -521,7 +538,7 @@ class Corvid::PriorAuthorizationApiServiceTest < ActiveSupport::TestCase
       error = assert_raises(ArgumentError) do
         Corvid::PriorAuthorizationApiService.submit_from_claim(build_fhir_claim(patient: patient))
       end
-      assert_match(/patient/i, error.message)
+      assert_match(%r{relative Patient/<id> reference}i, error.message)
       assert_equal referral_count, Corvid::PrcReferral.count
       assert_equal case_count, Corvid::Case.count
     ensure
