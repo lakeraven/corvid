@@ -225,7 +225,7 @@ module Corvid
 
       def extract_patient_identifier(fhir_claim)
         ref = fhir_claim.dig(:patient, :reference) || fhir_claim.dig("patient", "reference")
-        Corvid::FhirReference.id_from(ref)
+        Corvid::FhirReference.id_from(ref, type: "Patient")
       end
 
       def extract_provider_identifier(fhir_claim)

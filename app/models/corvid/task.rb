@@ -70,10 +70,9 @@ module Corvid
       end
 
       if fhir_resource.respond_to?(:owner) && fhir_resource.owner
-        ref = fhir_resource.owner.reference.to_s
-        if ref.start_with?("Practitioner/")
-          attrs[:assignee_identifier] = ref.sub("Practitioner/", "")
-        end
+        attrs[:assignee_identifier] = Corvid::FhirReference.id_from(
+          fhir_resource.owner.reference, type: "Practitioner"
+        )
       end
 
       if fhir_resource.respond_to?(:executionPeriod) && fhir_resource.executionPeriod

@@ -376,7 +376,9 @@ module Corvid
         extract_entries(bundle).flat_map do |resource|
           (resource["participant"] || []).map do |p|
             Corvid::CareTeamMemberReference.new(
-              practitioner_identifier: p.dig("member", "reference")&.sub("Practitioner/", ""),
+              practitioner_identifier: Corvid::FhirReference.id_from(
+                p.dig("member", "reference"), type: "Practitioner"
+              ),
               role: p.dig("role", 0, "coding", 0, "code"),
               name: resource["name"],
               status: resource["status"]
@@ -874,7 +876,7 @@ module Corvid
       end
 
       def build_claim_line_references(claim)
-        patient_id = claim.dig("patient", "reference")&.sub("Patient/", "")
+        patient_id = Corvid::FhirReference.id_from(claim.dig("patient", "reference"), type: "Patient")
         provider_id = claim.dig("provider", "identifier", "value").presence ||
                       Corvid::FhirReference.id_from(claim.dig("provider", "reference")) ||
                       claim.dig("provider", "display").presence
@@ -921,7 +923,9 @@ module Corvid
       def build_referral_reference(resource)
         Corvid::ReferralReference.new(
           identifier: resource["id"],
-          patient_identifier: resource.dig("subject", "reference")&.sub("Patient/", ""),
+          patient_identifier: Corvid::FhirReference.id_from(
+            resource.dig("subject", "reference"), type: "Patient"
+          ),
           status: resource["status"],
           reason_token: nil,
           estimated_cost: nil,
