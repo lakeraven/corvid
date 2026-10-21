@@ -49,9 +49,10 @@ module Corvid
         appeal_deadline defer_reason modification_note
       ].freeze
 
-      # Known Condition.category systems. An in-scope code is kept. Any other
-      # code from these systems skips the row. No category, or only an
-      # unknown system, makes the page unknown.
+      # Known Condition.category systems. An in-scope code is kept. An
+      # explicit other code from these systems skips the row. A missing,
+      # nil, or blank code in a known system makes the page unknown, as
+      # does no category or only an unknown system.
       CONDITION_CATEGORY_SYSTEM = "http://terminology.hl7.org/CodeSystem/condition-category"
       US_CORE_CONDITION_CATEGORY_SYSTEM = "http://hl7.org/fhir/us/core/CodeSystem/condition-category"
       KNOWN_CONDITION_CATEGORY_SYSTEMS = [
@@ -274,13 +275,16 @@ module Corvid
         extract_entries(bundle).flat_map { |claim| build_claim_line_references(claim) }
       end
 
-      # One Condition search page (no Bundle.link follow). Array of
-      # ConditionReference, or nil when the page is unknown. [] means none.
-      # Bundle.type must be searchset. A positive total with no match entries
-      # is unknown. Requires a code, and a category from the HL7 or US Core
-      # condition-category system whose code is in scope. Clinical status
-      # must be condition-clinical or system-less, the codings must agree,
-      # and the value must be active, recurrence, relapse, or resolved.
+      # One Condition search page only. A Bundle.link relation "next" is
+      # unknown. Array of ConditionReference, or nil when the page is
+      # unknown. [] means none. Bundle.type must be searchset. A positive
+      # total counts only with a match-mode Condition entry. Requires a
+      # code, and a category from the HL7 or US Core condition-category
+      # system whose code is in scope. A missing, nil, or blank code in
+      # that system is unknown; an explicit out-of-scope code is excluded.
+      # Clinical status must be condition-clinical or system-less, the
+      # codings must agree, and the value must be active, recurrence,
+      # relapse, or resolved.
       # Refuted and entered-in-error are excluded in any system. The same
       # codes given only as verificationStatus text, stripped and
       # case-insensitive, are excluded too. Entered-in-error is dropped
@@ -294,19 +298,23 @@ module Corvid
         nil
       end
 
-      # One MedicationRequest search page. Bundle.type must be searchset. A
-      # positive total with no match entries is unknown. Resolves contained,
-      # bundle-included, or same-server Medication references. A bundled
-      # Medication is used only when fullUrl is absent, Medication/<id>, or
-      # base_url/Medication/<id>. Status must be an R4 medicationrequest-status
-      # code; missing or any other status makes the page unknown. Boolean
-      # doNotPerform true and entered-in-error are excluded. Boolean false or
-      # an absent doNotPerform is kept. Any other doNotPerform value makes the
-      # page unknown. Code is the first coding with a non-empty code; display
-      # falls back to that coding's display, then text. No such coding and
-      # no text is unknown. Invalid Medication ids are not requested. Never
-      # raises. Array of MedicationReference, or nil when unknown. In memory
-      # only — never persisted or logged (ADR 0003).
+      # One MedicationRequest search page only. A Bundle.link relation
+      # "next" is unknown. Bundle.type must be searchset. A positive total
+      # counts only with a match-mode MedicationRequest entry. Resolves
+      # contained, bundle-included, or same-server Medication references. A
+      # bundled Medication is used only when fullUrl is absent,
+      # Medication/<id>, or base_url/Medication/<id>. Status must be an R4
+      # medicationrequest-status code; missing or any other status makes
+      # the page unknown. Subject is checked before exclusions, so another
+      # patient's request is unknown even when it would be excluded.
+      # Boolean doNotPerform true and entered-in-error are excluded.
+      # Boolean false or an absent doNotPerform is kept. Any other
+      # doNotPerform value makes the page unknown. Code is the first
+      # coding with a non-empty code; display falls back to that coding's
+      # display, then text. No such coding and no text is unknown. Invalid
+      # Medication ids are not requested. Never raises. Array of
+      # MedicationReference, or nil when unknown. In memory only — never
+      # persisted or logged (ADR 0003).
       def get_medications(patient_identifier)
         clinical_search("MedicationRequest", patient_identifier) do |bundle|
           map_medication_entries(bundle, patient_identifier)
@@ -763,9 +771,11 @@ module Corvid
       end
 
       # Clinical search -------------------------------------------------------
-      # One page. nil means unknown; never a partial list. Response bodies are
-      # not logged (ADR 0003). Bundle.type must be searchset. total > 0 with
-      # no match entries is unknown. A missing search.mode counts as match.
+      # One page only. nil means unknown; never a partial list. A Bundle.link
+      # entry with relation "next" is unknown. Response bodies are not logged
+      # (ADR 0003). Bundle.type must be searchset. A positive total counts
+      # only with a match-mode entry (mode absent or "match") whose resource
+      # has the searched resourceType.
 
       # Goes through #fhir_search so an override (FhirDemoAdapter) can serve
       # the page from memory. Blank ids are unknown and must not hit the wire.
@@ -774,7 +784,8 @@ module Corvid
 
         bundle = fhir_search(resource_type, patient: patient_identifier)
         return nil unless search_bundle?(bundle)
-        return nil unless consistent_search_total?(bundle)
+        return nil if next_page_link?(bundle)
+        return nil unless consistent_search_total?(bundle, resource_type)
 
         yield bundle
       rescue *CLINICAL_READ_ERRORS
@@ -788,20 +799,34 @@ module Corvid
         parsed["type"] == "searchset"
       end
 
-      def consistent_search_total?(bundle)
+      def next_page_link?(bundle)
+        links = bundle["link"]
+        return false unless links.is_a?(Array)
+
+        links.any? { |link| link.is_a?(Hash) && link["relation"] == "next" }
+      end
+
+      def consistent_search_total?(bundle, resource_type)
         total = bundle["total"]
         return true if total.nil?
         return false unless total.is_a?(Integer)
         return true unless total.positive?
 
-        any_match_entry?(bundle)
+        any_match_entry?(bundle, resource_type)
       end
 
-      def any_match_entry?(bundle)
+      def any_match_entry?(bundle, resource_type)
         entries = bundle["entry"]
         return false unless entries.is_a?(Array)
 
-        entries.any? { |entry| match_mode_entry?(entry) }
+        entries.any? { |entry| typed_match_entry?(entry, resource_type) }
+      end
+
+      def typed_match_entry?(entry, resource_type)
+        return false unless match_mode_entry?(entry)
+
+        resource = entry["resource"]
+        resource.is_a?(Hash) && resource["resourceType"] == resource_type
       end
 
       def match_mode_entry?(entry)
@@ -1042,8 +1067,9 @@ module Corvid
         )
       end
 
-      # nil: a known category system is present, but no in-scope code (skip).
-      # :unknown: no known category system, or the element is malformed.
+      # nil: a known system has an explicit out-of-scope code (skip).
+      # :unknown: no known system, a missing, nil, or blank code in a
+      # known system, or a malformed element.
       def us_core_category(resource)
         categories = resource["category"]
         return :unknown if categories.nil? || !categories.is_a?(Array) || categories.empty?
@@ -1104,7 +1130,7 @@ module Corvid
 
       def category_code_value(raw)
         code = optional_string(raw)
-        return :unknown if code == :unknown
+        return :unknown unless code.is_a?(String)
         return :excluded unless US_CORE_CONDITION_CATEGORIES.include?(code)
 
         code
@@ -1308,7 +1334,7 @@ module Corvid
 
       def medication_references(requests, patient_identifier, index)
         requests.each_with_object([]) do |request, results|
-          disposition = medication_disposition(request)
+          disposition = medication_disposition(request, patient_identifier)
           return nil if disposition == :unknown
           next if disposition == :skip
 
@@ -1319,9 +1345,14 @@ module Corvid
         end
       end
 
-      # Unknown status or a non-boolean doNotPerform makes the page unknown.
-      # Boolean true and entered-in-error drop the row. False and absence stay.
-      def medication_disposition(request)
+      # Subject is checked before exclusions. Another patient's request
+      # makes the page unknown even when the row would be excluded.
+      # Unknown status or a non-boolean doNotPerform does too. Boolean
+      # true and entered-in-error drop a matching row. False and absence
+      # stay.
+      def medication_disposition(request, patient_identifier)
+        return :unknown unless subject_matches?(request, patient_identifier)
+
         perform = do_not_perform_disposition(request)
         return :unknown if perform == :unknown
         return :unknown unless known_medication_status?(request)
