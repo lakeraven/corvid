@@ -2948,6 +2948,141 @@ class Corvid::Adapters::FhirAdapterTest < Minitest::Test
     end
   end
 
+  # Round 2 chair decisions (#607) — each must fail until get_coverages matches clinical reads.
+
+  def test_get_coverages_returns_nil_for_nil_patient_identifier_without_http
+    assert_nil clinical_read_without_http(:get_coverages, nil)
+  end
+
+  def test_get_coverages_returns_nil_for_blank_patient_identifier_without_http
+    assert_nil clinical_read_without_http(:get_coverages, "")
+  end
+
+  def test_get_coverages_returns_nil_for_whitespace_only_patient_identifier_without_http
+    assert_nil clinical_read_without_http(:get_coverages, "   \t")
+  end
+
+  def test_get_coverages_returns_nil_when_bundle_has_unexpected_resource_without_include_mode
+    coverage = coverage_fhir_resource(
+      id: "cov_unexp",
+      for_patient: "pt_unexp",
+      status: "active",
+      payer_display: "TEST PAYER UNEXP",
+      type_code: "MCDSC",
+      subscriber_id: "POL_UNEXP",
+      period_start: Date.new(2026, 1, 1),
+      period_end: Date.new(2026, 12, 31)
+    )
+    bundle = coverage_bundle(
+      entries: [
+        coverage,
+        { "resource" => { "resourceType" => "Provenance", "id" => "prov_1" } }
+      ],
+      total: 1
+    )
+    with_stubbed_coverage_http({ coverage_search_url("pt_unexp") => http_ok_json(bundle) }) do
+      assert_nil @adapter.get_coverages("pt_unexp")
+    end
+  end
+
+  INEXACT_COVERAGE_OPERATION_OUTCOME_RESOURCE_TYPES = [
+    "operationOutcome",
+    "OperationOutcome "
+  ].freeze
+
+  def test_get_coverages_returns_nil_when_operation_outcome_resource_type_is_not_exact
+    INEXACT_COVERAGE_OPERATION_OUTCOME_RESOURCE_TYPES.each do |resource_type|
+      bundle = coverage_bundle(
+        entries: [
+          {
+            "resource" => {
+              "resourceType" => resource_type,
+              "issue" => [ { "severity" => "warning", "code" => "informational" } ]
+            }
+          }
+        ]
+      )
+      with_stubbed_coverage_http({ coverage_search_url("pt_oo_rt") => http_ok_json(bundle) }) do
+        assert_nil @adapter.get_coverages("pt_oo_rt"),
+                   "expected nil for inexact OperationOutcome resourceType #{resource_type.inspect}"
+      end
+    end
+  end
+
+  def test_get_coverages_returns_nil_when_operation_outcome_has_empty_issue_array
+    bundle = coverage_bundle(
+      entries: [
+        { "resource" => { "resourceType" => "OperationOutcome", "issue" => [] } }
+      ]
+    )
+    with_stubbed_coverage_http({ coverage_search_url("pt_oo_empty") => http_ok_json(bundle) }) do
+      assert_nil @adapter.get_coverages("pt_oo_empty")
+    end
+  end
+
+  def test_get_coverages_returns_nil_when_operation_outcome_issue_code_is_not_a_string
+    non_string_codes = [ [ "incomplete" ], 5 ]
+    non_string_codes.each do |code|
+      bundle = coverage_bundle(
+        entries: [
+          {
+            "resource" => {
+              "resourceType" => "OperationOutcome",
+              "issue" => [ { "severity" => "warning", "code" => code } ]
+            }
+          }
+        ]
+      )
+      with_stubbed_coverage_http({ coverage_search_url("pt_oo_code") => http_ok_json(bundle) }) do
+        assert_nil @adapter.get_coverages("pt_oo_code"),
+                   "expected nil when OperationOutcome issue code is #{code.inspect}"
+      end
+    end
+  end
+
+  UNICODE_NEXT_COVERAGE_LINK_RELATIONS = [
+    "next\u00A0",
+    "next\u2003"
+  ].freeze
+
+  def test_get_coverages_returns_nil_when_next_link_relation_equals_next_only_after_unicode_whitespace
+    UNICODE_NEXT_COVERAGE_LINK_RELATIONS.each do |next_relation|
+      patient = "pt_link_unicode_#{next_relation.bytes.join('_')}"
+      page1_url = coverage_search_url(patient)
+      page2_url = "#{@adapter.base_url}/Coverage?#{URI.encode_www_form(page: "2", beneficiary: "Patient/#{patient}")}"
+      page1 = coverage_bundle(
+        entries: [
+          coverage_fhir_resource(
+            id: "cov_unicode",
+            for_patient: patient,
+            status: "active",
+            payer_display: "TEST PAYER UNICODE",
+            type_code: "MCDSC",
+            subscriber_id: "POL_UNICODE",
+            period_start: Date.new(2026, 1, 1),
+            period_end: Date.new(2026, 12, 31)
+          )
+        ],
+        total: 1,
+        next_url: page2_url,
+        next_relation: next_relation
+      )
+      page2_fetched = []
+      with_stubbed_coverage_http({
+        page1_url => http_ok_json(page1),
+        page2_url => lambda {
+          page2_fetched << true
+          http_ok_json(coverage_bundle(entries: []))
+        }
+      }) do
+        assert_nil @adapter.get_coverages(patient),
+                   "expected nil for next link relation #{next_relation.inspect}"
+        assert_equal [ page1_url ], @requested_urls
+        assert_empty page2_fetched
+      end
+    end
+  end
+
   private
 
   def invalid_utf8_byte_sequence
