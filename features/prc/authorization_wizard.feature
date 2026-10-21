@@ -50,6 +50,12 @@ Feature: PRC Authorization Wizard
     When I start the authorization wizard for patient "John Doe"
     Then I should see a warning "Patient eligibility verification pending"
 
+  Scenario: Patient assigned after wizard start shows eligibility warning at read time
+    Given the authorization wizard has no patient selected
+    When I start the authorization wizard
+    And I assign patient "pt_wiz_001" to the wizard
+    Then I should see a warning "Patient eligibility verification pending"
+
   # =============================================================================
   # STEP 2: CLINICAL INFORMATION
   # =============================================================================

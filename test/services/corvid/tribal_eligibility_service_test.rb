@@ -246,6 +246,144 @@ class Corvid::TribalEligibilityServiceTest < ActiveSupport::TestCase
     assert_includes decision.reason_codes, :not_enrolled_in_contracted_tribe
   end
 
+  # ---- Issue #662 round 2: canonical enrolled flag and adapter shape ---------
+
+  def stub_tribal_enrollment_response(person_id, enrollment_payload)
+    @adapter.add_patient(person_id, ssn_last4: "1234", dob: Date.new(1980, 1, 1), birthplace: "Springfield")
+    @adapter.define_singleton_method(:verify_residency) do |pid|
+      { on_reservation: true, address: "Rd", verified_at: Time.current } if pid == person_id
+    end
+    @adapter.define_singleton_method(:verify_tribal_enrollment) do |pid|
+      pid == person_id ? enrollment_payload : super(pid)
+    end
+  end
+
+  test "decide persists ineligible decision when verify_tribal_enrollment returns nil without raising" do
+    person_id = "pt_nil_enroll"
+    stub_tribal_enrollment_response(person_id, nil)
+
+    decision = nil
+    assert_difference "Corvid::PrcEligibilityDecision.count", 1 do
+      assert_nothing_raised do
+        decision = Corvid::TribalEligibilityService.decide(
+          person_identifier: person_id,
+          facility: @facility,
+          tenant_identifier: TENANT
+        )
+      end
+    end
+
+    refute decision.eligible?
+    assert_includes decision.reason_codes, :provider_unavailable_fail_closed
+  end
+
+  test "decide persists ineligible decision when verify_tribal_enrollment returns non-Hash without raising" do
+    person_id = "pt_bad_enroll"
+    stub_tribal_enrollment_response(person_id, "not-a-hash")
+
+    decision = nil
+    assert_difference "Corvid::PrcEligibilityDecision.count", 1 do
+      assert_nothing_raised do
+        decision = Corvid::TribalEligibilityService.decide(
+          person_identifier: person_id,
+          facility: @facility,
+          tenant_identifier: TENANT
+        )
+      end
+    end
+
+    refute decision.eligible?
+    assert_includes decision.reason_codes, :provider_unavailable_fail_closed
+  end
+
+  test "decide fails closed when enrolled is string false with verified confidence" do
+    person_id = "pt_str_false"
+    stub_tribal_enrollment_response(
+      person_id,
+      enrolled: "false", tribe_code: "DEMO", confidence: :verified, verified_at: Time.current
+    )
+
+    decision = Corvid::TribalEligibilityService.decide(
+      person_identifier: person_id,
+      facility: @facility,
+      tenant_identifier: TENANT
+    )
+
+    refute decision.eligible?
+    assert_includes decision.reason_codes, :provider_unavailable_fail_closed
+    refute_includes decision.reason_codes, :not_enrolled
+  end
+
+  test "decide fails closed when enrolled is string true with verified confidence" do
+    person_id = "pt_str_true"
+    stub_tribal_enrollment_response(
+      person_id,
+      enrolled: "true", tribe_code: "DEMO", confidence: :verified, verified_at: Time.current
+    )
+
+    decision = Corvid::TribalEligibilityService.decide(
+      person_identifier: person_id,
+      facility: @facility,
+      tenant_identifier: TENANT
+    )
+
+    refute decision.eligible?
+    assert_includes decision.reason_codes, :provider_unavailable_fail_closed
+  end
+
+  test "decide fails closed when enrolled key is nil with verified confidence" do
+    person_id = "pt_nil_enrolled_key"
+    stub_tribal_enrollment_response(
+      person_id,
+      enrolled: nil, tribe_code: "DEMO", confidence: :verified, verified_at: Time.current
+    )
+
+    decision = Corvid::TribalEligibilityService.decide(
+      person_identifier: person_id,
+      facility: @facility,
+      tenant_identifier: TENANT
+    )
+
+    refute decision.eligible?
+    assert_includes decision.reason_codes, :provider_unavailable_fail_closed
+  end
+
+  test "decide uses not_enrolled when enrolled is false and confidence is unavailable" do
+    person_id = "pt_false_unavail"
+    stub_tribal_enrollment_response(
+      person_id,
+      enrolled: false, tribe_code: nil, confidence: :unavailable, verified_at: Time.current
+    )
+
+    decision = Corvid::TribalEligibilityService.decide(
+      person_identifier: person_id,
+      facility: @facility,
+      tenant_identifier: TENANT
+    )
+
+    refute decision.eligible?
+    assert_includes decision.reason_codes, :not_enrolled
+    refute_includes decision.reason_codes, :provider_unavailable_fail_closed
+  end
+
+  test "decide uses not_enrolled when enrolled is false and confidence is missing" do
+    person_id = "pt_false_no_conf"
+    stub_tribal_enrollment_response(
+      person_id,
+      { enrolled: false, tribe_code: nil, verified_at: Time.current }
+    )
+
+    decision = Corvid::TribalEligibilityService.decide(
+      person_identifier: person_id,
+      facility: @facility,
+      tenant_identifier: TENANT
+    )
+
+    refute decision.eligible?
+    assert_includes decision.reason_codes, :not_enrolled
+    refute_includes decision.reason_codes, :provider_unavailable_fail_closed
+  end
+
   # ---- Would-be false negative (stale data must not deny on its own) --------
 
   test "decide approves stale-but-otherwise-eligible enrollment with informational warning" do

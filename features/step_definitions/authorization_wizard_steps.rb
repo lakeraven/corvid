@@ -157,6 +157,17 @@ Given("patient {string} has eligibility status {string}") do |_name, status|
   @patient_eligibility_status = status
 end
 
+Given("the authorization wizard has no patient selected") do
+  @wizard = Corvid::AuthorizationWizard.new(
+    tenant_identifier: @tenant,
+    facility_identifier: @facility
+  )
+end
+
+When("I assign patient {string} to the wizard") do |patient_id|
+  @wizard.patient_identifier = patient_id
+end
+
 Then("I should see a warning {string}") do |message|
   assert @wizard.warnings.include?(message), "Expected warning '#{message}' in #{@wizard.warnings}"
 end

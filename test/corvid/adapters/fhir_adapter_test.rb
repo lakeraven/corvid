@@ -492,6 +492,62 @@ class Corvid::Adapters::FhirAdapterTest < Minitest::Test
     end
   end
 
+  # Issue #662 round 2: missing or non-boolean enrolled sub-extension => nil enrolled.
+
+  def test_verify_tribal_enrollment_missing_enrolled_sub_extension_returns_nil_enrolled
+    resource = {
+      "id" => "pt_no_enrolled_sub",
+      "extension" => [ {
+        "url" => TRIBAL_ENROLLMENT_EXTENSION_URL,
+        "extension" => [
+          { "url" => "tribeCode", "valueString" => "TGN" },
+          { "url" => "confidence", "valueString" => "verified" }
+        ]
+      } ]
+    }
+    @adapter.stub(:fhir_read, resource) do
+      result = @adapter.verify_tribal_enrollment("pt_no_enrolled_sub")
+      assert_nil result[:enrolled]
+      assert_equal :verified, result[:confidence]
+    end
+  end
+
+  def test_verify_tribal_enrollment_non_boolean_enrolled_sub_extension_returns_nil_enrolled
+    resource = {
+      "id" => "pt_str_enrolled",
+      "extension" => [ {
+        "url" => TRIBAL_ENROLLMENT_EXTENSION_URL,
+        "extension" => [
+          { "url" => "enrolled", "valueString" => "true" },
+          { "url" => "tribeCode", "valueString" => "TGN" },
+          { "url" => "confidence", "valueString" => "verified" }
+        ]
+      } ]
+    }
+    @adapter.stub(:fhir_read, resource) do
+      result = @adapter.verify_tribal_enrollment("pt_str_enrolled")
+      assert_nil result[:enrolled]
+    end
+  end
+
+  def test_verify_tribal_enrollment_value_boolean_false_returns_false_enrolled
+    resource = {
+      "id" => "pt_enrolled_false",
+      "extension" => [ {
+        "url" => TRIBAL_ENROLLMENT_EXTENSION_URL,
+        "extension" => [
+          { "url" => "enrolled", "valueBoolean" => false },
+          { "url" => "tribeCode", "valueString" => "TGN" },
+          { "url" => "confidence", "valueString" => "verified" }
+        ]
+      } ]
+    }
+    @adapter.stub(:fhir_read, resource) do
+      result = @adapter.verify_tribal_enrollment("pt_enrolled_false")
+      assert_equal false, result[:enrolled]
+    end
+  end
+
   # Issue #662: confidence sub-extension is allow-listed; anything else is :unavailable.
 
   def test_verify_tribal_enrollment_confidence_allow_lists_verified_stale_unavailable_strings

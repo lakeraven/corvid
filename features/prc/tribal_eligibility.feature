@@ -37,3 +37,17 @@ Feature: Tribal eligibility decision matrix (TribalEligibilityService)
     When I decide eligibility for person "pt_persist" at facility "fac_demo"
     Then exactly 1 PrcEligibilityDecision row should exist for person "pt_persist"
     And that row should have the provider confidence "verified"
+
+  Scenario: Nil tribal enrollment response fails closed without error
+    Given tribal enrollment verification returns nil
+    When I decide eligibility for person "pt_nil_adapter" at facility "fac_demo"
+    Then the decision should be ineligible
+    And the reason codes should include "provider_unavailable_fail_closed"
+    And exactly 1 PrcEligibilityDecision row should exist for person "pt_nil_adapter"
+
+  Scenario: Not enrolled with unavailable confidence is a source answer
+    Given person "pt_false_unavail" is not enrolled with confidence unavailable
+    When I decide eligibility for person "pt_false_unavail" at facility "fac_demo"
+    Then the decision should be ineligible
+    And the reason codes should include "not_enrolled"
+    And the reason codes should not include "provider_unavailable_fail_closed"
