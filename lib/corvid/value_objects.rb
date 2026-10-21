@@ -78,4 +78,17 @@ module Corvid
       super(reasons: reasons.map { |reason| reason.dup.freeze }.freeze, **rest)
     end
   end
+
+  # Retroactive coverage window for one application. Computed in memory,
+  # never persisted.
+  RetroactiveWindow = Data.define(
+    :earliest_covered_date,
+    :window_months,
+    :status,
+    :reasons
+  ) do
+    def initialize(reasons:, **rest)
+      super(reasons: reasons.map { |reason| reason.dup.freeze }.freeze, **rest)
+    end
+  end
 end
