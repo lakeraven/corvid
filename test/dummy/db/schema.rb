@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_10_21_000002) do
+ActiveRecord::Schema[8.1].define(version: 2026_10_21_000003) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
@@ -30,6 +30,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_21_000002) do
     t.string "eligibility_group"
     t.string "eligibility_group_source"
     t.datetime "eligibility_group_set_at"
+    t.date "renewal_date"
     t.index ["prc_referral_id", "resource_type"], name: "idx_corvid_arc_referral_type", unique: true
     t.index ["prc_referral_id"], name: "index_corvid_alternate_resource_checks_on_prc_referral_id"
     t.check_constraint "eligibility_group IS NULL AND eligibility_group_set_at IS NULL OR eligibility_group IS NOT NULL AND eligibility_group_set_at IS NOT NULL", name: "corvid_arc_eligibility_group_set_at_check"

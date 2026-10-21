@@ -208,13 +208,13 @@ Feature: Alternate resource tracking (payer of last resort)
   # COST OPTIMIZATION — REUSE ACROSS REFERRALS
   # =============================================================================
 
-  Scenario: Recent checks for same patient can seed a new referral
+  Scenario: Seeded checks keep the previous status and still need re-verification
     Given a previous referral "rf_prev" for patient "pt_001" with all checks verified 10 days ago
     And a new PRC referral "rf_new" for that case
     When I seed alternate resource checks from the previous referral
     Then the new referral should have 12 checks
     And all new checks should be pre-populated from the previous verification
-    And no new checks should be stale
+    And all new checks should require re-verification
 
   Scenario: Stale checks from previous referral are not reused
     Given a previous referral "rf_old" for patient "pt_001" with all checks verified 45 days ago

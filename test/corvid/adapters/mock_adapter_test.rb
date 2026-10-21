@@ -103,6 +103,22 @@ class Corvid::Adapters::MockAdapterTest < Minitest::Test
     assert result[:payer_name]
   end
 
+  def test_verify_eligibility_explicit_nil_coverage_dates_stay_nil
+    @adapter.add_coverage("pt_test_001", resource_type: "medicaid", coverage_start: nil, coverage_end: nil, renewal_date: nil)
+    result = @adapter.verify_eligibility("pt_test_001", "medicaid")
+    assert_nil result[:coverage_start]
+    assert_nil result[:coverage_end]
+    assert_nil result[:renewal_date]
+  end
+
+  def test_verify_eligibility_omitted_coverage_dates_keep_defaults
+    @adapter.add_coverage("pt_test_001", resource_type: "medicaid", coverage_end: nil)
+    result = @adapter.verify_eligibility("pt_test_001", "medicaid")
+    assert_equal Date.new(Date.current.year, 1, 1), result[:coverage_start]
+    assert_nil result[:coverage_end]
+    refute result.key?(:renewal_date)
+  end
+
   def test_get_coverages_returns_eligibility_group_state_and_source_from_add_coverage
     @adapter.add_coverage(
       "pt_mcd_001",

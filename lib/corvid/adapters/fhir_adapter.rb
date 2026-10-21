@@ -406,8 +406,8 @@ module Corvid
           eligible: coverage["status"] == "active",
           payer_name: coverage.dig("payor", 0, "display"),
           policy_number: coverage["subscriberId"],
-          coverage_start: parse_date(coverage.dig("period", "start")),
-          coverage_end: parse_date(coverage.dig("period", "end"))
+          coverage_start: parse_period_date(coverage.dig("period", "start"), :start),
+          coverage_end: parse_period_date(coverage.dig("period", "end"), :end)
         }
       end
 
@@ -1001,6 +1001,29 @@ module Corvid
         Date.parse(value.to_s)
       rescue ArgumentError
         nil
+      end
+
+      # Coverage period bounds only. A partial FHIR date ("2026" or
+      # "2026-03") means its whole range: a start is the first day and an
+      # end is the last day. Full dates parse as parse_date; malformed is nil.
+      def parse_period_date(value, bound)
+        range = partial_date_range(value.to_s)
+        return parse_date(value) unless range
+
+        bound == :start ? range.first : range.last
+      rescue ArgumentError
+        nil
+      end
+
+      def partial_date_range(text)
+        case text
+        when /\A(\d{4})\z/
+          year = Regexp.last_match(1).to_i
+          Date.new(year, 1, 1)..Date.new(year, 12, 31)
+        when /\A(\d{4})-(\d{2})\z/
+          first = Date.new(Regexp.last_match(1).to_i, Regexp.last_match(2).to_i, 1)
+          first..first.next_month.prev_day
+        end
       end
 
       # Clinical search -------------------------------------------------------

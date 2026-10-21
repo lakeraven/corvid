@@ -24,6 +24,16 @@ module Corvid
   # key material. #as_json, #to_json, and #to_yaml emit those same redacted
   # fields and omit key bytes.
   class Configuration
+    # Alternate-resource types whose check freshness is configurable (#640).
+    # Duplicated so configuration can boot without loading app models.
+    # test/models/corvid/alternate_resource_check_test.rb keeps this aligned with
+    # AlternateResourceCheck::RESOURCE_TYPES.
+    ALTERNATE_RESOURCE_TYPES = %w[
+      medicare_a medicare_b medicare_d medicaid va_benefits
+      private_insurance workers_comp auto_insurance liability_coverage
+      state_program tribal_program charity_care
+    ].freeze
+
     attr_accessor :adapter, :edi_adapter, :phi_sanitizer, :on_provenance, :fetch_provenance
     attr_accessor :verification_snapshot_keys, :verification_snapshot_key_version
 
@@ -58,6 +68,26 @@ module Corvid
       end
     end
 
+    # Frozen resource_type => Duration. Host overrides merge over the defaults.
+    # Override keys are stored as strings and must be alternate resource types.
+    def alternate_resource_check_max_age
+      overrides = max_age_overrides
+      defaults = self.class.default_alternate_resource_check_max_age
+      return defaults if overrides.empty?
+
+      defaults.merge(overrides).freeze
+    end
+
+    def alternate_resource_check_max_age=(overrides)
+      @alternate_resource_check_max_age_overrides = validated_max_ages(overrides)
+    end
+
+    def self.default_alternate_resource_check_max_age
+      @default_alternate_resource_check_max_age ||= ALTERNATE_RESOURCE_TYPES.to_h { |type|
+        [ type, type == "medicaid" ? 30.days : 90.days ]
+      }.freeze
+    end
+
     private
 
     def redacted_serialization
@@ -72,6 +102,31 @@ module Corvid
       return [] unless keys.respond_to?(:keys)
 
       keys.keys
+    end
+
+    def max_age_overrides
+      return {} unless defined?(@alternate_resource_check_max_age_overrides)
+
+      @alternate_resource_check_max_age_overrides
+    end
+
+    # Symbol keys become strings. Unknown types, non-durations, and
+    # non-positive durations are rejected.
+    def validated_max_ages(overrides)
+      overrides.to_h { |key, value|
+        type = key.to_s
+        unless ALTERNATE_RESOURCE_TYPES.include?(type)
+          raise ArgumentError, "unknown alternate resource type: #{type}"
+        end
+        unless value.is_a?(ActiveSupport::Duration)
+          raise ArgumentError, "alternate resource check max age must be a duration"
+        end
+        unless value.positive?
+          raise ArgumentError, "alternate resource check max age must be positive"
+        end
+
+        [ type, value ]
+      }.freeze
     end
   end
 
