@@ -13,16 +13,20 @@ module Corvid
   # The caller is used only for its id. The row is loaded only when its
   # referral is visible in the current tenant, so a missing, hidden, or
   # no-tenant row is never locked. record! returns nil for that row
-  # before the adapter. Eligibility fields are snapshotted before an
-  # inference is computed, and the adapter runs before any lock. A
-  # non-medicaid row, coverage that states a real group, or a fresh
-  # unlocked read that already has staff_entry or a stated real group
-  # does not call the adapter. Visibility is checked again under the
-  # lock, because the referral can change, along with resource type and
-  # precedence. A stated real group or a staff entry is never overwritten.
-  # A stored "unknown" with a stated source may be replaced by an
-  # inference. When the stored inferred group changed during the lookup
-  # and disagrees with the new inference, the recorded group is unknown.
+  # before the adapter, and nil when the row disappears before the lock.
+  # The referral id is taken at that load. Eligibility fields are
+  # snapshotted before an inference is computed, and the adapter runs
+  # before any lock. A non-medicaid row, coverage that states a real
+  # group, or a fresh unlocked read that already has staff_entry or a
+  # stated real group does not call the adapter. Visibility, resource
+  # type, and precedence are checked again under the lock. A different
+  # referral id writes no inference and returns the stored group. A
+  # stated group does not depend on the patient and is still written on
+  # a visible row. A stated real group or a staff entry is never
+  # overwritten. A stored "unknown" with a stated source may be replaced
+  # by an inference. When the stored inferred group changed during the
+  # lookup and disagrees with the new inference, the recorded group is
+  # unknown.
   #
   # Coverage may state only eligibility_response, state_case_data, or
   # registration. Any other source is recorded as eligibility_response.
@@ -60,8 +64,15 @@ module Corvid
       row = persisted_check(check)
       return unless row
 
+      loaded_referral_id = row.prc_referral_id
       inferred, snapshot = prepare_inference(row, coverage, date_of_service)
-      row.with_lock { apply_locked(row, coverage, inferred, snapshot) }
+      row.with_lock do
+        apply_locked(row, coverage, inferred, snapshot, loaded_referral_id)
+      end
+    rescue ActiveRecord::RecordNotFound
+      # The row can disappear between the unlocked load and the lock.
+      # RecordNotFound names the id. Return nil; nothing was written.
+      nil
     end
 
     def record_staff_entry!(check, eligibility_group:)
@@ -143,13 +154,15 @@ module Corvid
 
     # with_lock has reloaded this row. Visibility, resource type, and
     # precedence come from that read. An inference was computed, when
-    # one was needed, before the lock was taken.
-    def apply_locked(row, coverage, inferred, snapshot)
+    # one was needed, before the lock, for the loaded referral id. A
+    # different id skips that inference. Stated coverage does not.
+    def apply_locked(row, coverage, inferred, snapshot, loaded_referral_id)
       return unless medicaid?(row)
       return unless referral_visible?(row)
       return current_group(row) if staff_entry?(row)
       return write_stated!(row, coverage) if stated?(coverage)
       return current_group(row) if preserved?(row)
+      return current_group(row) if row.prc_referral_id != loaded_referral_id
 
       apply_inference(row, inferred, snapshot)
     end
