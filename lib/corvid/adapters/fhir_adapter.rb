@@ -132,7 +132,9 @@ module Corvid
 
       def search_patients(query)
         bundle = fhir_search("Patient", name: query)
-        extract_entries(bundle).map { |r| build_patient_reference(r) }
+        extract_entries(bundle)
+          .select { |resource| resource["resourceType"] == "Patient" }
+          .map { |resource| build_patient_reference(resource) }
       end
 
       # ----------------------------------------------------------------------
@@ -429,18 +431,23 @@ module Corvid
       # Returns one Bundle whose `entry` array is every page, in order.
       # Follows `link` entries with relation exactly "next", resolving each
       # URL with URI.join against the current page. Fail closed: returns nil
-      # (never a partial Bundle) when any page is non-2xx, invalid JSON, or
-      # not a Bundle Hash; when `entry` is present and not an Array (absent
-      # or null is an empty page); when `link` is present and not an Array;
-      # when a Hash link's relation is a String equal to "next" only after
-      # strip and case-insensitive compare (that URL is not requested); when
-      # more than one exactly-"next" link is present (neither URL is
-      # requested); when a next URL's scheme, host, or port differs from
-      # @base_url, or its path does not start with @base_url's path at a
-      # segment boundary (that URL is not requested); when the first page's
-      # Integer `total` differs from the merged entry count (an equal total
-      # is kept and an absent total stays absent); when a next URL was
-      # already visited; or when the chain is longer than MAX_SEARCH_PAGES.
+      # (never a partial Bundle) when any page is non-2xx, invalid JSON, an
+      # empty or nil body, or not a Bundle Hash; when `entry` is present and
+      # not an Array (absent or null is an empty page); when `link` is
+      # present and not an Array; when a Hash link's relation is a String
+      # equal to "next" only after strip and case-insensitive compare (that
+      # URL is not requested); when more than one exactly-"next" link is
+      # present (neither URL is requested); when a next URL's scheme, host,
+      # or port differs from @base_url, its path does not start with
+      # @base_url's path at a segment boundary, or a path segment is "." or
+      # ".." after %2e/%2E are decoded (that URL is not requested); when a
+      # present `total` is not a non-negative Integer, or differs from the
+      # count of merged entries whose search.mode is "match" or absent (an
+      # equal total is kept, an absent total stays absent, and outcome and
+      # include entries are not counted); when the same resourceType and id
+      # appear twice among those match or no-mode entries (repeated include
+      # entries are allowed); when a next URL was already visited; or when
+      # the chain is longer than MAX_SEARCH_PAGES.
       def fhir_search(resource_type, params = {})
         query = URI.encode_www_form(params)
         pages = collect_search_pages("#{@base_url}/#{resource_type}?#{query}")
@@ -474,15 +481,18 @@ module Corvid
       end
 
       def parse_search_bundle(body)
+        return if body.nil? || body.empty?
+
         bundle = JSON.parse(body)
         bundle if bundle.is_a?(Hash) && bundle["resourceType"] == "Bundle"
-      rescue JSON::ParserError
+      rescue JSON::ParserError, TypeError
         nil
       end
 
       def next_search_url(page, current_url)
         href = next_link_href(page)
         return href if href.nil? || href == SEARCH_REJECTED
+        return SEARCH_REJECTED if dot_segment_path?(href)
 
         resolved = resolve_search_url(current_url, href)
         same_origin_url?(resolved) ? resolved : SEARCH_REJECTED
@@ -548,9 +558,18 @@ module Corvid
         base == "/" || other == base || other.start_with?("#{base}/")
       end
 
+      # "." and ".." segments, including %2e/%2E, are rejected before fetch.
+      def dot_segment_path?(href)
+        path = URI.parse(href).path.to_s.gsub(/%2e/i, ".")
+        path.split("/").any? { |segment| segment == "." || segment == ".." }
+      rescue URI::InvalidURIError
+        false
+      end
+
       def merge_search_pages(pages)
         entries = pages.flat_map { |page| bundle_entries(page) }
         return if total_mismatch?(pages.first, entries)
+        return if duplicate_match_entries?(entries)
 
         merged = pages.first.dup
         merged["entry"] = entries
@@ -559,8 +578,39 @@ module Corvid
       end
 
       def total_mismatch?(page, entries)
+        return false unless page.key?("total")
+
         total = page["total"]
-        total.is_a?(Integer) && total != entries.length
+        return true unless total.is_a?(Integer) && total >= 0
+
+        total != entries.count { |entry| search_match_entry?(entry) }
+      end
+
+      def duplicate_match_entries?(entries)
+        keys = entries.filter_map { |entry| match_resource_key(entry) }
+        keys.size != keys.uniq.size
+      end
+
+      def search_match_entry?(entry)
+        return true unless entry.is_a?(Hash)
+
+        search = entry["search"]
+        return true unless search.is_a?(Hash)
+
+        mode = search["mode"]
+        mode.nil? || mode == "match"
+      end
+
+      def match_resource_key(entry)
+        return unless search_match_entry?(entry)
+        return unless entry.is_a?(Hash)
+
+        resource = entry["resource"]
+        return unless resource.is_a?(Hash)
+
+        type = resource["resourceType"]
+        id = resource["id"]
+        [ type, id ] unless type.nil? || id.nil?
       end
 
       def acceptable_entries?(page)
