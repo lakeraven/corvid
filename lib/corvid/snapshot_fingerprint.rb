@@ -9,12 +9,14 @@ module Corvid
   #
   # The key comes from Corvid.configuration, which hosts load from a secret
   # store. A plain SHA256 is never produced. The HMAC input is canonical JSON
-  # of the allowed leaf types. A usable version is a String or Symbol whose
-  # to_s has a valid encoding, contains no control characters, is non-blank
-  # after strip, and is at most MAX_VERSION_LENGTH characters.
-  # normalized_version does not raise. A usable key is a String of at least
-  # MIN_KEY_BYTES whose bytes are not all the same byte. More than one
-  # configured name matching the version after to_s makes the key unusable.
+  # of the allowed leaf types, with EXCLUDED_KEYS removed at every level.
+  # A usable version is a String or Symbol whose to_s has a valid encoding,
+  # contains no control characters and no format characters, is non-blank
+  # after strip, is not blank by Unicode whitespace rules, and is at most
+  # MAX_VERSION_LENGTH characters. normalized_version does not raise. A usable
+  # key is a String of at least MIN_KEY_BYTES whose bytes are not all the
+  # same byte. More than one configured name matching the version after to_s
+  # makes the key unusable.
   # When the configured version is non-nil and no usable key backs it,
   # compute logs a fixed warning and returns [nil, nil]. A nil version logs
   # nothing. When the digest cannot be computed, compute returns [nil, nil]
@@ -22,6 +24,9 @@ module Corvid
   module SnapshotFingerprint
     MIN_KEY_BYTES = 32
     MAX_VERSION_LENGTH = 64
+    # Dropped at every level before the HMAC. Adapters stamp call time here;
+    # the fingerprint identifies upstream data.
+    EXCLUDED_KEYS = %w[verified_at].freeze
     UNUSABLE_KEY_MESSAGE =
       "corvid.snapshot_fingerprint: verification snapshot key version is configured but has no usable key"
 
@@ -96,7 +101,7 @@ module Corvid
       end
 
       # String or Symbol only. to_s must be valid_encoding? before the
-      # control-character check; blank and length rules are unchanged.
+      # control-character, Unicode-blank, and format-character checks.
       # Never raises.
       def normalized_version(version)
         return unless version.is_a?(String) || version.is_a?(Symbol)
@@ -113,6 +118,8 @@ module Corvid
         name.is_a?(String) &&
           name.valid_encoding? &&
           !name.match?(/[[:cntrl:]]/) &&
+          !name.match?(/\A[[:space:]]*\z/) &&
+          !name.match?(/\p{Cf}/) &&
           !name.strip.empty? &&
           name.length <= MAX_VERSION_LENGTH
       end
@@ -154,10 +161,13 @@ module Corvid
         end
       end
 
+      # EXCLUDED_KEYS are removed before collision detection, so a repeated
+      # verified_at does not collide and its value is not canonicalized.
       def canonical_hash(hash)
         string_keyed = {}
         hash.each_pair do |key, nested|
           name = key.to_s
+          next if EXCLUDED_KEYS.include?(name)
           raise CanonicalizationError if string_keyed.key?(name)
 
           string_keyed[name] = canonicalize(nested)
