@@ -54,6 +54,10 @@ class Corvid::Adapters::FhirDemoAdapterContractTest < Minitest::Test
     FHIR_ADAPTER_CONTRACT_UNSUPPORTED
   end
 
+  def contract_fail_closed_stubs
+    FHIR_ADAPTER_CONTRACT_FAIL_CLOSED_STUBS
+  end
+
   def contract_seed!
     adapter = contract_adapter
     adapter.instance_variable_get(:@by_type).clear
@@ -91,6 +95,9 @@ class Corvid::Adapters::FhirDemoAdapterContractTest < Minitest::Test
       unknown_payment_identifier: "pay_contract_unknown",
       claim_identifier: "clm_contract_001",
       payer_identifier: "MOCK_PAYER",
+      unknown_payer_identifier: "PAYER_CONTRACT_UNKNOWN",
+      coverage_resource_type: "medicaid",
+      other_resource_type: "medicare_a",
       dereference_tokens: %w[pt_contract_001],
       care_team_seeded: true,
       claims_listable: true
@@ -98,7 +105,7 @@ class Corvid::Adapters::FhirDemoAdapterContractTest < Minitest::Test
   end
 
   def test_contract_update_referral_fhir_update_returns_false
-    validate_contract_unsupported!
+    validate_contract_hooks!
     seed = contract_seed!
     validate_required_seed_keys!(seed)
     adapter = contract_adapter

@@ -24,6 +24,41 @@ class Corvid::Adapters::EnrollmentDemoAdapterContractTest < Minitest::Test
 
     stored_text = "TEST CONTRACT NOTE"
     text_token = adapter.store_text(case_token: "ct_contract_001", kind: :note, text: stored_text)
+    adapter.add_patient(
+      "pt_contract_002",
+      display_name: "TEST,PATIENT 002",
+      dob: Date.new(1990, 5, 5),
+      sex: "M",
+      ssn_last4: "0002",
+      birthplace: "TEST CITY, WA"
+    )
+    adapter.add_enrollment(
+      "pt_contract_002",
+      enrolled: true,
+      membership_number: "TEST-CONTRACT-002",
+      tribe_name: "TEST TRIBE",
+      tribe_code: "TST",
+      member_status: "enrolled"
+    )
+    adapter.add_coverage(
+      "pt_demo_enrolled",
+      resource_type: "medicaid",
+      coverage_type: "medicaid",
+      payer_identifier: "MOCK_PAYER",
+      payer_name: "MOCK MEDICAID PAYER",
+      plan_name: "Mock Medicaid",
+      eligible: true
+    )
+    adapter.add_enrollment(
+      "pt_demo_enrolled",
+      enrolled: true,
+      membership_number: "TEST-10042",
+      tribe_name: "Test Tribe",
+      tribe_code: "TST",
+      member_status: "enrolled",
+      blood_quantum: { fraction: "1/4" },
+      confidence: :verified
+    )
     adapter.add_referral(
       "rf_contract_001",
       patient_identifier: "pt_demo_enrolled",
@@ -65,6 +100,7 @@ class Corvid::Adapters::EnrollmentDemoAdapterContractTest < Minitest::Test
 
     {
       patient_identifier: "pt_demo_enrolled",
+      patient_identifier_tribal_no_confidence: "pt_contract_002",
       unknown_patient_identifier: "pt_contract_unknown",
       patient_search_query: "ENROLLED",
       practitioner_identifier: "pr_demo_001",
@@ -82,6 +118,9 @@ class Corvid::Adapters::EnrollmentDemoAdapterContractTest < Minitest::Test
       unknown_payment_identifier: "pay_contract_unknown",
       claim_identifier: "clm_contract_001",
       payer_identifier: "MOCK_PAYER",
+      unknown_payer_identifier: "PAYER_CONTRACT_UNKNOWN",
+      coverage_resource_type: "medicaid",
+      other_resource_type: "medicare_a",
       dereference_tokens: %w[pt_demo_enrolled rf_contract_001],
       care_team_seeded: true,
       claims_listable: false

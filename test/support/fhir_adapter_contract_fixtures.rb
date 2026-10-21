@@ -13,7 +13,8 @@ module FhirAdapterContractFixtures
       "identifier" => [ { "system" => "http://hl7.org/fhir/sid/us-ssn", "value" => "000-00-0001" } ],
       "extension" => [
         tribal_enrollment_extension,
-        residency_extension
+        residency_extension,
+        us_core_birthplace_extension
       ]
     }
   end
@@ -103,6 +104,7 @@ module FhirAdapterContractFixtures
         { "url" => "tribeName", "valueString" => "TEST TRIBE" },
         { "url" => "tribeCode", "valueString" => "TST" },
         { "url" => "memberStatus", "valueString" => "enrolled" },
+        { "url" => "bloodQuantum", "valueDecimal" => 0.25 },
         { "url" => "confidence", "valueString" => "verified" }
       ]
     }
@@ -129,7 +131,24 @@ module FhirAdapterContractFixtures
       ]
     }
   end
+
+  def us_core_birthplace_extension
+    {
+      "url" => "http://hl7.org/fhir/us/core/StructureDefinition/us-core-birthplace",
+      "valueAddress" => {
+        "city" => "TEST CITY",
+        "state" => "WA"
+      }
+    }
+  end
 end
+
+FHIR_ADAPTER_CONTRACT_FAIL_CLOSED_STUBS = {
+  submit_claim: "Stock FHIR has no clearinghouse; submit_claim returns status unsupported",
+  check_claim_status: "Stock FHIR has no remittance read; check_claim_status returns status unsupported",
+  process_payment: "Stock FHIR has no payment rail; process_payment returns status unsupported",
+  refund_payment: "Stock FHIR has no payment rail; refund_payment returns status unsupported"
+}.freeze
 
 FHIR_ADAPTER_CONTRACT_UNSUPPORTED = {
   store_text: "Stock FHIR has no vault; production must wire store_text separately",
