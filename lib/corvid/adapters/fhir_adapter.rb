@@ -70,6 +70,9 @@ module Corvid
       DEFAULT_READ_TIMEOUT = 30
       # get_coverages follows at most this many Bundle pages, then fails closed.
       MAX_COVERAGE_PAGES = 50
+      # Bundle.link relations followed as the next Coverage page. Any other
+      # relation that equals "next" after strip and downcase fails the search.
+      COVERAGE_NEXT_RELATIONS = %w[next Next].freeze
 
       # Strict Coverage.period grammar. Anchored, and applied before any
       # Date or Time parse. Date.parse is never used on these bounds.
@@ -321,11 +324,17 @@ module Corvid
       # ----------------------------------------------------------------------
       # Coverages
       #
-      # GET Coverage?beneficiary=Patient/<id>, then follow Bundle.link
-      # relation "next" (any case) for up to MAX_COVERAGE_PAGES pages.
-      # A relative next URL is resolved with URI.join against the URL of
-      # the page that contained it. That absolute URL is fetched only when
-      # it stays on this origin and under the base path.
+      # GET Coverage?beneficiary=Patient/<id>. Bundle.type must equal
+      # "searchset" or the search is nil. Follow Bundle.link relation
+      # "next" for up to MAX_COVERAGE_PAGES pages; "Next" is that same
+      # link. When link is present it must be an Array of Hashes, each
+      # with a String relation. An exactly-"next" link must have a String
+      # url. A relation that is not exactly "next" or "Next" but equals
+      # "next" after strip and downcase, a non-String relation, or more
+      # than one "next" link is nil. A relative next URL is resolved with
+      # URI.join against the URL of the page that contained it. That
+      # absolute URL is fetched only when it stays on this origin and
+      # under the base path.
       #
       # Every Coverage must name this patient. beneficiary.reference is
       # accepted only as "Patient/<id>" or exactly
@@ -380,16 +389,24 @@ module Corvid
       # positive total, and no next link is nil via the count check. A
       # string anywhere in the bundle that fails valid_encoding? is nil
       # and does not raise.
+      # An entry that is not a Hash, an entry without a Hash resource, or
+      # a resource without a String resourceType is nil. A resourceType
+      # equal to "Coverage" case-insensitively but not exactly is nil.
+      # Other well-formed resource types keep the prior handling. Each
+      # Coverage id is tracked across all pages. A Coverage without a
+      # non-empty String id, or a repeated id, is nil.
       # plan_name is the class entry typed "plan": its name, otherwise
       # its value.
       #
       # An Array means the search finished ([] when nothing matched). nil
-      # means unknown — a non-2xx page, bad JSON, a non-Bundle body, an
-      # untrusted beneficiary or period, a malformed Coverage, a status
-      # outside the FHIR set, a total that is not an Integer >= 0, differs
-      # from the first page, or does not match the Coverage count, invalid
-      # encoding, a fatal OperationOutcome, an
-      # off-origin / cyclic / over-limit next link, or a transport error
+      # means unknown — a non-2xx page, bad JSON, a non-Bundle body, a
+      # Bundle.type other than "searchset", a malformed link or entry, a
+      # missing or duplicate Coverage id, an untrusted beneficiary or
+      # period, a malformed Coverage, a status outside the FHIR set, a
+      # total that is not an Integer >= 0, differs from the first page,
+      # or does not match the Coverage count, invalid encoding, a fatal
+      # OperationOutcome, an off-origin / cyclic / over-limit next link,
+      # or a transport error
       # (Timeout::Error, including Net::ReadTimeout and Net::OpenTimeout,
       # SocketError, SystemCallError, OpenSSL::SSL::SSLError, IOError,
       # Net::ProtocolError, Net::HTTPBadResponse,
@@ -783,13 +800,12 @@ module Corvid
       # Coverage search -----------------------------------------------------
 
       def collect_coverage_pages(url, patient_identifier)
-        found = []
-        seen = {}
+        found, seen, seen_ids = [], {}, {}
         received = 0
         stated_total = nil
 
         MAX_COVERAGE_PAGES.times do |index|
-          page = read_coverage_page(url, seen, patient_identifier)
+          page = read_coverage_page(url, seen, seen_ids, patient_identifier)
           return nil unless page
 
           stated_total = page[:stated_total] if index.zero?
@@ -829,12 +845,12 @@ module Corvid
         total.is_a?(Integer) && total >= 0
       end
 
-      def read_coverage_page(url, seen, patient_identifier)
+      def read_coverage_page(url, seen, seen_ids, patient_identifier)
         absolute = absolute_coverage_url(url)
         return nil if absolute.nil? || seen[absolute] || !same_origin_coverage_url?(absolute)
 
         seen[absolute] = true
-        fetch_coverage_bundle(absolute, patient_identifier)
+        fetch_coverage_bundle(absolute, patient_identifier, seen_ids)
       end
 
       # Absolute references pass through. Relative next links are resolved
@@ -847,14 +863,14 @@ module Corvid
         nil
       end
 
-      def fetch_coverage_bundle(url, patient_identifier)
+      def fetch_coverage_bundle(url, patient_identifier, seen_ids)
         response = http_get(url)
         return nil unless response.is_a?(Net::HTTPSuccess)
 
         bundle = parse_coverage_bundle(response.body)
         return nil unless bundle
 
-        page = active_coverage_rows(bundle, patient_identifier)
+        page = active_coverage_rows(bundle, patient_identifier, seen_ids)
         return nil unless page
 
         next_url = coverage_next_url(url, bundle)
@@ -879,6 +895,7 @@ module Corvid
 
         parsed = JSON.parse(body)
         return nil unless parsed.is_a?(Hash) && parsed["resourceType"] == "Bundle"
+        return nil unless parsed["type"] == "searchset"
         return nil unless coverage_strings_encoded?(parsed)
 
         parsed
@@ -900,12 +917,12 @@ module Corvid
         end
       end
 
-      def active_coverage_rows(bundle, patient_identifier)
+      def active_coverage_rows(bundle, patient_identifier, seen_ids)
         entries = bundle["entry"]
         return empty_coverage_page(bundle) if entries.nil?
         return nil unless entries.is_a?(Array)
 
-        fold_coverage_entries(entries, patient_identifier)
+        fold_coverage_entries(entries, patient_identifier, seen_ids)
       end
 
       # No entry array. Absent or a non-negative Integer total is an empty
@@ -918,11 +935,11 @@ module Corvid
         { coverages: [], coverage_count: 0 }
       end
 
-      def fold_coverage_entries(entries, patient_identifier)
+      def fold_coverage_entries(entries, patient_identifier, seen_ids)
         rows = []
         count = 0
         entries.each do |entry|
-          counted = append_coverage_entry(entry, rows, patient_identifier)
+          counted = append_coverage_entry(entry, rows, patient_identifier, seen_ids)
           return nil if counted.nil?
 
           count += counted
@@ -930,10 +947,12 @@ module Corvid
         { coverages: rows, coverage_count: count }
       end
 
-      def append_coverage_entry(entry, rows, patient_identifier)
+      def append_coverage_entry(entry, rows, patient_identifier, seen_ids)
+        return nil unless well_formed_coverage_entry?(entry)
         return nil if fatal_coverage_outcome?(entry)
 
         resource = coverage_resource(entry)
+        return nil if resource && !remember_coverage_id(resource, seen_ids)
         return 0 unless resource
 
         row = coverage_row(resource, patient_identifier)
@@ -943,6 +962,29 @@ module Corvid
         1
       rescue TypeError, NoMethodError, ArgumentError, EncodingError
         nil
+      end
+
+      # false fails the search. Other resource types stay on the prior path.
+      def well_formed_coverage_entry?(entry)
+        resource = bundle_entry_resource(entry)
+        return false unless resource
+
+        type = resource["resourceType"]
+        type.is_a?(String) && !inexact_coverage_type?(type)
+      end
+
+      def inexact_coverage_type?(type)
+        type != "Coverage" && type.casecmp?("Coverage")
+      end
+
+      # false fails the search. The id is a non-empty String, unique across
+      # every page of this search, including coverages later filtered out.
+      def remember_coverage_id(resource, seen_ids)
+        id = resource["id"]
+        return false unless id.is_a?(String) && !id.empty?
+        return false if seen_ids.key?(id)
+
+        seen_ids[id] = true
       end
 
       def bundle_entry_resource(entry)
@@ -1298,11 +1340,52 @@ module Corvid
         return nil if links.nil?
         return :invalid_coverage_next unless links.is_a?(Array)
 
-        link = links.find { |row| row.is_a?(Hash) && row["relation"].to_s.casecmp?("next") }
-        return nil unless link
+        single_coverage_next_url(links)
+      end
 
-        url = link["url"]
-        url.is_a?(String) && !url.empty? ? url : :invalid_coverage_next
+      def single_coverage_next_url(links)
+        chosen = nil
+        links.each do |link|
+          url = coverage_link_url(link)
+          return :invalid_coverage_next if url == :invalid
+          next if url.nil?
+          return :invalid_coverage_next if chosen
+
+          chosen = url
+        end
+        chosen
+      end
+
+      def coverage_link_url(link)
+        relation = coverage_link_relation(link)
+        return relation if relation.nil? || relation == :invalid
+
+        strict_next_url(link["url"])
+      end
+
+      # :invalid fails the search. nil is a link that is not the next page.
+      def coverage_link_relation(link)
+        return :invalid unless link.is_a?(Hash)
+
+        relation = link["relation"]
+        return :invalid unless relation.is_a?(String)
+        return :invalid if rejected_next_relation?(relation)
+
+        relation if followed_next_relation?(relation)
+      end
+
+      def rejected_next_relation?(relation)
+        relation.strip.downcase == "next" && !followed_next_relation?(relation)
+      end
+
+      def followed_next_relation?(relation)
+        COVERAGE_NEXT_RELATIONS.include?(relation)
+      end
+
+      def strict_next_url(url)
+        return :invalid unless url.is_a?(String) && !url.empty?
+
+        url
       end
 
       def same_origin_coverage_url?(url)
