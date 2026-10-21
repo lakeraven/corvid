@@ -303,22 +303,298 @@ class Corvid::Adapters::FhirAdapterPaginationTest < Minitest::Test
     end
   end
 
+  # --- fhir_search: entry shape (gate round 1) ---------------------------------
+
+  def test_fhir_search_returns_nil_when_page_entry_is_a_hash
+    url1 = patient_search_url(name: "entryhash")
+    url2 = "#{BASE_URL}/Patient?_getpages=entryhash2"
+
+    responses = {
+      url1 => success_json(search_bundle(entries: [ patient_entry("pt_eh1") ], next_url: url2)),
+      url2 => success_json(search_bundle(entries: { "resource" => { "resourceType" => "Patient", "id" => "bad" } }))
+    }
+
+    with_http_stub(responses) do |requested|
+      assert_nil @adapter.send(:fhir_search, "Patient", name: "entryhash")
+      assert_equal [ url1, url2 ], requested
+    end
+  end
+
+  def test_fhir_search_returns_nil_when_page_entry_is_a_string
+    url1 = patient_search_url(name: "entrystr")
+
+    with_http_stub({
+      url1 => success_json(search_bundle(entries: "not-an-array"))
+    }) do |requested|
+      assert_nil @adapter.send(:fhir_search, "Patient", name: "entrystr")
+      assert_equal [ url1 ], requested
+    end
+  end
+
+  def test_fhir_search_treats_missing_or_null_entry_as_empty_page_and_continues_chain
+    url1 = patient_search_url(name: "entrygap")
+    url2 = "#{BASE_URL}/Patient?_getpages=entrygap2"
+    url3 = "#{BASE_URL}/Patient?_getpages=entrygap3"
+
+    e1 = patient_entry("pt_gap1")
+    e3 = patient_entry("pt_gap3")
+
+    page2_no_entry = search_bundle(entries: :omit, next_url: url3)
+    page2_null_entry = search_bundle(entries: nil, next_url: url3)
+
+    responses = {
+      url1 => success_json(search_bundle(entries: [ e1 ], next_url: url2)),
+      url2 => success_json(page2_no_entry),
+      url3 => success_json(search_bundle(entries: [ e3 ]))
+    }
+
+    with_http_stub(responses) do |requested|
+      result = @adapter.send(:fhir_search, "Patient", name: "entrygap")
+
+      assert_equal [ e1, e3 ], result["entry"]
+      assert_equal [ url1, url2, url3 ], requested
+    end
+
+    responses[url2] = success_json(page2_null_entry)
+
+    with_http_stub(responses) do |requested|
+      result = @adapter.send(:fhir_search, "Patient", name: "entrygap")
+
+      assert_equal [ e1, e3 ], result["entry"]
+      assert_equal [ url1, url2, url3 ], requested
+    end
+  end
+
+  # --- fhir_search: link shape and relation (gate round 1) ---------------------
+
+  def test_fhir_search_returns_nil_when_link_is_present_but_not_an_array
+    url1 = patient_search_url(name: "linkhash")
+    evil_next = "#{BASE_URL}/Patient?page=2&name=linkhash"
+
+    bundle = search_bundle(entries: [ patient_entry("pt_lh") ])
+    bundle["link"] = { "relation" => "next", "url" => evil_next }
+
+    with_http_stub({ url1 => success_json(bundle) }) do |requested|
+      assert_nil @adapter.send(:fhir_search, "Patient", name: "linkhash")
+      refute_includes requested, evil_next
+      assert_equal [ url1 ], requested
+    end
+  end
+
+  def test_fhir_search_returns_nil_for_case_insensitive_next_relation_without_requesting_url
+    [
+      [ "Next", "casing_next" ],
+      [ "NEXT", "casing_next_upper" ],
+      [ " next", "casing_next_space" ]
+    ].each do |relation, name|
+      url1 = patient_search_url(name: name)
+      evil_next = "#{BASE_URL}/Patient?page=2&name=#{name}"
+
+      bundle = search_bundle(entries: [ patient_entry("pt_rel") ])
+      bundle["link"] = [ { "relation" => relation, "url" => evil_next } ]
+
+      with_http_stub({ url1 => success_json(bundle) }) do |requested|
+        assert_nil @adapter.send(:fhir_search, "Patient", name: name),
+          "expected nil for relation #{relation.inspect}"
+        refute_includes requested, evil_next
+        assert_equal [ url1 ], requested
+      end
+    end
+  end
+
+  def test_fhir_search_returns_nil_when_bundle_has_two_next_links_without_requesting_either
+    url1 = patient_search_url(name: "twonext")
+    next_a = "#{BASE_URL}/Patient?_getpages=twonext_a"
+    next_b = "#{BASE_URL}/Patient?_getpages=twonext_b"
+
+    bundle = search_bundle(entries: [ patient_entry("pt_2n") ], links: [
+      { "relation" => "next", "url" => next_a },
+      { "relation" => "next", "url" => next_b }
+    ])
+
+    responses = {
+      url1 => success_json(bundle),
+      next_a => success_json(search_bundle(entries: [ patient_entry("pt_2n_a") ])),
+      next_b => success_json(search_bundle(entries: [ patient_entry("pt_2n_b") ]))
+    }
+
+    with_http_stub(responses) do |requested|
+      assert_nil @adapter.send(:fhir_search, "Patient", name: "twonext")
+      refute_includes requested, next_a
+      refute_includes requested, next_b
+      assert_equal [ url1 ], requested
+    end
+  end
+
+  # --- fhir_search: merged total (gate round 1) --------------------------------
+
+  def test_fhir_search_returns_nil_when_first_page_total_differs_from_merged_entry_count
+    url1 = patient_search_url(name: "totalbad")
+    url2 = "#{BASE_URL}/Patient?_getpages=totalbad2"
+
+    e1 = patient_entry("pt_tb1")
+    e2 = patient_entry("pt_tb2")
+
+    responses = {
+      url1 => success_json(search_bundle(entries: [ e1 ], next_url: url2, total: 99)),
+      url2 => success_json(search_bundle(entries: [ e2 ]))
+    }
+
+    with_http_stub(responses) do |requested|
+      assert_nil @adapter.send(:fhir_search, "Patient", name: "totalbad")
+      assert_equal [ url1, url2 ], requested
+    end
+  end
+
+  def test_fhir_search_keeps_total_when_first_page_total_matches_merged_entry_count
+    url1 = patient_search_url(name: "totalok")
+    url2 = "#{BASE_URL}/Patient?_getpages=totalok2"
+
+    e1 = patient_entry("pt_to1")
+    e2 = patient_entry("pt_to2")
+
+    responses = {
+      url1 => success_json(search_bundle(entries: [ e1 ], next_url: url2, total: 2)),
+      url2 => success_json(search_bundle(entries: [ e2 ]))
+    }
+
+    with_http_stub(responses) do |requested|
+      result = @adapter.send(:fhir_search, "Patient", name: "totalok")
+
+      assert_equal [ e1, e2 ], result["entry"]
+      assert_equal 2, result["total"]
+      assert_equal [ url1, url2 ], requested
+    end
+  end
+
+  def test_fhir_search_omits_total_in_merged_bundle_when_first_page_has_no_total
+    url1 = patient_search_url(name: "nototal")
+    url2 = "#{BASE_URL}/Patient?_getpages=nototal2"
+
+    e1 = patient_entry("pt_nt1")
+    e2 = patient_entry("pt_nt2")
+
+    responses = {
+      url1 => success_json(search_bundle(entries: [ e1 ], next_url: url2)),
+      url2 => success_json(search_bundle(entries: [ e2 ]))
+    }
+
+    with_http_stub(responses) do |requested|
+      result = @adapter.send(:fhir_search, "Patient", name: "nototal")
+
+      assert_equal [ e1, e2 ], result["entry"]
+      refute result.key?("total")
+      assert_equal [ url1, url2 ], requested
+    end
+  end
+
+  # --- fhir_search: base path prefix (gate round 1) ----------------------------
+
+  def test_fhir_search_returns_nil_for_same_origin_next_outside_base_path_without_requesting
+    tenant_base = "https://fhir.example.test/tenant-a/r4"
+    adapter = Corvid::Adapters::FhirAdapter.new(base_url: tenant_base)
+    url1 = "#{tenant_base}/Patient?#{URI.encode_www_form(name: "tenantpath")}"
+    outside_next = "/tenant-b/r4/Patient?page=2"
+    resolved_outside = "https://fhir.example.test#{outside_next}"
+    responses = {
+      url1 => success_json(search_bundle(entries: [ patient_entry("pt_tp") ], next_url: outside_next)),
+      resolved_outside => success_json(search_bundle(entries: [ patient_entry("pt_tp_out") ]))
+    }
+
+    requested = []
+    handler = lambda do |url|
+      requested << url
+      response = responses[url]
+      raise "unexpected http_get: #{url}" unless response
+
+      response
+    end
+
+    adapter.stub(:http_get, handler) do
+      assert_nil adapter.send(:fhir_search, "Patient", name: "tenantpath")
+    end
+
+    refute_includes requested, resolved_outside
+    assert_equal [ url1 ], requested
+  end
+
+  def test_fhir_search_follows_same_origin_next_inside_base_path_prefix
+    tenant_base = "https://fhir.example.test/tenant-a/r4"
+    adapter = Corvid::Adapters::FhirAdapter.new(base_url: tenant_base)
+    url1 = "#{tenant_base}/Patient?#{URI.encode_www_form(name: "tenantin")}"
+    url2 = "#{tenant_base}/Patient?page=2&name=tenantin"
+
+    e1 = patient_entry("pt_ti1")
+    e2 = patient_entry("pt_ti2")
+
+    responses = {
+      url1 => success_json(search_bundle(entries: [ e1 ], next_url: "Patient?page=2&name=tenantin")),
+      url2 => success_json(search_bundle(entries: [ e2 ]))
+    }
+
+    requested = []
+    handler = lambda do |url|
+      requested << url
+      responses[url] || raise("unexpected http_get: #{url}")
+    end
+
+    adapter.stub(:http_get, handler) do
+      result = adapter.send(:fhir_search, "Patient", name: "tenantin")
+
+      assert_equal [ e1, e2 ], result["entry"]
+      assert_equal [ url1, url2 ], requested
+    end
+  end
+
+  # --- fhir_search: page cap success (gate round 1) ----------------------------
+
+  def test_fhir_search_succeeds_with_exactly_max_search_pages_and_no_trailing_next
+    cap = Corvid::Adapters::FhirAdapter::MAX_SEARCH_PAGES
+    responses = {}
+    urls = []
+    expected_entries = []
+
+    cap.times do |i|
+      urls << (i.zero? ? patient_search_url(name: "maxok") : "#{BASE_URL}/Patient?_getpages=maxok#{i}")
+    end
+
+    urls.each_with_index do |url, i|
+      entry = patient_entry("pt_maxok#{i}")
+      expected_entries << entry
+      next_url = i < cap - 1 ? urls[i + 1] : nil
+      responses[url] = success_json(search_bundle(entries: [ entry ], next_url: next_url))
+    end
+
+    with_http_stub(responses) do |requested|
+      result = @adapter.send(:fhir_search, "Patient", name: "maxok")
+
+      assert_equal expected_entries, result["entry"]
+      assert_equal urls, requested
+      assert_equal cap, requested.length
+    end
+  end
+
   private
 
   def patient_search_url(name:)
     "#{BASE_URL}/Patient?#{URI.encode_www_form(name: name)}"
   end
 
-  def search_bundle(entries:, next_url: nil, link_relation: "next")
-    links = []
-    links << { "relation" => link_relation, "url" => next_url } if next_url
-
-    {
+  def search_bundle(entries:, next_url: nil, link_relation: "next", total: :__unset__, links: nil)
+    bundle = {
       "resourceType" => "Bundle",
-      "type" => "searchset",
-      "entry" => entries,
-      "link" => links
+      "type" => "searchset"
     }
+    bundle["total"] = total unless total == :__unset__
+    bundle["entry"] = entries unless entries == :omit
+    bundle["link"] = if links
+      links
+    elsif next_url
+      [ { "relation" => link_relation, "url" => next_url } ]
+    else
+      []
+    end
+    bundle
   end
 
   def patient_entry(id)
