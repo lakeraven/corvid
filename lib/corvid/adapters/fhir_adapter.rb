@@ -432,22 +432,27 @@ module Corvid
       # Follows `link` entries with relation exactly "next", resolving each
       # URL with URI.join against the current page. Fail closed: returns nil
       # (never a partial Bundle) when any page is non-2xx, invalid JSON, an
-      # empty or nil body, or not a Bundle Hash; when `entry` is present and
-      # not an Array (absent or null is an empty page); when `link` is
-      # present and not an Array; when a Hash link's relation is a String
-      # equal to "next" only after strip and case-insensitive compare (that
-      # URL is not requested); when more than one exactly-"next" link is
-      # present (neither URL is requested); when a next URL's scheme, host,
-      # or port differs from @base_url, its path does not start with
-      # @base_url's path at a segment boundary, or a path segment is "." or
-      # ".." after %2e/%2E are decoded (that URL is not requested); when a
-      # present `total` is not a non-negative Integer, or differs from the
-      # count of merged entries whose search.mode is "match" or absent (an
-      # equal total is kept, an absent total stays absent, and outcome and
-      # include entries are not counted); when the same resourceType and id
-      # appear twice among those match or no-mode entries (repeated include
-      # entries are allowed); when a next URL was already visited; or when
-      # the chain is longer than MAX_SEARCH_PAGES.
+      # empty or nil body, a String body that is not valid_encoding?, or not
+      # a Bundle Hash; when `entry` is present and not an Array (absent or
+      # null is an empty page); when `link` is present and not an Array;
+      # when a link relation or url String is not valid_encoding?; when a
+      # Hash link's relation is a String equal to "next" only after strip
+      # and case-insensitive compare (that URL is not requested); when more
+      # than one exactly-"next" link is present (neither URL is requested);
+      # when parsing, joining, or checking a next URL raises URI::Error;
+      # when a next URL's scheme or port differs from @base_url, or its host
+      # differs case-insensitively; when its path does not start with
+      # @base_url's path at a segment boundary; when that path contains ";",
+      # a backslash, or an encoded separator (%2f/%5c, any case) before or
+      # after percent-decoding, or a path segment is "." or ".." after
+      # %2e/%2E are decoded (that URL is not requested); when a present
+      # `total` is not a non-negative Integer, or differs from the count of
+      # merged entries whose search.mode is "match" or absent (an equal
+      # total is kept, an absent total stays absent, and outcome and include
+      # entries are not counted); when the same resourceType and id appear
+      # twice among those match or no-mode entries (repeated include entries
+      # are allowed); when a next URL was already visited; or when the chain
+      # is longer than MAX_SEARCH_PAGES.
       def fhir_search(resource_type, params = {})
         query = URI.encode_www_form(params)
         pages = collect_search_pages("#{@base_url}/#{resource_type}?#{query}")
@@ -481,7 +486,7 @@ module Corvid
       end
 
       def parse_search_bundle(body)
-        return if body.nil? || body.empty?
+        return if !body.is_a?(String) || body.empty? || !body.valid_encoding?
 
         bundle = JSON.parse(body)
         bundle if bundle.is_a?(Hash) && bundle["resourceType"] == "Bundle"
@@ -501,6 +506,7 @@ module Corvid
       def next_link_href(bundle)
         links = bundle_links(bundle)
         return SEARCH_REJECTED if links == SEARCH_REJECTED
+        return SEARCH_REJECTED if links.any? { |link| invalid_link_encoding?(link) }
         return SEARCH_REJECTED if links.any? { |link| inexact_next_relation?(link) }
 
         next_links = links.select { |link| next_relation?(link) }
@@ -508,7 +514,13 @@ module Corvid
         return if next_links.empty?
 
         href = next_links.first["url"]
-        href.is_a?(String) && !href.empty? ? href : SEARCH_REJECTED
+        href.is_a?(String) && href.valid_encoding? && !href.empty? ? href : SEARCH_REJECTED
+      end
+
+      def invalid_link_encoding?(link)
+        return false unless link.is_a?(Hash)
+
+        [ link["relation"], link["url"] ].any? { |value| value.is_a?(String) && !value.valid_encoding? }
       end
 
       def inexact_next_relation?(link)
@@ -534,7 +546,7 @@ module Corvid
 
       def resolve_search_url(current_url, href)
         URI.join(current_url, href).to_s
-      rescue URI::InvalidURIError
+      rescue URI::Error
         nil
       end
 
@@ -543,10 +555,11 @@ module Corvid
 
         origin = URI.parse(@base_url)
         other = URI.parse(url)
-        return false unless origin.scheme == other.scheme && origin.host == other.host && origin.port == other.port
+        return false unless origin.scheme == other.scheme && origin.port == other.port
+        return false unless origin.host.is_a?(String) && origin.host.casecmp?(other.host)
 
         path_under_base?(origin.path, other.path)
-      rescue URI::InvalidURIError
+      rescue URI::Error
         false
       end
 
@@ -559,11 +572,20 @@ module Corvid
       end
 
       # "." and ".." segments, including %2e/%2E, are rejected before fetch.
+      # ";", a backslash, and encoded separators %2f/%5c (any case) are
+      # rejected on the path both before and after that percent-decoding.
       def dot_segment_path?(href)
-        path = URI.parse(href).path.to_s.gsub(/%2e/i, ".")
-        path.split("/").any? { |segment| segment == "." || segment == ".." }
-      rescue URI::InvalidURIError
+        raw = URI.parse(href).path.to_s
+        decoded = raw.gsub(/%2e/i, ".")
+        return true if forbidden_next_path?(raw) || forbidden_next_path?(decoded)
+
+        decoded.split("/").any? { |segment| segment == "." || segment == ".." }
+      rescue URI::Error
         false
+      end
+
+      def forbidden_next_path?(path)
+        path.match?(/[;\\]|%2f|%5c/i)
       end
 
       def merge_search_pages(pages)
