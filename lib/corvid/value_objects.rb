@@ -65,4 +65,17 @@ module Corvid
       super(amount_error: amount_error, **rest)
     end
   end
+
+  # Resolved Medicaid rules for one member. Computed in memory, never persisted.
+  MedicaidRuleSet = Data.define(
+    :renewal_cycle_months,
+    :retroactive_window_months,
+    :work_requirement,
+    :exemption_needs_confirmation,
+    :reasons
+  ) do
+    def initialize(reasons:, **rest)
+      super(reasons: reasons.map { |reason| reason.dup.freeze }.freeze, **rest)
+    end
+  end
 end
