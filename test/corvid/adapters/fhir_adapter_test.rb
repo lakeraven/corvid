@@ -1927,5 +1927,4 @@ class Corvid::Adapters::FhirAdapterTest < Minitest::Test
     }
     @adapter.stub(:fhir_search, bundle) { @adapter.list_claims("pt_pr3").first }
   end
-
 end
