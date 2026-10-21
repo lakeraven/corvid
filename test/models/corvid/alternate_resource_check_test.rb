@@ -759,25 +759,90 @@ class Corvid::AlternateResourceCheckTest < ActiveSupport::TestCase
     end
   end
 
-  test "current_for? is false for negative status when date of service is inside stored coverage period" do
+  test "current_for? is false for not_enrolled when date of service is inside stored coverage period" do
     with_tenant("tnt_test") do
       travel_to Time.zone.parse("2025-06-15 12:00:00 UTC") do
         dos = Date.new(2025, 6, 1)
-        coverage = {
+        check = Corvid::AlternateResourceCheck.new(
+          resource_type: "medicaid",
+          status: "not_enrolled",
+          checked_at: 1.day.ago,
           coverage_start: Date.new(2025, 1, 1),
           coverage_end: Date.new(2025, 12, 31),
           renewal_date: Date.new(2025, 12, 1)
-        }
+        )
 
-        %i[not_enrolled denied exhausted].each do |status|
-          check = Corvid::AlternateResourceCheck.new(
-            resource_type: "medicaid",
-            status: status,
-            checked_at: 1.day.ago,
-            **coverage
-          )
-          refute check.current_for?(dos), "expected #{status} not current inside coverage period"
-        end
+        refute check.current_for?(dos)
+      end
+    end
+  end
+
+  test "current_for? is true for fresh exhausted when date of service is inside stored coverage period" do
+    with_tenant("tnt_test") do
+      travel_to Time.zone.parse("2025-06-15 12:00:00 UTC") do
+        dos = Date.new(2025, 6, 1)
+        check = Corvid::AlternateResourceCheck.new(
+          resource_type: "medicaid",
+          status: "exhausted",
+          checked_at: 1.day.ago,
+          coverage_start: Date.new(2025, 1, 1),
+          coverage_end: Date.new(2025, 12, 31),
+          renewal_date: Date.new(2025, 12, 1)
+        )
+
+        assert check.current_for?(dos)
+      end
+    end
+  end
+
+  test "current_for? is true for fresh denied when date of service is inside stored coverage period" do
+    with_tenant("tnt_test") do
+      travel_to Time.zone.parse("2025-06-15 12:00:00 UTC") do
+        dos = Date.new(2025, 6, 1)
+        check = Corvid::AlternateResourceCheck.new(
+          resource_type: "medicaid",
+          status: "denied",
+          checked_at: 1.day.ago,
+          coverage_start: Date.new(2025, 1, 1),
+          coverage_end: Date.new(2025, 12, 31),
+          renewal_date: Date.new(2025, 12, 1)
+        )
+
+        assert check.current_for?(dos)
+      end
+    end
+  end
+
+  test "current_for? is false for not_enrolled when only coverage_end covers date of service on or before end" do
+    with_tenant("tnt_test") do
+      travel_to Time.zone.parse("2025-06-15 12:00:00 UTC") do
+        check = Corvid::AlternateResourceCheck.new(
+          resource_type: "private_insurance",
+          status: "not_enrolled",
+          checked_at: 1.day.ago,
+          coverage_start: nil,
+          coverage_end: Date.new(2025, 12, 31)
+        )
+
+        refute check.current_for?(Date.new(2025, 6, 1))
+        refute check.current_for?(Date.new(2025, 12, 31))
+      end
+    end
+  end
+
+  test "current_for? is false for not_enrolled when only coverage_start covers date of service on or after start" do
+    with_tenant("tnt_test") do
+      travel_to Time.zone.parse("2025-06-15 12:00:00 UTC") do
+        check = Corvid::AlternateResourceCheck.new(
+          resource_type: "private_insurance",
+          status: "not_enrolled",
+          checked_at: 1.day.ago,
+          coverage_start: Date.new(2025, 1, 1),
+          coverage_end: nil
+        )
+
+        refute check.current_for?(Date.new(2025, 6, 1))
+        refute check.current_for?(Date.new(2025, 1, 1))
       end
     end
   end
