@@ -555,7 +555,7 @@ module Corvid
       # when a next URL's scheme or port differs from @base_url, or its host
       # differs case-insensitively; when its path does not start with
       # @base_url's path at a segment boundary; when that path contains ";",
-      # a backslash, or an encoded separator (%2f/%5c, any case) before or
+      # a backslash, or an encoded %2f/%5c/%3b/%25 (any case) before or
       # after percent-decoding, or a path segment is "." or ".." after
       # %2e/%2E are decoded (that URL is not requested); when a present
       # `total` is not a non-negative Integer, or differs from the count of
@@ -693,8 +693,11 @@ module Corvid
       end
 
       # "." and ".." segments, including %2e/%2E, are rejected before fetch.
-      # ";", a backslash, and encoded separators %2f/%5c (any case) are
-      # rejected on the path both before and after that percent-decoding.
+      # ";", a backslash, encoded separators %2f/%5c, an encoded ";" (%3b)
+      # and any double-encoded escape (%25), all in any case, are rejected
+      # on the path both before and after that percent-decoding. A gateway
+      # that decodes, strips path parameters and normalizes dot segments
+      # could otherwise route the request outside the base path.
       def dot_segment_path?(href)
         raw = URI.parse(href).path.to_s
         decoded = raw.gsub(/%2e/i, ".")
@@ -706,7 +709,7 @@ module Corvid
       end
 
       def forbidden_next_path?(path)
-        path.match?(/[;\\]|%2f|%5c/i)
+        path.match?(/[;\\]|%2f|%5c|%3b|%25/i)
       end
 
       def merge_search_pages(pages)
