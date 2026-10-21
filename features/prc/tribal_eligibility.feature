@@ -51,3 +51,10 @@ Feature: Tribal eligibility decision matrix (TribalEligibilityService)
     Then the decision should be ineligible
     And the reason codes should include "not_enrolled"
     And the reason codes should not include "provider_unavailable_fail_closed"
+
+  Scenario: Unreachable enrollment source is provider unavailable
+    When I decide eligibility for person "pt_unreachable" at facility "fac_demo"
+    Then the decision should be ineligible
+    And the reason codes should include "provider_unavailable_fail_closed"
+    And the reason codes should not include "not_enrolled"
+    And the decision provider confidence should be absent

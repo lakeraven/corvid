@@ -483,11 +483,18 @@ class Corvid::Adapters::FhirAdapterTest < Minitest::Test
   end
 
   def test_verify_tribal_enrollment_falls_back_when_extension_absent
-    # Plain FHIR servers with no tribal-enrollment extension degrade to the
-    # same fail-closed "unavailable" shape as before this method read FHIR.
+    # Issue #662 round 4: missing extension is unknown enrollment, not a firm false.
     @adapter.stub(:fhir_read, { "id" => "pt_001" }) do
       result = @adapter.verify_tribal_enrollment("pt_001")
-      assert_equal false, result[:enrolled]
+      assert_nil result[:enrolled]
+      assert_equal :unavailable, result[:confidence]
+    end
+  end
+
+  def test_verify_tribal_enrollment_returns_nil_enrolled_when_patient_read_fails
+    @adapter.stub(:fhir_read, nil) do
+      result = @adapter.verify_tribal_enrollment("pt_missing")
+      assert_nil result[:enrolled]
       assert_equal :unavailable, result[:confidence]
     end
   end

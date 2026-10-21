@@ -25,4 +25,10 @@ class Corvid::Adapters::EnrollmentDemoAdapterTest < Minitest::Test
     refute result[:enrolled]
     assert_equal :unavailable, result[:confidence]
   end
+
+  def test_unknown_patient_returns_nil_enrolled_with_unavailable_confidence
+    result = @adapter.verify_tribal_enrollment("pt_demo_unknown")
+    assert_nil result[:enrolled]
+    assert_equal :unavailable, result[:confidence]
+  end
 end

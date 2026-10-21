@@ -128,6 +128,36 @@ class Corvid::EligibilityChecklistServiceInjectionTest < ActiveSupport::TestCase
     def get_coverages(_id);                 nil; end
   end
 
+  # Issue #662 round 4: nil enrolled must not be treated as a firm denial.
+  class NilEnrolledEnrollmentAdapter
+    def verify_tribal_enrollment(_id)
+      { enrolled: nil, confidence: :verified, verified_at: Time.current }
+    end
+
+    def verify_identity_documents(_id)
+      { ssn_present: true, dob_present: true, verified_at: Time.current }
+    end
+
+    def verify_residency(_id)
+      { on_reservation: true, verified_at: Time.current }
+    end
+
+    def get_coverages(_id)
+      [ { plan: "Test" } ]
+    end
+  end
+
+  test "populate! does not verify enrollment when adapter reports nil enrolled even with verified confidence" do
+    Corvid::TenantContext.with_tenant(TENANT) do
+      referral = build_referral_in_tenant
+      service = Corvid::EligibilityChecklistService.new(adapter: NilEnrolledEnrollmentAdapter.new)
+
+      assert_nothing_raised { service.populate!(referral) }
+
+      refute referral.reload.eligibility_checklist.enrollment_verified
+    end
+  end
+
   test "populate! with nil adapter returns leaves checklist items unverified instead of raising" do
     Corvid::TenantContext.with_tenant(TENANT) do
       referral = build_referral_in_tenant

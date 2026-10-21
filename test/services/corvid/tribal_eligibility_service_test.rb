@@ -3,6 +3,7 @@
 require "test_helper"
 require "digest"
 require "json"
+require "corvid/adapters/fhir_adapter"
 
 # Tests the four eligibility-matrix scenarios against MockAdapter:
 #   - True positive       (enrolled in contracted tribe, all checks pass)
@@ -275,6 +276,9 @@ class Corvid::TribalEligibilityServiceTest < ActiveSupport::TestCase
 
     refute decision.eligible?
     assert_includes decision.reason_codes, :provider_unavailable_fail_closed
+    assert_nil decision.provider_confidence
+    row = Corvid::PrcEligibilityDecision.find(decision.decision_id)
+    assert_nil row.provider_confidence
   end
 
   test "decide persists ineligible decision when verify_tribal_enrollment returns non-Hash without raising" do
@@ -312,6 +316,7 @@ class Corvid::TribalEligibilityServiceTest < ActiveSupport::TestCase
     refute decision.eligible?
     assert_includes decision.reason_codes, :provider_unavailable_fail_closed
     refute_includes decision.reason_codes, :not_enrolled
+    assert_nil decision.provider_confidence
   end
 
   test "decide fails closed when enrolled is string true with verified confidence" do
@@ -382,6 +387,94 @@ class Corvid::TribalEligibilityServiceTest < ActiveSupport::TestCase
     refute decision.eligible?
     assert_includes decision.reason_codes, :not_enrolled
     refute_includes decision.reason_codes, :provider_unavailable_fail_closed
+  end
+
+  # ---- Issue #662 round 4: adapter outage shapes and provider_confidence ----
+
+  test "decide fails closed for MockAdapter unknown patient without not_enrolled" do
+    decision = Corvid::TribalEligibilityService.decide(
+      person_identifier: "pt_unknown_e2e",
+      facility: @facility,
+      tenant_identifier: TENANT
+    )
+
+    refute decision.eligible?
+    assert_includes decision.reason_codes, :provider_unavailable_fail_closed
+    refute_includes decision.reason_codes, :not_enrolled
+    assert_nil decision.provider_confidence
+    row = Corvid::PrcEligibilityDecision.find(decision.decision_id)
+    assert_nil row.provider_confidence
+  end
+
+  test "decide fails closed through FhirAdapter when Patient read returns nil" do
+    fhir = Corvid::Adapters::FhirAdapter.new(base_url: "https://fhir.example.com/r4")
+    fhir.define_singleton_method(:fhir_read) { |_resource, _id| nil }
+    Corvid.configure { |c| c.adapter = fhir }
+
+    decision = Corvid::TribalEligibilityService.decide(
+      person_identifier: "pt_fhir_missing",
+      facility: @facility,
+      tenant_identifier: TENANT
+    )
+
+    refute decision.eligible?
+    assert_includes decision.reason_codes, :provider_unavailable_fail_closed
+    refute_includes decision.reason_codes, :not_enrolled
+    assert_nil decision.provider_confidence
+  end
+
+  test "decide persists nil provider_confidence when enrolled is nil with verified confidence" do
+    person_id = "pt_nil_enrolled_conf"
+    stub_tribal_enrollment_response(
+      person_id,
+      enrolled: nil, tribe_code: "DEMO", confidence: :verified, verified_at: Time.current
+    )
+
+    decision = Corvid::TribalEligibilityService.decide(
+      person_identifier: person_id,
+      facility: @facility,
+      tenant_identifier: TENANT
+    )
+
+    refute decision.eligible?
+    assert_includes decision.reason_codes, :provider_unavailable_fail_closed
+    assert_nil decision.provider_confidence
+    row = Corvid::PrcEligibilityDecision.find(decision.decision_id)
+    assert_nil row.provider_confidence
+  end
+
+  test "decide persists nil provider_confidence when enrolled is string true with verified confidence" do
+    person_id = "pt_str_true_conf"
+    stub_tribal_enrollment_response(
+      person_id,
+      enrolled: "true", tribe_code: "DEMO", confidence: :verified, verified_at: Time.current
+    )
+
+    decision = Corvid::TribalEligibilityService.decide(
+      person_identifier: person_id,
+      facility: @facility,
+      tenant_identifier: TENANT
+    )
+
+    refute decision.eligible?
+    assert_includes decision.reason_codes, :provider_unavailable_fail_closed
+    assert_nil decision.provider_confidence
+    row = Corvid::PrcEligibilityDecision.find(decision.decision_id)
+    assert_nil row.provider_confidence
+  end
+
+  test "decide persists verified provider_confidence only when enrolled is canonical true" do
+    seed_verified_enrollment_baseline("pt_good_conf")
+
+    decision = Corvid::TribalEligibilityService.decide(
+      person_identifier: "pt_good_conf",
+      facility: @facility,
+      tenant_identifier: TENANT
+    )
+
+    assert_equal "verified", decision.provider_confidence
+    row = Corvid::PrcEligibilityDecision.find(decision.decision_id)
+    assert_equal "verified", row.provider_confidence
   end
 
   # ---- Would-be false negative (stale data must not deny on its own) --------

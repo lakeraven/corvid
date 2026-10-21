@@ -88,3 +88,7 @@ Then("that row should have the provider confidence {string}") do |confidence|
   row = Corvid::PrcEligibilityDecision.order(decided_at: :desc).first
   assert_equal confidence, row.provider_confidence
 end
+
+Then("the decision provider confidence should be absent") do
+  assert_nil @decision.provider_confidence
+end

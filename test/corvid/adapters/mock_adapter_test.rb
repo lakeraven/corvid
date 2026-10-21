@@ -183,9 +183,9 @@ class Corvid::Adapters::MockAdapterTest < Minitest::Test
     assert_equal :stale, result[:confidence]
   end
 
-  def test_verify_tribal_enrollment_unknown_patient_returns_not_enrolled_with_unavailable_confidence
+  def test_verify_tribal_enrollment_unknown_patient_returns_nil_enrolled_with_unavailable_confidence
     result = @adapter.verify_tribal_enrollment("pt_unknown")
-    refute result[:enrolled]
+    assert_nil result[:enrolled]
     assert_nil result[:tribe_code]
     assert_equal :unavailable, result[:confidence]
   end
