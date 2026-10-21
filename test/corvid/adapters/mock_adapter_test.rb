@@ -118,6 +118,12 @@ class Corvid::Adapters::MockAdapterTest < Minitest::Test
     refute_equal true, result&.dig(:eligible)
   end
 
+  def test_verify_eligibility_with_a_non_boolean_eligible_stays_undetermined
+    @adapter.add_coverage("pt_001", coverage_type: "medicaid", eligible: :unknown)
+
+    assert_nil @adapter.verify_eligibility("pt_001", "medicaid")
+  end
+
   def test_check_eligibility_detailed_without_an_eligible_flag_is_not_eligible
     @adapter.add_coverage("pt_001", coverage_type: "medicaid", payer_identifier: "MOCK_PAYER")
 

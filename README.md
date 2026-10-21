@@ -98,10 +98,19 @@ Every adapter — in this repo or a private vendor repo — must include the `Ad
 The including class defines:
 
 - `contract_adapter`
-- `contract_seed!` — one synthetic patient, referral, and obligation. Synthetic data only ([ADR 0003](docs/adr/0003-phi-tokenization.md))
+- `contract_seed!` — seeds synthetic records and returns a Hash with every key in `AdapterContractTests::REQUIRED_SEED_KEYS` (`*_identifier` names per [ADR 0001](docs/adr/0001-id-vs-identifier-naming.md)). Synthetic data only ([ADR 0003](docs/adr/0003-phi-tokenization.md))
 - `contract_unsupported` — a Hash of `Corvid::Adapters::Base` method => one-line reason. Listed methods must raise `NotImplementedError`
+- `contract_fail_closed_stubs` (optional) — a Hash of method => reason for methods that return a documented "unsupported" value instead of raising (for example FhirAdapter's `submit_claim`). The seeded call must not report success; the shape and unknown-identifier checks still run. It must not overlap `contract_unsupported`
 
-A public method added to `Corvid::Adapters::Base` is covered automatically and needs a `CONTRACT_CALLS` entry.
+Every seeded check runs for every implemented method. There are no seed flags that switch a check off: an adapter that cannot serve one lists the method in `contract_unsupported`. Writes are read back, so a write that reports success must be visible to the matching read (`create_referral` to `find_referral`, `record_payment` to `get_payments`, and so on).
+
+Each `Base` method is in exactly one unknown-identifier category:
+
+- `UNKNOWN_IDENTIFIER_RULES` — an unknown identifier fails closed: nil, `[]`, false or a non-success result, never eligible, verified or refunded
+- `NO_IDENTIFIER_METHODS` — the method takes no identifier
+- `DECLINED_UNKNOWN_IDENTIFIER_CHECKS` — writes the host owns the registry for (for example `create_referral`), each with a reason
+
+A public method added to `Corvid::Adapters::Base` is covered automatically. It fails until it has a `CONTRACT_CALLS` entry, a shape case and an unknown-identifier category.
 
 Examples: `test/corvid/adapters/*_contract_test.rb`.
 

@@ -302,7 +302,7 @@ module Corvid
       # ----------------------------------------------------------------------
 
       def verify_eligibility(patient_identifier, resource_type)
-        coverage = coverage_for(patient_identifier, resource_type)
+        coverage = coverage_for(patient_identifier, resource_type, :coverage_type)
         return nil unless coverage
 
         eligibility_from_coverage(patient_identifier, resource_type, coverage)
@@ -377,7 +377,7 @@ module Corvid
       end
 
       def check_eligibility_detailed(patient_identifier, payer_identifier)
-        coverage = coverage_for(patient_identifier, payer_identifier)
+        coverage = coverage_for(patient_identifier, payer_identifier, :payer_identifier)
         return undetermined_detailed_eligibility unless coverage
 
         detailed_eligibility_from_coverage(payer_identifier, coverage)
@@ -482,6 +482,18 @@ module Corvid
         copied_references(@medications[patient_identifier.to_s])
       end
 
+      def add_claim_line(patient_identifier, reference)
+        unless reference.is_a?(Corvid::ClaimLineReference)
+          raise ArgumentError, "expected ClaimLineReference"
+        end
+
+        (@claim_lines[patient_identifier.to_s] ||= []) << reference
+      end
+
+      def list_claims(patient_identifier)
+        copied_references(@claim_lines[patient_identifier.to_s])
+      end
+
       def reset!
         @patients = {}
         @practitioners = {}
@@ -493,6 +505,7 @@ module Corvid
         @coverages = {}
         @conditions = {}
         @medications = {}
+        @claim_lines = {}
         @claims = {}
         @remittances = {}
         @payments_store = {}
@@ -513,30 +526,29 @@ module Corvid
         }
       end
 
-      def coverage_for(patient_identifier, type_or_payer)
+      # Matches the request against one field of the coverage itself:
+      # coverage_type for a type, payer_identifier for a payer. A payer or
+      # plan name that happens to spell the requested word is not a match,
+      # and a request that matches nothing is unknown. Never substitute a
+      # different coverage.
+      def coverage_for(patient_identifier, requested, field)
         coverages = @coverages[patient_identifier.to_s]
         return nil if coverages.nil? || coverages.empty?
 
-        needle = type_or_payer.to_s.downcase
+        needle = requested.to_s.downcase
         return coverages.first if needle.empty?
 
-        # A requested type or payer that matches nothing is unknown.
-        # Never substitute a different coverage.
-        coverages.find { |coverage| coverage_matches?(coverage, needle) }
+        coverages.find { |coverage| coverage[field].to_s.downcase == needle }
       end
 
-      def coverage_matches?(coverage, needle)
-        %i[coverage_type resource_type payer_identifier payer_name plan_name].any? do |key|
-          coverage[key].to_s.downcase == needle
-        end
-      end
-
+      # Only an explicit eligible: true verifies; a coverage that does not
+      # say is not eligible. A non-boolean answer stays undetermined (nil).
       def eligibility_from_coverage(patient_identifier, resource_type, coverage)
-        eligible = coverage.fetch(:eligible, true)
-        return nil unless eligible == true || eligible == false
+        eligible = coverage[:eligible]
+        return nil if coverage.key?(:eligible) && eligible != true && eligible != false
 
         {
-          eligible: eligible,
+          eligible: eligible == true,
           payer_name: coverage[:payer_name] || "MOCK #{resource_type.to_s.upcase} PAYER",
           policy_token: coverage[:policy_token] || policy_token_for(patient_identifier, resource_type),
           coverage_start: coverage[:coverage_start] || year_start,
@@ -545,11 +557,8 @@ module Corvid
       end
 
       def detailed_eligibility_from_coverage(payer_identifier, coverage)
-        eligible = coverage.fetch(:eligible, true)
-        eligible = false unless eligible == true
-
         {
-          eligible: eligible,
+          eligible: coverage[:eligible] == true,
           payer_name: coverage[:payer_name] || "MOCK #{payer_identifier}",
           plan_name: coverage[:plan_name] || "Mock Plan",
           coverage_start: coverage[:coverage_start] || year_start,

@@ -500,6 +500,21 @@ module Corvid
           "would record an obligation that was never made"
       end
 
+      # Stock FHIR cannot make obligations, so it has none to read. These
+      # raise rather than answer nil / [] so a lookup is never mistaken for
+      # "no obligation" (same posture as #create_obligation).
+      def get_obligation(_obligation_id)
+        raise NotImplementedError, "FhirAdapter#get_obligation requires a budget backend"
+      end
+
+      def get_obligation_by_referral(_referral_identifier)
+        raise NotImplementedError, "FhirAdapter#get_obligation_by_referral requires a budget backend"
+      end
+
+      def get_payments(obligation_id:)
+        raise NotImplementedError, "FhirAdapter#get_payments requires a budget backend"
+      end
+
       private
 
       # FHIR REST primitives ------------------------------------------------
