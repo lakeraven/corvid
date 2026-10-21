@@ -178,6 +178,45 @@ class Corvid::AuthorizationWizardTest < ActiveSupport::TestCase
     end
   end
 
+  test "start! warns when patient eligibility status is empty string" do
+    with_tenant(TENANT) do
+      wizard = Corvid::AuthorizationWizard.new(
+        patient_identifier: "pt_wiz",
+        facility_identifier: "fac_test"
+      )
+      wizard.patient_eligibility_status = ""
+      wizard.start!
+
+      assert_includes wizard.warnings, "Patient eligibility verification pending"
+    end
+  end
+
+  test "start! warns when patient eligibility status is unverified" do
+    with_tenant(TENANT) do
+      wizard = Corvid::AuthorizationWizard.new(
+        patient_identifier: "pt_wiz",
+        facility_identifier: "fac_test"
+      )
+      wizard.patient_eligibility_status = "unverified"
+      wizard.start!
+
+      assert_includes wizard.warnings, "Patient eligibility verification pending"
+    end
+  end
+
+  test "start! warns when patient eligibility status is ineligible" do
+    with_tenant(TENANT) do
+      wizard = Corvid::AuthorizationWizard.new(
+        patient_identifier: "pt_wiz",
+        facility_identifier: "fac_test"
+      )
+      wizard.patient_eligibility_status = "ineligible"
+      wizard.start!
+
+      assert_includes wizard.warnings, "Patient eligibility verification pending"
+    end
+  end
+
   test "start! does not treat unset eligibility as verified on the wizard" do
     with_tenant(TENANT) do
       wizard = Corvid::AuthorizationWizard.new(

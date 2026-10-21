@@ -492,6 +492,71 @@ class Corvid::Adapters::FhirAdapterTest < Minitest::Test
     end
   end
 
+  # Issue #662: confidence sub-extension is allow-listed; anything else is :unavailable.
+
+  def test_verify_tribal_enrollment_confidence_allow_lists_verified_stale_unavailable_strings
+    %w[verified stale unavailable].each do |word|
+      resource = tribal_enrollment_patient("pt_conf_#{word}", confidence_sub: { "valueString" => word })
+      @adapter.stub(:fhir_read, resource) do
+        result = @adapter.verify_tribal_enrollment("pt_conf_#{word}")
+        assert_equal word.to_sym, result[:confidence]
+      end
+    end
+  end
+
+  def test_verify_tribal_enrollment_confidence_blank_string_is_unavailable
+    resource = tribal_enrollment_patient("pt_conf_blank", confidence_sub: { "valueString" => "" })
+    @adapter.stub(:fhir_read, resource) do
+      result = @adapter.verify_tribal_enrollment("pt_conf_blank")
+      assert_equal :unavailable, result[:confidence]
+    end
+  end
+
+  %w[VERIFIED unverified probable].each do |bad|
+    define_method("test_verify_tribal_enrollment_confidence_#{bad.downcase}_string_is_unavailable") do
+      resource = tribal_enrollment_patient("pt_bad_#{bad}", confidence_sub: { "valueString" => bad })
+      @adapter.stub(:fhir_read, resource) do
+        result = @adapter.verify_tribal_enrollment("pt_bad_#{bad}")
+        assert_equal :unavailable, result[:confidence]
+      end
+    end
+  end
+
+  def test_verify_tribal_enrollment_confidence_value_decimal_is_unavailable_without_raising
+    resource = tribal_enrollment_patient("pt_conf_dec", confidence_sub: { "valueDecimal" => 0.2 })
+    @adapter.stub(:fhir_read, resource) do
+      result = @adapter.verify_tribal_enrollment("pt_conf_dec")
+      assert_equal :unavailable, result[:confidence]
+    end
+  end
+
+  def test_verify_tribal_enrollment_confidence_value_boolean_true_is_unavailable_without_raising
+    resource = tribal_enrollment_patient("pt_conf_bool_t", confidence_sub: { "valueBoolean" => true })
+    @adapter.stub(:fhir_read, resource) do
+      result = @adapter.verify_tribal_enrollment("pt_conf_bool_t")
+      assert_equal :unavailable, result[:confidence]
+    end
+  end
+
+  def test_verify_tribal_enrollment_confidence_value_boolean_false_is_unavailable_without_raising
+    resource = tribal_enrollment_patient("pt_conf_bool_f", confidence_sub: { "valueBoolean" => false })
+    @adapter.stub(:fhir_read, resource) do
+      result = @adapter.verify_tribal_enrollment("pt_conf_bool_f")
+      assert_equal :unavailable, result[:confidence]
+    end
+  end
+
+  def test_verify_tribal_enrollment_confidence_value_code_is_unavailable_without_raising
+    resource = tribal_enrollment_patient("pt_conf_code", confidence_sub: {
+      "valueCode" => "verified",
+      "system" => "http://example.test/confidence"
+    })
+    @adapter.stub(:fhir_read, resource) do
+      result = @adapter.verify_tribal_enrollment("pt_conf_code")
+      assert_equal :unavailable, result[:confidence]
+    end
+  end
+
   def test_verify_identity_documents_derives_from_patient_resource
     resource = {
       "id" => "pt_001",
@@ -1738,6 +1803,22 @@ class Corvid::Adapters::FhirAdapterTest < Minitest::Test
   end
 
   private
+
+  TRIBAL_ENROLLMENT_EXTENSION_URL = "https://lakeraven.com/fhir/StructureDefinition/tribal-enrollment"
+
+  def tribal_enrollment_patient(id, confidence_sub:)
+    {
+      "id" => id,
+      "extension" => [ {
+        "url" => TRIBAL_ENROLLMENT_EXTENSION_URL,
+        "extension" => [
+          { "url" => "enrolled", "valueBoolean" => true },
+          { "url" => "tribeCode", "valueString" => "TGN" },
+          { "url" => "confidence" }.merge(confidence_sub)
+        ]
+      } ]
+    }
+  end
 
   def no_content_http_response
     response = Net::HTTPNoContent.new("1.1", "204", "No Content")

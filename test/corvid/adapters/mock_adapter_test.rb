@@ -165,9 +165,15 @@ class Corvid::Adapters::MockAdapterTest < Minitest::Test
     assert result[:enrolled]
   end
 
-  def test_verify_tribal_enrollment_defaults_confidence_to_verified
+  def test_verify_tribal_enrollment_without_confidence_returns_unavailable
     @adapter.add_enrollment("pt_e2", enrolled: true, tribe_name: "T", tribe_code: "T")
     result = @adapter.verify_tribal_enrollment("pt_e2")
+    assert_equal :unavailable, result[:confidence]
+  end
+
+  def test_verify_tribal_enrollment_propagates_explicit_confidence_verified
+    @adapter.add_enrollment("pt_e2v", enrolled: true, tribe_name: "T", tribe_code: "T", confidence: :verified)
+    result = @adapter.verify_tribal_enrollment("pt_e2v")
     assert_equal :verified, result[:confidence]
   end
 
@@ -177,11 +183,11 @@ class Corvid::Adapters::MockAdapterTest < Minitest::Test
     assert_equal :stale, result[:confidence]
   end
 
-  def test_verify_tribal_enrollment_unknown_patient_returns_not_enrolled_with_verified_confidence
+  def test_verify_tribal_enrollment_unknown_patient_returns_not_enrolled_with_unavailable_confidence
     result = @adapter.verify_tribal_enrollment("pt_unknown")
     refute result[:enrolled]
     assert_nil result[:tribe_code]
-    assert_equal :verified, result[:confidence]
+    assert_equal :unavailable, result[:confidence]
   end
 
   # -- ADR 0003: MockAdapter is not a security boundary ----------------------

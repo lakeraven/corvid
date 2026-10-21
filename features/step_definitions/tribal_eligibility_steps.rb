@@ -28,6 +28,15 @@ Given("facility {string} has contracted tribe code {string}") do |facility_id, t
   )
 end
 
+Given("person {string} is not enrolled with confidence {word}") do |person_id, confidence|
+  Corvid.adapter.add_enrollment(person_id,
+                                enrolled: false,
+                                tribe_name: nil,
+                                tribe_code: nil,
+                                member_status: "denied",
+                                confidence: confidence.to_sym)
+end
+
 Given("person {string} is enrolled in tribe {string} with confidence {word}") do |person_id, tribe_code, confidence|
   Corvid.adapter.add_enrollment(person_id,
                                 enrolled: true,

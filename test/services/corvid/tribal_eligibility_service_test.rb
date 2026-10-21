@@ -63,6 +63,16 @@ class Corvid::TribalEligibilityServiceTest < ActiveSupport::TestCase
     end
   end
 
+  def seed_verified_enrollment_baseline(person_id, confidence: :verified, tribe_code: "DEMO")
+    @adapter.add_enrollment(person_id,
+                            enrolled: true, tribe_code: tribe_code, tribe_name: "Demo Tribe",
+                            member_status: "enrolled", confidence: confidence)
+    @adapter.add_patient(person_id, ssn_last4: "1234", dob: Date.new(1980, 1, 1), birthplace: "Springfield")
+    @adapter.define_singleton_method(:verify_residency) do |pid|
+      { on_reservation: true, address: "Rd", verified_at: Time.current } if pid == person_id
+    end
+  end
+
   def fixed_adapter_responses_for(person_id)
     @adapter.add_enrollment(person_id,
                             enrolled: true, tribe_code: "DEMO", tribe_name: "Demo Tribe",
@@ -109,7 +119,7 @@ class Corvid::TribalEligibilityServiceTest < ActiveSupport::TestCase
   # ---- True negative --------------------------------------------------------
 
   test "decide denies a not-enrolled person with reason :not_enrolled" do
-    # No add_enrollment — MockAdapter returns enrolled: false
+    @adapter.add_enrollment("pt_tn", enrolled: false, confidence: :verified)
 
     decision = Corvid::TribalEligibilityService.decide(
       person_identifier: "pt_tn",
@@ -148,6 +158,86 @@ class Corvid::TribalEligibilityServiceTest < ActiveSupport::TestCase
 
     decision = Corvid::TribalEligibilityService.decide(
       person_identifier: "pt_wfp",
+      facility: @facility,
+      tenant_identifier: TENANT
+    )
+
+    refute decision.eligible?
+    assert_includes decision.reason_codes, :not_enrolled_in_contracted_tribe
+  end
+
+  # ---- Issue #662: fail closed on non-canonical confidence ------------------
+
+  test "decide denies when adapter returns confidence :unverified" do
+    seed_verified_enrollment_baseline("pt_bad_conf", confidence: :unverified)
+
+    decision = Corvid::TribalEligibilityService.decide(
+      person_identifier: "pt_bad_conf",
+      facility: @facility,
+      tenant_identifier: TENANT
+    )
+
+    refute decision.eligible?
+    assert_includes decision.reason_codes, :provider_unavailable_fail_closed
+  end
+
+  test "decide denies when adapter returns confidence :VERIFIED symbol" do
+    seed_verified_enrollment_baseline("pt_upper_sym", confidence: :VERIFIED)
+
+    decision = Corvid::TribalEligibilityService.decide(
+      person_identifier: "pt_upper_sym",
+      facility: @facility,
+      tenant_identifier: TENANT
+    )
+
+    refute decision.eligible?
+    assert_includes decision.reason_codes, :provider_unavailable_fail_closed
+  end
+
+  test "decide denies when adapter returns nil confidence" do
+    seed_verified_enrollment_baseline("pt_nil_conf", confidence: nil)
+
+    decision = Corvid::TribalEligibilityService.decide(
+      person_identifier: "pt_nil_conf",
+      facility: @facility,
+      tenant_identifier: TENANT
+    )
+
+    refute decision.eligible?
+    assert_includes decision.reason_codes, :provider_unavailable_fail_closed
+  end
+
+  test "decide denies when adapter returns confidence as string verified" do
+    seed_verified_enrollment_baseline("pt_str_conf", confidence: "verified")
+
+    decision = Corvid::TribalEligibilityService.decide(
+      person_identifier: "pt_str_conf",
+      facility: @facility,
+      tenant_identifier: TENANT
+    )
+
+    refute decision.eligible?
+    assert_includes decision.reason_codes, :provider_unavailable_fail_closed
+  end
+
+  test "decide denies enrolled person with blank tribe_code when facility has contracted tribe" do
+    seed_verified_enrollment_baseline("pt_no_tribe", tribe_code: "", confidence: :verified)
+
+    decision = Corvid::TribalEligibilityService.decide(
+      person_identifier: "pt_no_tribe",
+      facility: @facility,
+      tenant_identifier: TENANT
+    )
+
+    refute decision.eligible?
+    assert_includes decision.reason_codes, :not_enrolled_in_contracted_tribe
+  end
+
+  test "decide denies enrolled person with nil tribe_code when facility has contracted tribe" do
+    seed_verified_enrollment_baseline("pt_nil_tribe", tribe_code: nil, confidence: :verified)
+
+    decision = Corvid::TribalEligibilityService.decide(
+      person_identifier: "pt_nil_tribe",
       facility: @facility,
       tenant_identifier: TENANT
     )

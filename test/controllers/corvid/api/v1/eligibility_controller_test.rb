@@ -47,6 +47,8 @@ class Corvid::Api::V1::EligibilityControllerTest < ActionDispatch::IntegrationTe
   end
 
   test "check returns ineligible for not-enrolled person with structured reason" do
+    Corvid.adapter.add_enrollment("pt_tn", enrolled: false, confidence: :verified)
+
     post "/corvid/api/v1/eligibility/check", params: check_body("pt_tn"), headers: headers
 
     assert_response :success
