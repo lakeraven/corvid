@@ -444,6 +444,44 @@ class Corvid::Adapters::FhirAdapterTest < Minitest::Test
     end
   end
 
+  def test_verify_tribal_enrollment_missing_confidence_sub_extension_is_unavailable
+    resource = {
+      "id" => "pt_no_conf",
+      "extension" => [ {
+        "url" => "https://lakeraven.com/fhir/StructureDefinition/tribal-enrollment",
+        "extension" => [
+          { "url" => "enrolled", "valueBoolean" => true },
+          { "url" => "membershipNumber", "valueString" => "TGN-100255" },
+          { "url" => "tribeName", "valueString" => "Tallgrass Nation" },
+          { "url" => "tribeCode", "valueString" => "TGN" }
+        ]
+      } ]
+    }
+    @adapter.stub(:fhir_read, resource) do
+      result = @adapter.verify_tribal_enrollment("pt_no_conf")
+      assert_equal true, result[:enrolled]
+      assert_equal :unavailable, result[:confidence]
+    end
+  end
+
+  def test_verify_tribal_enrollment_explicit_stale_confidence_passes_through
+    resource = {
+      "id" => "pt_stale",
+      "extension" => [ {
+        "url" => "https://lakeraven.com/fhir/StructureDefinition/tribal-enrollment",
+        "extension" => [
+          { "url" => "enrolled", "valueBoolean" => true },
+          { "url" => "tribeCode", "valueString" => "TGN" },
+          { "url" => "confidence", "valueString" => "stale" }
+        ]
+      } ]
+    }
+    @adapter.stub(:fhir_read, resource) do
+      result = @adapter.verify_tribal_enrollment("pt_stale")
+      assert_equal :stale, result[:confidence]
+    end
+  end
+
   def test_verify_tribal_enrollment_falls_back_when_extension_absent
     # Plain FHIR servers with no tribal-enrollment extension degrade to the
     # same fail-closed "unavailable" shape as before this method read FHIR.

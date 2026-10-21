@@ -126,4 +126,67 @@ class Corvid::AuthorizationWizardTest < ActiveSupport::TestCase
       assert_equal "Verified", wizard.summary[:alternate_resources_status]
     end
   end
+
+  # ---- Issue #662: patient eligibility status must not default to verified ----
+
+  test "patient_eligibility_status is nil when host never sets it" do
+    with_tenant(TENANT) do
+      wizard = Corvid::AuthorizationWizard.new(
+        patient_identifier: "pt_wiz",
+        facility_identifier: "fac_test"
+      )
+
+      assert_nil wizard.patient_eligibility_status
+    end
+  end
+
+  test "start! warns when patient eligibility status was never set" do
+    with_tenant(TENANT) do
+      wizard = Corvid::AuthorizationWizard.new(
+        patient_identifier: "pt_wiz",
+        facility_identifier: "fac_test"
+      )
+      wizard.start!
+
+      assert_includes wizard.warnings, "Patient eligibility verification pending"
+    end
+  end
+
+  test "start! does not warn when patient eligibility status is explicitly verified" do
+    with_tenant(TENANT) do
+      wizard = Corvid::AuthorizationWizard.new(
+        patient_identifier: "pt_wiz",
+        facility_identifier: "fac_test"
+      )
+      wizard.patient_eligibility_status = "verified"
+      wizard.start!
+
+      refute_includes wizard.warnings, "Patient eligibility verification pending"
+    end
+  end
+
+  test "start! warns when patient eligibility status is explicitly pending" do
+    with_tenant(TENANT) do
+      wizard = Corvid::AuthorizationWizard.new(
+        patient_identifier: "pt_wiz",
+        facility_identifier: "fac_test"
+      )
+      wizard.patient_eligibility_status = "pending"
+      wizard.start!
+
+      assert_includes wizard.warnings, "Patient eligibility verification pending"
+    end
+  end
+
+  test "start! does not treat unset eligibility as verified on the wizard" do
+    with_tenant(TENANT) do
+      wizard = Corvid::AuthorizationWizard.new(
+        patient_identifier: "pt_wiz",
+        facility_identifier: "fac_test"
+      )
+      wizard.start!
+
+      refute_equal "verified", wizard.patient_eligibility_status
+    end
+  end
 end

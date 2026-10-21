@@ -39,6 +39,7 @@ Feature: PRC Authorization Wizard
   # =============================================================================
 
   Scenario: Select patient for referral
+    Given patient "John Doe" has eligibility status "verified"
     When I start the authorization wizard for patient "John Doe"
     Then I should see patient "John Doe" pre-selected
     And I should see the patient's eligibility status

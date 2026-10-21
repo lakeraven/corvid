@@ -141,7 +141,11 @@ Then("I should see patient {string} pre-selected") do |_name|
 end
 
 Then("I should see the patient's eligibility status") do
-  refute_nil @wizard.patient_eligibility_status
+  if @patient_eligibility_status
+    assert_equal @patient_eligibility_status, @wizard.patient_eligibility_status
+  else
+    refute_equal "verified", @wizard.patient_eligibility_status.to_s
+  end
 end
 
 Then("I should see the patient's active coverage information") do

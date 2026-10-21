@@ -121,6 +121,23 @@ class Corvid::TribalEligibilityServiceTest < ActiveSupport::TestCase
     assert_includes decision.reason_codes, :not_enrolled
   end
 
+  test "decide denies enrolled person when adapter reports confidence unavailable" do
+    @adapter.add_enrollment("pt_unavail_conf",
+                            enrolled: true, tribe_name: "Demo Tribe",
+                            tribe_code: "DEMO", member_status: "enrolled",
+                            confidence: :unavailable)
+
+    decision = Corvid::TribalEligibilityService.decide(
+      person_identifier: "pt_unavail_conf",
+      facility: @facility,
+      tenant_identifier: TENANT
+    )
+
+    refute decision.eligible?
+    assert_includes decision.reason_codes, :provider_unavailable_fail_closed
+    refute_includes decision.reason_codes, :not_enrolled
+  end
+
   # ---- Would-be false positive (wrong-tribe enrollee caught) ----------------
 
   test "decide denies a person enrolled in a tribe other than the facility's contracted tribe" do
