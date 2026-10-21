@@ -91,6 +91,22 @@ Host App (e.g. lakeraven-ehr, corvid-saas)
 | `Corvid::Adapters::FhirAdapter` | Generic FHIR R4 — works with any compliant server |
 | Vendor adapters | Implement `Corvid::Adapters::Base` for proprietary EHRs (private repos) |
 
+### Adapter contract tests
+
+Every adapter — in this repo or a private vendor repo — must include the `AdapterContractTests` module from `test/support/adapter_contract_tests.rb` in a test class and pass it to merge.
+
+The including class defines:
+
+- `contract_adapter`
+- `contract_seed!` — one synthetic patient, referral, and obligation. Synthetic data only ([ADR 0003](docs/adr/0003-phi-tokenization.md))
+- `contract_unsupported` — a Hash of `Corvid::Adapters::Base` method => one-line reason. Listed methods must raise `NotImplementedError`
+
+A public method added to `Corvid::Adapters::Base` is covered automatically and needs a `CONTRACT_CALLS` entry.
+
+Examples: `test/corvid/adapters/*_contract_test.rb`.
+
+The module lives under `test/`, which the packaged gem does not ship. A vendor repo loads it from a git checkout of corvid, for example `require File.join(Gem.loaded_specs["corvid"].full_gem_path, "test/support/adapter_contract_tests")` with corvid as a Bundler git dependency.
+
 ## Tenancy model
 
 Corvid supports a two-level tenancy hierarchy:
