@@ -48,11 +48,17 @@ module Corvid
       private
 
       def not_applied(rule_set)
+        months = positive_window_months(rule_set)
+        reasons = [ "application_not_filed" ]
+        reasons << "retroactive_window_undetermined" unless months
+        merged_reasons(nil, rule_set).each do |reason|
+          reasons << reason unless reasons.include?(reason)
+        end
         retroactive_window(
           earliest_covered_date: nil,
-          window_months: rule_set.retroactive_window_months,
+          window_months: months,
           status: "not_applied",
-          reasons: [ "application_not_filed" ]
+          reasons:
         )
       end
 
