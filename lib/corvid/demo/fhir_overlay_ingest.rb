@@ -18,8 +18,8 @@ module Corvid
 
       # Returns { cases_created:, obligations_created:, skipped:, skipped_reasons: }.
       # skipped_reasons is an Array of { claim:, code:, reason: } for lines that
-      # could not be priced (missing code / missing or unparseable amount) —
-      # surfaced, not silently dropped.
+      # could not be priced (unresolved patient, missing code, or missing or
+      # unparseable amount) — surfaced, not silently dropped.
       def ingest(facility:, patient_identifiers:, adapter: Corvid.adapter, imported_at: Time.current)
         cases = 0
         obligations = 0
@@ -79,6 +79,7 @@ module Corvid
       # rather than lumped in with an absent one.
       def skip_reason(line)
         reasons = []
+        reasons << "patient_unresolved" if line.patient_identifier.nil?
         reasons << "missing procedure code" if line.procedure_code.nil?
         if line.billed_amount.nil?
           reasons << (line.amount_error || "missing billed amount")

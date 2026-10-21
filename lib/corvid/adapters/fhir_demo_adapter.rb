@@ -74,6 +74,8 @@ module Corvid
 
       def reference_matches?(resource, value)
         wanted = patient_reference_token(value)
+        return false if wanted.nil? || wanted.empty?
+
         patient_reference_values(resource).include?(wanted)
       end
 
@@ -82,20 +84,31 @@ module Corvid
           resource.dig("patient", "reference"),
           resource.dig("beneficiary", "reference"),
           resource.dig("subject", "reference")
-        ].compact.map { |ref| patient_reference_token(ref) }
+        ].compact.filter_map { |ref| patient_reference_token(ref) }
       end
 
       # Patient/<id> and <base_url>/Patient/<id> both name this server's
-      # patient. Any other reference is left intact so a foreign absolute
-      # URL cannot match a local id.
+      # patient. An empty or whitespace id matches nothing. Any other
+      # reference is left intact so a foreign absolute URL cannot match a
+      # local id.
       def patient_reference_token(reference)
         ref = reference.to_s
-        return ref.delete_prefix("Patient/") if ref.start_with?("Patient/")
+        prefix = patient_reference_prefix(ref)
+        return ref unless prefix
+
+        id = ref.delete_prefix(prefix)
+        id unless blank_patient_id?(id)
+      end
+
+      def patient_reference_prefix(ref)
+        return "Patient/" if ref.start_with?("Patient/")
 
         absolute = "#{@base_url}/Patient/"
-        return ref.delete_prefix(absolute) if ref.start_with?(absolute)
+        absolute if ref.start_with?(absolute)
+      end
 
-        ref
+      def blank_patient_id?(id)
+        id.sub(/\A[ \t\n\v\f\r]+/, "").sub(/[ \t\n\v\f\r]+\z/, "").empty?
       end
 
       def name_matches?(resource, value)

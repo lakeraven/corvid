@@ -46,7 +46,7 @@ module Corvid
         patient_id = extract_patient_identifier(fhir_claim)
         # Fail closed before a Case row or an adapter referral exists. The
         # message names the missing field only — never the reference value.
-        raise ArgumentError, "patient reference must include an identifier" if patient_id.nil?
+        raise ArgumentError, "patient reference must be a relative Patient/<id> reference" if patient_id.nil?
 
         provider_id = extract_provider_identifier(fhir_claim)
         service_description = extract_service_description(fhir_claim)
@@ -230,7 +230,7 @@ module Corvid
 
       def extract_provider_identifier(fhir_claim)
         ref = fhir_claim.dig(:provider, :reference) || fhir_claim.dig("provider", "reference")
-        Corvid::FhirReference.id_from(ref)
+        Corvid::FhirReference.id_from(ref, type: Corvid::FhirReference::PROVIDER_TYPES)
       end
 
       def extract_service_description(fhir_claim)
