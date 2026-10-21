@@ -66,7 +66,14 @@ module Corvid
       FHIR_CLINICAL_STATUSES = %w[active recurrence relapse inactive remission resolved].freeze
       INCLUDED_CLINICAL_STATUSES = %w[active recurrence relapse resolved].freeze
       EXCLUDED_VERIFICATION_STATUSES = %w[refuted entered-in-error].freeze
+      # FHIR R4 medicationrequest-status. Missing or any other value is unknown.
+      MEDICATION_REQUEST_STATUSES = %w[
+        active on-hold cancelled completed entered-in-error stopped draft unknown
+      ].freeze
       BLOCKING_OUTCOME_SEVERITIES = %w[error fatal].freeze
+      # These issue codes make the page unknown at any severity. Other codes
+      # still follow BLOCKING_OUTCOME_SEVERITIES.
+      UNTRUSTED_OUTCOME_CODES = %w[suppressed incomplete too-costly].freeze
       # FHIR R4 dateTime grammar (anchored). Year and year-month are valid
       # partials and carry no day. Do not use Date.parse — it accepts prose.
       FHIR_YEAR = "(?:[0-9](?:[0-9](?:[0-9][1-9]|[1-9]0)|[1-9]00)|[1-9]000)"
@@ -274,8 +281,10 @@ module Corvid
       # condition-category system whose code is in scope. Clinical status
       # must be condition-clinical or system-less, the codings must agree,
       # and the value must be active, recurrence, relapse, or resolved.
-      # Refuted and entered-in-error are excluded in any system. Entered-in-error
-      # is dropped even when clinical status is unusable. Never raises.
+      # Refuted and entered-in-error are excluded in any system. The same
+      # codes given only as verificationStatus text, stripped and
+      # case-insensitive, are excluded too. Entered-in-error is dropped
+      # even when clinical status is unusable. Never raises.
       # In memory only — never persisted or logged (ADR 0003).
       def get_conditions(patient_identifier)
         clinical_search("Condition", patient_identifier) do |bundle|
@@ -289,8 +298,11 @@ module Corvid
       # positive total with no match entries is unknown. Resolves contained,
       # bundle-included, or same-server Medication references. A bundled
       # Medication is used only when fullUrl is absent, Medication/<id>, or
-      # base_url/Medication/<id>. doNotPerform and entered-in-error are
-      # excluded. Code is the first coding with a non-empty code; display
+      # base_url/Medication/<id>. Status must be an R4 medicationrequest-status
+      # code; missing or any other status makes the page unknown. Boolean
+      # doNotPerform true and entered-in-error are excluded. Boolean false or
+      # an absent doNotPerform is kept. Any other doNotPerform value makes the
+      # page unknown. Code is the first coding with a non-empty code; display
       # falls back to that coding's display, then text. No such coding and
       # no text is unknown. Invalid Medication ids are not requested. Never
       # raises. Array of MedicationReference, or nil when unknown. In memory
@@ -831,6 +843,15 @@ module Corvid
       def blocking_issue?(issue)
         return true unless issue.is_a?(Hash)
 
+        untrusted_outcome?(issue) || blocking_severity?(issue)
+      end
+
+      def untrusted_outcome?(issue)
+        code = issue["code"]
+        code.is_a?(String) && UNTRUSTED_OUTCOME_CODES.include?(code)
+      end
+
+      def blocking_severity?(issue)
         severity = issue["severity"]
         severity.is_a?(String) && BLOCKING_OUTCOME_SEVERITIES.include?(severity.downcase)
       end
@@ -953,25 +974,50 @@ module Corvid
       end
 
       # Missing, text-only, or non-condition-clinical status makes the page
-      # unknown. entered-in-error still drops the row.
+      # unknown. entered-in-error, coded or text-only, still drops the row.
       def unusable_clinical_status?(resource, status)
         status.nil? && !entered_in_error?(resource)
       end
 
       def entered_in_error?(resource)
-        codings = status_codings(resource["verificationStatus"])
-        return false unless codings.is_a?(Array)
+        status = resource["verificationStatus"]
+        codings = status_codings(status)
+        return false if codings == :unknown
+        return verification_text(status) == "entered-in-error" if uncoded_verification?(codings)
 
         codings.any? { |coding| coding["code"] == "entered-in-error" }
       end
 
       def verification_marker(resource)
-        codings = status_codings(resource["verificationStatus"])
+        status = resource["verificationStatus"]
+        codings = status_codings(status)
         return :unknown if codings == :unknown
-        return :ok if codings.nil? || codings.empty?
+        return text_verification_marker(status) if uncoded_verification?(codings)
         return :skip if codings.any? { |coding| excluded_verification_coding?(coding) }
 
         :ok
+      end
+
+      def uncoded_verification?(codings)
+        codings.nil? || codings.empty?
+      end
+
+      # Text alone excludes refuted and entered-in-error. Other text does not.
+      def text_verification_marker(status)
+        return :skip if EXCLUDED_VERIFICATION_STATUSES.include?(verification_text(status))
+
+        :ok
+      end
+
+      # Stripped, case-insensitive verificationStatus.text. nil when absent
+      # or not a string.
+      def verification_text(status)
+        return nil unless status.is_a?(Hash)
+
+        text = status["text"]
+        return nil unless text.is_a?(String)
+
+        text.strip.downcase
       end
 
       # refuted and entered-in-error exclude the row in any code system.
@@ -1262,7 +1308,9 @@ module Corvid
 
       def medication_references(requests, patient_identifier, index)
         requests.each_with_object([]) do |request, results|
-          next if skip_medication_request?(request)
+          disposition = medication_disposition(request)
+          return nil if disposition == :unknown
+          next if disposition == :skip
 
           mapped = build_medication_reference(request, patient_identifier, index)
           return nil if mapped.nil?
@@ -1271,16 +1319,32 @@ module Corvid
         end
       end
 
-      def skip_medication_request?(request)
-        do_not_perform?(request) || medication_entered_in_error?(request)
+      # Unknown status or a non-boolean doNotPerform makes the page unknown.
+      # Boolean true and entered-in-error drop the row. False and absence stay.
+      def medication_disposition(request)
+        perform = do_not_perform_disposition(request)
+        return :unknown if perform == :unknown
+        return :unknown unless known_medication_status?(request)
+        return :skip if perform == :skip || medication_entered_in_error?(request)
+
+        :keep
+      end
+
+      def do_not_perform_disposition(request)
+        case request["doNotPerform"]
+        when true       then :skip
+        when false, nil then :keep
+        else :unknown
+        end
+      end
+
+      def known_medication_status?(request)
+        status = request["status"]
+        status.is_a?(String) && MEDICATION_REQUEST_STATUSES.include?(status)
       end
 
       def medication_entered_in_error?(request)
         request["status"] == "entered-in-error"
-      end
-
-      def do_not_perform?(request)
-        request["doNotPerform"] == true
       end
 
       def build_medication_reference(request, patient_identifier, index)

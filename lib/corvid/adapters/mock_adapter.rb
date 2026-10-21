@@ -461,7 +461,7 @@ module Corvid
       def get_conditions(patient_identifier)
         return nil if blank_patient_identifier?(patient_identifier)
 
-        (@conditions[patient_identifier.to_s] || []).dup
+        copied_references(@conditions[patient_identifier.to_s])
       end
 
       def add_medication(patient_identifier, reference)
@@ -475,7 +475,7 @@ module Corvid
       def get_medications(patient_identifier)
         return nil if blank_patient_identifier?(patient_identifier)
 
-        (@medications[patient_identifier.to_s] || []).dup
+        copied_references(@medications[patient_identifier.to_s])
       end
 
       def reset!
@@ -498,6 +498,20 @@ module Corvid
 
       def blank_patient_identifier?(patient_identifier)
         patient_identifier.nil? || patient_identifier.to_s.strip.empty?
+      end
+
+      # Frozen string copies so a caller cannot mutate stored clinical data.
+      def copied_references(stored)
+        (stored || []).map { |reference| copied_reference(reference) }
+      end
+
+      def copied_reference(reference)
+        values = reference.to_h.transform_values { |value| frozen_string_copy(value) }
+        reference.class.new(**values)
+      end
+
+      def frozen_string_copy(value)
+        value.is_a?(String) ? value.dup.freeze : value
       end
 
       def build_referral_reference(identifier, attrs)
