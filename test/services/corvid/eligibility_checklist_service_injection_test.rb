@@ -22,7 +22,7 @@ class Corvid::EligibilityChecklistServiceInjectionTest < ActiveSupport::TestCase
 
     def verify_tribal_enrollment(patient_id)
       @calls << [ :verify_tribal_enrollment, patient_id ]
-      { enrolled: true }
+      { enrolled: true, confidence: :verified }
     end
 
     def verify_identity_documents(patient_id)
