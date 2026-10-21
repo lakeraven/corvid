@@ -859,6 +859,163 @@ class Corvid::Adapters::FhirAdapterPaginationTest < Minitest::Test
     end
   end
 
+  # --- fhir_search: schemes and URI errors (gate round 3) --------------------
+
+  def test_fhir_search_returns_nil_for_mailto_urn_and_javascript_next_urls_without_requesting_them
+    {
+      "schm_mailto" => "mailto:x",
+      "schm_urn" => "urn:x",
+      "schm_javascript" => "javascript:x"
+    }.each do |name, evil_next|
+      url1 = patient_search_url(name: name)
+
+      with_http_stub({
+        url1 => success_json(search_bundle(entries: [ patient_entry("pt_#{name}") ], next_url: evil_next))
+      }) do |requested|
+        assert_nil @adapter.send(:fhir_search, "Patient", name: name),
+          "expected nil for next url #{evil_next.inspect}"
+        refute_includes requested, evil_next
+        assert_equal [ url1 ], requested
+      end
+    end
+  end
+
+  def test_fhir_search_returns_nil_for_next_url_that_raises_uri_error_without_requesting_it
+    url1 = patient_search_url(name: "urierr")
+    evil_next = "mailto:broken"
+
+    with_http_stub({
+      url1 => success_json(search_bundle(entries: [ patient_entry("pt_urierr") ], next_url: evil_next))
+    }) do |requested|
+      assert_nil @adapter.send(:fhir_search, "Patient", name: "urierr")
+      refute_includes requested, evil_next
+      assert_equal [ url1 ], requested
+    end
+  end
+
+  # --- fhir_search: invalid UTF-8 (gate round 3) -----------------------------
+
+  def test_fhir_search_returns_nil_for_next_link_with_invalid_utf8_relation_without_requesting_url
+    url1 = patient_search_url(name: "relutf8")
+    evil_next = "#{BASE_URL}/Patient?page=2&name=relutf8"
+    bundle = search_bundle(entries: [ patient_entry("pt_ru8") ], next_url: evil_next)
+
+    with_http_stub({ url1 => success_bundle_body_with_invalid_utf8_next_relation(bundle) }) do |requested|
+      assert_nil @adapter.send(:fhir_search, "Patient", name: "relutf8")
+      refute_includes requested, evil_next
+      assert_equal [ url1 ], requested
+    end
+  end
+
+  def test_fhir_search_returns_nil_for_next_link_with_invalid_utf8_url_without_requesting_it
+    url1 = patient_search_url(name: "urlutf8")
+    placeholder_next = "#{BASE_URL}/Patient?page=2&name=urlutf8"
+    bundle = search_bundle(entries: [ patient_entry("pt_uu8") ], next_url: placeholder_next)
+
+    with_http_stub({
+      url1 => success_bundle_body_with_invalid_utf8_next_url(bundle, placeholder_next)
+    }) do |requested|
+      assert_nil @adapter.send(:fhir_search, "Patient", name: "urlutf8")
+      refute requested.any? { |url| url.bytes.include?(0xFF) }
+      assert_equal [ url1 ], requested
+    end
+  end
+
+  def test_fhir_search_returns_nil_when_page_body_is_not_valid_utf8_without_raise
+    url1 = patient_search_url(name: "bodyutf8")
+    invalid_body = "#{JSON.generate(search_bundle(entries: [ patient_entry("pt_bu8") ]))}\xFF"
+    invalid_body.force_encoding(Encoding::UTF_8)
+
+    with_http_stub({ url1 => success_raw(invalid_body) }) do |requested|
+      assert_nil @adapter.send(:fhir_search, "Patient", name: "bodyutf8")
+      assert_equal [ url1 ], requested
+    end
+  end
+
+  # --- fhir_search: path separators under /fhir base (gate round 3) ----------
+
+  def test_fhir_search_returns_nil_for_semicolon_next_path_under_fhir_base_without_requesting
+    fhir_base = "https://fhir.example.test/fhir"
+    adapter = Corvid::Adapters::FhirAdapter.new(base_url: fhir_base)
+    url1 = "#{fhir_base}/Patient?#{URI.encode_www_form(name: "semipath")}"
+    evil_next = "/fhir/..;/admin/Patient"
+    resolved_evil = "https://fhir.example.test/fhir/..;/admin/Patient"
+
+    responses = {
+      url1 => success_json(search_bundle(entries: [ patient_entry("pt_semi") ], next_url: evil_next)),
+      resolved_evil => success_json(search_bundle(entries: [ patient_entry("pt_semi2") ]))
+    }
+
+    with_adapter_http_stub(adapter, responses) do |requested|
+      assert_nil adapter.send(:fhir_search, "Patient", name: "semipath")
+      refute_includes requested, resolved_evil
+      assert_equal [ url1 ], requested
+    end
+  end
+
+  def test_fhir_search_returns_nil_for_encoded_separator_next_paths_under_fhir_base_without_requesting
+    fhir_base = "https://fhir.example.test/fhir"
+    adapter = Corvid::Adapters::FhirAdapter.new(base_url: fhir_base)
+    url1 = "#{fhir_base}/Patient?#{URI.encode_www_form(name: "encsep")}"
+
+    [
+      [ "/fhir/out%2fadmin/Patient", "https://fhir.example.test/fhir/out%2fadmin/Patient" ],
+      [ "/fhir/out%2Fadmin/Patient", "https://fhir.example.test/fhir/out%2Fadmin/Patient" ],
+      [ "/fhir/out%5cadmin/Patient", "https://fhir.example.test/fhir/out%5cadmin/Patient" ],
+      [ "/fhir/out%5Cadmin/Patient", "https://fhir.example.test/fhir/out%5Cadmin/Patient" ]
+    ].each do |evil_next, resolved_evil|
+      responses = {
+        url1 => success_json(search_bundle(entries: [ patient_entry("pt_enc") ], next_url: evil_next)),
+        resolved_evil => success_json(search_bundle(entries: [ patient_entry("pt_enc2") ]))
+      }
+
+      with_adapter_http_stub(adapter, responses) do |requested|
+        assert_nil adapter.send(:fhir_search, "Patient", name: "encsep"),
+          "expected nil for next path #{evil_next.inspect}"
+        refute_includes requested, resolved_evil
+        assert_equal [ url1 ], requested
+      end
+    end
+  end
+
+  def test_fhir_search_returns_nil_for_raw_backslash_next_path_under_fhir_base_without_requesting
+    fhir_base = "https://fhir.example.test/fhir"
+    adapter = Corvid::Adapters::FhirAdapter.new(base_url: fhir_base)
+    url1 = "#{fhir_base}/Patient?#{URI.encode_www_form(name: "bslash")}"
+    evil_next = "/fhir/out\\admin/Patient"
+
+    responses = {
+      url1 => success_json(search_bundle(entries: [ patient_entry("pt_bs") ], next_url: evil_next))
+    }
+
+    with_adapter_http_stub(adapter, responses) do |requested|
+      assert_nil adapter.send(:fhir_search, "Patient", name: "bslash")
+      assert_equal [ url1 ], requested
+    end
+  end
+
+  # --- fhir_search: case-insensitive host (gate round 3) ---------------------
+
+  def test_fhir_search_follows_next_link_with_case_insensitive_host_and_merges_pages
+    url1 = patient_search_url(name: "hostcase")
+    url2 = "https://FHIR.EXAMPLE.TEST/r4/Patient?page=2&name=hostcase"
+
+    e1 = patient_entry("pt_hc1")
+    e2 = patient_entry("pt_hc2")
+
+    responses = {
+      url1 => success_json(search_bundle(entries: [ e1 ], next_url: url2)),
+      url2 => success_json(search_bundle(entries: [ e2 ]))
+    }
+
+    with_http_stub(responses) do |requested|
+      result = @adapter.send(:fhir_search, "Patient", name: "hostcase")
+
+      assert_equal [ e1, e2 ], result["entry"]
+      assert_equal [ url1, url2 ], requested
+    end
+  end
+
   private
 
   def patient_search_url(name:)
@@ -922,6 +1079,10 @@ class Corvid::Adapters::FhirAdapterPaginationTest < Minitest::Test
   end
 
   def with_http_stub(responses_by_url)
+    with_adapter_http_stub(@adapter, responses_by_url) { |requested| yield requested }
+  end
+
+  def with_adapter_http_stub(adapter, responses_by_url)
     requested = []
     handler = lambda do |url|
       requested << url
@@ -931,11 +1092,26 @@ class Corvid::Adapters::FhirAdapterPaginationTest < Minitest::Test
       response
     end
 
-    @adapter.stub(:http_get, handler) { yield requested }
+    adapter.stub(:http_get, handler) { yield requested }
   end
 
   def success_json(payload)
     success_raw(JSON.generate(payload))
+  end
+
+  def success_bundle_body_with_invalid_utf8_next_relation(bundle)
+    body = JSON.generate(bundle)
+    invalid_body = body.sub('"relation":"next"', %("relation":"ne\xFFxt"))
+    invalid_body.force_encoding(Encoding::UTF_8)
+    success_raw(invalid_body)
+  end
+
+  def success_bundle_body_with_invalid_utf8_next_url(bundle, placeholder_url)
+    body = JSON.generate(bundle)
+    needle = %("url":"#{placeholder_url}")
+    invalid_body = body.sub(needle, %("url":"#{placeholder_url}\xFF"))
+    invalid_body.force_encoding(Encoding::UTF_8)
+    success_raw(invalid_body)
   end
 
   def success_raw(body)
