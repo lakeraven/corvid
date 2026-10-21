@@ -21,6 +21,11 @@ class Corvid::AlternateResourceCheckTest < ActiveSupport::TestCase
     end
   end
 
+  test "configurable max-age types match RESOURCE_TYPES" do
+    assert_equal Corvid::AlternateResourceCheck::RESOURCE_TYPES.sort,
+      Corvid::Configuration::ALTERNATE_RESOURCE_TYPES.sort
+  end
+
   test "resource_type unique per referral" do
     with_tenant(TENANT) do
       referral = create_referral

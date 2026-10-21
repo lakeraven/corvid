@@ -3,7 +3,6 @@
 require "minitest/autorun"
 require "active_support/core_ext/numeric/time"
 require "corvid/configuration"
-require_relative "../test_helper"
 
 class Corvid::ConfigurationTest < Minitest::Test
   def setup
@@ -128,7 +127,7 @@ class Corvid::ConfigurationTest < Minitest::Test
       assert_equal 90.days, max_age.fetch(type)
     end
 
-    other_types = Corvid::AlternateResourceCheck::RESOURCE_TYPES - %w[medicaid medicare_a medicare_b medicare_d]
+    other_types = Corvid::Configuration::ALTERNATE_RESOURCE_TYPES - %w[medicaid medicare_a medicare_b medicare_d]
     other_types.each do |type|
       assert_equal 90.days, max_age.fetch(type), "expected 90.days default for #{type}"
     end
