@@ -371,19 +371,24 @@ module Corvid
       # (type, payor, beneficiary, class, or coding that is not the Hash,
       # Array, or String that element requires) is nil and does not raise.
       # Every Coverage resource is counted across all pages before the
-      # active and insurance filters. When total is present it must be an
-      # Integer >= 0 equal to that count, or the result is nil. An entry
-      # whose resource is an OperationOutcome with an issue severity
-      # "error" or "fatal" is nil. A Bundle with no entry is [] only when
-      # total is absent or 0; any other total with no entries is nil.
+      # active and insurance filters. When a page includes total, it must
+      # be an Integer >= 0 and equal to the first page's total; a later
+      # page may omit total. The first page's total must equal that count,
+      # or the result is nil. An entry whose resource is an OperationOutcome
+      # with an issue severity "error" or "fatal" is nil. A page with no
+      # entry and total nil or 0 is empty. A first page with no entry, a
+      # positive total, and no next link is nil via the count check. A
+      # string anywhere in the bundle that fails valid_encoding? is nil
+      # and does not raise.
       # plan_name is the class entry typed "plan": its name, otherwise
       # its value.
       #
       # An Array means the search finished ([] when nothing matched). nil
       # means unknown — a non-2xx page, bad JSON, a non-Bundle body, an
       # untrusted beneficiary or period, a malformed Coverage, a status
-      # outside the FHIR set, a total that is not an Integer >= 0 or does
-      # not match the Coverage count, a fatal OperationOutcome, an
+      # outside the FHIR set, a total that is not an Integer >= 0, differs
+      # from the first page, or does not match the Coverage count, invalid
+      # encoding, a fatal OperationOutcome, an
       # off-origin / cyclic / over-limit next link, or a transport error
       # (Timeout::Error, including Net::ReadTimeout and Net::OpenTimeout,
       # SocketError, SystemCallError, OpenSSL::SSL::SSLError, IOError,
@@ -788,6 +793,8 @@ module Corvid
           return nil unless page
 
           stated_total = page[:stated_total] if index.zero?
+          return nil unless coverage_page_total_ok?(page[:stated_total], stated_total)
+
           received += page[:coverage_count]
           found.concat(page[:coverages])
           url = page[:next_url]
@@ -807,6 +814,15 @@ module Corvid
         return false unless non_negative_coverage_total?(stated_total)
 
         stated_total == received
+      end
+
+      # A present total must be a non-negative Integer and the same value
+      # as the first page. A later page may omit total.
+      def coverage_page_total_ok?(page_total, stated_total)
+        return true if page_total.nil?
+        return false unless non_negative_coverage_total?(page_total)
+
+        page_total == stated_total
       end
 
       def non_negative_coverage_total?(total)
@@ -859,12 +875,29 @@ module Corvid
       end
 
       def parse_coverage_bundle(body)
-        return nil unless body.is_a?(String)
+        return nil unless body.is_a?(String) && body.valid_encoding?
 
         parsed = JSON.parse(body)
-        parsed if parsed.is_a?(Hash) && parsed["resourceType"] == "Bundle"
-      rescue JSON::ParserError
+        return nil unless parsed.is_a?(Hash) && parsed["resourceType"] == "Bundle"
+        return nil unless coverage_strings_encoded?(parsed)
+
+        parsed
+      rescue JSON::ParserError, ArgumentError, EncodingError
         nil
+      end
+
+      # Keys and values. One invalid string fails the whole search.
+      def coverage_strings_encoded?(value)
+        case value
+        when String
+          value.valid_encoding?
+        when Array
+          value.all? { |item| coverage_strings_encoded?(item) }
+        when Hash
+          value.all? { |key, item| coverage_strings_encoded?(key) && coverage_strings_encoded?(item) }
+        else
+          true
+        end
       end
 
       def active_coverage_rows(bundle, patient_identifier)
@@ -875,11 +908,12 @@ module Corvid
         fold_coverage_entries(entries, patient_identifier)
       end
 
-      # No entry array: an omitted or zero Integer total is an empty
-      # search. Any other total with nothing inline is incomplete.
+      # No entry array. Absent or a non-negative Integer total is an empty
+      # page; the caller checks it against the first page and the count.
+      # Any other total is incomplete.
       def empty_coverage_page(bundle)
         total = bundle["total"]
-        return nil unless total.nil? || (non_negative_coverage_total?(total) && total.zero?)
+        return nil unless total.nil? || non_negative_coverage_total?(total)
 
         { coverages: [], coverage_count: 0 }
       end
@@ -907,7 +941,7 @@ module Corvid
 
         rows << row if row
         1
-      rescue TypeError, NoMethodError
+      rescue TypeError, NoMethodError, ArgumentError, EncodingError
         nil
       end
 
