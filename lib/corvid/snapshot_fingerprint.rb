@@ -120,6 +120,9 @@ module Corvid
         nil
       end
 
+      # Printable ASCII only, so Unicode whitespace ([[:space:]]) and format
+      # characters (\p{Cf}) are rejected, never just stripped. Every name the
+      # model's presence check calls blank is unusable here.
       def acceptable_version_name?(name)
         name.is_a?(String) &&
           name.valid_encoding? &&

@@ -12,8 +12,9 @@ class ScrubLegacyVerificationSnapshotHashes < ActiveRecord::Migration[8.1]
     SQL
   end
 
+  # Irreversible by design: the cleared digests are gone and the inputs were
+  # never retained, so there is nothing to restore. Rolling back is a no-op
+  # and the scrubbed rows keep a nil hash (ADR 0008 decision 8).
   def down
-    raise ActiveRecord::IrreversibleMigration,
-      "legacy unkeyed verification snapshot hashes cannot be restored"
   end
 end
