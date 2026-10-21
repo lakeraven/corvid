@@ -261,4 +261,42 @@ class Corvid::Adapters::MockAdapterTest < Minitest::Test
   def test_get_medications_returns_nil_for_blank_patient_identifier
     assert_nil @adapter.get_medications("")
   end
+
+  # -- Issue #611 panel round 4: returned reference strings are immutable ------
+
+  def test_get_conditions_returned_display_is_frozen_or_unchanged_on_next_call
+    ref = Corvid::ConditionReference.new(
+      code: "C001", code_system: "http://example.test/codes", display: +"TEST CONDITION 001",
+      clinical_status: "active", category: "problem-list-item", onset_date: nil
+    )
+    @adapter.add_condition("pt_001", ref)
+    first = @adapter.get_conditions("pt_001").first
+    expected_display = "TEST CONDITION 001"
+
+    if first.display.frozen?
+      assert first.display.frozen?
+    else
+      first.display << "X"
+      second = @adapter.get_conditions("pt_001").first
+      assert_equal expected_display, second.display
+    end
+  end
+
+  def test_get_medications_returned_display_is_frozen_or_unchanged_on_next_call
+    ref = Corvid::MedicationReference.new(
+      code: "M001", code_system: "http://example.test/rxnorm", display: +"TEST MEDICATION 001",
+      status: "active", authored_on: nil, dosage_text: +"TEST DOSAGE 001"
+    )
+    @adapter.add_medication("pt_001", ref)
+    first = @adapter.get_medications("pt_001").first
+    expected_display = "TEST MEDICATION 001"
+
+    if first.display.frozen?
+      assert first.display.frozen?
+    else
+      first.display << "X"
+      second = @adapter.get_medications("pt_001").first
+      assert_equal expected_display, second.display
+    end
+  end
 end

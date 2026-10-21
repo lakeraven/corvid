@@ -1402,6 +1402,109 @@ class Corvid::Adapters::FhirAdapterTest < Minitest::Test
     assert_equal "active", results.first.clinical_status
   end
 
+  # -- Issue #611 panel round 4: spec amendment (failing until implemented) ----
+
+  TRUST_DEFEATING_OUTCOME_CODES = %w[suppressed incomplete too-costly].freeze
+  OUTCOME_SEVERITIES = %w[fatal error warning information].freeze
+
+  TRUST_DEFEATING_OUTCOME_CODES.each do |issue_code|
+    OUTCOME_SEVERITIES.each do |severity|
+      define_method(:"test_get_conditions_returns_nil_when_operation_outcome_#{issue_code}_at_#{severity}") do
+        condition = build_condition_resource
+        bundle = conditions_bundle_with_operation_outcome([ condition ], issue_code: issue_code, severity: severity)
+        assert_nil get_conditions_with_bundle(bundle)
+      end
+
+      define_method(:"test_get_medications_returns_nil_when_operation_outcome_#{issue_code}_at_#{severity}") do
+        request = build_medication_request_resource
+        bundle = medications_bundle_with_operation_outcome([ request ], issue_code: issue_code, severity: severity)
+        assert_nil get_medications_with_bundle(bundle)
+      end
+    end
+  end
+
+  def test_get_conditions_keeps_list_when_operation_outcome_informational_at_information_severity
+    condition = build_condition_resource
+    bundle = conditions_bundle_with_operation_outcome(
+      [ condition ], issue_code: "informational", severity: "information"
+    )
+    results = get_conditions_with_bundle(bundle)
+
+    assert_equal 1, results.size
+    assert_equal "C001", results.first.code
+  end
+
+  def test_get_medications_keeps_list_when_operation_outcome_informational_at_information_severity
+    request = build_medication_request_resource
+    bundle = medications_bundle_with_operation_outcome(
+      [ request ], issue_code: "informational", severity: "information"
+    )
+    results = get_medications_with_bundle(bundle)
+
+    assert_equal 1, results.size
+    assert_equal "M001", results.first.code
+  end
+
+  def test_get_medications_returns_nil_when_medication_request_status_absent
+    request = build_medication_request_resource.tap { |resource| resource.delete("status") }
+    assert_nil get_medications_with_bundle(medications_bundle([ request ]))
+  end
+
+  def test_get_medications_returns_nil_when_medication_request_status_outside_r4_value_set
+    request = build_medication_request_resource(status: "planned")
+    assert_nil get_medications_with_bundle(medications_bundle([ request ]))
+  end
+
+  def test_get_medications_returns_nil_when_do_not_perform_is_string_true
+    request = build_medication_request_resource(doNotPerform: "true")
+    assert_nil get_medications_with_bundle(medications_bundle([ request ]))
+  end
+
+  def test_get_medications_returns_nil_when_do_not_perform_is_non_boolean
+    included = build_medication_request_resource("id" => "mr_ok")
+    invalid = build_medication_request_resource("id" => "mr_bad", doNotPerform: "false")
+    assert_nil get_medications_with_bundle(medications_bundle([ included, invalid ]))
+  end
+
+  def test_get_medications_keeps_row_when_do_not_perform_is_boolean_false
+    request = build_medication_request_resource(doNotPerform: false)
+    results = get_medications_with_bundle(medications_bundle([ request ]))
+
+    assert_equal 1, results.size
+    assert_equal "M001", results.first.code
+  end
+
+  def test_get_conditions_excludes_refuted_verification_status_from_text_only
+    condition = build_condition_resource.tap do |resource|
+      resource["verificationStatus"] = { "text" => "REFUTED" }
+    end
+    active = build_condition_resource("id" => "cond_ok")
+    results = get_conditions_with_bundle(conditions_bundle([ condition, active ]))
+
+    assert_equal 1, results.size
+    assert_equal "C001", results.first.code
+  end
+
+  def test_get_conditions_excludes_refuted_verification_status_from_stripped_text_only
+    condition = build_condition_resource.tap do |resource|
+      resource["verificationStatus"] = { "text" => "  Refuted  " }
+    end
+    active = build_condition_resource("id" => "cond_ok")
+    results = get_conditions_with_bundle(conditions_bundle([ condition, active ]))
+
+    assert_equal 1, results.size
+    assert_equal "C001", results.first.code
+  end
+
+  def test_get_conditions_excludes_entered_in_error_verification_status_from_stripped_text_only
+    condition = build_condition_resource.tap do |resource|
+      resource["verificationStatus"] = { "text" => "  ENTERED-IN-ERROR  " }
+    end
+    results = get_conditions_with_bundle(conditions_bundle([ condition ]))
+
+    assert_equal [], results
+  end
+
   private
 
   def no_content_http_response
@@ -1477,6 +1580,27 @@ class Corvid::Adapters::FhirAdapterTest < Minitest::Test
     return [ inc, nil ] unless inc.is_a?(Array)
 
     [ inc[0], inc[1] ]
+  end
+
+  def conditions_bundle_with_operation_outcome(conditions, issue_code:, severity:)
+    entries = conditions.map { |c| { "resource" => c, "search" => { "mode" => "match" } } }
+    entries << operation_outcome_bundle_entry(issue_code: issue_code, severity: severity)
+    { "resourceType" => "Bundle", "type" => "searchset", "entry" => entries }
+  end
+
+  def medications_bundle_with_operation_outcome(requests, issue_code:, severity:)
+    entries = requests.map { |r| { "resource" => r, "search" => { "mode" => "match" } } }
+    entries << operation_outcome_bundle_entry(issue_code: issue_code, severity: severity)
+    { "resourceType" => "Bundle", "type" => "searchset", "entry" => entries }
+  end
+
+  def operation_outcome_bundle_entry(issue_code:, severity:)
+    {
+      "resource" => {
+        "resourceType" => "OperationOutcome",
+        "issue" => [ { "severity" => severity, "code" => issue_code } ]
+      }
+    }
   end
 
   def build_condition_resource(overrides = {})
