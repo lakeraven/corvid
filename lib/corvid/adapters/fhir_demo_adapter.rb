@@ -73,13 +73,29 @@ module Corvid
       end
 
       def reference_matches?(resource, value)
-        wanted = value.to_s.sub(%r{\APatient/}, "")
-        candidates = [
+        wanted = patient_reference_token(value)
+        patient_reference_values(resource).include?(wanted)
+      end
+
+      def patient_reference_values(resource)
+        [
           resource.dig("patient", "reference"),
           resource.dig("beneficiary", "reference"),
           resource.dig("subject", "reference")
-        ].compact.map { |ref| ref.sub(%r{\APatient/}, "") }
-        candidates.include?(wanted)
+        ].compact.map { |ref| patient_reference_token(ref) }
+      end
+
+      # Patient/<id> and <base_url>/Patient/<id> both name this server's
+      # patient. Any other reference is left intact so a foreign absolute
+      # URL cannot match a local id.
+      def patient_reference_token(reference)
+        ref = reference.to_s
+        return ref.delete_prefix("Patient/") if ref.start_with?("Patient/")
+
+        absolute = "#{@base_url}/Patient/"
+        return ref.delete_prefix(absolute) if ref.start_with?(absolute)
+
+        ref
       end
 
       def name_matches?(resource, value)

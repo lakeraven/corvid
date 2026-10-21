@@ -157,4 +157,146 @@ class Corvid::Adapters::MockAdapterTest < Minitest::Test
     source = File.read(File.expand_path("../../../lib/corvid/adapters/mock_adapter.rb", __dir__))
     assert_match(/not a security boundary/i, source)
   end
+
+  # -- Conditions / medications (issue #611) ----------------------------------
+
+  def test_add_condition_and_get_conditions_round_trip
+    ref = Corvid::ConditionReference.new(
+      code: "C001", code_system: "http://example.test/codes", display: "TEST CONDITION 001",
+      clinical_status: "active", category: "problem-list-item", onset_date: Date.new(2020, 3, 15)
+    )
+    @adapter.add_condition("pt_001", ref)
+    result = @adapter.get_conditions("pt_001")
+    assert_equal 1, result.size
+    assert_equal ref, result.first
+  end
+
+  def test_get_conditions_returns_empty_when_none_seeded
+    assert_respond_to @adapter, :add_condition
+    assert_equal [], @adapter.get_conditions("pt_001")
+  end
+
+  def test_reset_clears_conditions
+    ref = Corvid::ConditionReference.new(
+      code: "C001", code_system: "http://example.test/codes", display: "TEST CONDITION 001",
+      clinical_status: "resolved", category: "encounter-diagnosis", onset_date: nil
+    )
+    @adapter.add_condition("pt_001", ref)
+    @adapter.reset!
+    assert_equal [], @adapter.get_conditions("pt_001")
+  end
+
+  def test_add_medication_and_get_medications_round_trip
+    ref = Corvid::MedicationReference.new(
+      code: "M001", code_system: "http://example.test/rxnorm", display: "TEST MEDICATION 001",
+      status: "active", authored_on: Date.new(2024, 6, 1), dosage_text: "TEST DOSAGE 001"
+    )
+    @adapter.add_medication("pt_001", ref)
+    result = @adapter.get_medications("pt_001")
+    assert_equal 1, result.size
+    assert_equal ref, result.first
+  end
+
+  def test_get_medications_returns_empty_when_none_seeded
+    assert_respond_to @adapter, :add_medication
+    assert_equal [], @adapter.get_medications("pt_001")
+  end
+
+  def test_reset_clears_medications
+    ref = Corvid::MedicationReference.new(
+      code: "M001", code_system: "http://example.test/rxnorm", display: "TEST MEDICATION 001",
+      status: "stopped", authored_on: nil, dosage_text: nil
+    )
+    @adapter.add_medication("pt_001", ref)
+    @adapter.reset!
+    assert_equal [], @adapter.get_medications("pt_001")
+  end
+
+  def test_add_condition_raises_unless_given_condition_reference
+    error = assert_raises(ArgumentError) { @adapter.add_condition("pt_001", { code: "C001" }) }
+    assert_match(/ConditionReference/i, error.message)
+  end
+
+  def test_add_medication_raises_unless_given_medication_reference
+    error = assert_raises(ArgumentError) { @adapter.add_medication("pt_001", { code: "M001" }) }
+    assert_match(/MedicationReference/i, error.message)
+  end
+
+  def test_get_conditions_returns_copy_not_internal_storage
+    ref = Corvid::ConditionReference.new(
+      code: "C001", code_system: "http://example.test/codes", display: "TEST CONDITION 001",
+      clinical_status: "active", category: "problem-list-item", onset_date: nil
+    )
+    @adapter.add_condition("pt_001", ref)
+    returned = @adapter.get_conditions("pt_001")
+    returned.clear
+    assert_equal 1, @adapter.get_conditions("pt_001").size
+  end
+
+  def test_get_medications_returns_copy_not_internal_storage
+    ref = Corvid::MedicationReference.new(
+      code: "M001", code_system: "http://example.test/rxnorm", display: "TEST MEDICATION 001",
+      status: "active", authored_on: nil, dosage_text: nil
+    )
+    @adapter.add_medication("pt_001", ref)
+    returned = @adapter.get_medications("pt_001")
+    returned.clear
+    assert_equal 1, @adapter.get_medications("pt_001").size
+  end
+
+  # -- Issue #611 panel round 2 ------------------------------------------------
+
+  def test_get_conditions_returns_nil_for_nil_patient_identifier
+    assert_nil @adapter.get_conditions(nil)
+  end
+
+  def test_get_conditions_returns_nil_for_blank_patient_identifier
+    assert_nil @adapter.get_conditions("   ")
+  end
+
+  def test_get_medications_returns_nil_for_nil_patient_identifier
+    assert_nil @adapter.get_medications(nil)
+  end
+
+  def test_get_medications_returns_nil_for_blank_patient_identifier
+    assert_nil @adapter.get_medications("")
+  end
+
+  # -- Issue #611 panel round 4: returned reference strings are immutable ------
+
+  def test_get_conditions_returned_display_is_frozen_or_unchanged_on_next_call
+    ref = Corvid::ConditionReference.new(
+      code: "C001", code_system: "http://example.test/codes", display: +"TEST CONDITION 001",
+      clinical_status: "active", category: "problem-list-item", onset_date: nil
+    )
+    @adapter.add_condition("pt_001", ref)
+    first = @adapter.get_conditions("pt_001").first
+    expected_display = "TEST CONDITION 001"
+
+    if first.display.frozen?
+      assert first.display.frozen?
+    else
+      first.display << "X"
+      second = @adapter.get_conditions("pt_001").first
+      assert_equal expected_display, second.display
+    end
+  end
+
+  def test_get_medications_returned_display_is_frozen_or_unchanged_on_next_call
+    ref = Corvid::MedicationReference.new(
+      code: "M001", code_system: "http://example.test/rxnorm", display: +"TEST MEDICATION 001",
+      status: "active", authored_on: nil, dosage_text: +"TEST DOSAGE 001"
+    )
+    @adapter.add_medication("pt_001", ref)
+    first = @adapter.get_medications("pt_001").first
+    expected_display = "TEST MEDICATION 001"
+
+    if first.display.frozen?
+      assert first.display.frozen?
+    else
+      first.display << "X"
+      second = @adapter.get_medications("pt_001").first
+      assert_equal expected_display, second.display
+    end
+  end
 end
