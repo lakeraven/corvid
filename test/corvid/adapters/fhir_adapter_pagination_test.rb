@@ -978,6 +978,35 @@ class Corvid::Adapters::FhirAdapterPaginationTest < Minitest::Test
     end
   end
 
+  # A gateway that decodes the path, strips ";" parameters and normalizes
+  # dot segments could route ..%3b or a double-encoded escape to another
+  # tenant prefix.
+  def test_fhir_search_returns_nil_for_encoded_semicolon_and_double_encoded_next_paths
+    fhir_base = "https://fhir.example.test/tenant-a/r4"
+    adapter = Corvid::Adapters::FhirAdapter.new(base_url: fhir_base)
+    url1 = "#{fhir_base}/Patient?#{URI.encode_www_form(name: "encsemi")}"
+
+    [
+      "/tenant-a/r4/..%3b/..%3b/tenant-b/r4/Patient",
+      "/tenant-a/r4/..%3B/..%3B/tenant-b/r4/Patient",
+      "/tenant-a/r4/out%253badmin/Patient",
+      "/tenant-a/r4/out%252fadmin/Patient"
+    ].each do |evil_next|
+      resolved_evil = "https://fhir.example.test#{evil_next}"
+      responses = {
+        url1 => success_json(search_bundle(entries: [ patient_entry("pt_semi") ], next_url: evil_next)),
+        resolved_evil => success_json(search_bundle(entries: [ patient_entry("pt_semi2") ]))
+      }
+
+      with_adapter_http_stub(adapter, responses) do |requested|
+        assert_nil adapter.send(:fhir_search, "Patient", name: "encsemi"),
+          "expected nil for next path #{evil_next.inspect}"
+        refute_includes requested, resolved_evil
+        assert_equal [ url1 ], requested
+      end
+    end
+  end
+
   def test_fhir_search_returns_nil_for_raw_backslash_next_path_under_fhir_base_without_requesting
     fhir_base = "https://fhir.example.test/fhir"
     adapter = Corvid::Adapters::FhirAdapter.new(base_url: fhir_base)
