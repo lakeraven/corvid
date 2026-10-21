@@ -574,6 +574,291 @@ class Corvid::Adapters::FhirAdapterPaginationTest < Minitest::Test
     end
   end
 
+  # --- fhir_search: total vs search.mode (gate round 2) ----------------------
+
+  def test_fhir_search_keeps_total_when_outcome_entry_does_not_count_toward_total
+    url1 = patient_search_url(name: "totalmode1")
+    match = patient_entry("p1", search_mode: "match")
+    outcome = operation_outcome_entry(search_mode: "outcome")
+    bundle = search_bundle(entries: [ match, outcome ], total: 1)
+
+    with_http_stub({ url1 => success_json(bundle) }) do |requested|
+      result = @adapter.send(:fhir_search, "Patient", name: "totalmode1")
+
+      assert_equal [ match, outcome ], result["entry"]
+      assert_equal 1, result["total"]
+      assert_equal [ url1 ], requested
+    end
+  end
+
+  def test_search_patients_succeeds_when_total_counts_only_match_entries
+    url1 = patient_search_url(name: "totalmode_sp")
+    match = patient_entry("p1", search_mode: "match")
+    outcome = operation_outcome_entry(search_mode: "outcome")
+    bundle = search_bundle(entries: [ match, outcome ], total: 1)
+
+    with_http_stub({ url1 => success_json(bundle) }) do |_requested|
+      refs = @adapter.search_patients("totalmode_sp")
+
+      assert_equal 1, refs.length
+      assert_equal "p1", refs.first.identifier
+    end
+  end
+
+  def test_fhir_search_keeps_total_when_include_entry_does_not_count_toward_total
+    url1 = patient_search_url(name: "totalinc")
+    match = patient_entry("p_main", search_mode: "match")
+    included = patient_entry("p_inc", search_mode: "include")
+    bundle = search_bundle(entries: [ match, included ], total: 1)
+
+    with_http_stub({ url1 => success_json(bundle) }) do |requested|
+      result = @adapter.send(:fhir_search, "Patient", name: "totalinc")
+
+      assert_equal [ match, included ], result["entry"]
+      assert_equal 1, result["total"]
+      assert_equal [ url1 ], requested
+    end
+  end
+
+  def test_fhir_search_keeps_total_zero_when_only_outcome_entry_present
+    url1 = patient_search_url(name: "totalout0")
+    outcome = operation_outcome_entry(search_mode: "outcome")
+    bundle = search_bundle(entries: [ outcome ], total: 0)
+
+    with_http_stub({ url1 => success_json(bundle) }) do |requested|
+      result = @adapter.send(:fhir_search, "Patient", name: "totalout0")
+
+      assert_equal [ outcome ], result["entry"]
+      assert_equal 0, result["total"]
+      assert_equal [ url1 ], requested
+    end
+  end
+
+  def test_fhir_search_returns_nil_when_total_disagrees_with_match_and_no_mode_count
+    url1 = patient_search_url(name: "totalmm")
+    entries = [
+      patient_entry("p_a", search_mode: "match"),
+      patient_entry("p_b"),
+      operation_outcome_entry(search_mode: "outcome")
+    ]
+    bundle = search_bundle(entries: entries, total: 1)
+
+    with_http_stub({ url1 => success_json(bundle) }) do |requested|
+      assert_nil @adapter.send(:fhir_search, "Patient", name: "totalmm")
+      assert_equal [ url1 ], requested
+    end
+  end
+
+  def test_fhir_search_returns_nil_when_total_is_float
+    url1 = patient_search_url(name: "totalfloat")
+    bundle = search_bundle(entries: [ patient_entry("p_f") ], total: 3.0)
+
+    with_http_stub({ url1 => success_json(bundle) }) do |requested|
+      assert_nil @adapter.send(:fhir_search, "Patient", name: "totalfloat")
+      assert_equal [ url1 ], requested
+    end
+  end
+
+  def test_fhir_search_returns_nil_when_total_is_string
+    url1 = patient_search_url(name: "totalstr")
+    bundle = search_bundle(entries: [ patient_entry("p_s") ], total: "3")
+
+    with_http_stub({ url1 => success_json(bundle) }) do |requested|
+      assert_nil @adapter.send(:fhir_search, "Patient", name: "totalstr")
+      assert_equal [ url1 ], requested
+    end
+  end
+
+  def test_fhir_search_returns_nil_when_total_is_negative_integer
+    url1 = patient_search_url(name: "totalneg")
+    bundle = search_bundle(entries: [ patient_entry("p_n") ], total: -1)
+
+    with_http_stub({ url1 => success_json(bundle) }) do |requested|
+      assert_nil @adapter.send(:fhir_search, "Patient", name: "totalneg")
+      assert_equal [ url1 ], requested
+    end
+  end
+
+  # --- fhir_search: duplicate match resources (gate round 2) -----------------
+
+  def test_fhir_search_returns_nil_when_same_match_patient_appears_twice_on_one_page
+    url1 = patient_search_url(name: "dup1page")
+    e1 = patient_entry("p_dup", search_mode: "match")
+    e2 = patient_entry("p_dup", search_mode: "match")
+    bundle = search_bundle(entries: [ e1, e2 ], total: 2)
+
+    with_http_stub({ url1 => success_json(bundle) }) do |requested|
+      assert_nil @adapter.send(:fhir_search, "Patient", name: "dup1page")
+      assert_equal [ url1 ], requested
+    end
+  end
+
+  def test_fhir_search_returns_nil_when_same_no_mode_patient_appears_on_later_page
+    url1 = patient_search_url(name: "dup2page")
+    url2 = "#{BASE_URL}/Patient?_getpages=dup2&name=dup2page"
+
+    e1 = patient_entry("p_x")
+    e2 = patient_entry("p_x")
+
+    responses = {
+      url1 => success_json(search_bundle(entries: [ e1 ], next_url: url2, total: 2)),
+      url2 => success_json(search_bundle(entries: [ e2 ]))
+    }
+
+    with_http_stub(responses) do |requested|
+      assert_nil @adapter.send(:fhir_search, "Patient", name: "dup2page")
+      assert_equal [ url1, url2 ], requested
+    end
+  end
+
+  def test_fhir_search_returns_nil_when_same_match_patient_reappears_via_next_link_with_reordered_params
+    url1 = patient_search_url(name: "dupreorder")
+    url2 = "#{BASE_URL}/Patient?name=dupreorder&_getpages=dupre"
+
+    e1 = patient_entry("p_ro", search_mode: "match")
+    e2 = patient_entry("p_ro", search_mode: "match")
+
+    responses = {
+      url1 => success_json(search_bundle(entries: [ e1 ], next_url: url2, total: 2)),
+      url2 => success_json(search_bundle(entries: [ e2 ]))
+    }
+
+    with_http_stub(responses) do |requested|
+      assert_nil @adapter.send(:fhir_search, "Patient", name: "dupreorder")
+      assert_equal [ url1, url2 ], requested
+    end
+  end
+
+  def test_fhir_search_returns_nil_when_same_match_patient_reappears_via_next_link_with_trailing_slash
+    url1 = patient_search_url(name: "dupslash")
+    url2 = "#{BASE_URL}/Patient/?_getpages=dupslash2&name=dupslash"
+
+    e1 = patient_entry("p_sl", search_mode: "match")
+    e2 = patient_entry("p_sl", search_mode: "match")
+
+    responses = {
+      url1 => success_json(search_bundle(entries: [ e1 ], next_url: url2, total: 2)),
+      url2 => success_json(search_bundle(entries: [ e2 ]))
+    }
+
+    with_http_stub(responses) do |requested|
+      assert_nil @adapter.send(:fhir_search, "Patient", name: "dupslash")
+      assert_equal [ url1, url2 ], requested
+    end
+  end
+
+  def test_fhir_search_allows_same_include_patient_on_later_page
+    url1 = patient_search_url(name: "dupincok")
+    url2 = "#{BASE_URL}/Patient?_getpages=dupinc2"
+
+    match = patient_entry("p_m", search_mode: "match")
+    inc1 = patient_entry("p_i", search_mode: "include")
+    inc2 = patient_entry("p_i", search_mode: "include")
+
+    responses = {
+      url1 => success_json(search_bundle(entries: [ match, inc1 ], next_url: url2)),
+      url2 => success_json(search_bundle(entries: [ inc2 ]))
+    }
+
+    with_http_stub(responses) do |requested|
+      result = @adapter.send(:fhir_search, "Patient", name: "dupincok")
+
+      assert_equal [ match, inc1, inc2 ], result["entry"]
+      refute result.key?("total")
+      assert_equal [ url1, url2 ], requested
+    end
+  end
+
+  # --- fhir_search: dot segments in next URL (gate round 2) ------------------
+
+  def test_fhir_search_returns_nil_for_next_url_with_raw_dot_dot_segment_without_requesting
+    evil_next = "#{BASE_URL}/../admin/Patient?page=2"
+    url1 = patient_search_url(name: "dotdot")
+
+    with_http_stub({
+      url1 => success_json(search_bundle(entries: [ patient_entry("pt_dd") ], next_url: evil_next)),
+      evil_next => success_json(search_bundle(entries: [ patient_entry("pt_dd2") ]))
+    }) do |requested|
+      assert_nil @adapter.send(:fhir_search, "Patient", name: "dotdot")
+      refute_includes requested, evil_next
+      assert_equal [ url1 ], requested
+    end
+  end
+
+  def test_fhir_search_returns_nil_for_next_url_with_raw_dot_segment_without_requesting
+    evil_next = "#{BASE_URL}/./Patient?page=2"
+    url1 = patient_search_url(name: "dotseg")
+
+    with_http_stub({
+      url1 => success_json(search_bundle(entries: [ patient_entry("pt_ds") ], next_url: evil_next)),
+      evil_next => success_json(search_bundle(entries: [ patient_entry("pt_ds2") ]))
+    }) do |requested|
+      assert_nil @adapter.send(:fhir_search, "Patient", name: "dotseg")
+      refute_includes requested, evil_next
+      assert_equal [ url1 ], requested
+    end
+  end
+
+  def test_fhir_search_returns_nil_for_next_url_with_percent_encoded_dot_dot_without_requesting
+    evil_next = "https://fhir.example.test/r4/%2e%2e/admin/Patient?page=2"
+    url1 = patient_search_url(name: "dotenc")
+
+    with_http_stub({
+      url1 => success_json(search_bundle(entries: [ patient_entry("pt_de") ], next_url: evil_next)),
+      evil_next => success_json(search_bundle(entries: [ patient_entry("pt_de2") ]))
+    }) do |requested|
+      assert_nil @adapter.send(:fhir_search, "Patient", name: "dotenc")
+      refute_includes requested, evil_next
+      assert_equal [ url1 ], requested
+    end
+  end
+
+  def test_fhir_search_returns_nil_for_next_url_with_percent_encoded_dot_uppercase_without_requesting
+    evil_next = "https://fhir.example.test/r4/%2E%2E/admin/Patient?page=2"
+    url1 = patient_search_url(name: "dotencu")
+
+    with_http_stub({
+      url1 => success_json(search_bundle(entries: [ patient_entry("pt_deu") ], next_url: evil_next)),
+      evil_next => success_json(search_bundle(entries: [ patient_entry("pt_deu2") ]))
+    }) do |requested|
+      assert_nil @adapter.send(:fhir_search, "Patient", name: "dotencu")
+      refute_includes requested, evil_next
+      assert_equal [ url1 ], requested
+    end
+  end
+
+  # --- fhir_search: empty later page body (gate round 2) ---------------------
+
+  def test_fhir_search_returns_nil_when_page_two_is_204_no_content_without_raise
+    url1 = patient_search_url(name: "p2empty")
+    url2 = "#{BASE_URL}/Patient?_getpages=p2empty"
+
+    responses = {
+      url1 => success_json(search_bundle(entries: [ patient_entry("pt_p2e") ], next_url: url2)),
+      url2 => success_no_content
+    }
+
+    with_http_stub(responses) do |requested|
+      assert_nil @adapter.send(:fhir_search, "Patient", name: "p2empty")
+      assert_equal [ url1, url2 ], requested
+    end
+  end
+
+  def test_fhir_search_returns_nil_when_page_two_is_200_with_empty_body_without_raise
+    url1 = patient_search_url(name: "p2blank")
+    url2 = "#{BASE_URL}/Patient?_getpages=p2blank"
+
+    responses = {
+      url1 => success_json(search_bundle(entries: [ patient_entry("pt_p2b") ], next_url: url2)),
+      url2 => success_raw("")
+    }
+
+    with_http_stub(responses) do |requested|
+      assert_nil @adapter.send(:fhir_search, "Patient", name: "p2blank")
+      assert_equal [ url1, url2 ], requested
+    end
+  end
+
   private
 
   def patient_search_url(name:)
@@ -597,14 +882,26 @@ class Corvid::Adapters::FhirAdapterPaginationTest < Minitest::Test
     bundle
   end
 
-  def patient_entry(id)
-    {
+  def patient_entry(id, search_mode: nil)
+    entry = {
       "resource" => {
         "resourceType" => "Patient",
         "id" => id,
         "birthDate" => "1980-01-01",
         "gender" => "female",
         "name" => [ { "family" => "TEST", "given" => [ "PATIENT#{id}" ] } ]
+      }
+    }
+    entry["search"] = { "mode" => search_mode } if search_mode
+    entry
+  end
+
+  def operation_outcome_entry(search_mode: "outcome")
+    {
+      "search" => { "mode" => search_mode },
+      "resource" => {
+        "resourceType" => "OperationOutcome",
+        "issue" => [ { "severity" => "information", "code" => "informational" } ]
       }
     }
   end
@@ -645,16 +942,17 @@ class Corvid::Adapters::FhirAdapterPaginationTest < Minitest::Test
     fake_response(200, body)
   end
 
+  def success_no_content
+    fake_response(204, nil)
+  end
+
   def http_error(status, body)
     fake_response(status, body)
   end
 
   def fake_response(status, body)
-    response_class = if status >= 200 && status < 300
-      Net::HTTPOK
-    else
-      Net::HTTPResponse::CODE_TO_OBJ[status.to_s] || Net::HTTPUnknownResponse
-    end
+    response_class = Net::HTTPResponse::CODE_TO_OBJ[status.to_s]
+    response_class ||= status.between?(200, 299) ? Net::HTTPOK : Net::HTTPUnknownResponse
     response = response_class.new("1.1", status.to_s, "OK")
     response.instance_variable_set(:@body, body)
     response.instance_variable_set(:@read, true)
