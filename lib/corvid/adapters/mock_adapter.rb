@@ -315,7 +315,7 @@ module Corvid
             tribe_name: nil,
             tribe_code: nil,
             confidence: :verified,
-            verified_at: Time.current
+            verified_at: verification_timestamp
           }
         end
 
@@ -327,31 +327,31 @@ module Corvid
           blood_quantum: enrollment[:blood_quantum],
           member_status: enrollment[:member_status],
           confidence: enrollment.fetch(:confidence, :verified),
-          verified_at: Time.current
+          verified_at: verification_timestamp
         }
       end
 
       def verify_identity_documents(patient_identifier)
         patient = @patients[patient_identifier.to_s]
-        return { ssn_present: false, dob_present: false, birthplace_present: false, verified_at: Time.current } unless patient
+        return { ssn_present: false, dob_present: false, birthplace_present: false, verified_at: verification_timestamp } unless patient
 
         {
           ssn_present: patient[:ssn_last4].present?,
           dob_present: patient[:dob].present?,
           birthplace_present: patient[:birthplace].present?,
-          verified_at: Time.current
+          verified_at: verification_timestamp
         }
       end
 
       def verify_residency(patient_identifier)
         residency = @residencies[patient_identifier.to_s]
-        return { on_reservation: false, address: nil, service_area: nil, verified_at: Time.current } unless residency
+        return { on_reservation: false, address: nil, service_area: nil, verified_at: verification_timestamp } unless residency
 
         {
           on_reservation: residency[:on_reservation],
           address: residency[:address],
           service_area: residency[:service_area],
-          verified_at: Time.current
+          verified_at: verification_timestamp
         }
       end
 
@@ -496,6 +496,12 @@ module Corvid
       end
 
       private
+
+      # Whole-second clock so a repeated check in the same second reports
+      # the same verified_at.
+      def verification_timestamp
+        Time.current.change(usec: 0)
+      end
 
       def blank_patient_identifier?(patient_identifier)
         patient_identifier.nil? || patient_identifier.to_s.strip.empty?
