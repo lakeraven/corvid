@@ -5,16 +5,22 @@ require "active_support/all"
 require "corvid/adapters/fhir_adapter"
 require_relative "../../support/adapter_contract_tests"
 require_relative "../../support/fhir_adapter_contract_fixtures"
+require_relative "../../support/fhir_contract_harness_search"
 
 module Corvid
   module Adapters
     # Test-only transport: exercises FhirAdapter parsing without network.
     class FhirAdapterContractHarness < FhirAdapter
+      include FhirContractHarnessSearch
+
+      attr_accessor :contract_fhir_update_returns
+
       def initialize
         super(base_url: "https://fhir.contract.test/r4")
         @by_type_and_id = Hash.new { |h, k| h[k] = {} }
         @by_type = Hash.new { |h, k| h[k] = [] }
         @create_responses = {}
+        @contract_fhir_update_returns = true
       end
 
       def add_resource(resource)
@@ -36,7 +42,7 @@ module Corvid
 
       def fhir_search(resource_type, params = {})
         params = params.transform_keys(&:to_s)
-        matches = @by_type[resource_type].select { |r| search_match?(resource_type, r, params) }
+        matches = @by_type[resource_type].select { |r| contract_harness_search_match?(resource_type, r, params) }
         {
           "resourceType" => "Bundle",
           "type" => "searchset",
@@ -50,37 +56,7 @@ module Corvid
       end
 
       def fhir_update(_resource_type, _id, _body)
-        true
-      end
-
-      def search_match?(resource_type, resource, params)
-        params.all? do |key, value|
-          case key
-          when "patient", "beneficiary", "subject"
-            reference_matches?(resource, value)
-          when "name"
-            name_matches?(resource, value)
-          else
-            true
-          end
-        end
-      end
-
-      def reference_matches?(resource, value)
-        wanted = value.to_s.sub(%r{\APatient/}, "")
-        candidates = [
-          resource.dig("patient", "reference"),
-          resource.dig("beneficiary", "reference"),
-          resource.dig("subject", "reference")
-        ].compact.map { |ref| ref.sub(%r{\APatient/}, "") }
-        candidates.include?(wanted)
-      end
-
-      def name_matches?(resource, value)
-        needle = value.to_s.downcase
-        Array(resource["name"]).any? do |n|
-          [ n["family"], *Array(n["given"]) ].compact.any? { |part| part.downcase.include?(needle) }
-        end
+        contract_fhir_update_returns
       end
     end
   end
@@ -101,35 +77,56 @@ class Corvid::Adapters::FhirAdapterContractTest < Minitest::Test
     adapter = contract_adapter
     adapter.instance_variable_set(:@by_type_and_id, Hash.new { |h, k| h[k] = {} })
     adapter.instance_variable_set(:@by_type, Hash.new { |h, k| h[k] = [] })
+    adapter.contract_fhir_update_returns = true
 
-    adapter.add_resource(FhirAdapterContractFixtures.patient_resource("pt_contract_001", "TEST", "PATIENT 001"))
-    adapter.add_resource(FhirAdapterContractFixtures.practitioner_resource("pr_contract_001", "TEST", "PROVIDER 001"))
-    adapter.add_resource(FhirAdapterContractFixtures.service_request_resource("rf_contract_001", "pt_contract_001"))
-    adapter.add_resource(FhirAdapterContractFixtures.coverage_resource("cov_contract_001", "pt_contract_001"))
+    fixtures = FhirAdapterContractFixtures
+    adapter.add_resource(fixtures.patient_resource("pt_contract_001", "TEST", "PATIENT 001"))
     adapter.add_resource(
-      FhirAdapterContractFixtures.care_team_resource("ct_contract_001", "pt_contract_001", "pr_contract_001")
+      fixtures.patient_resource_tribal_no_confidence("pt_contract_002", "TEST", "PATIENT 002")
     )
-    adapter.add_resource(FhirAdapterContractFixtures.claim_resource("clm_contract_001", "pt_contract_001"))
+    adapter.add_resource(fixtures.practitioner_resource("pr_contract_001", "TEST", "PROVIDER 001"))
+    adapter.add_resource(fixtures.service_request_resource("rf_contract_001", "pt_contract_001"))
+    adapter.add_resource(fixtures.coverage_resource("cov_contract_001", "pt_contract_001"))
+    adapter.add_resource(
+      fixtures.care_team_resource("ct_contract_001", "pt_contract_001", "pr_contract_001")
+    )
+    adapter.add_resource(fixtures.claim_resource("clm_contract_001", "pt_contract_001"))
     adapter.stub_create("ServiceRequest", { "id" => "rf_contract_created" })
 
     {
-      patient_id: "pt_contract_001",
-      unknown_patient_id: "pt_contract_unknown",
+      patient_identifier: "pt_contract_001",
+      patient_identifier_tribal_no_confidence: "pt_contract_002",
+      unknown_patient_identifier: "pt_contract_unknown",
       patient_search_query: "PATIENT",
-      practitioner_id: "pr_contract_001",
-      unknown_practitioner_id: "pr_contract_unknown",
+      practitioner_identifier: "pr_contract_001",
+      unknown_practitioner_identifier: "pr_contract_unknown",
       practitioner_search_query: "PROVIDER",
-      referral_id: "rf_contract_001",
-      unknown_referral_id: "rf_contract_unknown",
+      referral_identifier: "rf_contract_001",
+      unknown_referral_identifier: "rf_contract_unknown",
       text_token: "nt_contract_unused",
+      stored_text: "TEST CONTRACT NOTE",
       case_token: "ct_contract_001",
-      obligation_id: "obl_contract_001",
-      unknown_obligation_id: "obl_contract_unknown",
-      payment_id: "pay_contract_001",
-      claim_id: "clm_contract_001",
-      payer_id: "MOCK_PAYER",
-      dereference_tokens: %w[pt_contract_001]
+      obligation_identifier: "obl_contract_001",
+      unknown_obligation_identifier: "obl_contract_unknown",
+      obligation_seeded: false,
+      payment_identifier: "pay_contract_001",
+      unknown_payment_identifier: "pay_contract_unknown",
+      claim_identifier: "clm_contract_001",
+      payer_identifier: "MOCK_PAYER",
+      dereference_tokens: %w[pt_contract_001],
+      care_team_seeded: true,
+      claims_listable: true
     }
+  end
+
+  def test_contract_update_referral_fhir_update_returns_false
+    validate_contract_unsupported!
+    seed = contract_seed!
+    validate_required_seed_keys!(seed)
+    adapter = contract_adapter
+    adapter.contract_fhir_update_returns = false
+    refute adapter.update_referral(seed[:referral_identifier], { status: "active" }),
+           "update_referral must return false when fhir_update returns false"
   end
 
   def setup

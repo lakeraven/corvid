@@ -18,6 +18,17 @@ module FhirAdapterContractFixtures
     }
   end
 
+  def patient_resource_tribal_no_confidence(id, family, given)
+    {
+      "resourceType" => "Patient",
+      "id" => id,
+      "birthDate" => "1990-05-05",
+      "gender" => "male",
+      "name" => [ { "family" => family, "given" => [ given ] } ],
+      "extension" => [ tribal_enrollment_extension_without_confidence ]
+    }
+  end
+
   def practitioner_resource(id, family, given)
     {
       "resourceType" => "Practitioner",
@@ -91,7 +102,20 @@ module FhirAdapterContractFixtures
         { "url" => "membershipNumber", "valueString" => "TEST-CONTRACT-001" },
         { "url" => "tribeName", "valueString" => "TEST TRIBE" },
         { "url" => "tribeCode", "valueString" => "TST" },
+        { "url" => "memberStatus", "valueString" => "enrolled" },
         { "url" => "confidence", "valueString" => "verified" }
+      ]
+    }
+  end
+
+  def tribal_enrollment_extension_without_confidence
+    {
+      "url" => "https://lakeraven.com/fhir/StructureDefinition/tribal-enrollment",
+      "extension" => [
+        { "url" => "enrolled", "valueBoolean" => true },
+        { "url" => "membershipNumber", "valueString" => "TEST-CONTRACT-002" },
+        { "url" => "tribeName", "valueString" => "TEST TRIBE" },
+        { "url" => "tribeCode", "valueString" => "TST" }
       ]
     }
   end
