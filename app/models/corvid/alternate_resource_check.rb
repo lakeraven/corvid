@@ -168,8 +168,9 @@ module Corvid
     # Current for a date of service only when the check is fresh for its
     # resource type and any reported period still covers that date (#640).
     # as_of is a Time; a check recorded after that moment is not current.
-    # not_enrolled, denied, and exhausted are not current for a date of
-    # service inside the stored coverage period. Absence never verifies.
+    # not_enrolled is not current inside its own stored period. Exhausted
+    # and denied are about a covered period and are current when fresh.
+    # Absence never verifies.
     def current_for?(date_of_service, as_of: Time.current)
       raise ArgumentError, "date_of_service must be a Date" unless date_of_service.instance_of?(Date)
       raise ArgumentError, "as_of must be a Time" unless as_of.is_a?(Time) || as_of.is_a?(ActiveSupport::TimeWithZone)
@@ -233,12 +234,23 @@ module Corvid
       Corvid.configuration.alternate_resource_check_max_age.fetch(resource_type)
     end
 
-    # not_enrolled, denied, and exhausted contradict a stored period that
-    # still covers the date of service.
+    # Only not_enrolled is not current inside its own stored period.
+    # Exhausted and denied are about a covered period and are current
+    # when fresh.
     def negative_inside_coverage?(date_of_service)
-      return false unless not_enrolled? || denied? || exhausted?
+      return false unless not_enrolled?
 
-      stored_period_covers?(date_of_service)
+      not_enrolled_period_covers?(date_of_service)
+    end
+
+    # A not_enrolled period covers the date of service when at least one
+    # bound is present, coverage_start is nil or on or before that date,
+    # and coverage_end is nil or on or after it.
+    def not_enrolled_period_covers?(date_of_service)
+      return false if coverage_start.nil? && coverage_end.nil?
+
+      (coverage_start.nil? || coverage_start <= date_of_service) &&
+        (coverage_end.nil? || coverage_end >= date_of_service)
     end
 
     def coverage_period_covers?(date_of_service)
