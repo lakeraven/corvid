@@ -1,7 +1,9 @@
 # frozen_string_literal: true
 
 require "minitest/autorun"
+require "active_support/core_ext/numeric/time"
 require "corvid/configuration"
+require_relative "../test_helper"
 
 class Corvid::ConfigurationTest < Minitest::Test
   def setup
@@ -113,5 +115,47 @@ class Corvid::ConfigurationTest < Minitest::Test
     end
     result = Corvid.configuration.fetch_provenance.call(target_type: "x", target_id: "y")
     assert_equal [ { activity: "CREATE" } ], result
+  end
+
+  # -- alternate_resource_check_max_age (#640) ------------------------------
+
+  def test_alternate_resource_check_max_age_defaults
+    max_age = Corvid.configuration.alternate_resource_check_max_age
+
+    assert max_age.frozen?
+    assert_equal 30.days, max_age.fetch("medicaid")
+    %w[medicare_a medicare_b medicare_d].each do |type|
+      assert_equal 90.days, max_age.fetch(type)
+    end
+
+    other_types = Corvid::AlternateResourceCheck::RESOURCE_TYPES - %w[medicaid medicare_a medicare_b medicare_d]
+    other_types.each do |type|
+      assert_equal 90.days, max_age.fetch(type), "expected 90.days default for #{type}"
+    end
+  end
+
+  def test_alternate_resource_check_max_age_can_be_overridden_per_type
+    Corvid.configure do |c|
+      c.alternate_resource_check_max_age = { "medicaid" => 14.days }
+    end
+
+    max_age = Corvid.configuration.alternate_resource_check_max_age
+    assert_equal 14.days, max_age.fetch("medicaid")
+    assert_equal 90.days, max_age.fetch("medicare_a")
+    assert_equal 90.days, max_age.fetch("private_insurance")
+  end
+
+  def test_alternate_resource_check_max_age_rejects_non_duration_values
+    error = assert_raises(ArgumentError) do
+      Corvid.configure { |c| c.alternate_resource_check_max_age = { "medicaid" => 30 } }
+    end
+    assert_match(/duration/i, error.message)
+  end
+
+  def test_alternate_resource_check_max_age_rejects_non_positive_duration
+    error = assert_raises(ArgumentError) do
+      Corvid.configure { |c| c.alternate_resource_check_max_age = { "medicaid" => 0.days } }
+    end
+    assert_match(/positive/i, error.message)
   end
 end

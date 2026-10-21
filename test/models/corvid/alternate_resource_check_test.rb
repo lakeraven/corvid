@@ -514,19 +514,24 @@ class Corvid::AlternateResourceCheckTest < ActiveSupport::TestCase
   end
 
   test "seed_from_previous! copies coordinated as enrolled on the new referral" do
-    with_tenant(TENANT) do
+    with_tenant("tnt_test") do
       previous = create_referral
       Corvid::AlternateResourceCheck.create!(
         prc_referral: previous,
         resource_type: "medicaid",
         status: "coordinated",
-        checked_at: 2.days.ago
+        checked_at: 2.days.ago,
+        policy_token: "POL-MED",
+        coverage_start: Date.new(2024, 1, 1),
+        coverage_end: Date.new(2024, 12, 31),
+        renewal_date: Date.new(2024, 6, 1)
       )
       Corvid::AlternateResourceCheck.create!(
         prc_referral: previous,
         resource_type: "medicare_a",
         status: "not_enrolled",
-        checked_at: 1.day.ago
+        checked_at: 1.day.ago,
+        policy_token: "POL-MCR"
       )
 
       new_referral = create_referral
@@ -534,10 +539,312 @@ class Corvid::AlternateResourceCheckTest < ActiveSupport::TestCase
 
       medicaid = new_referral.alternate_resource_checks.find_by!(resource_type: "medicaid")
       assert_equal "enrolled", medicaid.status
-      assert_equal previous.alternate_resource_checks.find_by!(resource_type: "medicaid").checked_at, medicaid.checked_at
+      assert_equal "POL-MED", medicaid.policy_token
+      assert_nil medicaid.checked_at
+      assert_nil medicaid.coverage_start
+      assert_nil medicaid.coverage_end
+      assert_nil medicaid.renewal_date
 
       medicare = new_referral.alternate_resource_checks.find_by!(resource_type: "medicare_a")
       assert_equal "not_enrolled", medicare.status
+      assert_equal "POL-MCR", medicare.policy_token
+      assert_nil medicare.checked_at
+    end
+  end
+
+  test "seed_from_previous! leaves seeded checks not current_for? any date of service" do
+    with_tenant("tnt_test") do
+      previous = create_referral
+      Corvid::AlternateResourceCheck.create!(
+        prc_referral: previous,
+        resource_type: "medicaid",
+        status: "enrolled",
+        checked_at: 1.day.ago,
+        coverage_start: Date.new(2020, 1, 1),
+        coverage_end: Date.new(2030, 12, 31)
+      )
+
+      new_referral = create_referral
+      Corvid::AlternateResourceCheck.seed_from_previous!(new_referral, previous)
+
+      seeded = new_referral.alternate_resource_checks.find_by!(resource_type: "medicaid")
+      dos = Date.new(2025, 6, 15)
+      refute seeded.current_for?(dos)
+    end
+  end
+
+  # -- Issue #640: coverage period on verify! ---------------------------------
+
+  test "verify! stores coverage period and renewal date from adapter as Date values" do
+    with_tenant("tnt_test") do
+      referral = create_referral
+      patient_identifier = referral.case.patient_identifier
+      coverage_start = Date.new(2025, 3, 1)
+      coverage_end = Date.new(2025, 9, 30)
+      renewal_date = Date.new(2025, 8, 15)
+
+      Corvid.adapter.add_coverage(
+        patient_identifier,
+        resource_type: "medicaid",
+        eligible: true,
+        coverage_start: coverage_start,
+        coverage_end: coverage_end,
+        renewal_date: renewal_date
+      )
+
+      check = Corvid::AlternateResourceCheck.create!(
+        prc_referral: referral,
+        resource_type: "medicaid"
+      )
+      assert check.verify!
+      check.reload
+
+      assert_equal coverage_start, check.coverage_start
+      assert_equal coverage_end, check.coverage_end
+      assert_equal renewal_date, check.renewal_date
+    end
+  end
+
+  test "verify! stores nil coverage fields when adapter omits or sends non-Date values" do
+    with_tenant("tnt_test") do
+      referral = create_referral
+      check = Corvid::AlternateResourceCheck.create!(
+        prc_referral: referral,
+        resource_type: "medicare_a",
+        status: "enrolled",
+        coverage_start: Date.new(2020, 1, 1),
+        coverage_end: Date.new(2020, 12, 31),
+        renewal_date: Date.new(2020, 6, 1)
+      )
+
+      Corvid.adapter.define_singleton_method(:verify_eligibility) do |_pid, _type|
+        {
+          eligible: true,
+          policy_token: "TOK-CLEAR",
+          coverage_start: "2025-01-01",
+          coverage_end: nil,
+          renewal_date: 20_250_615
+        }
+      end
+
+      assert check.verify!
+      check.reload
+
+      assert_nil check.coverage_start
+      assert_nil check.coverage_end
+      assert_nil check.renewal_date
+    end
+  end
+
+  # -- Issue #640: current_for? -----------------------------------------------
+
+  test "current_for? raises ArgumentError when date_of_service is not a Date" do
+    check = Corvid::AlternateResourceCheck.new(
+      resource_type: "medicaid",
+      status: "not_enrolled",
+      checked_at: Time.current
+    )
+    assert_raises(ArgumentError) { check.current_for?("2025-06-01") }
+  end
+
+  test "current_for? is false for not_checked and checking regardless of age" do
+    with_tenant("tnt_test") do
+      dos = Date.new(2025, 6, 1)
+      not_checked = Corvid::AlternateResourceCheck.new(
+        resource_type: "medicaid", status: "not_checked", checked_at: Time.current
+      )
+      checking = Corvid::AlternateResourceCheck.new(
+        resource_type: "medicaid", status: "checking", checked_at: Time.current
+      )
+
+      refute not_checked.current_for?(dos)
+      refute checking.current_for?(dos)
+    end
+  end
+
+  test "current_for? is true for fresh not_enrolled without coverage period" do
+    with_tenant("tnt_test") do
+      travel_to Time.zone.parse("2025-06-15 12:00:00 UTC") do
+        dos = Date.new(2025, 6, 1)
+        check = Corvid::AlternateResourceCheck.new(
+          resource_type: "private_insurance",
+          status: "not_enrolled",
+          checked_at: 10.days.ago
+        )
+        assert check.current_for?(dos)
+      end
+    end
+  end
+
+  test "current_for? is false for enrolled coverage without coverage_start" do
+    with_tenant("tnt_test") do
+      travel_to Time.zone.parse("2025-06-15 12:00:00 UTC") do
+        dos = Date.new(2025, 6, 1)
+        check = Corvid::AlternateResourceCheck.new(
+          resource_type: "medicaid",
+          status: "enrolled",
+          checked_at: 1.day.ago,
+          coverage_start: nil,
+          coverage_end: Date.new(2025, 12, 31)
+        )
+        refute check.current_for?(dos)
+      end
+    end
+  end
+
+  test "current_for? medicaid 31 days old is not current while medicare 31 days old is current" do
+    with_tenant("tnt_test") do
+      travel_to Time.zone.parse("2025-07-01 12:00:00 UTC") do
+        dos = Date.new(2025, 6, 15)
+        as_of = Time.current
+        coverage = {
+          coverage_start: Date.new(2025, 1, 1),
+          coverage_end: Date.new(2025, 12, 31),
+          renewal_date: Date.new(2025, 12, 1)
+        }
+
+        medicaid = Corvid::AlternateResourceCheck.new(
+          resource_type: "medicaid",
+          status: "enrolled",
+          checked_at: 31.days.ago,
+          **coverage
+        )
+        medicare = Corvid::AlternateResourceCheck.new(
+          resource_type: "medicare_a",
+          status: "enrolled",
+          checked_at: 31.days.ago,
+          **coverage
+        )
+
+        refute medicaid.current_for?(dos, as_of: as_of)
+        assert medicare.current_for?(dos, as_of: as_of)
+      end
+    end
+  end
+
+  test "current_for? is true when checked_at is exactly at configured max age" do
+    with_tenant("tnt_test") do
+      travel_to Time.zone.parse("2025-07-01 12:00:00 UTC") do
+        dos = Date.new(2025, 6, 15)
+        as_of = Time.current
+        check = Corvid::AlternateResourceCheck.new(
+          resource_type: "medicaid",
+          status: "enrolled",
+          checked_at: 30.days.ago,
+          coverage_start: Date.new(2025, 1, 1),
+          coverage_end: nil
+        )
+
+        assert check.current_for?(dos, as_of: as_of)
+      end
+    end
+  end
+
+  test "current_for? is false when date of service is before coverage_start" do
+    with_tenant("tnt_test") do
+      travel_to Time.zone.parse("2025-06-15 12:00:00 UTC") do
+        check = Corvid::AlternateResourceCheck.new(
+          resource_type: "medicaid",
+          status: "enrolled",
+          checked_at: 1.day.ago,
+          coverage_start: Date.new(2025, 6, 10),
+          coverage_end: Date.new(2025, 12, 31)
+        )
+
+        refute check.current_for?(Date.new(2025, 6, 9))
+      end
+    end
+  end
+
+  test "current_for? is false when date of service is after coverage_end" do
+    with_tenant("tnt_test") do
+      travel_to Time.zone.parse("2025-06-15 12:00:00 UTC") do
+        check = Corvid::AlternateResourceCheck.new(
+          resource_type: "medicaid",
+          status: "enrolled",
+          checked_at: 1.day.ago,
+          coverage_start: Date.new(2025, 1, 1),
+          coverage_end: Date.new(2025, 6, 10)
+        )
+
+        refute check.current_for?(Date.new(2025, 6, 11))
+      end
+    end
+  end
+
+  test "current_for? is false when renewal_date is before date of service" do
+    with_tenant("tnt_test") do
+      travel_to Time.zone.parse("2025-06-15 12:00:00 UTC") do
+        check = Corvid::AlternateResourceCheck.new(
+          resource_type: "medicare_b",
+          status: "pending_enrollment",
+          checked_at: 1.day.ago,
+          coverage_start: Date.new(2025, 1, 1),
+          coverage_end: Date.new(2025, 12, 31),
+          renewal_date: Date.new(2025, 6, 10)
+        )
+
+        refute check.current_for?(Date.new(2025, 6, 11))
+      end
+    end
+  end
+
+  test "current_for? is false when renewal_date is before as_of date" do
+    with_tenant("tnt_test") do
+      travel_to Time.zone.parse("2025-06-15 12:00:00 UTC") do
+        dos = Date.new(2025, 6, 20)
+        check = Corvid::AlternateResourceCheck.new(
+          resource_type: "medicare_d",
+          status: "coordinated",
+          checked_at: 1.day.ago,
+          coverage_start: Date.new(2025, 1, 1),
+          coverage_end: Date.new(2025, 12, 31),
+          renewal_date: Date.new(2025, 6, 14)
+        )
+
+        refute check.current_for?(dos, as_of: Time.current)
+      end
+    end
+  end
+
+  test "current_for? is true when renewal_date is on or after date of service and as_of date" do
+    with_tenant("tnt_test") do
+      travel_to Time.zone.parse("2025-06-15 12:00:00 UTC") do
+        dos = Date.new(2025, 6, 10)
+        check = Corvid::AlternateResourceCheck.new(
+          resource_type: "va_benefits",
+          status: "enrolled",
+          checked_at: 1.day.ago,
+          coverage_start: Date.new(2025, 1, 1),
+          coverage_end: Date.new(2025, 12, 31),
+          renewal_date: Date.new(2025, 6, 15)
+        )
+
+        assert check.current_for?(dos, as_of: Time.current)
+      end
+    end
+  end
+
+  test "current_for? respects overridden alternate_resource_check_max_age" do
+    with_tenant("tnt_test") do
+      Corvid.configure do |c|
+        c.alternate_resource_check_max_age = { "medicaid" => 60.days }
+      end
+
+      travel_to Time.zone.parse("2025-07-01 12:00:00 UTC") do
+        dos = Date.new(2025, 6, 15)
+        check = Corvid::AlternateResourceCheck.new(
+          resource_type: "medicaid",
+          status: "enrolled",
+          checked_at: 31.days.ago,
+          coverage_start: Date.new(2025, 1, 1),
+          coverage_end: nil
+        )
+
+        assert check.current_for?(dos, as_of: Time.current)
+      end
+    ensure
+      Corvid.reset_configuration!
     end
   end
 
