@@ -440,6 +440,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_21_000003) do
     t.string "verification_snapshot_hash"
     t.datetime "created_at", null: false
     t.datetime "updated_at", null: false
+    t.string "verification_snapshot_key_version"
     t.index ["tenant_identifier", "decided_at"], name: "idx_corvid_prc_eligibility_decisions_tenant_decided_at"
     t.index ["tenant_identifier", "facility_identifier", "decided_at"], name: "idx_corvid_prc_elig_decisions_tenant_facility_decided"
     t.index ["tenant_identifier", "person_identifier", "decided_at"], name: "idx_corvid_prc_elig_decisions_tenant_person_decided"

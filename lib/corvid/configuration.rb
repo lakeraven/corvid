@@ -8,10 +8,21 @@ module Corvid
   #     c.phi_sanitizer = ->(msg) { PhiSanitizer.redact(msg) }
   #     c.on_provenance = ->(**attrs) { Provenance.create!(**attrs) }
   #     c.fetch_provenance = ->(**attrs) { Provenance.where(**attrs).to_a }
+  #     # HMAC keys for verification snapshot fingerprints (ADR 0008).
+  #     # Hosts load these from a secret store. The database records only
+  #     # the key version, never the key bytes.
+  #     c.verification_snapshot_keys = {
+  #       "2026-10" => secret_store.fetch("corvid/verification-snapshot/2026-10")
+  #     }
+  #     c.verification_snapshot_key_version = "2026-10"
   #   end
   #
   # Per ADR 0003, phi_sanitizer defaults to fail-safe redact-all so that
   # forgetting to configure it does not increase PHI exposure.
+  #
+  # #inspect lists verification snapshot key versions and does not reveal
+  # key material. #as_json, #to_json, and #to_yaml emit those same redacted
+  # fields and omit key bytes.
   class Configuration
     # Alternate-resource types whose check freshness is configurable (#640).
     # Duplicated so configuration can boot without loading app models.
@@ -24,6 +35,7 @@ module Corvid
     ].freeze
 
     attr_accessor :adapter, :edi_adapter, :phi_sanitizer, :on_provenance, :fetch_provenance
+    attr_accessor :verification_snapshot_keys, :verification_snapshot_key_version
 
     def initialize
       @adapter = nil
@@ -33,6 +45,27 @@ module Corvid
       @phi_sanitizer = ->(_msg) { "[REDACTED]" }
       @on_provenance = nil
       @fetch_provenance = ->(**) { [] }
+      @verification_snapshot_keys = {}
+      @verification_snapshot_key_version = nil
+    end
+
+    def inspect
+      "#<#{self.class.name} verification_snapshot_key_versions=#{snapshot_key_versions.inspect} " \
+        "verification_snapshot_key_version=#{verification_snapshot_key_version.inspect}>"
+    end
+
+    def as_json(*)
+      redacted_serialization
+    end
+
+    def to_json(*)
+      as_json(*).to_json(*)
+    end
+
+    def encode_with(coder)
+      redacted_serialization.each do |field, value|
+        coder[field] = value
+      end
     end
 
     # Frozen resource_type => Duration. Host overrides merge over the defaults.
@@ -49,11 +82,6 @@ module Corvid
       @alternate_resource_check_max_age_overrides = validated_max_ages(overrides)
     end
 
-    # Max-age overrides are not part of the serialized configuration.
-    def as_json(options = nil)
-      super.except("alternate_resource_check_max_age_overrides")
-    end
-
     def self.default_alternate_resource_check_max_age
       @default_alternate_resource_check_max_age ||= ALTERNATE_RESOURCE_TYPES.to_h { |type|
         [ type, type == "medicaid" ? 30.days : 90.days ]
@@ -61,6 +89,20 @@ module Corvid
     end
 
     private
+
+    def redacted_serialization
+      {
+        "verification_snapshot_key_versions" => snapshot_key_versions,
+        "verification_snapshot_key_version" => verification_snapshot_key_version
+      }
+    end
+
+    def snapshot_key_versions
+      keys = verification_snapshot_keys
+      return [] unless keys.respond_to?(:keys)
+
+      keys.keys
+    end
 
     def max_age_overrides
       return {} unless defined?(@alternate_resource_check_max_age_overrides)
