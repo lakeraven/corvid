@@ -67,6 +67,14 @@ module Corvid
       DEFAULT_OPEN_TIMEOUT = 10
       DEFAULT_READ_TIMEOUT = 30
 
+      # One search that still has a next page after this many Bundles is
+      # undetermined. Callers never see a partial result.
+      MAX_SEARCH_PAGES = 100
+
+      # Next URL that aborts the search and is never requested.
+      SEARCH_REJECTED = :rejected
+      private_constant :SEARCH_REJECTED
+
       def initialize(base_url:, bearer_token: nil, headers: {},
                      open_timeout: DEFAULT_OPEN_TIMEOUT,
                      read_timeout: DEFAULT_READ_TIMEOUT,
@@ -418,12 +426,110 @@ module Corvid
         JSON.parse(response.body)
       end
 
+      # Returns one Bundle whose `entry` array is every page, in order.
+      # Follows `link` entries with relation exactly "next", resolving each
+      # URL with URI.join against the current page. Fail closed: returns nil
+      # (never a partial Bundle) when any page is non-2xx, invalid JSON, or
+      # not a Bundle Hash; when a next URL's scheme, host, or port differs
+      # from @base_url (that URL is not requested); when a next URL was
+      # already visited; or when the chain is longer than MAX_SEARCH_PAGES.
       def fhir_search(resource_type, params = {})
-        query_string = URI.encode_www_form(params)
-        response = http_get("#{@base_url}/#{resource_type}?#{query_string}")
-        return nil unless response.is_a?(Net::HTTPSuccess)
+        query = URI.encode_www_form(params)
+        pages = collect_search_pages("#{@base_url}/#{resource_type}?#{query}")
+        merge_search_pages(pages) if pages
+      end
 
-        JSON.parse(response.body)
+      def collect_search_pages(url)
+        pages = []
+        seen = {}
+
+        while url && pages.size < MAX_SEARCH_PAGES && !seen[url]
+          page = fetch_bundle_page(url)
+          return unless page
+
+          seen[url] = true
+          pages << page
+          url = next_search_url(page, url)
+          return if url == SEARCH_REJECTED
+        end
+
+        # A nil url means the chain ended. A leftover url is a page cap or a
+        # repeated next link, so pages already read are discarded.
+        pages if url.nil?
+      end
+
+      def fetch_bundle_page(url)
+        response = http_get(url)
+        return unless response.is_a?(Net::HTTPSuccess)
+
+        parse_search_bundle(response.body)
+      end
+
+      def parse_search_bundle(body)
+        bundle = JSON.parse(body)
+        bundle if bundle.is_a?(Hash) && bundle["resourceType"] == "Bundle"
+      rescue JSON::ParserError
+        nil
+      end
+
+      def next_search_url(page, current_url)
+        href = next_link_href(page)
+        return href if href.nil? || href == SEARCH_REJECTED
+
+        resolved = resolve_search_url(current_url, href)
+        same_origin_url?(resolved) ? resolved : SEARCH_REJECTED
+      end
+
+      def next_link_href(bundle)
+        link = bundle_links(bundle).find { |item| next_relation?(item) }
+        return if link.nil?
+
+        href = link["url"]
+        href.is_a?(String) && !href.empty? ? href : SEARCH_REJECTED
+      end
+
+      def next_relation?(link)
+        link.is_a?(Hash) && link["relation"] == "next"
+      end
+
+      def bundle_links(bundle)
+        links = bundle["link"]
+        links.is_a?(Array) ? links : []
+      end
+
+      def resolve_search_url(current_url, href)
+        URI.join(current_url, href).to_s
+      rescue URI::InvalidURIError
+        nil
+      end
+
+      def same_origin_url?(url)
+        return false if url.nil?
+
+        origin = URI.parse(@base_url)
+        other = URI.parse(url)
+        origin.scheme == other.scheme && origin.host == other.host && origin.port == other.port
+      rescue URI::InvalidURIError
+        false
+      end
+
+      def merge_search_pages(pages)
+        merged = pages.first.dup
+        merged["entry"] = pages.flat_map { |page| bundle_entries(page) }
+        strip_next_links(merged)
+        merged
+      end
+
+      def bundle_entries(page)
+        entries = page["entry"]
+        entries.is_a?(Array) ? entries : []
+      end
+
+      def strip_next_links(bundle)
+        links = bundle["link"]
+        return unless links.is_a?(Array)
+
+        bundle["link"] = links.reject { |link| next_relation?(link) }
       end
 
       def fhir_create(resource_type, body)
