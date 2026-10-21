@@ -156,27 +156,35 @@ module Corvid
         JSON.generate(canonicalize(payload))
       end
 
-      def canonicalize(value)
-        case value
-        when Hash
-          canonical_hash(value)
-        when Array
-          value.map { |entry| canonicalize(entry) }
-        else
-          canonical_leaf(value)
+      # ancestors holds the containers on the current path by identity, so a
+      # cycle raises CanonicalizationError instead of SystemStackError (which
+      # is not a StandardError). A container shared by two branches is fine.
+      def canonicalize(value, ancestors = {}.compare_by_identity)
+        return canonical_leaf(value) unless value.is_a?(Hash) || value.is_a?(Array)
+        raise CanonicalizationError if ancestors.key?(value)
+
+        ancestors[value] = true
+        begin
+          if value.is_a?(Hash)
+            canonical_hash(value, ancestors)
+          else
+            value.map { |entry| canonicalize(entry, ancestors) }
+          end
+        ensure
+          ancestors.delete(value)
         end
       end
 
       # EXCLUDED_KEYS are removed before collision detection, so a repeated
       # verified_at does not collide and its value is not canonicalized.
-      def canonical_hash(hash)
+      def canonical_hash(hash, ancestors)
         string_keyed = {}
         hash.each_pair do |key, nested|
           name = key.to_s
           next if EXCLUDED_KEYS.include?(name)
           raise CanonicalizationError if string_keyed.key?(name)
 
-          string_keyed[name] = canonicalize(nested)
+          string_keyed[name] = canonicalize(nested, ancestors)
         end
         string_keyed.sort.to_h
       end
