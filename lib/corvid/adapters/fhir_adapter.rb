@@ -441,7 +441,7 @@ module Corvid
           membership_number: sub_extension_value(ext, "membershipNumber"),
           tribe_name: sub_extension_value(ext, "tribeName"),
           tribe_code: sub_extension_value(ext, "tribeCode"),
-          confidence: (sub_extension_value(ext, "confidence") || "verified").to_sym,
+          confidence: (sub_extension_value(ext, "confidence") || "unavailable").to_sym,
           verified_at: Time.current
         }
       end

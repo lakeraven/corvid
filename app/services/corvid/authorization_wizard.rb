@@ -156,11 +156,9 @@ module Corvid
       @patient ||= Corvid.adapter.find_patient(patient_identifier) if patient_identifier
     end
 
-    # STUB: defaults to "verified" until real eligibility verification is
-    # wired through the adapter. Host apps / tests can set it explicitly.
-    # See #14 / #60 for the eligibility dashboard that will feed this.
+    # Undetermined until set.
     def patient_eligibility_status
-      @patient_eligibility_status ||= "verified"
+      @patient_eligibility_status
     end
 
     def patient_eligibility_status=(status)
@@ -414,7 +412,10 @@ module Corvid
     end
 
     def check_patient_eligibility
-      @warnings << "Patient eligibility verification pending" if patient_eligibility_status == "pending"
+      status = patient_eligibility_status
+      return unless status.nil? || status == "pending"
+
+      @warnings << "Patient eligibility verification pending"
     end
 
     def initialize_alternate_resources
