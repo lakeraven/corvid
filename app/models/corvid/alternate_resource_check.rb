@@ -35,6 +35,11 @@ module Corvid
       eligibility_response state_case_data registration staff_entry inferred
     ].freeze
 
+    # A coverage states a group only with one of these. "unknown" is not
+    # a statement, and neither is a missing or unrecognised value.
+    REAL_STATED_GROUPS = (ELIGIBILITY_GROUPS - %w[unknown]).freeze
+    private_constant :REAL_STATED_GROUPS
+
     # Fixed text only. No patient identifier and no exception text (ADR 0003).
     VERIFY_MEDICAID_ELIGIBILITY_GROUP_WARNING =
       "medicaid eligibility group could not be recorded during verification"
@@ -234,9 +239,12 @@ module Corvid
     # After the Medicaid answer is saved. record! keeps a staff entry.
     # An EHR failure leaves that answer in place and the group as it was.
     # Nil or a non-Array from get_coverages is that failure, so record!
-    # is not called. With no single matching coverage, inference replaces
-    # a stated group in one write. A failed inference leaves the previous
-    # group. A staff entry stays.
+    # is not called. One matching coverage that states a real group is
+    # recorded as that group. No single matching row, or one row that
+    # does not state a real group, asks record! to replace the pinned
+    # stated group. The pin is that group, source, and set_at. A newer
+    # stated group is left in place. A failed inference leaves the
+    # previous group. A staff entry stays.
     def record_medicaid_eligibility_group
       return unless resource_type == "medicaid"
 
@@ -271,20 +279,55 @@ module Corvid
       rows.select { |row| resource_type_coverage?(row) }
     end
 
-    # Pass the option only when this answer has no single matching row
-    # and the stored source is a stated one. Omitting it leaves record!'s
-    # other callers, and a staff entry, on the existing path.
+    # Pin the stated group this answer would replace when the answer
+    # does not itself state a real group and the stored source is a
+    # stated one. The service supersedes only while that group, source,
+    # and set_at are still stored. Omitting the option leaves record!'s
+    # other callers, and a staff entry, on the existing path. The stored
+    # fields are read here because record! writes through another
+    # instance, so this object's attributes can lag the database.
     def stated_group_supersede(coverage)
-      return {} unless coverage.empty? && stated_eligibility_source?
+      return {} if real_stated_group?(coverage)
 
-      { supersede_stated: true }
+      pinned = pinned_stated_group
+      return {} unless pinned
+
+      { supersede_stated: pinned }
     end
 
-    # The stored source. record! writes through another instance, so
-    # eligibility_group_source on this object can lag the database.
-    def stated_eligibility_source?
-      source = self.class.where(id: id).pick(:eligibility_group_source)
-      MedicaidEligibilityGroupService::STATED_SOURCES.include?(source)
+    def real_stated_group?(coverage)
+      REAL_STATED_GROUPS.include?(group_token(coverage_field(coverage, :eligibility_group)))
+    end
+
+    def pinned_stated_group
+      group, source, set_at = self.class.where(id: id).pick(
+        :eligibility_group,
+        :eligibility_group_source,
+        :eligibility_group_set_at
+      )
+      return unless MedicaidEligibilityGroupService::STATED_SOURCES.include?(source)
+
+      { group: group, source: source, set_at: set_at }
+    end
+
+    def coverage_field(coverage, key)
+      return unless coverage.is_a?(Hash)
+
+      if coverage.key?(key)
+        value = coverage[key]
+        return value unless value.nil?
+      end
+
+      coverage[key.to_s]
+    end
+
+    def group_token(value)
+      case value
+      when Symbol then value.name
+      when String then String.new(value)
+      end
+    rescue ArgumentError, EncodingError
+      nil
     end
 
     def resource_type_coverage?(coverage)
