@@ -132,9 +132,28 @@ class Corvid::AlternateResourceCheckVerifyMedicaidEligibilityGroupTest < ActiveS
 
       call = sole_record_call(recorder)
       assert_empty call[:coverage]
+    end
+  end
+
+  test "verify! records unknown when no get_coverages entry matches medicaid" do
+    with_tenant(TENANT) do
+      register_patient(dob: Date.new(1996, 6, 15))
+      @adapter.add_coverage(
+        PATIENT_ID,
+        coverage_type: "medicare_a",
+        eligible: true,
+        state: "XA",
+        plan_name: "TEST REGULAR PLAN"
+      )
+      check = create_medicaid_check!
+      stub_verify_eligibility(eligible: true, policy_token: "TEST-POLICY-670")
+
+      assert check.verify!
       check.reload
-      assert_equal "expansion_adult", check.eligibility_group
+
+      assert_equal "unknown", check.eligibility_group
       assert_equal "inferred", check.eligibility_group_source
+      assert_not_nil check.eligibility_group_set_at
     end
   end
 
@@ -167,9 +186,37 @@ class Corvid::AlternateResourceCheckVerifyMedicaidEligibilityGroupTest < ActiveS
 
       call = sole_record_call(recorder)
       assert_empty call[:coverage]
+    end
+  end
+
+  test "verify! records unknown when more than one medicaid get_coverages entry exists" do
+    with_tenant(TENANT) do
+      register_patient(dob: Date.new(1996, 6, 15))
+      @adapter.add_coverage(
+        PATIENT_ID,
+        coverage_type: "medicaid",
+        eligible: true,
+        state: "XA",
+        eligibility_group: "expansion_adult",
+        eligibility_group_source: "eligibility_response"
+      )
+      @adapter.add_coverage(
+        PATIENT_ID,
+        coverage_type: "medicaid",
+        eligible: true,
+        state: "XA",
+        eligibility_group: "other",
+        eligibility_group_source: "eligibility_response"
+      )
+      check = create_medicaid_check!
+      stub_verify_eligibility(eligible: true, policy_token: "TEST-POLICY-670")
+
+      assert check.verify!
       check.reload
-      assert_equal "expansion_adult", check.eligibility_group
+
+      assert_equal "unknown", check.eligibility_group
       assert_equal "inferred", check.eligibility_group_source
+      assert_not_nil check.eligibility_group_set_at
     end
   end
 
