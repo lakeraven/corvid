@@ -12,6 +12,13 @@ set -uo pipefail
 cd "$(dirname "$0")/.." || exit 1
 
 only="${1:-all}"
+case "$only" in
+  all | overlay | prc-migration | prc) ;;
+  *)
+    printf 'demo-smoke: unknown demo: %s (one of: overlay, prc-migration, prc)\n' "$only" >&2
+    exit 64
+    ;;
+esac
 failures=0
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
@@ -43,6 +50,17 @@ check() {
   fi
 }
 
+# Narrated PRC happy path: referral walks the state machine to authorized with
+# a funded obligation. Runs first on purpose: it shares the Broken Rock
+# facility with the overlay, so the overlay's reset must clear what it leaves.
+check prc bin/demo-prc \
+  "1. Patient registration" \
+  "3. Eligibility review + tribal enrollment verification" \
+  "referral.approve_management!" \
+  "funds_available=true" \
+  "-> status=authorized" \
+  "Checklist:      100.0% complete"
+
 # Stock-FHIR overlay: both synthetic clinics ingest over generic FHIR, PRC
 # eligibility auto-populates, and MLR repricing reports dollars recovered.
 check overlay bin/demo-overlay \
@@ -62,16 +80,6 @@ check prc-migration bin/demo-prc-migration \
   "-> HALTED    Data Governance Board consent not granted" \
   "determination approved" \
   "determination denied"
-
-# Narrated PRC happy path: referral walks the state machine to authorized with
-# a funded obligation.
-check prc bin/demo-prc \
-  "1. Patient registration" \
-  "3. Eligibility review + tribal enrollment verification" \
-  "referral.approve_management!" \
-  "funds_available=true" \
-  "-> status=authorized" \
-  "Checklist:      100.0% complete"
 
 if [ "$failures" -gt 0 ]; then
   printf '\ndemo-smoke: %d demo(s) failed\n' "$failures"

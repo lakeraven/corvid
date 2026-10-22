@@ -182,6 +182,6 @@ environment, demo or production.
 bundle exec cucumber features/prc/    → 280 scenarios (280 passed), 1769 steps (1769 passed)
 bundle exec cucumber                  → 2490 steps (2490 passed)  [full suite]
 bundle exec rake test                 → 981 runs, 2243 assertions, 0 failures, 0 errors, 0 skips
-RAILS_ENV=test bin/rails demo:prc     → completes, referral status=authorized, checklist 100%
+bin/demo-prc  (development DB)       → completes, referral status=authorized, checklist 100%
 bundle exec rubocop lib/tasks/demo.rake → no offenses
 ```

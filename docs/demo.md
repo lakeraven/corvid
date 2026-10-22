@@ -3,8 +3,10 @@
 Three runnable demos ship with the engine. All are **fully synthetic** —
 invented clinics ("Broken Rock", "Tallgrass"), invented patients
 ("Riverstone, Dawn (synthetic)"), invented dollar amounts; no real tribe,
-facility, person, or PHI. All run **offline**: no network, no live EHR, no
-cloud credentials.
+facility, person, or PHI. The demos themselves run **offline**: no live EHR,
+no cloud credentials, no network calls. The only network use is the one-time
+`bundle install` an entry point runs on a checkout whose gems are not yet
+installed; once gems are cached, everything is offline.
 
 ## Prerequisites
 
@@ -17,8 +19,10 @@ resets any prior demo rows, and runs the demo. Nothing else to seed by hand —
 including the CMS rate data the MLR demo prices against, which is seeded
 in-process.
 
-The demos use the **development** database. They never touch the test database
-and never rewrite `test/dummy/db/schema.rb`.
+The demos use the **development** database. Each entry point forces
+`RAILS_ENV=development` and refuses to start if a different `RAILS_ENV` is
+inherited from your shell (for example one set up for the suites), so it can
+never reset the test database.
 
 `test/dummy/config/database.yml` names no user, so it connects as your OS user
 over the local socket. If your Postgres needs a role, host, or password, set
@@ -76,8 +80,10 @@ is **halted**. Both outcomes are recorded as audit `Determination`s.
 
 ## Reset between runs
 
-Each entry point resets before it runs, so **re-running the script is enough**.
-All three demos are also idempotent — a second run without a reset produces the
+Each entry point resets before it runs, so **re-running the script is enough**,
+and the demos can run in any order (the PRC demo and the overlay share the
+Broken Rock facility; the overlay reset clears what the PRC demo leaves). All
+three demos are also idempotent — a second run without a reset produces the
 same numbers and does not duplicate rows.
 
 To reset by hand:
@@ -117,21 +123,10 @@ bin/demo-smoke              # all three
 bin/demo-smoke overlay      # one of: overlay, prc-migration, prc
 ```
 
+An unknown name is an error, not a silent pass.
+
 Runs every demo end to end and asserts the beats the audience is supposed to
 see are actually present, so demo rot fails in CI instead of on stage. The
 `demo-smoke` job in `.github/workflows/ci.yml` runs it on every PR and is
 **independent of the test job** — the demos must stay runnable even while the
 suite is red.
-
-## Known environment issue
-
-Under `json` 3.x, the Rails 8.1 schema dumper cannot dump a `json`/`jsonb`
-column that has a default; it drops the whole table from `schema.rb` and leaves
-a `# Could not dump table ... ArgumentError` comment in its place. In this repo
-that hits `corvid_prc_eligibility_decisions`.
-
-The demos are insulated from it — the dummy app's development environment sets
-`config.active_record.dump_schema_after_migration = false`, so a demo run can
-never rewrite the checked-in schema. Anything that runs `db:migrate` in another
-environment still needs the real fix (pin `json` to `~> 2.21`, or a Rails
-release that handles it).
