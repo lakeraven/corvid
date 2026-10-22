@@ -558,6 +558,49 @@ class Corvid::AlternateResourceCheckVerifyMedicaidEligibilityGroupTest < ActiveS
     end
   end
 
+  test "verify! does not overwrite newer stated group written during get_coverages" do
+    with_tenant(TENANT) do
+      register_patient(dob: Date.new(1996, 6, 15))
+      @adapter.add_coverage(
+        PATIENT_ID,
+        coverage_type: "medicaid",
+        eligible: true,
+        state: "XA",
+        eligibility_group: "expansion_adult",
+        eligibility_group_source: "eligibility_response"
+      )
+      check = create_medicaid_check!
+      stub_verify_eligibility(eligible: true, policy_token: "TEST-POLICY-670")
+
+      assert check.verify!
+      check.reload
+      assert_equal "expansion_adult", check.eligibility_group
+      assert_equal "eligibility_response", check.eligibility_group_source
+
+      nil_group_row = [
+        {
+          coverage_type: "medicaid",
+          eligible: true,
+          state: "XA",
+          eligibility_group: nil
+        }
+      ]
+      writing = WriteDuringGetCoveragesAdapterDelegate.new(
+        @adapter,
+        check_id: check.id,
+        rows: nil_group_row
+      )
+
+      travel_to Time.zone.local(2026, 6, 1, 14, 0, 0) do
+        with_adapter(writing) { assert check.verify! }
+      end
+      check.reload
+
+      assert_equal "waiver_adult", check.eligibility_group
+      assert_equal "state_case_data", check.eligibility_group_source
+    end
+  end
+
   test "verify! re-infers when re-verification has ambiguous medicaid coverage and prior group was stated" do
     with_tenant(TENANT) do
       register_patient(dob: Date.new(1996, 6, 15))
@@ -726,6 +769,47 @@ class Corvid::AlternateResourceCheckVerifyMedicaidEligibilityGroupTest < ActiveS
       end
 
       @inner.get_coverages(patient_identifier)
+    end
+
+    def verify_eligibility(patient_identifier, resource_type)
+      @inner.verify_eligibility(patient_identifier, resource_type)
+    end
+
+    def add_coverage(patient_identifier, attrs = {}, **extra)
+      @inner.add_coverage(patient_identifier, attrs, **extra)
+    end
+
+    def add_patient(patient_identifier, **attrs)
+      @inner.add_patient(patient_identifier, **attrs)
+    end
+
+    def find_patient(patient_identifier)
+      @inner.find_patient(patient_identifier)
+    end
+
+    def respond_to_missing?(method, include_private = false)
+      @inner.respond_to?(method, include_private) || super
+    end
+
+    def method_missing(method, *args, **kwargs, &block)
+      @inner.public_send(method, *args, **kwargs, &block)
+    end
+  end
+
+  class WriteDuringGetCoveragesAdapterDelegate
+    def initialize(inner, check_id:, rows:)
+      @inner = inner
+      @check_id = check_id
+      @rows = rows
+    end
+
+    def get_coverages(_patient_identifier)
+      Corvid::AlternateResourceCheck.where(id: @check_id).update_all(
+        eligibility_group: "waiver_adult",
+        eligibility_group_source: "state_case_data",
+        eligibility_group_set_at: Time.current + 1.second
+      )
+      @rows
     end
 
     def verify_eligibility(patient_identifier, resource_type)
