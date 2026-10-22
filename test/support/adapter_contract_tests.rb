@@ -855,6 +855,13 @@ module AdapterContractTests
       return if value.nil?
 
       assert_instance_of Hash, value
+      # base.rb: these dates are Date or nil when present.
+      %i[coverage_start coverage_end renewal_date].each do |key|
+        next unless value.key?(key)
+
+        assert value[key].nil? || value[key].is_a?(Date),
+               "verify_eligibility #{key} must be a Date or nil, got #{value[key].class}"
+      end
       return unless value.key?(:eligible)
 
       eligible = value[:eligible]
