@@ -73,16 +73,19 @@ When("the PRC Director {string} approves the referral") do |director|
 end
 
 When("the Referral Specialist verifies alternate resources") do
+  exhaust_alternate_resources!(@referral)
   @referral.verify_alternate_resources!
   @referral.reload
 end
 
 When("the Referral Specialist completes priority assignment") do
+  exhaust_alternate_resources!(@referral)
   @referral.complete_priority_assignment!
   @referral.reload
 end
 
 When("the committee authorizes the referral") do
+  exhaust_alternate_resources!(@referral)
   @referral.authorize!
   @referral.reload
 end
@@ -128,7 +131,10 @@ Given("the referral has reached {string}") do |phrase|
   unless target == "management_approval"
     @referral.pending_approval_by = "dir_cookie"
     @referral.approve_management!
-    @referral.verify_alternate_resources! unless target == "alternate_resource_review"
+    unless target == "alternate_resource_review"
+      exhaust_alternate_resources!(@referral)
+      @referral.verify_alternate_resources!
+    end
   end
   @referral.reload
   assert_equal target, @referral.status, "expected to reach #{phrase}, got #{@referral.status}"

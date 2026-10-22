@@ -262,6 +262,35 @@ Then("I should see updated status for each resource") do
   end
 end
 
+Given("every payer eligibility lookup is unavailable") do
+  @eligibility_lookup_previous_adapter = Corvid.adapter
+  adapter = Corvid::Adapters::MockAdapter.new
+  adapter.define_singleton_method(:verify_eligibility) { |_, _| nil }
+  Corvid.configure { |c| c.adapter = adapter }
+end
+
+After do
+  if @eligibility_lookup_previous_adapter
+    Corvid.configure { |c| c.adapter = @eligibility_lookup_previous_adapter }
+    @eligibility_lookup_previous_adapter = nil
+  end
+end
+
+Then("no alternate resource should be marked not enrolled") do
+  @wizard.alternate_resources.each do |type, resource|
+    refute_equal :not_enrolled, resource[:status], "Expected #{type} not to be not_enrolled"
+  end
+end
+
+Then("the alternate resources summary should not read {string}") do |status|
+  refute_equal status, @wizard.summary[:alternate_resources_status].to_s
+end
+
+Then("I should see a warning containing {string}") do |phrase|
+  assert @wizard.warnings.any? { |w| w.include?(phrase) },
+    "Expected a warning containing '#{phrase}' in #{@wizard.warnings}"
+end
+
 # --- Review & submit ---
 
 Given("I have completed all wizard steps") do
