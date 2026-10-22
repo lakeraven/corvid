@@ -95,6 +95,38 @@ module Corvid
       refute row.update(facility_identifier: "fac_plain_example")
     end
 
+    test "a correction is appended in the row's own tenant or not at all" do
+      original = FmapClassificationService.classify!(
+        encounter_identifier: "enc_example_24", facility_identifier: "fac_plain_example",
+        date_of_service: Date.new(2026, 3, 1), jurisdiction: "XA"
+      )
+      Corvid::TenantContext.current_tenant_identifier = "tnt_other_example"
+      assert_raises(ArgumentError) { original.supersede_with!(rule_key: "us-regular") }
+      assert_equal 0, FmapDetermination.unscoped.where(tenant_identifier: "tnt_other_example").count
+    ensure
+      Corvid::TenantContext.current_tenant_identifier = "tnt_example"
+    end
+
+    test "a correction cannot change whose encounter it is" do
+      original = FmapClassificationService.classify!(
+        encounter_identifier: "enc_example_25", person_identifier: "pt_test_001",
+        facility_identifier: "fac_plain_example", date_of_service: Date.new(2026, 3, 1), jurisdiction: "XA"
+      )
+      assert_raises(ArgumentError) { original.supersede_with!(rule_key: "us-regular", encounter_identifier: "enc_other") }
+      assert_raises(ArgumentError) { original.supersede_with!(rule_key: "us-regular", person_identifier: "pt_test_002") }
+      assert_raises(ArgumentError) { original.supersede_with!(rule_key: "us-regular", tenant_identifier: "tnt_other") }
+      assert_nil original.reload.superseded_by_id
+    end
+
+    test "an undetermined row carries no percent" do
+      row = FmapDetermination.new(
+        encounter_identifier: "enc_example_26", date_of_service: Date.new(2026, 3, 1), jurisdiction: "XA",
+        category: FmapClassificationService::UNDETERMINED, fmap_percent: 100, determined_at: Time.current
+      )
+      refute row.valid?
+      assert row.errors[:fmap_percent].any?
+    end
+
     test "a correction cannot move a row onto another facility's authority" do
       original = FmapClassificationService.classify!(
         encounter_identifier: "enc_example_21",
