@@ -21,8 +21,8 @@ module Corvid
         return not_applied(rule_set) if application_date.nil?
         return predates_hr1(rule_set) if application_date < HR1_EFFECTIVE_DATE
 
-        months = positive_window_months(rule_set)
-        return window_undetermined(rule_set) unless months
+        months = non_negative_window_months(rule_set)
+        return window_undetermined(rule_set) if months.nil?
 
         determined(application_date, months, rule_set)
       end
@@ -39,8 +39,8 @@ module Corvid
       def filing_deadline(date_of_service:, rule_set:)
         date_of_service = require_date(date_of_service, "date_of_service")
         require_rule_set(rule_set)
-        months = positive_window_months(rule_set)
-        return unless months
+        months = non_negative_window_months(rule_set)
+        return if months.nil?
 
         deadline = (date_of_service >> months).end_of_month.gregorian
         deadline unless deadline < HR1_EFFECTIVE_DATE
@@ -49,9 +49,9 @@ module Corvid
       private
 
       def not_applied(rule_set)
-        months = positive_window_months(rule_set)
+        months = non_negative_window_months(rule_set)
         reasons = [ "application_not_filed" ]
-        reasons << "retroactive_window_undetermined" unless months
+        reasons << "retroactive_window_undetermined" if months.nil?
         merged_reasons(nil, rule_set).each do |reason|
           reasons << reason unless reasons.include?(reason)
         end
@@ -99,9 +99,10 @@ module Corvid
         reasons
       end
 
-      def positive_window_months(rule_set)
+      # Zero is a real window: the state has no retroactive coverage.
+      def non_negative_window_months(rule_set)
         months = rule_set.retroactive_window_months
-        months if months.is_a?(Integer) && months.positive?
+        months if months.is_a?(Integer) && months >= 0
       end
 
       def retroactive_window(earliest_covered_date:, window_months:, status:, reasons:)
