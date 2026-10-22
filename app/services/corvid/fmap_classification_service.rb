@@ -20,6 +20,10 @@ module Corvid
     UNEVIDENCED_100 = "unevidenced_100_percent"
     REASONS = [ NO_RULES_IN_FORCE, NO_MATCHING_RULE, UNEVIDENCED_100 ].freeze
 
+    # Raised by classify! when the encounter already has a current
+    # determination: correct it with FmapDetermination#supersede_with!.
+    class AlreadyDeterminedError < StandardError; end
+
     # Accepted coverage groups: main's eligibility-group vocabulary, plus
     # "unknown", which matches no group-scoped rule.
     COVERAGE_GROUPS = (StateMedicaidRules::GROUPS + %w[unknown]).freeze
@@ -45,6 +49,9 @@ module Corvid
                    aian_verified: false, received_through_basis: nil,
                    coverage_group: nil, billed_amount_cents: nil,
                    evidence_refs: [])
+        # The jurisdiction selects the state's rows; without one, federal
+        # rows alone would read as a complete answer.
+        raise ArgumentError, "jurisdiction is required" if jurisdiction.to_s.strip.empty?
         check_coverage_group!(coverage_group)
         if received_through_basis.present? && !FmapRule::RECEIVED_THROUGH_BASES.include?(received_through_basis.to_s)
           raise ArgumentError, "received_through_basis is not recognized"
@@ -117,6 +124,10 @@ module Corvid
         authority = stored_authority(classify_opts[:facility_authority])
         if authority && facility_identifier.present? && authority.facility_identifier != facility_identifier
           raise ArgumentError, "facility authority belongs to a different facility than the encounter"
+        end
+
+        if FmapDetermination.current.for_encounter(encounter_identifier).exists?
+          raise AlreadyDeterminedError, "encounter already has a current FMAP determination; supersede it instead"
         end
 
         result = classify(evidence_refs: evidence_refs, **classify_opts)

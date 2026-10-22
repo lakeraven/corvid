@@ -35,7 +35,7 @@ module Corvid
     DECISION_FIELDS = %w[
       category fmap_percent rule_key rule_citations evidence_refs aian_verified
       received_through_basis facility_authority_id authority_type coverage_group
-      date_of_service jurisdiction
+      date_of_service jurisdiction facility_identifier
     ].freeze
 
     belongs_to :superseded_by, class_name: "Corvid::FmapDetermination", optional: true
@@ -62,6 +62,7 @@ module Corvid
     # appending a correction to an old row.
     validate :cites_applied_rule, if: :decision_changed?
     validate :evidence_backs_hundred_percent, if: :decision_changed?
+    validate :authority_is_own_facilitys, if: :decision_changed?
 
     scope :current, -> { where(superseded_by_id: nil) }
     scope :misclassified, -> {
@@ -189,6 +190,15 @@ module Corvid
       return nil unless authority_type == authority.authority_type
       return nil unless authority.facility_identifier == facility_identifier
       authority
+    end
+
+    # A named authority is one this tenant holds, for this row's facility,
+    # whatever the category: an audit row never points across either.
+    def authority_is_own_facilitys
+      return if facility_authority_id.nil?
+      authority = facility_authority
+      return if authority && authority.facility_identifier == facility_identifier
+      errors.add(:facility_authority_id, "must be an authority of this facility in the current tenant")
     end
 
     def supersession_is_final

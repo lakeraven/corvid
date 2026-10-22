@@ -20,9 +20,9 @@ module Corvid
       )
     end
 
-    def arpa_determination(claim_reference: nil)
+    def arpa_determination(claim_reference: nil, encounter_identifier: "enc_example_20")
       FmapClassificationService.classify!(
-        encounter_identifier: "enc_example_20",
+        encounter_identifier: encounter_identifier,
         date_of_service: Date.new(2022, 6, 1),
         jurisdiction: "XA",
         facility_authority: @uio,
@@ -97,7 +97,7 @@ module Corvid
     test "a supersession link cannot be repointed" do
       original = arpa_determination
       original.supersede_with!(rule_key: "us-regular")
-      other = arpa_determination
+      other = arpa_determination(encounter_identifier: "enc_example_22")
 
       original.superseded_by_id = other.id
       refute original.valid?
