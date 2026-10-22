@@ -277,6 +277,17 @@ class Corvid::ClaimSubmissionTest < ActiveSupport::TestCase
     end
   end
 
+  test "mark_denied! with no codes keeps the codes already recorded" do
+    with_tenant(TENANT) do
+      claim = create_claim(status: "accepted", denial_reason_codes: [ "CO-97" ])
+
+      claim.mark_denied!
+
+      assert claim.reload.denied?
+      assert_equal [ "CO-97" ], claim.denial_reason_codes
+    end
+  end
+
   test "check_status! keeps recorded denial codes when a later poll reports none" do
     with_tenant(TENANT) do
       claim = create_claim(status: "appealed", claim_identifier: "CLM-DENY-2", denial_reason_codes: [ "CO-97" ])
