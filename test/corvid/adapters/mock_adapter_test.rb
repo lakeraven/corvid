@@ -246,14 +246,27 @@ class Corvid::Adapters::MockAdapterTest < Minitest::Test
     assert result[:enrolled]
   end
 
-  def test_verify_tribal_enrollment_returns_seeded_confidence
-    @adapter.add_enrollment("pt_e2", enrolled: true, tribe_name: "T", tribe_code: "T", confidence: :verified)
+  def test_verify_tribal_enrollment_without_confidence_returns_unavailable
+    @adapter.add_enrollment("pt_e2", enrolled: true, tribe_name: "T", tribe_code: "T")
     result = @adapter.verify_tribal_enrollment("pt_e2")
+    assert_equal :unavailable, result[:confidence]
+  end
+
+  def test_verify_tribal_enrollment_propagates_explicit_confidence_verified
+    @adapter.add_enrollment("pt_e2v", enrolled: true, tribe_name: "T", tribe_code: "T", confidence: :verified)
+    result = @adapter.verify_tribal_enrollment("pt_e2v")
     assert_equal :verified, result[:confidence]
 
     @adapter.add_enrollment("pt_e2b", enrolled: true, tribe_name: "T", tribe_code: "T")
     result_without_confidence = @adapter.verify_tribal_enrollment("pt_e2b")
     refute_equal :verified, result_without_confidence[:confidence]
+  end
+
+  def test_verify_tribal_enrollment_confidence_outside_allow_list_is_unavailable
+    [ :VERIFIED, :unverified, "Verified", " verified", "", nil, true, 1 ].each_with_index do |raw, index|
+      @adapter.add_enrollment("pt_conf_#{index}", enrolled: true, tribe_name: "T", tribe_code: "T", confidence: raw)
+      assert_equal :unavailable, @adapter.verify_tribal_enrollment("pt_conf_#{index}")[:confidence], raw.inspect
+    end
   end
 
   def test_verify_tribal_enrollment_propagates_explicit_confidence_stale
@@ -262,9 +275,9 @@ class Corvid::Adapters::MockAdapterTest < Minitest::Test
     assert_equal :stale, result[:confidence]
   end
 
-  def test_verify_tribal_enrollment_unknown_patient_returns_not_enrolled_with_unavailable_confidence
+  def test_verify_tribal_enrollment_unknown_patient_returns_nil_enrolled_with_unavailable_confidence
     result = @adapter.verify_tribal_enrollment("pt_unknown")
-    refute result[:enrolled]
+    assert_nil result[:enrolled]
     assert_nil result[:tribe_code]
     assert_equal :unavailable, result[:confidence]
   end

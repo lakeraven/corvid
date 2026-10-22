@@ -205,12 +205,15 @@ module Corvid
       # Enrollment verification (for PRC eligibility checklist)
       # ----------------------------------------------------------------------
 
-      # Returns { enrolled: bool, membership_number: str|nil,
+      # Returns { enrolled: true|false|nil, membership_number: str|nil,
       #           tribe_name: str|nil, tribe_code: str|nil,
       #           member_status: str|nil,
       #           blood_quantum: { display: String, decimal: Float|nil }|nil,
       #           confidence: :verified|:stale|:unavailable,
       #           verified_at: datetime }
+      #
+      # `enrolled` is nil when the source is unreachable or the record is
+      # unknown. true and false are answers from the source.
       #
       # `blood_quantum` is nil when the source has none. `display` is the
       # source text (for example "1/4" or "0.25"). `decimal` is that value
@@ -221,8 +224,9 @@ module Corvid
       # positives). `confidence` reflects how fresh the underlying data is —
       # `:verified` is canonical; `:stale` means the source returned data
       # but flagged it as out-of-date; `:unavailable` means the source could
-      # not be reached. A missing or unrecognized confidence is
-      # `:unavailable`, not `:verified`.
+      # not be reached. A missing or unrecognized confidence is also
+      # `:unavailable`, not `:verified`. Consumers must treat anything other
+      # than :verified/:stale as not verified.
       def verify_tribal_enrollment(patient_identifier)
         raise NotImplementedError, "#{self.class}#verify_tribal_enrollment not implemented"
       end
@@ -298,8 +302,13 @@ module Corvid
         end
       end
 
+      # Allow-list: an exact documented Symbol, or its exact String spelling
+      # (FHIR sends valueString). Anything else, including blank, other case
+      # or padding, is :unavailable. Never raises.
       def normalize_tribal_confidence(value)
-        symbol = value.to_s.strip.downcase.to_sym
+        return :unavailable unless value.is_a?(Symbol) || value.is_a?(String)
+
+        symbol = value.to_sym
         TRIBAL_CONFIDENCE_VALUES.include?(symbol) ? symbol : :unavailable
       end
 

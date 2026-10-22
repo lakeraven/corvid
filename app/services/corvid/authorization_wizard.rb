@@ -24,9 +24,12 @@ module Corvid
 
     # Prefix only: the warning names a count of resource types, never a patient (ADR 0003).
     UNDETERMINED_ELIGIBILITY_WARNING_PREFIX = "Eligibility could not be determined"
+    # Read when warnings is asked for. A selected patient whose status is not
+    # exactly "verified" warns; a later status change drops or restores it.
+    ELIGIBILITY_PENDING_WARNING = "Patient eligibility verification pending"
 
     attr_reader :tenant_identifier, :facility_identifier,
-                :current_step, :data, :errors, :warnings, :messages,
+                :current_step, :data, :errors, :messages,
                 :field_errors, :prc_referral, :alternate_resources
 
     # patient_identifier always comes from @data so callers updating the
@@ -68,7 +71,6 @@ module Corvid
 
     def start!
       @current_step = :patient_selection
-      check_patient_eligibility if patient_identifier
       self
     end
 
@@ -156,15 +158,23 @@ module Corvid
       @patient ||= Corvid.adapter.find_patient(patient_identifier) if patient_identifier
     end
 
-    # STUB: defaults to "verified" until real eligibility verification is
-    # wired through the adapter. Host apps / tests can set it explicitly.
-    # See #14 / #60 for the eligibility dashboard that will feed this.
+    # Undetermined until set.
     def patient_eligibility_status
-      @patient_eligibility_status ||= "verified"
+      @patient_eligibility_status
     end
 
     def patient_eligibility_status=(status)
       @patient_eligibility_status = status
+    end
+
+    # Eligibility pending is derived here so it cannot linger after the status
+    # becomes "verified" or appear before a patient is selected. Other warnings
+    # stay as they were recorded.
+    def warnings
+      recorded = @warnings.reject { |warning| warning == ELIGIBILITY_PENDING_WARNING }
+      return recorded unless eligibility_verification_pending?
+
+      recorded + [ ELIGIBILITY_PENDING_WARNING ]
     end
 
     # ----------------------------------------------------------------
@@ -269,7 +279,7 @@ module Corvid
       @errors = []
       @field_errors = {}
       validate_review
-      return { success: false, errors: @errors } unless @errors.empty?
+      return { success: false, errors: @errors, warnings: warnings } unless @errors.empty?
 
       # Check adapter side-effects BEFORE we create any local AR records,
       # so a nil/blank referral_id fails closed without leaving an
@@ -282,7 +292,7 @@ module Corvid
         requesting_provider_identifier: @data[:referring_provider]
       })
       if referral_id.nil? || referral_id.to_s.strip.empty?
-        return { success: false, errors: [ "Adapter did not return a referral identifier" ] }
+        return { success: false, errors: [ "Adapter did not return a referral identifier" ], warnings: warnings }
       end
 
       Corvid::TenantContext.with_tenant(@tenant_identifier) do
@@ -319,9 +329,9 @@ module Corvid
       end
       @messages << message if requires_committee_review?
 
-      { success: true, message: message, referral: @prc_referral }
+      { success: true, message: message, referral: @prc_referral, warnings: warnings }
     rescue => e
-      { success: false, errors: [ Corvid.sanitize_phi(e.message) ] }
+      { success: false, errors: [ Corvid.sanitize_phi(e.message) ], warnings: warnings }
     end
 
     # ----------------------------------------------------------------
@@ -413,8 +423,9 @@ module Corvid
       validate_alternate_resources_step
     end
 
-    def check_patient_eligibility
-      @warnings << "Patient eligibility verification pending" if patient_eligibility_status == "pending"
+    # Exact String "verified" only. No patient selected is not a pending check.
+    def eligibility_verification_pending?
+      patient_identifier && patient_eligibility_status != "verified"
     end
 
     def initialize_alternate_resources

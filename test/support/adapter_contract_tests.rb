@@ -100,7 +100,7 @@ module AdapterContractTests
     verify_eligibility: "unknown patient must not return eligible: true",
     verify_identity_documents: "unknown patient reports all identity fields absent",
     verify_residency: "unknown patient reports not on reservation",
-    verify_tribal_enrollment: "unknown patient is not enrolled with :verified confidence"
+    verify_tribal_enrollment: "unknown patient is enrolled nil (undetermined), never :verified confidence"
   }.freeze
 
   CONTRACT_CALLS = {
@@ -725,7 +725,7 @@ module AdapterContractTests
 
     def assert_tribal_enrollment_unknown(result)
       assert_instance_of Hash, result
-      refute result[:enrolled], "verify_tribal_enrollment(unknown) must have enrolled: false"
+      assert_nil result[:enrolled], "verify_tribal_enrollment(unknown) must have enrolled: nil (unknown is not a denial)"
       refute_equal :verified, result[:confidence],
                    "verify_tribal_enrollment(unknown) must not have confidence :verified"
     end
@@ -874,7 +874,8 @@ module AdapterContractTests
                     enrolled membership_number tribe_name tribe_code member_status blood_quantum
                     confidence verified_at
                   ])
-      assert_includes [ true, false ], value[:enrolled]
+      # nil: the source could not answer (unreachable or unknown record).
+      assert_includes [ true, false, nil ], value[:enrolled]
       assert_optional_string(value[:membership_number])
       assert_optional_string(value[:tribe_name])
       assert_optional_string(value[:tribe_code])

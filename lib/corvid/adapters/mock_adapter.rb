@@ -517,9 +517,10 @@ module Corvid
 
       private
 
+      # Unknown record is not a denial. enrolled stays nil.
       def tribal_enrollment_unavailable
         {
-          enrolled: false,
+          enrolled: nil,
           membership_number: nil,
           tribe_name: nil,
           tribe_code: nil,
