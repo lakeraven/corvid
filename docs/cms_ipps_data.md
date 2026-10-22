@@ -220,15 +220,19 @@ the flat NATIONAL default, a ~10% difference that matters for tribal
 PRC recovery-triage accuracy in low-wage-index rural areas.
 
 **Data loaded in the shared `cms-fee-schedules-v1` GitHub Release:**
-FY 2026 only (as of this PR — a maintainer with release-upload access
-should run the recipe above for additional fiscal years and re-run
-`gh release upload`). `OppsRateProvider` and `AscRateProvider` now
-source wage index from this table (#369); until the analyzer itself
-passes a real CBSA locality (blocked on #372's zip→CBSA resolution),
-production OPPS/ASC pricing still resolves to the IPPS NATIONAL row
-(wage_index 1.0) in practice — this PR lands the plumbing and the
-per-CBSA data table, not the last-mile wiring from facility ZIP to
-CBSA code.
+none yet. The per-CBSA FY 2026 file was validated locally only; the
+release still carries the NATIONAL-only `ipps_hospital_rates_FY*.csv`
+files. A maintainer with release-upload access should run the recipe
+above for each fiscal year and `gh release upload` the result.
+
+`OppsRateProvider` and `AscRateProvider` now source wage index from
+this table (#369). The table is keyed by CMS wage area (5-digit CBSA
+or 2-digit rural-state code), which overlaps the PFS locality codes
+in `PrcFacilityDictionary` (PFS "02" is Seattle; wage area "02" is
+rural Alaska). So `PrcOverpaymentAnalyzer` deliberately prices IPPS,
+OPPS and ASC claims at the NATIONAL wage row until a facility
+resolves to a real CBSA (#372's ZIP→CBSA resolution); passing the PFS
+locality would silently apply whichever wage area shares its digits.
 
 Remaining in this cluster:
 - **#370** — drop the now-unused `wage_index` column from

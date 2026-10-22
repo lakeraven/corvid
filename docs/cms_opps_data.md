@@ -208,10 +208,12 @@ dead weight (unread by the rate provider) but still present in the
 schema; dropping it is #370, sequenced after #369 proves out.
 
 Passing a real CBSA `locality:` into `OppsRateProvider.rate_for` from
-the analyzer (rather than whatever PFS-style locality
-`PrcFacilityDictionary` currently resolves) is a separate follow-up,
-#372 — until that lands, this refactor is plumbing without a change
-in production analyzer output; it's a correctness/architecture fix
+the analyzer is a separate follow-up, #372. Until that lands the
+analyzer passes no wage area (NATIONAL), not the PFS-style locality
+`PrcFacilityDictionary` resolves, because PFS and wage-area codes
+overlap ("02" is Seattle in PFS and rural Alaska as a wage area). So
+this refactor is plumbing without a change in production analyzer
+output; it's a correctness/architecture fix
 (single source of truth for wage index) that also happens to unlock
 real per-CBSA OPPS pricing the moment #372 wires the locality through.
 
