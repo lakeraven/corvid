@@ -276,4 +276,25 @@ class Corvid::Rcm::Edi835ReaderTest < Minitest::Test
 
     assert_match(/outside the ST\/SE transaction/, error.message)
   end
+
+  # -- panel round 3 ------------------------------------------------------------
+
+  def test_a_claim_loop_before_the_st_header_raises
+    source = File.read(File.join(FIXTURES, "clean_full_pay.835"))
+                 .sub("ST*835*0001~", "CLP*ROGUE-1*1*0.00*0.00*0*12*PAYER-CTL-0*11~ST*835*0001~")
+    error = assert_raises(Corvid::Rcm::Edi835Reader::ParseError) do
+      Corvid::Rcm::Edi835Reader.new(source).parse
+    end
+
+    assert_match(/outside the ST\/SE transaction/, error.message)
+  end
+
+  def test_a_service_line_with_no_procedure_code_raises
+    source = File.read(File.join(FIXTURES, "clean_full_pay.835")).sub("SVC*HC>90837*", "SVC*HC*")
+    error = assert_raises(Corvid::Rcm::Edi835Reader::ParseError) do
+      Corvid::Rcm::Edi835Reader.new(source).parse
+    end
+
+    assert_match(/SVC01/, error.message)
+  end
 end

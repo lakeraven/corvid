@@ -765,4 +765,19 @@ class Corvid::Rcm::ScrubberTest < Minitest::Test
     assert_only_rule(:psychotherapy_60_minute_time_support,
                      scrub(Factory.claim_with_line(documented_minutes: "about an hour")))
   end
+
+  # -- panel round 3 ------------------------------------------------------------
+
+  # An open end means ongoing coverage (FHIR Period semantics), but with no
+  # start date nobody can say the coverage was in force on the date of service.
+  def test_coverage_with_no_start_date_blocks
+    result = scrub(Factory.claim(coverage: Factory.coverage(period_start: nil)))
+
+    assert_only_rule(:coverage_active_on_service_date, result)
+    assert_match(/start date/, result.findings.first.message)
+  end
+
+  def test_coverage_with_a_start_and_no_end_is_ongoing
+    assert scrub(Factory.claim(coverage: Factory.coverage(period_end: nil))).clean?
+  end
 end
