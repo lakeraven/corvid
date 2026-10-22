@@ -1,5 +1,6 @@
 # frozen_string_literal: true
 
+require "bigdecimal"
 require "date"
 
 module Corvid
@@ -65,12 +66,16 @@ module Corvid
       :currency,
       :units,
       :documented_minutes,
-      :diagnosis_sequences
+      :diagnosis_sequences,
+      :amount_error
     ) do
+      # `amount_error` carries `ClaimLineReference#amount_error` across the
+      # bridge: a source amount that was present but unparseable is a different
+      # fact from no amount at all, and the scrub has to be able to say so.
       def initialize(sequence:, procedure_code:, serviced_date:, billed_amount:,
                      modifiers: [], place_of_service: nil, encounter_modality: nil,
                      currency: "USD", units: 1, documented_minutes: nil,
-                     diagnosis_sequences: [ 1 ])
+                     diagnosis_sequences: [ 1 ], amount_error: nil)
         super
       end
 
@@ -90,6 +95,7 @@ module Corvid
           serviced_date: reference.serviced_date,
           billed_amount: reference.billed_amount,
           currency: reference.currency || "USD",
+          amount_error: reference.amount_error,
           **encounter_facts
         )
       end
@@ -172,8 +178,14 @@ module Corvid
         super
       end
 
+      # Exact, never floating point (ADR 0004). A line with no usable amount
+      # contributes nothing here; the scrub blocks it separately.
       def total_billed
-        Array(items).sum(0) { |item| item.billed_amount.to_f }
+        Array(items).sum(BigDecimal(0)) do |item|
+          BigDecimal(item.billed_amount.to_s)
+        rescue ArgumentError, TypeError
+          BigDecimal(0)
+        end
       end
 
       def earliest_service_date
@@ -192,13 +204,24 @@ module Corvid
     # apart: a prior 90837 with a distinct-service modifier and a new one
     # without it are not the same service, and the duplicate rule has to be
     # able to see that.
+    #
+    # `rejected` marks a submission refused at the front door (999/277CA). It
+    # never reached adjudication, so it cannot earn a CO-18 and is not a prior
+    # service for any history rule. Everything else counts — including a
+    # prior submission of this same claim identifier, because re-sending an
+    # accepted claim is exactly the duplicate a payer denies.
     PriorService = Data.define(
       :claim_identifier, :patient_identifier, :rendering_provider_npi,
-      :procedure_code, :modifiers, :serviced_date
+      :procedure_code, :modifiers, :serviced_date, :rejected
     ) do
       def initialize(patient_identifier:, procedure_code:, serviced_date:,
-                     claim_identifier: nil, rendering_provider_npi: nil, modifiers: [])
+                     claim_identifier: nil, rendering_provider_npi: nil, modifiers: [],
+                     rejected: false)
         super
+      end
+
+      def rejected?
+        rejected == true
       end
     end
 
@@ -217,22 +240,27 @@ module Corvid
 
       # Same patient, same date of service, same procedure code — the classic
       # duplicate that earns a CO-18 if it reaches the payer.
-      def duplicates_of(patient_identifier:, procedure_code:, serviced_date:, excluding_claim_identifier: nil)
-        @services.select do |prior|
+      def duplicates_of(patient_identifier:, procedure_code:, serviced_date:)
+        submitted.select do |prior|
           prior.patient_identifier == patient_identifier &&
             prior.procedure_code == procedure_code &&
-            prior.serviced_date == serviced_date &&
-            prior.claim_identifier != excluding_claim_identifier
+            prior.serviced_date == serviced_date
         end
       end
 
       def services_for(patient_identifier:, procedure_code:, rendering_provider_npi: nil, on_or_after: nil)
-        @services.select do |prior|
+        submitted.select do |prior|
           prior.patient_identifier == patient_identifier &&
             prior.procedure_code == procedure_code &&
             (rendering_provider_npi.nil? || prior.rendering_provider_npi == rendering_provider_npi) &&
             (on_or_after.nil? || (prior.serviced_date && prior.serviced_date >= on_or_after))
         end
+      end
+
+      private
+
+      def submitted
+        @services.reject(&:rejected?)
       end
     end
   end

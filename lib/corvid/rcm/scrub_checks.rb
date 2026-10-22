@@ -1,5 +1,6 @@
 # frozen_string_literal: true
 
+require "bigdecimal"
 require "date"
 
 module Corvid
@@ -24,6 +25,12 @@ module Corvid
       # table itself — see `diagnosis_code_well_formed`.
       ICD10_CM_CODE = /\A[A-Z][0-9][0-9A-Z](\.[0-9A-Z]{1,4})?\z/
 
+      # Identifiers are judged as written, not after stripping whatever is not a
+      # digit: "abc1299999999" is not an NPI, however its digits check out.
+      NPI_FORMAT = /\A\d{10}\z/
+      # A 9-digit EIN, optionally written with its conventional hyphen.
+      TAX_ID_FORMAT = /\A(\d{9}|\d{2}-\d{7})\z/
+
       module_function
 
       # -- helpers ------------------------------------------------------------
@@ -36,14 +43,10 @@ module Corvid
         [ { line_sequence: line_sequence, values: values } ]
       end
 
-      def digits(value)
-        value.to_s.gsub(/\D/, "")
-      end
-
       # NPI check digit: Luhn over the 80840 prefix plus the first nine digits.
       def npi_check_digit_valid?(npi)
-        body = digits(npi)
-        return false unless body.length == 10
+        body = npi.to_s.strip
+        return false unless body.match?(NPI_FORMAT)
 
         sum = 0
         ("80840#{body[0, 9]}").chars.map(&:to_i).reverse.each_with_index do |digit, index|
@@ -71,7 +74,7 @@ module Corvid
         problem =
           if blank?(value)
             "missing"
-          elsif digits(value).length != 10
+          elsif !value.to_s.strip.match?(NPI_FORMAT)
             "not 10 digits (#{value.to_s.strip.inspect})"
           else
             "#{value.to_s.strip.inspect}, whose check digit does not validate"
@@ -81,7 +84,7 @@ module Corvid
 
       def tax_id_valid(claim, params, _context)
         value = claim.public_send(params.fetch("field"))
-        return [] if digits(value).length == 9
+        return [] if value.to_s.strip.match?(TAX_ID_FORMAT)
 
         fail_with({ problem: blank?(value) ? "missing" : "not 9 digits (#{value.to_s.strip.inspect})" })
       end
@@ -120,30 +123,88 @@ module Corvid
         end
       end
 
-      # Only meaningful when the patient IS the subscriber. Fields absent on
-      # either side are not compared — a missing value is the completeness
-      # rules' business, not this one's.
+      PATIENT_DEMOGRAPHICS = [
+        [ "family name", :patient_family_name, :subscriber_family_name ],
+        [ "given name", :patient_given_name, :subscriber_given_name ],
+        [ "date of birth", :patient_birth_date, :subscriber_birth_date ],
+        [ "gender", :patient_gender, :subscriber_gender ]
+      ].freeze
+
+      # The 837P cannot carry a patient without name, birth date and gender;
+      # intake rejects it. Names the missing fields only.
+      def patient_demographics_present(claim, _params, _context)
+        missing = PATIENT_DEMOGRAPHICS.filter_map { |label, field, _| label if blank?(claim.public_send(field)) }
+        return [] if missing.empty?
+
+        fail_with({ missing: missing.join(", ") })
+      end
+
+      # Only meaningful when the patient IS the subscriber. A field missing on
+      # the claim side is `patient_demographics_present`'s finding; a field the
+      # coverage does not record cannot be matched at all, and absence never
+      # verifies, so it fails here.
+      #
+      # Messages name the fields, never the values: a finding is rendered and
+      # may be logged, and names and birth dates are PHI (ADR 0003).
       def subscriber_demographics_match(claim, _params, _context)
         coverage = claim.coverage
         return [] if coverage.nil? || !coverage.self_relationship?
 
-        mismatches = []
-        compare = lambda do |label, claim_value, coverage_value, normalize|
-          return if blank?(claim_value) || blank?(coverage_value)
-          return if normalize.call(claim_value) == normalize.call(coverage_value)
+        mismatched = []
+        unrecorded = []
+        PATIENT_DEMOGRAPHICS.each do |label, claim_field, coverage_field|
+          claim_value = claim.public_send(claim_field)
+          coverage_value = coverage.public_send(coverage_field)
+          next if blank?(claim_value)
 
-          mismatches << "#{label} #{claim_value.to_s.strip.inspect} on the claim vs #{coverage_value.to_s.strip.inspect} on the coverage"
+          if blank?(coverage_value)
+            unrecorded << label
+          elsif claim_value.to_s.strip.upcase != coverage_value.to_s.strip.upcase
+            mismatched << label
+          end
         end
-        upcase = ->(value) { value.to_s.strip.upcase }
 
-        compare.call("family name", claim.patient_family_name, coverage.subscriber_family_name, upcase)
-        compare.call("given name", claim.patient_given_name, coverage.subscriber_given_name, upcase)
-        compare.call("date of birth", claim.patient_birth_date, coverage.subscriber_birth_date, ->(value) { value.to_s })
-        compare.call("gender", claim.patient_gender, coverage.subscriber_gender, upcase)
+        problems = []
+        problems << "#{mismatched.join(', ')} differ" if mismatched.any?
+        problems << "#{unrecorded.join(', ')} not recorded on the coverage, so cannot be matched" if unrecorded.any?
+        return [] if problems.empty?
 
-        return [] if mismatches.empty?
+        fail_with({ problem: problems.join("; ") })
+      end
 
-        fail_with({ problem: mismatches.join("; ") })
+      # -- service lines -------------------------------------------------------
+
+      def service_lines_present(claim, _params, _context)
+        Array(claim.items).empty? ? fail_with({}) : []
+      end
+
+      # Each line has to carry a procedure code, a date of service and a usable
+      # billed amount. The line-scoped rules skip what they cannot see, so a
+      # line missing any of these blocks here instead of passing by omission.
+      def service_line_complete(claim, _params, _context)
+        Array(claim.items).flat_map do |item|
+          problems = []
+          problems << "no procedure code" if blank?(item.procedure_code)
+          problems << "no date of service" if item.serviced_date.nil?
+          amount_problem = billed_amount_problem(item)
+          problems << amount_problem if amount_problem
+          next [] if problems.empty?
+
+          fail_with({ problem: "Line #{item.sequence} has #{problems.join(', ')}." }, line_sequence: item.sequence)
+        end
+      end
+
+      def billed_amount_problem(item)
+        return "an unparseable billed amount (#{item.amount_error})" unless blank?(item.amount_error)
+        return "no billed amount" if blank?(item.billed_amount)
+
+        amount = BigDecimal(item.billed_amount.to_s)
+        return "a billed amount that is not positive" unless amount.positive?
+        return "a billed amount with fractions of a cent" unless amount.round(2) == amount
+
+        nil
+      rescue ArgumentError, TypeError
+        "an unparseable billed amount"
       end
 
       def diagnosis_pointers_resolve(claim, _params, _context)
@@ -396,8 +457,7 @@ module Corvid
           priors = history.duplicates_of(
             patient_identifier: claim.patient_identifier,
             procedure_code: item.procedure_code,
-            serviced_date: item.serviced_date,
-            excluding_claim_identifier: claim.identifier
+            serviced_date: item.serviced_date
           ).reject { |prior| modifiers_distinguish?(item.modifiers, prior.modifiers, distinguishing) }
           next [] if priors.empty?
 

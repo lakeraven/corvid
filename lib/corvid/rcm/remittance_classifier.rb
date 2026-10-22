@@ -111,13 +111,24 @@ module Corvid
         # A reversal takes money back; it is never a quiet auto-post.
         return [ :reversal, :reversal_review, false, false ] if claim.reversal?
 
+        # A claim whose adjustments do not account for the gap between billed
+        # and paid has money nobody can explain — a zero or partial payment
+        # with no CAS at all is the common shape. A person looks at it.
+        unless claim.balanced?
+          return [ :needs_human_review, AdjustmentReasonCodes::HUMAN_REVIEW_QUEUE, false, false ]
+        end
+
         # Invariant 2 — denials are adjudicated refusals; a person decides.
         if claim.denied?
           denial = classifications.find(&:denial?)
           return [ :denied, denial&.work_queue || AdjustmentReasonCodes::HUMAN_REVIEW_QUEUE, false, false ]
         end
 
-        return [ :paid_in_full, nil, true, true ] if classifications.empty?
+        if classifications.empty?
+          return [ :paid_in_full, nil, true, true ] if claim.paid_in_full?
+
+          return [ :needs_human_review, AdjustmentReasonCodes::HUMAN_REVIEW_QUEUE, false, false ]
+        end
 
         postable = classifications.all?(&:auto_closeable?)
         queue = work_queue_for(classifications)

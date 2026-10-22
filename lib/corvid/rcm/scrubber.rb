@@ -24,7 +24,11 @@ module Corvid
     end
 
     # The verdict on one claim.
-    ScrubResult = Data.define(:claim_identifier, :ruleset_version, :evaluated_as_of, :findings) do
+    #
+    # `evaluated_as_of` is the date the claim was judged on (the filing clock);
+    # `rules_as_of` is the date whose rules were applied. They differ when a
+    # claim is re-judged by the rules in force on its date of service.
+    ScrubResult = Data.define(:claim_identifier, :ruleset_version, :evaluated_as_of, :rules_as_of, :findings) do
       def blocking_findings
         findings.select(&:blocking?)
       end
@@ -50,9 +54,11 @@ module Corvid
 
     # Context a check may need beyond the claim itself.
     #
-    # `as_of` is the date the rules are evaluated on — normally today for a
-    # claim about to go out, but explicitly settable so a claim can be re-judged
-    # by the rules that were in force on its date of service.
+    # `as_of` is the date the claim is being judged on — normally today for a
+    # claim about to go out. Clock-based checks (the filing window) always run
+    # against it. Which RULES apply is a separate choice, `rules_as_of` on
+    # `Scrubber#scrub`, so re-judging a claim by the rules in force on its date
+    # of service does not also pretend it is being filed on that date.
     #
     # `history` is the caller's view of prior services. Phase 0 has no database:
     # the caller supplies what it knows and the scrubber queries nothing.
@@ -79,18 +85,23 @@ module Corvid
       attr_reader :ruleset
 
       # @param claim [Corvid::Rcm::Claim]
-      # @param as_of [Date] the date to evaluate rule effective windows on
+      # @param as_of [Date] the date the claim is judged on; the filing-window
+      #   checks measure against it
+      # @param rules_as_of [Date, nil] the date whose rules apply (e.g. the date
+      #   of service); defaults to `as_of`
       # @param history [Corvid::Rcm::ClaimHistory, nil] prior services the
       #   caller knows about, for the duplicate and repeat-service rules
       # @return [ScrubResult]
-      def scrub(claim, as_of: Date.today, history: nil)
+      def scrub(claim, as_of: Date.today, history: nil, rules_as_of: nil)
+        rules_as_of ||= as_of
         context = ScrubContext.new(as_of: as_of, history: history)
-        findings = @ruleset.effective_on(as_of).flat_map { |rule| apply(rule, claim, context) }
+        findings = @ruleset.effective_on(rules_as_of).flat_map { |rule| apply(rule, claim, context) }
 
         ScrubResult.new(
           claim_identifier: claim.identifier,
           ruleset_version: @ruleset.version,
           evaluated_as_of: as_of,
+          rules_as_of: rules_as_of,
           findings: findings
         )
       end

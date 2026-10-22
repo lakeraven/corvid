@@ -80,6 +80,33 @@ rules:
     message: "Coverage is %{problem} for the date of service."
     remedy: "Re-verify eligibility for the date of service. Submitting against terminated coverage buys a denial and a wasted filing window."
 
+  - id: patient_demographics_present
+    category: structural_completeness
+    severity: block
+    effective_start: "2026-01-01"
+    check: patient_demographics_present
+    params: {}
+    message: "The claim is missing the patient's %{missing}."
+    remedy: "Add the patient's name, date of birth and gender as the payer has them on the member record. Intake refuses a professional claim without them."
+
+  - id: service_lines_present
+    category: structural_completeness
+    severity: block
+    effective_start: "2026-01-01"
+    check: service_lines_present
+    params: {}
+    message: "The claim has no service lines."
+    remedy: "Add the billed services. A claim with nothing on it bills nothing and is refused at the front door."
+
+  - id: service_line_complete
+    category: structural_completeness
+    severity: block
+    effective_start: "2026-01-01"
+    check: service_line_complete
+    params: {}
+    message: "%{problem}"
+    remedy: "Every line needs a procedure code, a date of service and a positive billed amount in whole cents. The line-level rules cannot judge a line that is missing any of them."
+
   - id: patient_demographics_match_subscriber
     category: structural_completeness
     severity: block

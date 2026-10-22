@@ -10,13 +10,14 @@ module Corvid
     # Minimal reader for the X12 835 Health Care Claim Payment/Advice.
     #
     # Deliberately narrow: it understands only the segments Phase 0 posts from
-    # (BPR, TRN, DTM, N1, CLP, NM1, SVC, CAS, AMT) and ignores everything else
+    # (ST/SE, BPR, TRN, DTM, N1, CLP, NM1, SVC, CAS, LQ) and ignores everything else
     # rather than guessing. It is a *fixture* reader — enough to derive real
     # structures from real 835 syntax so the posting logic is exercised against
     # the format it will meet in production, not a hand-built hash that quietly
     # agrees with the code under test. Production ingest of arbitrary payer 835s
-    # (envelope validation, PLB provider-level adjustments, reversals, multiple
-    # ST/SE transactions per file) is wave 2.
+    # (ISA/GS envelope validation, PLB provider-level adjustments, reversals,
+    # multiple ST/SE transactions per file) is wave 2. The ST/SE segment count
+    # is checked here, because it is the truncation guard.
     #
     # Anything it cannot parse raises rather than returning a half-file:
     # silently dropping a CLP loop means silently losing money. That principle
@@ -62,9 +63,17 @@ module Corvid
         claims = []
         current_claim = nil
         current_service = nil
+        envelope = { st_position: nil, se_position: nil, se_count: nil }
 
-        segments.each do |elements|
+        segments.each_with_index do |elements, position|
           case elements[0]
+          when "ST"
+            raise ParseError, "more than one ST transaction in the file; only one is supported" if envelope[:st_position]
+
+            envelope[:st_position] = position
+          when "SE"
+            envelope[:se_position] = position
+            envelope[:se_count] = elements[1]
           when "BPR"
             # BPR02 monetary amount, BPR04 payment method, BPR16 payment date.
             # 005010X221A1 carries no currency element — USD by convention;
@@ -162,10 +171,25 @@ module Corvid
           claims: claims
         )
         assert_balanced!(remittance)
+        assert_envelope!(envelope)
         remittance
       end
 
       private
+
+      # SE01 counts the segments from ST through SE inclusive. A file cut off
+      # after its last claim loop can still balance, so the trailer is the only
+      # thing left that can tell a whole transaction from a truncated one.
+      def assert_envelope!(envelope)
+        raise ParseError, "missing ST transaction header" unless envelope[:st_position]
+        raise ParseError, "missing SE transaction trailer; the file is truncated" unless envelope[:se_position]
+
+        actual = envelope[:se_position] - envelope[:st_position] + 1
+        return if envelope[:se_count].to_s.strip == actual.to_s
+
+        raise ParseError,
+              "SE01 declares #{envelope[:se_count].inspect} segments but the transaction has #{actual}"
+      end
 
       # The 835 is a self-balancing document: the payment BPR02 actually made
       # is the sum of what was paid on each claim (CLP04). A file that does not
@@ -212,6 +236,10 @@ module Corvid
           )
           index += 3
         end
+        # A CAS with a group code and no reason/amount triplet is a broken
+        # segment, not an absence of adjustments.
+        raise ParseError, "CAS segment for group #{group_code.inspect} carries no adjustment" if adjustments.empty?
+
         adjustments
       end
 

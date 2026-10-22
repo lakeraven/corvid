@@ -64,9 +64,11 @@ module Corvid
                        edits: edits)
       end
 
-      def fetch_remittances(since: nil)
+      # An undated remittance is kept rather than filtered out: dropping one
+      # because its date is unknown would be dropping money silently.
+      def fetch_remittances(date_range: nil)
         @scenarios.map { |scenario| remittance(scenario) }.select do |rem|
-          since.nil? || rem.payment_date.nil? || rem.payment_date >= since
+          date_range.nil? || rem.payment_date.nil? || date_range.cover?(rem.payment_date)
         end
       end
 

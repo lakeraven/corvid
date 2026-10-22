@@ -137,7 +137,20 @@ module Corvid
       end
 
       def paid_in_full?
-        !denied? && paid_amount.to_f.positive? && total_adjustment_amount.to_f.zero?
+        !denied? && paid_amount.positive? && paid_amount == billed_amount &&
+          all_adjustments.empty?
+      end
+
+      # CLP03 billed = CLP04 paid + every CAS adjustment on the claim and its
+      # lines. Whatever that leaves over is money the remittance does not
+      # explain: zero for a well-formed claim, and never something a machine
+      # may close a claim over.
+      def unexplained_amount
+        billed_amount - paid_amount - total_adjustment_amount
+      end
+
+      def balanced?
+        unexplained_amount.zero?
       end
 
       def all_adjustments

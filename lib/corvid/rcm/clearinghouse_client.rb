@@ -33,9 +33,16 @@ module Corvid
 
       # Fetch available remittance advice (835).
       #
-      # @param since [Date, nil] only remittances paid on or after this date
+      # Takes the same `date_range:` keyword as
+      # `Corvid::Adapters::Base#fetch_remittances`, so a caller written against
+      # the adapter contract is not refused. It answers with typed `Remittance`
+      # values rather than the adapter's hashes; an adapter that wants to serve
+      # this seam converts at its own boundary.
+      #
+      # @param date_range [Range<Date>, nil] only remittances paid within it
+      #   (endless and beginless ranges allowed)
       # @return [Array<Corvid::Rcm::Remittance>]
-      def fetch_remittances(since: nil)
+      def fetch_remittances(date_range: nil)
         raise NotImplementedError, "#{self.class}#fetch_remittances not implemented"
       end
     end
