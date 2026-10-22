@@ -129,7 +129,7 @@ module Corvid
       def denied?
         return true if status_code.to_s == CLAIM_STATUS_DENIED
 
-        paid_amount.to_f.zero? && all_adjustments.any? { |adj| !adj.patient_responsibility? }
+        paid_amount.zero? && all_adjustments.any? { |adj| !adj.patient_responsibility? }
       end
 
       def reversal?

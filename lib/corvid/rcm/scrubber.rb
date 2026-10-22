@@ -60,7 +60,8 @@ module Corvid
     # `Scrubber#scrub`, so re-judging a claim by the rules in force on its date
     # of service does not also pretend it is being filed on that date.
     #
-    # `history` is the caller's view of prior services. Phase 0 has no database:
+    # `history` is the caller's view of prior services; nil means UNKNOWN (the
+    # duplicate rule blocks), `ClaimHistory.empty` means none. Phase 0 has no database:
     # the caller supplies what it knows and the scrubber queries nothing.
     ScrubContext = Data.define(:as_of, :history) do
       def initialize(as_of: Date.today, history: nil)

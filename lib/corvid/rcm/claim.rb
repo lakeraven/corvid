@@ -178,14 +178,19 @@ module Corvid
         super
       end
 
-      # Exact, never floating point (ADR 0004). A line with no usable amount
-      # contributes nothing here; the scrub blocks it separately.
+      # Exact, never floating point (ADR 0004). nil when any line has no usable
+      # amount: the total is then unknown, and a smaller number would be wrong.
       def total_billed
         Array(items).sum(BigDecimal(0)) do |item|
-          BigDecimal(item.billed_amount.to_s)
-        rescue ArgumentError, TypeError
-          BigDecimal(0)
+          return nil if item.billed_amount.nil? || item.billed_amount.to_s.strip.empty?
+
+          amount = BigDecimal(item.billed_amount.to_s)
+          return nil unless amount.finite?
+
+          amount
         end
+      rescue ArgumentError, TypeError
+        nil
       end
 
       def earliest_service_date

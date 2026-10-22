@@ -460,9 +460,14 @@ module Corvid
         end
       end
 
+      # nil history is UNKNOWN, not "none" — the nil/[] rule the adapters use.
+      # Nobody can say the claim was not already sent, so it blocks; a caller
+      # that knows there is nothing passes `ClaimHistory.empty`.
       def history_duplicates(claim, dated_items, distinguishing, context)
         history = context.history
-        return [] if history.nil?
+        if history.nil?
+          return fail_with({ problem: "No claim history was supplied, so Corvid cannot tell whether these services were already submitted." })
+        end
 
         dated_items.flat_map do |item|
           priors = history.duplicates_of(
