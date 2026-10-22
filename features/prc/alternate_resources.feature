@@ -135,6 +135,7 @@ Feature: Alternate resource tracking (payer of last resort)
 
   Scenario: Verify Medicare enrollment through service
     Given an alternate resource check for "medicare_a" exists with status "not_checked"
+    And the adapter has eligible coverage for patient "pt_001" for resource type "medicare_a"
     When I verify the enrollment status
     Then the check status should not be "not_checked"
     And the check should have response data
@@ -145,10 +146,14 @@ Feature: Alternate resource tracking (payer of last resort)
       | medicare_a         | not_checked  |
       | medicaid           | not_checked  |
       | tribal_program     | not_checked  |
+    And the adapter has eligible coverage for patient "pt_001" for resource type "medicare_a"
+    And the adapter has eligible coverage for patient "pt_001" for resource type "medicaid"
+    And the adapter has eligible coverage for patient "pt_001" for resource type "tribal_program"
     When I verify all enrollment statuses for the referral
     Then all checks should have been verified
 
   Scenario: Create and verify all resource checks for a referral
+    Given the adapter has eligible coverage for all alternate resource types for patient "pt_001"
     When I create all resource checks for the referral
     Then alternate resource checks should exist for all resource types
     When I verify all enrollment statuses for the referral

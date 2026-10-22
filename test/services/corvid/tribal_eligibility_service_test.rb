@@ -74,6 +74,16 @@ class Corvid::TribalEligibilityServiceTest < ActiveSupport::TestCase
     end
   end
 
+  # MockAdapter normalizes confidence (adapter contract), so a
+  # contract-violating adapter is simulated by returning the raw value.
+  def seed_raw_confidence_enrollment(person_id, raw_confidence)
+    seed_verified_enrollment_baseline(person_id)
+    seeded = @adapter.verify_tribal_enrollment(person_id)
+    @adapter.define_singleton_method(:verify_tribal_enrollment) do |pid|
+      seeded.merge(confidence: raw_confidence) if pid == person_id
+    end
+  end
+
   def fixed_adapter_responses_for(person_id)
     @adapter.add_enrollment(person_id,
                             enrolled: true, tribe_code: "DEMO", tribe_name: "Demo Tribe",
@@ -120,7 +130,12 @@ class Corvid::TribalEligibilityServiceTest < ActiveSupport::TestCase
   # ---- True negative --------------------------------------------------------
 
   test "decide denies a not-enrolled person with reason :not_enrolled" do
-    @adapter.add_enrollment("pt_tn", enrolled: false, confidence: :verified)
+    @adapter.add_enrollment("pt_tn",
+                            enrolled: false,
+                            tribe_name: nil,
+                            tribe_code: nil,
+                            member_status: "denied",
+                            confidence: :verified)
 
     decision = Corvid::TribalEligibilityService.decide(
       person_identifier: "pt_tn",
@@ -170,7 +185,7 @@ class Corvid::TribalEligibilityServiceTest < ActiveSupport::TestCase
   # ---- Issue #662: fail closed on non-canonical confidence ------------------
 
   test "decide denies when adapter returns confidence :unverified" do
-    seed_verified_enrollment_baseline("pt_bad_conf", confidence: :unverified)
+    seed_raw_confidence_enrollment("pt_bad_conf", :unverified)
 
     decision = Corvid::TribalEligibilityService.decide(
       person_identifier: "pt_bad_conf",
@@ -183,7 +198,7 @@ class Corvid::TribalEligibilityServiceTest < ActiveSupport::TestCase
   end
 
   test "decide denies when adapter returns confidence :VERIFIED symbol" do
-    seed_verified_enrollment_baseline("pt_upper_sym", confidence: :VERIFIED)
+    seed_raw_confidence_enrollment("pt_upper_sym", :VERIFIED)
 
     decision = Corvid::TribalEligibilityService.decide(
       person_identifier: "pt_upper_sym",
@@ -196,7 +211,7 @@ class Corvid::TribalEligibilityServiceTest < ActiveSupport::TestCase
   end
 
   test "decide denies when adapter returns nil confidence" do
-    seed_verified_enrollment_baseline("pt_nil_conf", confidence: nil)
+    seed_raw_confidence_enrollment("pt_nil_conf", nil)
 
     decision = Corvid::TribalEligibilityService.decide(
       person_identifier: "pt_nil_conf",
@@ -209,7 +224,7 @@ class Corvid::TribalEligibilityServiceTest < ActiveSupport::TestCase
   end
 
   test "decide denies when adapter returns confidence as string verified" do
-    seed_verified_enrollment_baseline("pt_str_conf", confidence: "verified")
+    seed_raw_confidence_enrollment("pt_str_conf", "verified")
 
     decision = Corvid::TribalEligibilityService.decide(
       person_identifier: "pt_str_conf",

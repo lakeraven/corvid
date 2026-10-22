@@ -136,6 +136,7 @@ Feature: PRC Authorization Wizard
 
   Scenario: Auto-verify enrollment status
     Given I am on the alternate resources step
+    And the adapter has eligible coverage for all alternate resource types for patient "pt_wiz_001"
     When I click "Verify All Enrollment"
     Then enrollment verification should run for all resources
     And I should see updated status for each resource
