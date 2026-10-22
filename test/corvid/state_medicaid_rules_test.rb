@@ -249,8 +249,24 @@ class Corvid::StateMedicaidRulesTest < Minitest::Test
     assert_raises(ArgumentError) { register_with_group(renewal_months: nil) }
   end
 
-  def test_register_raises_when_retro_coverage_months_is_zero
-    assert_raises(ArgumentError) { register_with_group(retro_coverage_months: 0) }
+  def test_register_accepts_zero_retro_coverage_months
+    entry = Corvid::StateMedicaidRules.register(
+      "XZ",
+      expanded: false,
+      groups: {
+        other: {
+          renewal_months: 12,
+          retro_coverage_months: 0,
+          work_requirement: false
+        }
+      }
+    )
+    assert_equal 0, entry.group("other").retro_coverage_months
+  end
+
+  def test_register_accepts_positive_retro_coverage_months
+    entry = register_with_group(retro_coverage_months: 3)
+    assert_equal 3, entry.group("other").retro_coverage_months
   end
 
   def test_register_raises_when_retro_coverage_months_is_negative
@@ -695,6 +711,9 @@ class Corvid::StateMedicaidRulesTest < Minitest::Test
     Corvid::StateMedicaidRules.register(
       "XY",
       expanded: false,
+      work_requirement_programs: [
+        { code: "xy_waiver", description_pattern: /\bTEST PATHWAYS\b/i }
+      ],
       groups: {
         waiver_adult: {
           renewal_months: 12,
@@ -887,6 +906,192 @@ class Corvid::StateMedicaidRulesTest < Minitest::Test
     assert_equal %w[expansion_adult waiver_adult other], Corvid::StateMedicaidRules::GROUPS
   end
 
+  # -- expanded flag vs expansion_adult group (#664) ---------------------------
+
+  def test_register_raises_when_expanded_false_with_expansion_adult_group
+    error = assert_raises(ArgumentError) do
+      Corvid::StateMedicaidRules.register(
+        "XY",
+        expanded: false,
+        groups: {
+          expansion_adult: {
+            renewal_months: 12,
+            retro_coverage_months: 3,
+            work_requirement: false
+          }
+        }
+      )
+    end
+    assert_field_named_in_error(error, "expansion_adult", "expanded")
+    refute_match(/SYNTHETIC_NON_EXPANDED_PLAN/, error.message)
+  end
+
+  def test_register_accepts_expanded_true_with_expansion_adult_group
+    entry = Corvid::StateMedicaidRules.register(
+      "XE",
+      expanded: true,
+      groups: {
+        expansion_adult: {
+          renewal_months: 12,
+          retro_coverage_months: 3,
+          work_requirement: false
+        }
+      }
+    )
+    assert entry.expanded?
+    refute_nil entry.group("expansion_adult")
+  end
+
+  # -- waiver_adult work requirement vs programs (#664) ----------------------
+
+  def test_register_raises_when_waiver_adult_work_requirement_without_programs
+    error = assert_raises(ArgumentError) do
+      Corvid::StateMedicaidRules.register(
+        "WQ",
+        expanded: false,
+        work_requirement_programs: [],
+        groups: {
+          waiver_adult: {
+            renewal_months: 12,
+            retro_coverage_months: 2,
+            work_requirement: true
+          }
+        }
+      )
+    end
+    assert_field_named_in_error(error, "waiver_adult", "work_requirement", "work_requirement_programs")
+    refute_match(/SYNTHETIC_WAIVER_LABEL/, error.message)
+  end
+
+  def test_register_raises_when_waiver_adult_work_requirement_with_nil_programs_keyword
+    error = assert_raises(ArgumentError) do
+      Corvid::StateMedicaidRules.register(
+        "WN",
+        expanded: false,
+        groups: {
+          waiver_adult: {
+            renewal_months: 12,
+            retro_coverage_months: 2,
+            work_requirement: true
+          }
+        }
+      )
+    end
+    assert_field_named_in_error(error, "waiver_adult", "work_requirement", "work_requirement_programs")
+  end
+
+  def test_register_accepts_waiver_adult_work_requirement_with_programs
+    Corvid::StateMedicaidRules.register(
+      "WP",
+      expanded: false,
+      work_requirement_programs: [
+        { code: "wq_demo", description_pattern: /\bSYNTHETIC_WAIVER_LABEL\b/i }
+      ],
+      groups: {
+        waiver_adult: {
+          renewal_months: 12,
+          retro_coverage_months: 2,
+          work_requirement: true
+        }
+      }
+    )
+    entry = Corvid::StateMedicaidRules.lookup("WP")
+    assert entry.group("waiver_adult").work_requirement?
+    refute_empty entry.work_requirement_programs
+  end
+
+  def test_register_accepts_waiver_adult_without_work_requirement_and_no_programs
+    entry = Corvid::StateMedicaidRules.register(
+      "WO",
+      expanded: false,
+      groups: {
+        waiver_adult: {
+          renewal_months: 12,
+          retro_coverage_months: 2,
+          work_requirement: false
+        }
+      }
+    )
+    refute entry.group("waiver_adult").work_requirement?
+    assert_empty entry.work_requirement_programs
+  end
+
+  # -- description_pattern catch-alls (#664) -----------------------------------
+
+  def test_register_raises_when_description_pattern_matches_catch_all_sentinels
+    [
+      /./,
+      /.+/,
+      /[\s\S]/,
+      /\w/,
+      /a|Z|0/
+    ].each do |pattern|
+      error = assert_raises(ArgumentError, "accepted catch-all #{pattern.inspect}") do
+        register_with_description_pattern(pattern, program_code: "catch_all_demo")
+      end
+      assert_match(/description_pattern/, error.message)
+      refute_match(/catch_all_demo/, error.message)
+      refute_match(/Commercial PPO/, error.message)
+    end
+  end
+
+  def test_register_accepts_specific_description_pattern_and_waiver_program_for
+    Corvid::StateMedicaidRules.register(
+      "TP",
+      expanded: false,
+      work_requirement_programs: [
+        { code: "test_pathways", description_pattern: /\bTEST PATHWAYS\b/i }
+      ],
+      groups: minimal_groups
+    )
+    entry = Corvid::StateMedicaidRules.lookup("TP")
+    matched = entry.waiver_program_for("Enrolled in TEST PATHWAYS plan")
+    refute_nil matched
+    assert_equal "test_pathways", matched.code
+    assert_nil entry.waiver_program_for("Commercial PPO")
+  end
+
+  def test_register_raises_when_description_pattern_matches_empty_string_still_rejected
+    error = assert_raises(ArgumentError) do
+      register_with_description_pattern(//, program_code: "empty_still_bad")
+    end
+    assert_match(/description_pattern/, error.message)
+    refute_match(/empty_still_bad/, error.message)
+  end
+
+  # -- retro_coverage_months validation (#664) ---------------------------------
+
+  def test_register_raises_when_retro_coverage_months_is_negative_message_names_field
+    error = assert_raises(ArgumentError) { register_with_group(retro_coverage_months: -2) }
+    assert_match(/retro_coverage_months/, error.message)
+    refute_match(/SYNTHETIC_RETRO_DESC/, error.message)
+  end
+
+  def test_register_raises_when_retro_coverage_months_is_float_message_names_field
+    error = assert_raises(ArgumentError) { register_with_group(retro_coverage_months: 3.0) }
+    assert_match(/retro_coverage_months/, error.message)
+  end
+
+  def test_register_raises_when_retro_coverage_months_is_string_message_names_field
+    error = assert_raises(ArgumentError) { register_with_group(retro_coverage_months: "3") }
+    assert_match(/retro_coverage_months/, error.message)
+  end
+
+  def test_register_raises_when_retro_coverage_months_is_nil_message_names_field
+    error = assert_raises(ArgumentError) { register_with_group(retro_coverage_months: nil) }
+    assert_match(/retro_coverage_months/, error.message)
+  end
+
+  def test_register_raises_when_renewal_months_is_zero_message_names_field
+    error = assert_raises(ArgumentError) { register_with_group(renewal_months: 0) }
+    assert_match(/renewal_months/, error.message)
+  end
+
+  def test_register_accepts_positive_renewal_months
+    entry = register_with_group(renewal_months: 6)
+    assert_equal 6, entry.group("other").renewal_months
+  end
+
   private
 
   def minimal_groups
@@ -923,6 +1128,22 @@ class Corvid::StateMedicaidRulesTest < Minitest::Test
       "GV",
       expanded: true,
       groups: { other: base.merge(overrides) }
+    )
+  end
+
+  def register_with_description_pattern(pattern, program_code: "pat_demo")
+    Corvid::StateMedicaidRules.register(
+      "ZP",
+      expanded: false,
+      work_requirement_programs: [ { code: program_code, description_pattern: pattern } ],
+      groups: minimal_groups
+    )
+  end
+
+  def assert_field_named_in_error(error, *field_names)
+    assert(
+      field_names.any? { |name| error.message.include?(name) },
+      "expected ArgumentError message to name one of #{field_names.inspect}, got #{error.message.inspect}"
     )
   end
 end

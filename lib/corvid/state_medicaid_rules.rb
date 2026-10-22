@@ -24,6 +24,10 @@ module Corvid
   # An unconfigured state means the rules are undetermined (fail closed):
   # callers must not apply a default expansion flag, renewal cycle, or
   # work requirement.
+  #
+  # A description_pattern must identify a specific program. A pattern that
+  # matches the empty string, or any of the sentinels "a", "Z", and "0",
+  # is rejected.
   module StateMedicaidRules
     GROUPS = %w[expansion_adult waiver_adult other].freeze
     GROUP_FIELDS = %w[renewal_months retro_coverage_months work_requirement].freeze
@@ -164,12 +168,35 @@ module Corvid
       end
 
       def build_entry(code, expanded, groups, programs)
+        expanded_flag = require_boolean(expanded, "expanded")
+        built_groups = build_groups(groups)
+        reject_unexpanded_expansion_group(expanded_flag, built_groups)
+        reject_waiver_without_programs(built_groups, programs)
         Entry.new(
           state_code: code,
-          expanded: require_boolean(expanded, "expanded"),
-          groups: build_groups(groups),
+          expanded: expanded_flag,
+          groups: built_groups,
           work_requirement_programs: build_programs(programs)
         ).freeze
+      end
+
+      def reject_unexpanded_expansion_group(expanded, groups)
+        return if expanded
+        return unless groups.key?("expansion_adult")
+
+        raise ArgumentError, "expansion_adult cannot be registered when expanded is false"
+      end
+
+      def reject_waiver_without_programs(groups, programs)
+        waiver = groups["waiver_adult"]
+        return unless waiver && waiver.work_requirement?
+        return unless programs_missing?(programs)
+
+        raise ArgumentError, "waiver_adult work_requirement requires work_requirement_programs"
+      end
+
+      def programs_missing?(programs)
+        programs.nil? || (programs.is_a?(Array) && programs.empty?)
       end
 
       # Accept symbol- or string-keyed hashes (initializers, YAML, JSON).
@@ -191,14 +218,13 @@ module Corvid
       def build_group(name, attrs)
         fields = normalize_fields(attrs, "group #{name}", GROUP_FIELDS)
         Group.new(
-          renewal_months: month_count(fields, name, :renewal_months),
-          retro_coverage_months: month_count(fields, name, :retro_coverage_months),
+          renewal_months: positive_integer(fields[:renewal_months], "group #{name} :renewal_months"),
+          retro_coverage_months: non_negative_integer(
+            fields[:retro_coverage_months],
+            "group #{name} :retro_coverage_months"
+          ),
           work_requirement: require_boolean(fields[:work_requirement], "group #{name} :work_requirement")
         ).freeze
-      end
-
-      def month_count(fields, name, field)
-        positive_integer(fields[field], "group #{name} :#{field}")
       end
 
       def build_programs(programs)
@@ -303,6 +329,13 @@ module Corvid
         raise ArgumentError, "#{label} must be a positive Integer, got #{value.inspect}"
       end
 
+      # Zero is a real window: the state has no retroactive coverage.
+      def non_negative_integer(value, label)
+        return value if value.is_a?(Integer) && value >= 0
+
+        raise ArgumentError, "#{label} must be a non-negative Integer, got #{value.inspect}"
+      end
+
       def require_boolean(value, label)
         return value if value == true || value == false
 
@@ -320,15 +353,23 @@ module Corvid
 
       def description_pattern(pattern)
         unless pattern.is_a?(Regexp)
-          raise ArgumentError, "description_pattern must be a Regexp, got #{pattern.inspect}"
+          raise ArgumentError, "description_pattern must be a Regexp, got #{pattern.class}"
         end
         # A pattern that matches "" matches every description, so every plan
-        # would be classified as that waiver.
+        # would be classified as that waiver. Matching a sentinel ("a", "Z",
+        # or "0") means the pattern does not identify a specific program.
         if pattern.match?("")
           raise ArgumentError, "description_pattern must not match an empty string"
         end
+        if catch_all_description_pattern?(pattern)
+          raise ArgumentError, "description_pattern must identify a specific program"
+        end
 
         pattern.dup.freeze
+      end
+
+      def catch_all_description_pattern?(pattern)
+        %w[a Z 0].any? { |sentinel| pattern.match?(sentinel) }
       end
     end
   end

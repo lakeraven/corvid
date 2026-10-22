@@ -59,6 +59,70 @@ class Corvid::EligibilityChecklistServiceTest < ActiveSupport::TestCase
     end
   end
 
+  test "populate! marks enrollment_verified only when enrolled and confidence is verified" do
+    with_tenant(TENANT) do
+      adapter = Corvid.adapter
+      patient_id = "pt_ecs_verified"
+      adapter.add_patient(patient_id, display_name: "TEST", dob: Date.new(1980, 1, 1), sex: "F", ssn_last4: "1234")
+      adapter.add_enrollment(patient_id,
+                             enrolled: true, tribe_name: "T", tribe_code: "T",
+                             member_status: "enrolled", confidence: :verified)
+
+      referral = create_referral(patient_id: patient_id)
+      checklist = Corvid::EligibilityChecklistService.populate!(referral, adapter: adapter)
+
+      assert checklist.enrollment_verified
+    end
+  end
+
+  test "populate! does not mark enrollment_verified when confidence is stale" do
+    with_tenant(TENANT) do
+      adapter = Corvid.adapter
+      patient_id = "pt_ecs_stale"
+      adapter.add_patient(patient_id, display_name: "TEST", dob: Date.new(1980, 1, 1), sex: "F", ssn_last4: "1234")
+      adapter.add_enrollment(patient_id,
+                             enrolled: true, tribe_name: "T", tribe_code: "T",
+                             member_status: "enrolled", confidence: :stale)
+
+      referral = create_referral(patient_id: patient_id)
+      checklist = Corvid::EligibilityChecklistService.populate!(referral, adapter: adapter)
+
+      refute checklist.enrollment_verified
+    end
+  end
+
+  test "populate! does not mark enrollment_verified when confidence is unavailable" do
+    with_tenant(TENANT) do
+      adapter = Corvid.adapter
+      patient_id = "pt_ecs_unavail"
+      adapter.add_patient(patient_id, display_name: "TEST", dob: Date.new(1980, 1, 1), sex: "F", ssn_last4: "1234")
+      adapter.add_enrollment(patient_id,
+                             enrolled: true, tribe_name: "T", tribe_code: "T",
+                             member_status: "enrolled", confidence: :unavailable)
+
+      referral = create_referral(patient_id: patient_id)
+      checklist = Corvid::EligibilityChecklistService.populate!(referral, adapter: adapter)
+
+      refute checklist.enrollment_verified
+    end
+  end
+
+  test "populate! does not mark enrollment_verified when confidence is missing from enrollment record" do
+    with_tenant(TENANT) do
+      adapter = Corvid.adapter
+      patient_id = "pt_ecs_no_conf"
+      adapter.add_patient(patient_id, display_name: "TEST", dob: Date.new(1980, 1, 1), sex: "F", ssn_last4: "1234")
+      adapter.add_enrollment(patient_id,
+                             enrolled: true, tribe_name: "T", tribe_code: "T",
+                             member_status: "enrolled")
+
+      referral = create_referral(patient_id: patient_id)
+      checklist = Corvid::EligibilityChecklistService.populate!(referral, adapter: adapter)
+
+      refute checklist.enrollment_verified
+    end
+  end
+
   test "verify_item! raises when no checklist exists" do
     with_tenant(TENANT) do
       referral = create_referral
@@ -73,8 +137,8 @@ class Corvid::EligibilityChecklistServiceTest < ActiveSupport::TestCase
 
   private
 
-  def create_referral
-    c = Corvid::Case.create!(patient_identifier: "pt_ecs", lifecycle_status: "intake", facility_identifier: "fac_test")
+  def create_referral(patient_id: "pt_ecs")
+    c = Corvid::Case.create!(patient_identifier: patient_id, lifecycle_status: "intake", facility_identifier: "fac_test")
     Corvid::PrcReferral.create!(case: c, referral_identifier: "ref_#{SecureRandom.hex(4)}")
   end
 end
