@@ -337,6 +337,93 @@ class Corvid::ClaimReferralLinkTest < ActiveSupport::TestCase
     end
   end
 
+  test "linked draft claim host-stamped as error with claim_identifier cannot be paid without submit gate" do
+    with_tenant(TENANT) do
+      referral = referral_at("fac_a", "REF-HOST-ERR-ID")
+      patient = referral.case.patient_identifier
+      authorize!(referral)
+      claim = build_claim(facility: "fac_a", referral_identifier: "REF-HOST-ERR-ID", patient: patient)
+      claim.save!
+
+      assert claim.update(status: "error", claim_identifier: "HOST-IMPORTED-1")
+      assert_equal "error", claim.reload.status
+      assert_nil claim.submitted_at
+
+      assert_raises(ActiveRecord::RecordInvalid) { claim.mark_paid!(paid_amount: 60.0) }
+      claim.reload
+      refute_equal "paid", claim.status
+      refute claim.update(status: "paid", paid_amount: 60.0)
+      assert_predicate claim.errors[:status], :present?
+    end
+  end
+
+  test "linked draft claim host-stamped error with submitted_at cannot be adjudicated without submit gate" do
+    with_tenant(TENANT) do
+      referral = referral_at("fac_a", "REF-HOST-ERR-STAMP")
+      patient = referral.case.patient_identifier
+      authorize!(referral)
+      claim = build_claim(facility: "fac_a", referral_identifier: "REF-HOST-ERR-STAMP", patient: patient)
+      claim.save!
+      claim.update_column(:submitted_at, 1.hour.ago)
+
+      assert claim.update(status: "error")
+      claim.reload
+      assert_nil claim.claim_identifier
+
+      assert_raises(ActiveRecord::RecordInvalid) { claim.mark_paid!(paid_amount: 25.0) }
+
+      Corvid.adapter.add_claim("HOST-POLL-ONLY", { status: "paid", paid_amount: 25.0 })
+      claim.update_column(:claim_identifier, "HOST-POLL-ONLY")
+      claim.reload
+
+      assert_raises(ActiveRecord::RecordInvalid) { claim.check_status! }
+      refute_equal "paid", claim.reload.status
+    end
+  end
+
+  test "linked draft claim cannot set claim_identifier via plain save" do
+    with_tenant(TENANT) do
+      referral = referral_at("fac_a", "REF-NO-PLAIN-ID")
+      patient = referral.case.patient_identifier
+      claim = build_claim(facility: "fac_a", referral_identifier: "REF-NO-PLAIN-ID", patient: patient)
+      claim.save!
+
+      refute claim.update(claim_identifier: "HOST-PLAIN-ID")
+      assert_predicate claim.errors[:claim_identifier], :present?
+      assert_nil claim.reload.claim_identifier
+    end
+  end
+
+  test "linked error claim cannot set submitted_at via plain save" do
+    with_tenant(TENANT) do
+      referral = referral_at("fac_a", "REF-NO-PLAIN-STAMP")
+      patient = referral.case.patient_identifier
+      claim = build_claim(facility: "fac_a", referral_identifier: "REF-NO-PLAIN-STAMP", patient: patient)
+      claim.save!
+      claim.update_column(:status, "error")
+
+      refute claim.update(submitted_at: 1.hour.ago)
+      assert_predicate claim.errors[:submitted_at], :present?
+      assert_nil claim.reload.submitted_at
+    end
+  end
+
+  test "never-sent linked claim on unauthorized referral cannot be paid after host error stamp" do
+    with_tenant(TENANT) do
+      referral = referral_at("fac_a", "REF-UNAUTH-HOST")
+      patient = referral.case.patient_identifier
+      assert_equal "draft", referral.status
+      claim = build_claim(facility: "fac_a", referral_identifier: "REF-UNAUTH-HOST", patient: patient)
+      claim.save!
+
+      refute claim.update(status: "paid")
+      assert claim.update(status: "error", claim_identifier: "HOST-IMPORTED-1")
+
+      assert_raises(ActiveRecord::RecordInvalid) { claim.mark_paid!(paid_amount: 100.0) }
+      refute_equal "paid", claim.reload.status
+    end
+  end
+
   test "linked error claim with claim_identifier but no submitted_at can reach paid via mark_paid!" do
     with_tenant(TENANT) do
       referral = referral_at("fac_a", "REF-ERR-ID-ONLY")

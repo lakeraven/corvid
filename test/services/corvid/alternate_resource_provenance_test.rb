@@ -149,6 +149,133 @@ class Corvid::AlternateResourceProvenanceTest < ActiveSupport::TestCase
     end
   end
 
+  test "non-bang authorize followed by save! syncs authorized CHS status once and records provenance once" do
+    updates = []
+    provenance_calls = []
+    Corvid.configure do |c|
+      c.on_provenance = ->(**attrs) { provenance_calls << attrs[:target_id] }
+    end
+
+    with_tenant(TENANT) do
+      referral = authorized_referral_ready_to_authorize!
+      Corvid.adapter.define_singleton_method(:update_referral) do |identifier, params|
+        updates << [ identifier, params.dup ]
+        true
+      end
+
+      assert referral.authorize
+      referral.save!
+
+      assert_equal "authorized", referral.reload.status
+      authorized_syncs = updates.select { |(_, params)| params[:chs_approval_status] == "A" }
+      assert_equal 1, authorized_syncs.size,
+        "expected exactly one authorized CHS sync after commit, got #{updates.inspect}"
+      assert_equal 1, provenance_calls.size,
+        "expected on_provenance once after commit, got #{provenance_calls.size}"
+      assert_equal referral.id.to_s, provenance_calls.first
+    end
+  end
+
+  test "non-bang mark_denied followed by save! syncs denied CHS status once" do
+    updates = []
+    Corvid.configure { |c| c.on_provenance = nil }
+
+    with_tenant(TENANT) do
+      referral = referral_in_eligibility_review!
+      Corvid.adapter.define_singleton_method(:update_referral) do |identifier, params|
+        updates << [ identifier, params.dup ]
+        true
+      end
+
+      assert referral.mark_denied
+      referral.save!
+
+      assert_equal "denied", referral.reload.status
+      denied_syncs = updates.select { |(_, params)| params[:chs_approval_status] == "D" }
+      assert_equal 1, denied_syncs.size,
+        "expected exactly one denied CHS sync after commit, got #{updates.inspect}"
+    end
+  end
+
+  test "non-bang mark_deferred followed by save! syncs deferred CHS status once" do
+    updates = []
+    Corvid.configure { |c| c.on_provenance = nil }
+
+    with_tenant(TENANT) do
+      referral = referral_in_priority_assignment_for_deferral!
+      Corvid.adapter.define_singleton_method(:update_referral) do |identifier, params|
+        updates << [ identifier, params.dup ]
+        true
+      end
+
+      assert referral.mark_deferred
+      referral.save!
+
+      assert_equal "deferred", referral.reload.status
+      deferred_syncs = updates.select { |(_, params)| params[:chs_approval_status] == "P" }
+      assert_equal 1, deferred_syncs.size,
+        "expected exactly one deferred CHS sync after commit, got #{updates.inspect}"
+    end
+  end
+
+  test "non-bang authorize inside host transaction syncs authorized CHS status once after outer commit" do
+    updates = []
+    Corvid.configure { |c| c.on_provenance = nil }
+
+    with_tenant(TENANT) do
+      referral = authorized_referral_ready_to_authorize!
+      Corvid.adapter.define_singleton_method(:update_referral) do |identifier, params|
+        updates << [ identifier, params.dup ]
+        true
+      end
+
+      during_outer = nil
+      ActiveRecord::Base.transaction do
+        assert referral.authorize
+        referral.save!
+        during_outer = updates.select { |(_, params)| params[:chs_approval_status] == "A" }
+      end
+
+      assert_empty during_outer,
+        "expected no authorized CHS sync before outer commit, got #{during_outer.inspect}"
+      authorized_syncs = updates.select { |(_, params)| params[:chs_approval_status] == "A" }
+      assert_equal 1, authorized_syncs.size,
+        "expected exactly one authorized CHS sync after outer commit, got #{updates.inspect}"
+    end
+  end
+
+  test "committee path authorize in one host transaction records provenance once and syncs authorized once" do
+    updates = []
+    provenance_calls = []
+    Corvid.configure do |c|
+      c.on_provenance = ->(**attrs) { provenance_calls << attrs[:target_id] }
+    end
+
+    with_tenant(TENANT) do
+      travel_to Time.zone.parse("2025-06-15 12:00:00 UTC") do
+        referral = referral_ready_for_committee_authorization!
+        Corvid.adapter.define_singleton_method(:update_referral) do |identifier, params|
+          updates << [ identifier, params.dup ]
+          true
+        end
+
+        ActiveRecord::Base.transaction do
+          referral.complete_priority_assignment!
+          assert referral.committee_review?
+          referral.authorize!
+        end
+
+        assert_equal "authorized", referral.reload.status
+        authorized_syncs = updates.select { |(_, params)| params[:chs_approval_status] == "A" }
+        assert_equal 1, authorized_syncs.size,
+          "expected exactly one authorized CHS sync, got #{updates.inspect}"
+        assert_equal 1, provenance_calls.size,
+          "expected on_provenance once after commit, got #{provenance_calls.size}"
+        assert_equal referral.id.to_s, provenance_calls.first
+      end
+    end
+  end
+
   test "authorize! does not sync authorized CHS status when outer transaction rolls back" do
     updates = []
     Corvid.configure { |c| c.on_provenance = nil }
@@ -223,6 +350,57 @@ class Corvid::AlternateResourceProvenanceTest < ActiveSupport::TestCase
     referral.update!(medical_priority: 2, flagged_for_review: false, estimated_cost: 5_000)
     referral.complete_priority_assignment!
     referral.update_column(:status, "priority_assignment")
+    referral.reload
+  end
+
+  def referral_in_eligibility_review!
+    referral = referral_at(FACILITY, "REF-PROV-DENY")
+    referral.submit!
+    referral.begin_eligibility_review!
+    referral.reload
+  end
+
+  def referral_in_priority_assignment_for_deferral!
+    referral = referral_at(FACILITY, "REF-PROV-DEFER")
+    referral.submit!
+    referral.begin_eligibility_review!
+    checklist = referral.eligibility_checklist
+    Corvid::EligibilityChecklist::NON_APPROVAL_ITEMS.each do |item|
+      fields = Corvid::EligibilityChecklist::ITEM_FIELDS.fetch(item)
+      kwargs = {}
+      kwargs[:source] = "test_fixture" if fields.key?(:source)
+      kwargs[:by] = "usr_submitter" if fields.key?(:by)
+      checklist.verify_item!(item, **kwargs)
+    end
+    referral.reload
+    referral.request_management_approval!
+    referral.pending_approval_by = "usr_other"
+    referral.approve_management!
+    exhaust_alternate_resources!(referral)
+    referral.verify_alternate_resources!
+    referral.update!(medical_priority: 2, flagged_for_review: false, estimated_cost: 5_000)
+    referral.reload
+  end
+
+  def referral_ready_for_committee_authorization!
+    referral = referral_at(FACILITY, "REF-PROV-COMMITTEE-TXN")
+    referral.submit!
+    referral.begin_eligibility_review!
+    checklist = referral.eligibility_checklist
+    Corvid::EligibilityChecklist::NON_APPROVAL_ITEMS.each do |item|
+      fields = Corvid::EligibilityChecklist::ITEM_FIELDS.fetch(item)
+      kwargs = {}
+      kwargs[:source] = "test_fixture" if fields.key?(:source)
+      kwargs[:by] = "usr_submitter" if fields.key?(:by)
+      checklist.verify_item!(item, **kwargs)
+    end
+    referral.reload
+    referral.request_management_approval!
+    referral.pending_approval_by = "usr_other"
+    referral.approve_management!
+    exhaust_alternate_resources!(referral)
+    referral.verify_alternate_resources!
+    referral.update!(medical_priority: 3, estimated_cost: 5_000)
     referral.reload
   end
 

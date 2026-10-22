@@ -16,6 +16,7 @@ class Corvid::AlternateResourceProvenanceDatabaseTest < ActiveSupport::TestCase
 
   setup do
     @created_referral_ids = []
+    @created_claim_ids = []
   end
 
   teardown do
@@ -76,6 +77,110 @@ class Corvid::AlternateResourceProvenanceDatabaseTest < ActiveSupport::TestCase
     end
   end
 
+  test "claim submit! does not call on_provenance when outer transaction rolls back" do
+    provenance_calls = []
+
+    with_tenant(TENANT) do
+      travel_to Time.zone.parse("2025-06-15 12:00:00 UTC") do
+        referral = referral_at(FACILITY, "REF-CLAIM-ROLL-SUBMIT")
+        authorize_referral!(referral)
+        claim = build_claim(referral, "REF-CLAIM-ROLL-SUBMIT")
+        claim.save!
+        @created_claim_ids << claim.id
+
+        Corvid.configure do |c|
+          c.on_provenance = ->(**attrs) { provenance_calls << attrs[:target_id] }
+        end
+
+        ActiveRecord::Base.transaction do
+          claim.submit!
+          raise ActiveRecord::Rollback
+        end
+
+        assert_equal "draft", claim.reload.status
+        assert_empty provenance_calls,
+          "expected on_provenance not to run for rolled-back submit!, got #{provenance_calls.inspect}"
+      end
+    end
+  end
+
+  test "claim submit! calls on_provenance once after outer transaction commits" do
+    provenance_calls = []
+
+    with_tenant(TENANT) do
+      travel_to Time.zone.parse("2025-06-15 12:00:00 UTC") do
+        referral = referral_at(FACILITY, "REF-CLAIM-COMMIT-SUBMIT")
+        authorize_referral!(referral)
+        claim = build_claim(referral, "REF-CLAIM-COMMIT-SUBMIT")
+        claim.save!
+        @created_claim_ids << claim.id
+
+        Corvid.configure do |c|
+          c.on_provenance = ->(**attrs) { provenance_calls << attrs[:target_id] }
+        end
+
+        ActiveRecord::Base.transaction do
+          claim.submit!
+        end
+
+        assert_equal "submitted", claim.reload.status
+        assert_equal [ claim.id.to_s ], provenance_calls
+      end
+    end
+  end
+
+  test "claim mark_submitted! does not call on_provenance when outer transaction rolls back" do
+    provenance_calls = []
+
+    with_tenant(TENANT) do
+      travel_to Time.zone.parse("2025-06-15 12:00:00 UTC") do
+        referral = referral_at(FACILITY, "REF-CLAIM-ROLL-MARK")
+        authorize_referral!(referral)
+        claim = build_claim(referral, "REF-CLAIM-ROLL-MARK")
+        claim.save!
+        @created_claim_ids << claim.id
+
+        Corvid.configure do |c|
+          c.on_provenance = ->(**attrs) { provenance_calls << attrs[:target_id] }
+        end
+
+        ActiveRecord::Base.transaction do
+          claim.mark_submitted!(claim_identifier: "CLM-ROLL-MARK-1")
+          raise ActiveRecord::Rollback
+        end
+
+        assert_equal "draft", claim.reload.status
+        assert_empty provenance_calls,
+          "expected on_provenance not to run for rolled-back mark_submitted!, got #{provenance_calls.inspect}"
+      end
+    end
+  end
+
+  test "claim mark_submitted! calls on_provenance once after outer transaction commits" do
+    provenance_calls = []
+
+    with_tenant(TENANT) do
+      travel_to Time.zone.parse("2025-06-15 12:00:00 UTC") do
+        referral = referral_at(FACILITY, "REF-CLAIM-COMMIT-MARK")
+        authorize_referral!(referral)
+        claim = build_claim(referral, "REF-CLAIM-COMMIT-MARK")
+        claim.save!
+        @created_claim_ids << claim.id
+
+        Corvid.configure do |c|
+          c.on_provenance = ->(**attrs) { provenance_calls << attrs[:target_id] }
+        end
+
+        ActiveRecord::Base.transaction do
+          claim.mark_submitted!(claim_identifier: "CLM-COMMIT-MARK-1")
+        end
+
+        assert_equal "submitted", claim.reload.status
+        assert_equal [ claim.id.to_s ], provenance_calls
+      end
+    end
+  end
+
   test "on_provenance database failure still syncs authorized CHS status after authorize!" do
     updates = []
 
@@ -125,6 +230,9 @@ class Corvid::AlternateResourceProvenanceDatabaseTest < ActiveSupport::TestCase
   end
 
   def delete_created_fixture_rows!
+    claim_ids = @created_claim_ids
+    Corvid::ClaimSubmission.unscoped.where(id: claim_ids).delete_all if claim_ids.present?
+
     ids = @created_referral_ids
     return if ids.blank?
 
@@ -181,6 +289,42 @@ class Corvid::AlternateResourceProvenanceDatabaseTest < ActiveSupport::TestCase
     referral.complete_priority_assignment!
     assert_equal "committee_review", referral.status
     exhaust_alternate_resources!(referral, date_of_service: Date.current, as_of: Time.current)
+    referral.reload
+  end
+
+  def build_claim(referral, referral_identifier)
+    Corvid::ClaimSubmission.new(
+      tenant_identifier: TENANT,
+      facility_identifier: FACILITY,
+      patient_identifier: referral.case.patient_identifier,
+      referral_identifier: referral_identifier,
+      claim_type: "professional",
+      service_date: Date.new(2025, 6, 10),
+      billed_amount: 100.0,
+      status: "draft"
+    )
+  end
+
+  def authorize_referral!(referral)
+    referral.submit!
+    referral.begin_eligibility_review!
+    checklist = referral.eligibility_checklist
+    Corvid::EligibilityChecklist::NON_APPROVAL_ITEMS.each do |item|
+      fields = Corvid::EligibilityChecklist::ITEM_FIELDS.fetch(item)
+      kwargs = {}
+      kwargs[:source] = "test_fixture" if fields.key?(:source)
+      kwargs[:by] = "usr_submitter" if fields.key?(:by)
+      checklist.verify_item!(item, **kwargs)
+    end
+    referral.reload
+    referral.request_management_approval!
+    referral.pending_approval_by = "usr_other"
+    referral.approve_management!
+    exhaust_alternate_resources!(referral)
+    referral.verify_alternate_resources!
+    referral.update!(medical_priority: 2, flagged_for_review: false, estimated_cost: 5_000)
+    referral.complete_priority_assignment!
+    referral.authorize! if referral.may_authorize?
     referral.reload
   end
 
