@@ -23,7 +23,7 @@ module Corvid
         checks = prc_referral.alternate_resource_checks.active_coverage
         return checks.exists? if date_of_service.nil?
 
-        checks.any? { |check| !check.stale? && check.current_for?(date_of_service, as_of: as_of) }
+        checks.any? { |check| check.current_for?(date_of_service, as_of: as_of) }
       end
     end
   end

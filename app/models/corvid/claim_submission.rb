@@ -19,6 +19,9 @@ module Corvid
 
     STATUSES = %w[draft submitted accepted rejected paid denied appealed error].freeze
     CLAIM_TYPES = %w[professional institutional dental].freeze
+    # Statuses that mean the claim has been sent. A PRC-linked draft reaches
+    # them only through submit! / mark_submitted!, which run the gate.
+    SUBMISSION_GATE_STATUSES = %w[submitted accepted paid].freeze
 
     # Raised by #submit! when this claim bills a PRC referral that has not been
     # authorized. PRC authorizes before care is purchased, so billing an
@@ -55,6 +58,8 @@ module Corvid
     # helpers, remittance processing) records when it first happened, so the
     # KPIs above still count the claim after its status moves on.
     before_save :stamp_rejection_and_denial_times, if: :will_save_change_to_status?
+
+    validate :submission_status_requires_gate, on: :update
 
     scope :by_status, ->(status) { where(status: status) }
     scope :pending, -> { where(status: %w[submitted accepted]) }
@@ -171,7 +176,7 @@ module Corvid
 
     def mark_submitted!(claim_identifier:)
       enforce_alternate_resources_current!
-      update!(
+      save_through_submission_gate!(
         claim_identifier: claim_identifier,
         status: "submitted",
         submitted_at: Time.current
@@ -205,7 +210,7 @@ module Corvid
       enforce_referral_authorization_gate!
       enforce_alternate_resources_current!
       result = Corvid.adapter.submit_claim(to_claim_data)
-      update!(
+      save_through_submission_gate!(
         claim_identifier: result[:claim_identifier],
         status: result[:status] == "accepted" ? "submitted" : result[:status],
         submitted_at: Time.current
@@ -252,6 +257,33 @@ module Corvid
     def stamp_rejection_and_denial_times
       self.rejected_at ||= Time.current if status == "rejected"
       self.denied_at ||= Time.current if status == "denied"
+    end
+
+    # A PRC-linked draft that has never been submitted (submitted_at still
+    # nil in the database) cannot be saved straight into submitted, accepted,
+    # or paid. submit! and mark_submitted! set the gate flag after the
+    # alternate-resource check. Creating a row that is already submitted, and
+    # later status changes on a claim that has left draft, stay allowed.
+    def submission_status_requires_gate
+      return if @submission_through_gate
+      return unless draft_prc_claim_entering_submission?
+
+      errors.add(:status, "must be submitted with submit! or mark_submitted!")
+    end
+
+    def draft_prc_claim_entering_submission?
+      prc_referral_id.present? &&
+        status_in_database == "draft" &&
+        submitted_at_in_database.nil? &&
+        will_save_change_to_status? &&
+        SUBMISSION_GATE_STATUSES.include?(status)
+    end
+
+    def save_through_submission_gate!(attributes)
+      @submission_through_gate = true
+      update!(attributes)
+    ensure
+      @submission_through_gate = false
     end
 
     # Link this claim to the referral it bills, but only where that link is
@@ -317,14 +349,16 @@ module Corvid
       prc_referral
     end
 
-    # The rows must already be a current exhausted set for the service date.
-    # Re-verification confirms that set; it does not create it at submission.
+    # Re-verify first, then decide. A stale row that comes back current and
+    # exhausted is a determination this submission can rely on. An unreadable
+    # answer leaves the row unchanged and the claim is refused.
     def alternate_resources_current?(referral)
       return false if service_date.nil?
+      return false unless AlternateResourceReverification.reverify_stale!(
+        referral, date_of_service: service_date, as_of: Time.current
+      )
 
-      already_exhausted = exhausted_for_claim?(referral)
-      AlternateResourceReverification.reverify_stale!(referral, date_of_service: service_date, as_of: Time.current)
-      already_exhausted && exhausted_for_claim?(referral)
+      exhausted_for_claim?(referral)
     end
 
     def exhausted_for_claim?(referral)

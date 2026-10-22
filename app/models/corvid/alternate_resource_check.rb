@@ -356,25 +356,18 @@ module Corvid
         prc_referral.alternate_resource_checks.reload.index_by(&:resource_type)
       end
 
-      # current_for? applies the per-type max age and the coverage period.
-      # stale? is the 30-day window every payer shares: a row older than that
-      # is not a determination an authorization or claim can rely on.
+      # current_for? is the only freshness test: the configured per-type
+      # max age and the coverage period.
       def unavailable_for?(check, date_of_service, as_of)
         return false unless check&.exhausted_or_unavailable?
-        return false unless fresh_enough?(check)
 
         check.current_for?(date_of_service, as_of: as_of)
       end
 
       def pending_for?(check, date_of_service, as_of)
         return true if check.not_checked? || check.checking? || check.pending_enrollment?
-        return true unless fresh_enough?(check)
 
         !check.current_for?(date_of_service, as_of: as_of)
-      end
-
-      def fresh_enough?(check)
-        !check.stale?
       end
     end
   end

@@ -28,10 +28,10 @@ module Corvid
         end
       end
 
-      # Not current for the date of service, or older than the shared 30-day
-      # window (stale?), including payers whose configured max age is longer.
+      # current_for? is the only freshness test: the configured per-type
+      # max age and the coverage period. There is no shared 30-day window.
       def needs_reverification?(check, date_of_service, as_of)
-        check.stale? || !check.current_for?(date_of_service, as_of: as_of)
+        !check.current_for?(date_of_service, as_of: as_of)
       end
 
       def confirm_check(check, date_of_service, as_of)

@@ -90,19 +90,21 @@ module Corvid
       end
 
       # Re-verify in the event callback, not the guard. Guards are pure and
-      # may_? would otherwise hit the payer on every check.
-      event :verify_alternate_resources, before: :reverify_alternate_resources_for_decision do
+      # may_? would otherwise hit the payer on every check. AASM still runs
+      # that callback when no transition leaves the current state, so each
+      # callback checks from-states (ignoring guards) before any payer call.
+      event :verify_alternate_resources, before: :reverify_before_verify_alternate_resources do
         transitions from: :alternate_resource_review, to: :priority_assignment,
                     guard: :alternate_resources_exhausted?
       end
 
-      event :complete_priority_assignment, before: :reverify_alternate_resources_for_decision,
+      event :complete_priority_assignment, before: :reverify_before_complete_priority_assignment,
             after: :record_authorization_provenance do
         transitions from: :priority_assignment, to: :committee_review, guard: :requires_committee?
         transitions from: :priority_assignment, to: :authorized, guard: :alternate_resources_exhausted?
       end
 
-      event :authorize, before: :reverify_alternate_resources_for_decision,
+      event :authorize, before: :reverify_before_authorize,
             after: [ :sync_status_to_ehr, :record_authorization_provenance ] do
         transitions from: [ :priority_assignment, :committee_review ], to: :authorized,
                     guard: :alternate_resources_exhausted?
@@ -140,12 +142,13 @@ module Corvid
       AlternateResourceCheck.all_exhausted?(self, date_of_service: Date.current, as_of: Time.current)
     end
 
-    # Refresh stale checks before an authorization decision. Returns true so
-    # the AASM before-callback does not abort; the guard decides.
+    # Refresh checks that are not current for the authorization date.
+    # Direct callers (committee apply and sync) always refresh. Event
+    # callbacks go through reverify_for_event so a refused event from a
+    # state it cannot leave does not call the payer. Returns true so an
+    # AASM before-callback does not abort; the guard decides.
     def reverify_alternate_resources_for_decision
-      AlternateResourceReverification.reverify_stale!(
-        self, date_of_service: Date.current, as_of: Time.current
-      )
+      refresh_stale_alternate_resources
       true
     end
 
@@ -385,11 +388,52 @@ module Corvid
 
     def blocker_for(resource_type, check)
       return "#{resource_type}: not checked" if check.nil?
+      return "#{resource_type}: not current" if unavailable_but_not_current?(check)
       return if check.exhausted_or_unavailable?
 
       detail = check.status.to_s.tr("_", " ")
       detail = "#{detail} (coordination of benefits not complete)" if check.enrolled?
       "#{resource_type}: #{detail}"
+    end
+
+    # Unavailable by status, but not a determination for the authorization
+    # date. Resource type and a fixed reason only — no patient, payer, or
+    # policy data (ADR 0003).
+    def unavailable_but_not_current?(check)
+      check.exhausted_or_unavailable? && !check.current_for?(Date.current, as_of: Time.current)
+    end
+
+    def reverify_before_verify_alternate_resources
+      reverify_for_event(:verify_alternate_resources)
+    end
+
+    def reverify_before_complete_priority_assignment
+      reverify_for_event(:complete_priority_assignment)
+    end
+
+    def reverify_before_authorize
+      reverify_for_event(:authorize)
+    end
+
+    def reverify_for_event(event_name)
+      refresh_stale_alternate_resources if event_can_leave_state?(event_name)
+      true
+    end
+
+    def refresh_stale_alternate_resources
+      AlternateResourceReverification.reverify_stale!(
+        self, date_of_service: Date.current, as_of: Time.current
+      )
+    end
+
+    # From-states only. Guards run after the refresh and must not be
+    # consulted here, or a stale row would skip the payer call that
+    # could make the guard pass.
+    def event_can_leave_state?(event_name)
+      event = self.class.aasm.state_machine.events[event_name]
+      return false unless event
+
+      event.transitions_from_state?(aasm.current_state)
     end
 
     # Get authorization number from RCIS (source of truth).
