@@ -415,8 +415,8 @@ module Corvid
       # Enrollment verification — FHIR R4 / US Core have no native tribal
       # enrollment concept, so this reads Lakeraven's tribal-enrollment
       # extension on Patient (see TRIBAL_ENROLLMENT_EXTENSION_URL below).
-      # A failed Patient read, or a Patient with no tribal-enrollment
-      # extension, is unknown enrollment: enrolled is nil and confidence
+      # A failed Patient read (including a transport failure), or a Patient
+      # with no tribal-enrollment extension, is unknown enrollment: enrolled is nil and confidence
       # is :unavailable. That is not a recorded denial.
       # ----------------------------------------------------------------------
 
@@ -432,7 +432,7 @@ module Corvid
           confidence: :unavailable, verified_at: Time.current
         }
 
-        patient = fhir_read("Patient", patient_identifier)
+        patient = verification_patient_read(patient_identifier)
         return unavailable unless patient
 
         ext = find_extension(patient, TRIBAL_ENROLLMENT_EXTENSION_URL)
@@ -451,7 +451,7 @@ module Corvid
       def verify_identity_documents(patient_identifier)
         empty = { ssn_present: false, dob_present: false, birthplace_present: false, verified_at: Time.current }
 
-        patient = fhir_read("Patient", patient_identifier)
+        patient = verification_patient_read(patient_identifier)
         return empty unless patient
 
         {
@@ -465,7 +465,7 @@ module Corvid
       def verify_residency(patient_identifier)
         unavailable = { on_reservation: false, address: nil, service_area: nil, verified_at: Time.current }
 
-        patient = fhir_read("Patient", patient_identifier)
+        patient = verification_patient_read(patient_identifier)
         return unavailable unless patient
 
         ext = find_extension(patient, RESIDENCY_EXTENSION_URL)
@@ -540,6 +540,16 @@ module Corvid
 
         response = http_get("#{@base_url}/#{resource_type}/#{id}")
         parse_success_json(response)
+      end
+
+      # Patient read for the verification primitives. A transport or parse
+      # fault (connection refused, timeout, TLS, EOF, protocol) is an
+      # unavailable source — nil, same as a failed read — never an exception
+      # that would stop a fail-closed decision from being recorded.
+      def verification_patient_read(patient_identifier)
+        fhir_read("Patient", patient_identifier)
+      rescue *CLINICAL_READ_ERRORS
+        nil
       end
 
       # Returns one Bundle whose `entry` array is every page, in order.
