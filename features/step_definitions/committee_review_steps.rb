@@ -162,8 +162,10 @@ Given("a referral in committee review state") do
   @referral.request_management_approval!
   @referral.pending_approval_by = "pr_test_mgr"
   @referral.approve_management!
+  exhaust_alternate_resources!(@referral)
   @referral.verify_alternate_resources!
   @referral.update!(estimated_cost: 100_000)
+  exhaust_alternate_resources!(@referral)
   @referral.complete_priority_assignment!
   assert_equal "committee_review", @referral.status
 end

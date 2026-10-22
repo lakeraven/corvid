@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_10_07_000001) do
+ActiveRecord::Schema[8.1].define(version: 2026_10_21_000003) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
@@ -27,10 +27,19 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_07_000001) do
     t.string "response_data_token"
     t.datetime "created_at", null: false
     t.datetime "updated_at", null: false
+    t.string "eligibility_group"
+    t.string "eligibility_group_source"
+    t.datetime "eligibility_group_set_at"
+    t.date "renewal_date"
     t.index ["prc_referral_id", "resource_type"], name: "idx_corvid_arc_referral_type", unique: true
     t.index ["prc_referral_id"], name: "index_corvid_alternate_resource_checks_on_prc_referral_id"
+    t.check_constraint "eligibility_group IS NULL AND eligibility_group_set_at IS NULL OR eligibility_group IS NOT NULL AND eligibility_group_set_at IS NOT NULL", name: "corvid_arc_eligibility_group_set_at_check"
+    t.check_constraint "eligibility_group IS NULL AND eligibility_group_source IS NULL OR eligibility_group IS NOT NULL AND eligibility_group_source IS NOT NULL", name: "corvid_arc_eligibility_group_pair_check"
+    t.check_constraint "eligibility_group IS NULL OR (eligibility_group::text = ANY (ARRAY['expansion_adult'::character varying, 'waiver_adult'::character varying, 'other'::character varying, 'unknown'::character varying]::text[]))", name: "corvid_arc_eligibility_group_check"
+    t.check_constraint "eligibility_group IS NULL OR resource_type::text = 'medicaid'::text", name: "corvid_arc_eligibility_group_medicaid_only_check"
+    t.check_constraint "eligibility_group_source IS NULL OR (eligibility_group_source::text = ANY (ARRAY['eligibility_response'::character varying, 'state_case_data'::character varying, 'registration'::character varying, 'staff_entry'::character varying, 'inferred'::character varying]::text[]))", name: "corvid_arc_eligibility_group_source_check"
     t.check_constraint "resource_type::text = ANY (ARRAY['medicare_a'::character varying, 'medicare_b'::character varying, 'medicare_d'::character varying, 'medicaid'::character varying, 'va_benefits'::character varying, 'private_insurance'::character varying, 'workers_comp'::character varying, 'auto_insurance'::character varying, 'liability_coverage'::character varying, 'state_program'::character varying, 'tribal_program'::character varying, 'charity_care'::character varying]::text[])", name: "corvid_arc_resource_type_check"
-    t.check_constraint "status::text = ANY (ARRAY['not_checked'::character varying, 'checking'::character varying, 'enrolled'::character varying, 'not_enrolled'::character varying, 'denied'::character varying, 'exhausted'::character varying, 'pending_enrollment'::character varying]::text[])", name: "corvid_arc_status_check"
+    t.check_constraint "status::text = ANY (ARRAY['not_checked'::character varying, 'checking'::character varying, 'enrolled'::character varying, 'not_enrolled'::character varying, 'denied'::character varying, 'exhausted'::character varying, 'pending_enrollment'::character varying, 'coordinated'::character varying]::text[])", name: "corvid_arc_status_check"
   end
 
   create_table "corvid_api_call_logs", force: :cascade do |t|
@@ -435,6 +444,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_07_000001) do
     t.string "verification_snapshot_hash"
     t.datetime "created_at", null: false
     t.datetime "updated_at", null: false
+    t.string "verification_snapshot_key_version"
     t.index ["tenant_identifier", "decided_at"], name: "idx_corvid_prc_eligibility_decisions_tenant_decided_at"
     t.index ["tenant_identifier", "facility_identifier", "decided_at"], name: "idx_corvid_prc_elig_decisions_tenant_facility_decided"
     t.index ["tenant_identifier", "person_identifier", "decided_at"], name: "idx_corvid_prc_elig_decisions_tenant_person_decided"

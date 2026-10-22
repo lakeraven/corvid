@@ -21,13 +21,42 @@ Feature: Alternate resource tracking (payer of last resort)
 
   Scenario: All alternate resources must be exhausted for PRC authorization
     Given the following alternate resource checks exist:
-      | resource_type      | status       |
-      | medicare_a         | not_enrolled |
-      | medicare_b         | not_enrolled |
-      | medicaid           | exhausted    |
-      | private_insurance  | denied       |
+      | resource_type        | status       |
+      | medicare_a           | not_enrolled |
+      | medicare_b           | not_enrolled |
+      | medicare_d           | not_enrolled |
+      | medicaid             | exhausted    |
+      | va_benefits          | not_enrolled |
+      | private_insurance    | denied       |
+      | workers_comp         | not_enrolled |
+      | auto_insurance       | denied       |
+      | liability_coverage   | exhausted    |
+      | state_program        | not_enrolled |
+      | tribal_program       | denied       |
+      | charity_care         | not_enrolled |
     When I check if alternate resources are exhausted
     Then all resources should be exhausted
+
+  Scenario: A referral with no alternate resource checks is not exhausted
+    When I check if alternate resources are exhausted
+    Then all resources should not be exhausted
+
+  Scenario: A referral with unchecked resource types is not exhausted
+    Given the following alternate resource checks exist:
+      | resource_type        | status       |
+      | medicare_a           | not_enrolled |
+      | medicare_b           | not_enrolled |
+      | medicare_d           | not_enrolled |
+      | medicaid             | exhausted    |
+      | va_benefits          | not_enrolled |
+      | private_insurance    | denied       |
+      | workers_comp         | not_enrolled |
+      | auto_insurance       | denied       |
+      | liability_coverage   | exhausted    |
+      | state_program        | not_enrolled |
+      | tribal_program       | denied       |
+    When I check if alternate resources are exhausted
+    Then all resources should not be exhausted
 
   Scenario: Cannot confirm exhaustion if any resource has active coverage
     Given the following alternate resource checks exist:
@@ -179,13 +208,13 @@ Feature: Alternate resource tracking (payer of last resort)
   # COST OPTIMIZATION — REUSE ACROSS REFERRALS
   # =============================================================================
 
-  Scenario: Recent checks for same patient can seed a new referral
+  Scenario: Seeded checks keep the previous status and still need re-verification
     Given a previous referral "rf_prev" for patient "pt_001" with all checks verified 10 days ago
     And a new PRC referral "rf_new" for that case
     When I seed alternate resource checks from the previous referral
     Then the new referral should have 12 checks
     And all new checks should be pre-populated from the previous verification
-    And no new checks should be stale
+    And all new checks should require re-verification
 
   Scenario: Stale checks from previous referral are not reused
     Given a previous referral "rf_old" for patient "pt_001" with all checks verified 45 days ago
@@ -211,12 +240,27 @@ Feature: Alternate resource tracking (payer of last resort)
     Then the check status should be "not_checked"
     And the check should still count as pending
 
+  Scenario: An unreadable payer response is not recorded as not enrolled
+    Given all 12 alternate resource checks are created for the referral
+    And every eligibility lookup returns an error payload
+    When I verify all enrollment statuses through the alternate resource service
+    Then 0 checks should have status "not_enrolled"
+    And 12 checks should have status "not_checked"
+    And the referral should not be ready for authorization
+
   Scenario: Patient loses coverage between check and authorization
     Given an alternate resource check for "medicaid" exists with status "enrolled"
     And the check was verified 25 days ago
     When the patient's coverage is terminated
     And I re-verify the check
     Then the check status should be "not_enrolled"
+
+  Scenario: Coordinated check drops to enrolled when re-verification finds a different policy
+    Given an alternate resource check for "medicaid" exists with status "coordinated"
+    And the check has policy token "TOK-A"
+    When the check is re-verified with policy token "TOK-B"
+    Then the check status should be "enrolled"
+    And the check policy token should be "TOK-B"
 
   Scenario: Batch verification with mixed results
     Given all 12 alternate resource checks are created for the referral
