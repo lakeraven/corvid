@@ -1,13 +1,17 @@
-# Spec — AI/AN service-eligibility verification as an eligibility-rail transaction
+# Spec — AI/AN service-eligibility verification: a minimal ex parte API, not X12 or FHIR eligibility
 
-Status: **draft, for review. No implementation authorized.** Target: a reviewer decides
-which of the three carriers in §5 we build to, and whether §9's operator-agnostic seam
-holds. The first step in §12 is a findings report, not code.
+Status: **draft spec, for review. Not an ADR. No implementation authorized.** Target: a
+reviewer decides which of the carriers in §5 we build to, and whether §9's
+operator-agnostic seam holds. The first step in §12 is a findings report, not code. The
+Corvid-side decisions (answer vocabulary, replay rule, query log, ceiling) are recorded in
+the ADR that ships with #623, not here; this document is the reasoning that ADR cites.
 
 Scope: how to express "is this person eligible for services from an Indian health
-provider?" as a transaction a state Medicaid eligibility system can already consume,
-so that the H.R. 1 community-engagement exclusion can be verified without inventing a
-proprietary API and without moving any roll, cohort, or clinical record.
+provider?" as a transaction a state Medicaid eligibility system can consume, so that the
+H.R. 1 community-engagement exclusion can be verified without moving any roll, cohort, or
+clinical record. The question started as "which existing eligibility rail carries it?";
+§5 rejects both existing rails (X12 270/271 and FHIR `CoverageEligibility*`) and
+recommends a minimal API shaped to CMS's own ex parte contract instead.
 
 Source: an internal architecture brief, §§5.1–5.3. That brief is off-git and not in this
 repository; its section numbers are cited below for traceability by the team that holds it.
@@ -35,7 +39,9 @@ Every substantive claim below carries one. They are not decoration — the brief
 The brief was written 2026-09-25 and records at §2.1 and §9 item 4 that "CMS has issued
 no implementation guidance — so the interface we would build to has not been specified."
 
-**That is now out of date, and the correction changes the design.** [V]
+**The first half is now out of date, and the correction changes the design.** [V] CMS has
+issued a rule. The second half still holds: the rule specifies no electronic verification
+interface for this exclusion (§0.6).
 
 CMS published **CMS-2454-IFC, "Medicaid Program; Community Engagement Requirement for
 Certain Individuals," 91 FR 33348 (June 3, 2026)** — an interim final rule with comment
@@ -76,7 +82,7 @@ prong of which is *made by the health facility at registration*, and tribal enro
 listed in §136.12 as merely one piece of evidence among several, not the test. [V]
 The integration surface is the health system. [J]
 
-### 0.2 The rule prohibits reverification
+### 0.2 The rule prohibits reverification between scheduled redeterminations
 
 Preamble, discussing the exclusion: [V]
 
@@ -89,11 +95,24 @@ And the rule encourages States to prefer this exclusion over others precisely be
 reverified." [V] American Indians are also exempt from the new 6-month renewal cycle for
 the adult group and stay on 12-month renewal. [V]
 
-**Design consequence:** the transaction is **once per person, for life** — not once per
-renewal and not monthly. [J] Volume is a function of the unverified backlog plus new
-applications, not of the enrolled population times twelve. That makes a federated,
-low-capacity endpoint (brief §5.2) viable where a monthly-recheck design would not be,
-and it strips away the main argument for bulk anything. [J]
+**The regulation text is narrower than the preamble.** 42 CFR 435.557(d)(4) bars a State
+from reverifying the status of a person determined to be a specified excluded individual
+**between regularly scheduled redeterminations**, unless it has information that the status
+changed. [V, as recorded in #625 and #623's ADR] The preamble's "may not reverify" is
+commentary on that rule; the operative text does not reach the regularly scheduled
+redetermination itself. An earlier draft of this section read the preamble as "once per
+person, for life." That over-read the rule, and it is corrected here to match #625 as
+re-scoped on 2026-10-11.
+
+**Design consequence:** the transaction is **once per person per redetermination period**
+(12 months for this population), not once for life, and not monthly. [J] Between scheduled
+redeterminations a repeat inquiry gets the earlier `eligible` or `not_eligible` answer
+replayed, with its original provider and timestamp; at a scheduled redetermination the
+provider is asked again; `unknown` is never replayed (§8 item 6). Volume is the unverified
+backlog plus new applications plus one inquiry per person per year — not the enrolled
+population times twelve. That still makes a federated, low-capacity endpoint (brief §5.2)
+viable where a monthly-recheck design would not be, and it still strips away the main
+argument for bulk anything. [J]
 
 ### 0.3 The rule points at a federal conduit, which answers the brief's top unknown
 
@@ -242,9 +261,10 @@ certainly not what CMS wrote.
    Secretary's judgment with no test stated in the regulation itself. That is genuinely
    loose drafting, and it is loose at exactly the point this design depends on.
 2. **The looseness runs protectively, not fraudulently.** Its effect is that once a status
-   is established it is permanent **by rule**. For the people this design serves that is
-   the single most valuable property in the whole rule (§0.2), and it is why the
-   transaction is once-per-lifetime. We should not advocate tightening it. We should
+   is established it cannot be reopened **by rule** between scheduled redeterminations. For
+   the people this design serves that is the single most valuable property in the whole
+   rule (§0.2), and it is why the transaction runs once per redetermination period rather
+   than monthly. We should not advocate tightening it. We should
    record that we noticed, because a reviewer who finds it independently will otherwise
    assume we did not. [J]
 
@@ -309,10 +329,14 @@ birth, MRNs, SSNs"; acceptance criterion is that a corvid database dump reveals 
 
 So: corvid may carry the protocol, the inbound query log (tokenized subject, requesting
 state, agreement reference, timestamp, outcome), and the audit surface. The determination
-is read through the adapter seam from RPMS and **is not persisted by corvid**. Corvid's
-existing `Corvid::BillingTransaction` already models exactly this shape — a tokenized
-request/response audit row for clearinghouse traffic — and is the obvious parent pattern.
-[V, repo] [J for the conclusion]
+is read through the adapter seam from RPMS and **is not persisted by corvid** as a
+determination of its own. The query log is a **dedicated table**,
+`corvid_indian_health_eligibility_inquiries` (#623): tenant-scoped, one row per inquiry,
+with a string-enum `answer` under a CHECK constraint and no evidence columns. An earlier
+draft pointed at `Corvid::BillingTransaction` as the parent pattern; that was wrong, because
+a clearinghouse audit row is not this transaction and sharing a table would put AI/AN
+inquiries inside billing reporting. [J] The table's columns and constraints are #623's
+ADR's to decide.
 
 ### 1.7 The federal definition is broader than tribal citizenship, and the language must never blur them
 
@@ -354,7 +378,7 @@ Four consequences. The first is a hard rule.
    citizens" — the set is not your citizens. The true claim is narrower, and stronger for
    being true: **"your clinic confirms who your clinic serves."**
 3. **Over-inclusion is the misuse direction, and it harms nations rather than
-   individuals.** A `true` may describe someone a nation does not recognize. So a portable
+   individuals.** An `eligible` may describe someone a nation does not recognize. So a portable
    credential (§5.4) will not merely be demanded by parties with no right to it — it will
    be **misread as evidence of tribal membership**, over-inclusively, eroding exactly the
    authority to define citizenship that §1.5 protects. This is a sharper version of
@@ -367,7 +391,7 @@ Four consequences. The first is a hard rule.
 **Disenrollment is the sharpest demonstration of the gap, and the most politically charged
 case this design will ever touch.** Because §447.51 is a disjunction and §136.12 operates
 independently (§0.8), a person a nation has **affirmatively declared not to be a citizen**
-may remain federally service-eligible, and a clinic determination may read `true` for them.
+may remain federally service-eligible, and a clinic determination may read `eligible` for them.
 [J]
 
 That is the over-inclusion direction at its most consequential, and it sets a boundary the
@@ -380,8 +404,9 @@ mechanisms. [J]
 
 **A noted digression, resolved elsewhere:** community regard can lapse — someone vouched
 for in one year may move away the next. That is real, and it is precisely why the IFC's "not
-subject to change" premise fails for this prong. See §0.8; it changes nothing here, because
-§0.2 forbids the state from rechecking regardless.
+subject to change" premise fails for this prong. See §0.8. §0.2 forbids the state from
+rechecking between scheduled redeterminations; at a redetermination the provider is asked
+again, and §8 item 6 sets out what that fresh answer can and cannot reveal.
 
 ---
 
@@ -395,13 +420,25 @@ Stated once, carrier-independent, so §5 can be compared against it:
 | **Asker** | A State Medicaid or CHIP eligibility agency (or its systems integrator acting for it under a §435.945(i) agreement) |
 | **Answerer** | An Indian health care provider or a body operating on its behalf — I/T/U per 42 CFR 447.51's "Indian health care provider" definition [V] |
 | **Subject** | One named individual, supplied by the asker |
-| **Answer** | `true` / `false` / `unknown`, plus asserting-party identity, plus assertion timestamp |
-| **Frequency** | Once per individual, for life (§0.2) |
+| **Answer** | `eligible` / `not_eligible` / `unknown`, plus asserting-party identity, plus assertion timestamp. Same vocabulary as `MedicaidRuleSetResolver::INDIAN_EXEMPTIONS` on main and #623 |
+| **Not an answer** | `unavailable` — the source could not be asked (adapter returns nil or errors, or a decisive answer arrives without a named provider and a time). Logged, returned as a failure (503 in #623), never as `unknown` |
+| **Frequency** | Once per individual per regularly scheduled redetermination (§0.2). Between redeterminations a decisive answer is replayed; at redetermination the provider is asked again; `unknown` is always asked again |
 | **Legal basis for the asker** | 42 CFR 435.557(b)(1)(ii)–(iii), 435.945(h)–(k) |
 | **Legal basis for the answerer** | Not a HIPAA standard transaction (§5.1.2); disclosure analysed under 45 CFR 164.506/164.512(k) or a §435.945(i) agreement — **[G], see §11** |
 
 Note what is *not* in that table: any statement about the individual's tribe, enrollment,
 descent, degree, residence, clinical history, or which §136.12 prong applied.
+
+**`unknown` and `unavailable` are different facts, and conflating them fails open.** [J]
+`unknown` is an answer: the provider was asked and holds no determination for this person.
+`unavailable` is the absence of an answer: the provider was not reached, or what came back
+could not be trusted. A state that reads `unavailable` as `unknown` records "the provider
+has no determination" about someone the provider never looked up — a false negative that
+lands as a documentation demand in 2028. And a state that reads either one as `not_eligible`
+records a determination nobody made. So `unavailable` is a transport outcome (a failure
+status, retryable), not one of the three answers, and it is never replayed. #623 also logs
+a fifth row type, `refused`, when the operator's ceiling (§8 item 7) turns an inquiry away;
+like `unavailable`, it is a log outcome and not an answer.
 
 ---
 
@@ -651,9 +688,11 @@ Follow the Emmy contract, element-for-element where it exists, and borrow
   - no batch endpoint, ever (§1.1; Emmy has one for education, we must not)
   - `dataSource` names the *asserting provider or operating body*, not a vendor —
     this is the §1.2 seam and the provenance requirement in one field
-  - `unknown` is a first-class answer distinct from `false`, because "we hold no
+  - `unknown` is a first-class answer distinct from `not_eligible`, because "we hold no
     determination" and "we determined this person is not service-eligible" are different
     facts and conflating them causes wrongful disenrollment [J]
+  - an unreachable source is a failure status (`unavailable`), not a fourth answer and not
+    `unknown` (§2) [J]
 
 Concrete field definitions are **deliberately not written here.** §12 step 3 authors them,
 after step 1's findings report closes §11's gaps. Writing a schema now would be the
@@ -661,11 +700,20 @@ fabrication this document's constraints forbid.
 
 #### 5.3.2 What each side would have to do
 
-- **State:** one HTTPS client with client-credentials OAuth, one new field in the
-  eligibility record, one entry in the §435.945(j) verification plan. This is the smallest
-  state-side change of the three by a large margin — and if the State already integrated
-  the Emmy API for VA or NSC data, it is a new base URL and a new client registration
-  against a contract its vendor has already implemented. [J]
+- **State, per transaction:** one HTTPS client with client-credentials OAuth, one new
+  field in the eligibility record, one entry in the §435.945(j) verification plan. If the
+  State already integrated the Emmy API for VA or NSC data, the transport and auth code may
+  be reusable, but §5.3.1's deliberate divergences (no address fallback, no batch, the
+  `dataSource` rule, the `unknown`/`unavailable` split) still need client changes. [J]
+- **State, per operator — and this is most of the work under the federated model.** §9
+  gives each operator its own base URL and credential issuer, so for every operator the
+  State connects to it needs: a §435.945(i) written agreement; a verification-plan entry
+  naming that source under §435.557(b)(1)(ii)–(iii); a client registration with that
+  operator's issuer; a credential lifecycle (issue, rotate, revoke on the operator's say,
+  §8 item 4); and routing that decides which operator to ask, which §9 rule 2 leaves
+  unsolved. That cost scales with the number of operators, not with the number of people.
+  The centralised models in §9 collapse it to one agreement and one registration; that is a
+  real argument for them, recorded here rather than in their favour. [J]
 - **Tribal endpoint:** one authenticated POST route, a read of the existing RPMS
   registration determination, a query log, and no persistence of the determination.
   Deployable by a site with the capacity brief §5.2 describes as the binding constraint. [J]
@@ -745,10 +793,13 @@ That 7% is the most important number in this section. [J]
 4. **It turns the 1 Jan 2028 mandate into the adoption driver.** §435.557(b)(2)(ii) requires
    documentation whenever reasonably available; a clinic-signed credential **is**
    documentation, issued by the authority §447.51's definition chain points at. [J]
-5. **Staleness is a near-non-issue here, unusually.** §0.2's reverification prohibition means
-   the attribute does not change. Wrongly-issued credentials still need a status mechanism,
-   but a status check concerns a *credential*, not a person — a materially smaller
-   disclosure than §5.3's per-person query. [J]
+5. **Staleness is a smaller issue here than usual.** §0.2's prohibition means the state may
+   not reopen the attribute between scheduled redeterminations, so a credential is good for
+   at least that long. Whether a state accepts a credential issued before the current
+   redetermination period, or wants a fresh one, is a state policy question (§15).
+   Wrongly-issued credentials still need a status mechanism, but a status check concerns a
+   *credential*, not a person — a materially smaller disclosure than §5.3's per-person
+   query. [J]
 
 #### 5.4.4 What it breaks
 
@@ -778,6 +829,12 @@ That 7% is the most important number in this section. [J]
    the loop. This is a new coercion surface that §5.3 does not have, and §5.6 shows it is
    not hypothetical. [J]
 
+#### 5.4.5 Verdict
+
+**Recommended as the documentation-tier carrier, sequenced second.** [J] It shares §5.3's
+determination source, one-bit discipline, provenance rule, and enrollment refusal — it is
+a second *presentation* of the same core, not a second system.
+
 #### 5.4.6 Revocation must not become a disenrollment feed
 
 Falls out of §0.8 and §1.7, and it is the credential analogue of §8 item 6. [J]
@@ -788,19 +845,15 @@ signal, timed to a nation's governance action, about a named individual — stri
 than the query-pattern residue §5.4 was adopted to eliminate.
 
 Revocation is therefore reserved for **issuance error and key compromise**, and nothing
-else. Credentials carry no routine expiry that would force re-presentation and
-re-determination, which §0.2 makes unnecessary anyway.
+else. Credentials carry no routine expiry that would force re-determination between
+scheduled redeterminations, which §0.2 forbids the state to require anyway. Whether a state
+asks the person for a freshly issued credential at a scheduled redetermination is the
+state's policy, not a revocation event (§15).
 
 The uncomfortable corollary, stated plainly: a credential may remain valid for someone a
 nation has since disenrolled. That is the correct behaviour under §1.7 — the credential
 asserts what a clinic determined, not what a nation decided — but it is the kind of thing
 that must be said out loud to a tribal partner before it is discovered. [J]
-
-#### 5.4.5 Verdict
-
-**Recommended as the documentation-tier carrier, sequenced second.** [J] It shares §5.3's
-determination source, one-bit discipline, provenance rule, and enrollment refusal — it is
-a second *presentation* of the same core, not a second system.
 
 ### 5.5 Why not a distributed ledger
 
@@ -1025,7 +1078,9 @@ from tribal infrastructure. [J]
 **Treat the Hub as the destination, not the competitor.** §435.557(e) means that if CMS
 ever puts AI/AN verification on the Hub, every State must migrate to it within 12 months.
 A design that is a §435.557(b)(1)(ii) source today and a Hub-backed source later is the
-same transaction with a different base URL — *provided* §9 holds. [J]
+same transaction contract behind a different base URL — *provided* §9 holds. [J] For the
+State that migration is the easy direction: it replaces many per-operator agreements and
+registrations (§5.3.2) with one Hub connection. [J]
 
 ---
 
@@ -1041,9 +1096,12 @@ same transaction with a different base URL — *provided* §9 holds. [J]
    where the individual learns a tribal endpoint was queried.
 5. Store **the determination**, against the individual record. Not the query, not a flag
    that means "we asked a tribal endpoint about this person." (§1.4, §10.)
-6. **Never reverify** — §435.554(c)(2) per the §0.2 preamble prohibition. [V] A state
-   system that re-queries at each renewal is non-conformant with the rule, not merely
-   impolite.
+6. **Do not reverify between scheduled redeterminations** — §435.557(d)(4), §0.2. [V] A
+   state system that re-queries between redeterminations without information that the
+   status changed is non-conformant with the rule, not merely impolite. At a regularly
+   scheduled redetermination it asks again, and the endpoint answers afresh (§8 item 6).
+7. **Treat `unavailable` as "not asked", never as `unknown` or `not_eligible`** (§2). Retry
+   it, or fall back to the next §6.1 tier; record nothing about the person from it.
 
 ## 8. What the tribal endpoint must expose (§5.3)
 
@@ -1054,34 +1112,51 @@ same transaction with a different base URL — *provided* §9 holds. [J]
    Reading the enrollment fields would make the endpoint sensitive to a nation's governance
    actions, which is §1.7's prohibition expressed as a field list.
 3. A query log the operator can read: requesting state, agreement reference, subject token,
-   timestamp, answer returned, `messageId`. Pattern after
-   `Corvid::BillingTransaction.log_transaction!`. [V, repo]
+   timestamp, answer returned (including `unavailable` and `refused` rows), `messageId`, and
+   whether the answer was replayed. In corvid this is the dedicated
+   `corvid_indian_health_eligibility_inquiries` table from #623, not
+   `Corvid::BillingTransaction`. [J]
 4. Revocation: per-requester credentials the operator can withdraw unilaterally, without
    coordinating with us or with any other operator. [J]
 5. Nothing else. No search, no list, no batch, no "patients matching" endpoint, no
    reporting surface over the query log beyond the operator's own view.
-6. **Asymmetric immutability.** A **determination** (`true` or `false`), once given, is
-   replayed verbatim with its original timestamp on any repeat query — the endpoint must not
-   re-determine. **`unknown` is not a determination and must never be frozen.**
+6. **Replay within a redetermination period; ask again at redetermination.** Follows
+   §435.557(d)(4) as #625 re-scoped it on 2026-10-11. [V for the rule; J for the
+   enforcement]
 
-   **Correction — an earlier draft of this item froze all three answers, and that was a
-   defect with a victim.** [J] If a state asks before a person has established care, the
-   honest answer is `unknown`; freezing it would mean that once the person *does* register
-   and become service-eligible, the endpoint is architecturally prevented from ever saying
-   so. A rule written to protect nations from disenrollment surveillance would have
-   permanently locked eligible people out of the exclusion — the exact coverage loss this
-   design exists to prevent. Found by the §12 step-4 gate, not by the author.
+   - Between regularly scheduled redeterminations, a **determination** (`eligible` or
+     `not_eligible`), once given, is replayed verbatim with its original provider and
+     timestamp on any repeat query, including from another requester under the same
+     tenant. The endpoint does not re-determine.
+   - At a regularly scheduled redetermination, the provider is asked again, and the fresh
+     answer becomes the one replayed for the next period.
+   - **`unknown` is not a determination and is never replayed.** The next inquiry asks the
+     provider again.
+   - `unavailable` and `refused` are never replayed; they are not answers (§2).
 
-   So: `unknown` → `true` is a permitted transition and the only permitted one. `true` never
-   changes. `false` never changes. The endpoint therefore cannot be used to watch a
-   determination be withdrawn, which is the §1.7 guarantee, while remaining able to report a
-   determination that did not exist yet.
+   How an inquiry says it is for a scheduled redetermination, and how that claim is bound
+   by the §435.945(i) agreement and logged, is a Corvid-side decision for #623's ADR. The
+   endpoint does not model the State's renewal calendar. [J]
 
-   Rationale for the immutable half: §0.8 establishes that every prong can change, and
-   disenrollment is one way (§1.7). A state that asked twice and saw `true` become `false`
-   would be reading a nation's governance action through a Medicaid interface. §0.2 forbids
-   re-asking, but a guarantee that depends on the consumer obeying someone else's rule is not
-   a guarantee. **Enforce §0.2 at the source.** [J]
+   **Correction — the first draft froze all three answers forever, and a later draft froze
+   `eligible` and `not_eligible` forever. Both were wrong.** [J] Freezing `unknown` meant that
+   once a person who was asked about before establishing care *does* register and become
+   service-eligible, the endpoint could never say so — permanently locking eligible people
+   out of the exclusion, the coverage loss this design exists to prevent. Found by the §12
+   step-4 gate. Freezing decisive answers for life read the IFC preamble as broader than
+   §435.557(d)(4), which bars reverification only between scheduled redeterminations; found
+   in the #623 review and settled in #625.
+
+   **What this costs the §1.7 guarantee, stated plainly.** Within a redetermination period a
+   state cannot watch a determination be withdrawn: a repeat query returns the earlier
+   answer. Across periods it can. A person answered `eligible` this year may be answered
+   `not_eligible` at next year's redetermination, and if the clinic's change was driven by a
+   nation's enrollment action, the state has read that action once, a year late, through a
+   Medicaid interface. Two things narrow it: item 2 reads only the clinic's own determination
+   fields, never the enrollment fields, so a disenrollment moves the answer only if the
+   clinic changes its §136.12 determination; and the cadence is the State's existing renewal
+   cycle, not a channel the State can drive at will. It is narrowed, not closed, and it goes
+   to the §12 step-4 governance review as such (§15). [J]
 
 7. **Volume and purpose controls, because sequential single queries are a search.** [J]
    Found by the same gate pass. §1.1 forbids search and batch, but nothing in items 1–6 stops
@@ -1104,7 +1179,7 @@ same transaction with a different base URL — *provided* §9 holds. [J]
 
 9. **The limits of items 6–8, stated so they are not oversold.** None of these constrains
    what a state does *after* it has an answer, and none closes the multi-provider path: a
-   state asking provider A (`unknown`) then provider B (`true`) obtains two lawful first
+   state asking provider A (`unknown`) then provider B (`eligible`) obtains two lawful first
    answers and infers a registration pattern anyway. That is §9 rule 2 — the unsolved
    directory problem — reappearing as a disclosure channel rather than a usability gap, and
    it is **not fixed here**. Nor is cross-channel leakage, where a state holds `unknown` from
@@ -1168,10 +1243,12 @@ will not survive a tribal partner's counsel. [J]
 
 Three further points, which are ours and not in the brief: [J]
 
-- **§0.2 helps more than any contract clause.** Because the State may not reverify, the
-  conformant query volume is one per person, once. A design that cannot re-ask cannot
-  accumulate a longitudinal query pattern.
-- **The `unknown` answer is the leak.** A `false` or `unknown` for a person the state
+- **§0.2 helps more than any contract clause.** Because the State may not reverify between
+  scheduled redeterminations, the conformant query volume is one per person per
+  redetermination period, and repeat queries inside a period are replays. A design that
+  re-asks only on the State's own renewal cycle accumulates a longitudinal pattern of at
+  most one point a year per person, not one per contact. [J]
+- **The `unknown` answer is the leak.** A `not_eligible` or `unknown` for a person the state
   nonetheless believes may be AI/AN is the §5.3 disclosure in its purest form — the state
   learns the *absence* of a determination, which is information about the individual's
   relationship to the Indian health system that no one asserted. The agreement must treat
@@ -1282,9 +1359,10 @@ Listed because brief §9 item 4 is right that an unadmitted gap is the failure m
    the §12 step-4 governance review as an open problem rather than solving it
    unilaterally.**
 16. **[Open] Cross-channel leakage between §5.3 and §5.4.** A state holding `unknown` from a
-   query, who later receives a credential asserting `true`, learns the transition — which is
-   the §8 item 6 transition and therefore benign — but the converse (credential presented,
-   then a query returning `false`) is not analysed. Analyse before §5.4 is scoped.
+   query, who later receives a credential asserting `eligible`, learns the transition — which
+   is the `unknown` → `eligible` case §8 item 6 permits and therefore benign — but the converse
+   (credential presented, then a query returning `not_eligible`, possibly at a later
+   redetermination) is not analysed. Analyse before §5.4 is scoped.
 17. **[G] Identity matching and wrongful non-match.** §5.3.1 specifies exact SSN matching and
    refuses demographic fallback, because a near-match against this population is itself a
    disclosure. The cost is unmeasured: I/T/U records are known to carry missing or mismatched
@@ -1312,9 +1390,13 @@ Listed because brief §9 item 4 is right that an unadmitted gap is the failure m
    determination is not reliably recorded at registration across real sites, §0.1's thesis
    is weaker than the brief believes and the whole design changes.
 2. **Correct the source brief.** Its §2.1 and §9 item 4 say CMS has issued no
-   implementation guidance. §0 of this document supersedes that, and §0.5's 1 Jan 2028
-   documentation cliff changes its §10.1 sequencing argument. Whoever holds that brief
-   should update it before it is relied on again.
+   implementation guidance. Half of that is now wrong and half still right, and the brief
+   should say which. CMS-2454-IFC is **regulatory** guidance: it sets the basis for the
+   exclusion (§0.1), the reverification limit (§0.2) and the dates (§0.5), and §0 of this
+   document supersedes the brief on those. It is **not** interface guidance: §0.6 records
+   that it specifies no electronic verification interface, so the brief's statement that
+   the interface we would build to has not been specified still stands. Whoever holds that
+   brief should make that distinction before it is relied on again.
 3. **Interface definition.** Only after step 1. The OpenAPI document and the
    `VerificationResult`-derived payload vocabulary, with every field traced to either the
    Emmy contract [V] or a `VerificationResult` element [V]. Reviewed by a second vendor
@@ -1325,7 +1407,8 @@ Listed because brief §9 item 4 is right that an unadmitted gap is the failure m
    that room. The §10 table is drafted so that it can be handed over as-is.
 5. **Reference implementation**, federated shape, in corvid, behind the §1.6 boundary:
    protocol and query log in corvid, determination read through the adapter, nothing
-   persisted. Gate seat authors the feature files and failing tests first.
+   persisted. Gate seat authors the feature files and failing tests first. #623 is this
+   step, built ahead of steps 1 and 4 and held in draft until they close.
 6. **The §5.1.5 companion item** — State→provider 271 reporting of the established
    exclusion — scoped separately once step 1 lands. It shares none of this design's
    blockers.
@@ -1358,8 +1441,8 @@ someone looks closely.
   owner and process named, is in scope; writing one here is not.
 - Deciding who operates the endpoint. That is brief §5.2, it is a governance decision, and
   §9 exists so that this design does not need the answer.
-- The state-side user experience, notices, and appeal path when the answer is `false` or
-  `unknown`. Real, consequential, and not a protocol question.
+- The state-side user experience, notices, and appeal path when the answer is
+  `not_eligible` or `unknown`, or when the source is `unavailable`. Real, consequential, and not a protocol question.
 - CMS voluntary module pre-certification packaging (§11 item 9).
 - Medicare claims EDI, TCEDI integration, and anything on the Part A/B MAC rail
   (§11 item 8).
@@ -1383,7 +1466,9 @@ someone looks closely.
   PR title, not in a deck. The assertion is service eligibility, determined by a facility.
 - **Policing, reporting, or enabling inference of enrollment or disenrollment** (§1.7,
   §8 item 6, §5.4.6). A nation's decisions about its citizenry must not be observable
-  through this transaction, including by repeated querying or by revocation timing.
+  through this transaction, including by repeated querying or by revocation timing. The
+  one residual channel, a changed answer at a scheduled redetermination, is admitted in §8
+  item 6 and carried to the governance review rather than designed around.
 - **Any use of the transaction or credential outside Medicaid or CHIP eligibility
   determination** (§1.7 consequence 3). Because the federal set over-includes relative to
   tribal citizenship, reuse elsewhere is not merely out of scope — it is wrong, and wrong
@@ -1391,7 +1476,63 @@ someone looks closely.
 
 ---
 
-## 14. Primary sources
+## 14. Relation to check currency (#640/#667)
+
+#640, and #667 on main, decide when an `AlternateResourceCheck` is current for a date of
+service: fresh within a per-type maximum age (Medicaid 30 days by default), a reported
+coverage period that covers the date, and no passed renewal date; seeded checks start as
+needing re-verification. [V, repo] Those rules and this transaction answer different
+questions and must not be merged. [J]
+
+- **A replayed answer is not a stale check.** Its validity is bounded by the State's
+  scheduled redetermination (§0.2), not by an age. Applying #667's maximum age to it would
+  re-ask the provider between redeterminations, which §435.557(d)(4) bars. So the
+  `indian_health_eligibility` answer gets no `current_for?`, no max age, and no seeding
+  rule.
+- **An `eligible` answer does not make Medicaid coverage current.** The exemption answer
+  says the person is excluded from community engagement; it says nothing about whether
+  their Medicaid coverage is in force for a date of service. A Medicaid alternate-resource
+  check still has to pass #667's currency test on its own.
+- **The renewal date #667 records may be the obvious signal for "a scheduled
+  redetermination has arrived"** (§8 item 6). Whether Corvid uses it that way, or relies on
+  the requester to say so, is a Corvid-side decision for #623's ADR, and §15 lists it.
+
+---
+
+## 15. Open questions for the owner
+
+These are not research gaps §12 step 1 can close alone; each needs a decision or a person
+outside this document. Items 1–4 block #623 from leaving draft.
+
+1. **What RPMS field `1112` ELIGIBILITY STATUS (`I`/`D`/`C`/`P`) actually means** (§11 item
+   3). If it encodes direct-care versus purchased/referred-care scope rather than the
+   §136.12 determination, `1111` is the only correct field and `1112` must not be read.
+2. **The HIPAA Privacy Rule basis for the provider's disclosure** (§11 item 4): 45 CFR
+   164.512(k), 164.506, an authorization, or the §435.945(i) agreement as the vehicle. A
+   question for counsel; it decides whether the ex parte tier is available at all.
+3. **Endpoint discovery** (§9 rule 2, §11 items 6 and 15). How a State knows which provider
+   to ask, without a directory that rebuilds the roll. Unsolved by design; the per-operator
+   cost in §5.3.2 makes it more pressing under the federated model.
+4. **The §12 step-4 governance review**: the operator model (brief §5.2), the §10 retention
+   terms, and the residual cross-period disclosure that §8 item 6 now admits. Who convenes
+   it, and whether it happens before #623 merges.
+5. **How an inquiry is marked as a scheduled redetermination** (§8 item 6, §14): a
+   requester-declared purpose bound by the agreement, the renewal date #667 records, or
+   something else. And whether the endpoint honours a between-redetermination re-ask that
+   claims "information that the status changed" under §435.557(d)(4), which would reopen
+   the §1.7 channel at the State's discretion. Settled in #623's ADR, after the owner
+   decides.
+6. **Whether a state may require a freshly issued §5.4 credential at a scheduled
+   redetermination**, or must accept one issued earlier (§5.4.3 item 5, §5.4.6). State
+   policy, but it shapes whether credentials need an issuance date in the payload.
+
+The Corvid-side decisions this spec leads to (the answer vocabulary, the `unavailable`
+outcome, the replay rule, the query-log table and the ceiling) belong in the ADR that ships
+with #623, not in this spec.
+
+---
+
+## 16. Primary sources
 
 Statute and regulation, read directly:
 
@@ -1439,5 +1580,7 @@ Comparative and empirical:
 - California Bureau of Automotive Repair Smog Check Manual / Reference Guide
   (licensed station → VID → DMV certificate of compliance; customer-held VIR)
 - CMS Transmittal R13839OTN (CR 14473), TCEDI as Part A/B MAC X12 production translator
-- This repository: ADR 0002, ADR 0003, `Corvid::BillingTransaction`,
-  `Corvid::Adapters::Base#check_eligibility_detailed`
+- This repository: ADR 0002, ADR 0003, `Corvid::MedicaidRuleSetResolver::INDIAN_EXEMPTIONS`,
+  `Corvid::AlternateResourceCheck#current_for?` (#667); PR #623
+  (`corvid_indian_health_eligibility_inquiries`, `Corvid::IndianHealthEligibilityService`);
+  issue #625

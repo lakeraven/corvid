@@ -41,7 +41,8 @@ determination:
 The answer is **yes**, **no**, or **we hold no determination** — plus **who** asserts it and
 **when**. Nothing else. No roll, no list, no batch, no search, no demographics, no tribe
 name, no enrollment number, no blood quantum, no degree of descent, and no reason code
-saying *why* the answer is yes.
+saying *why* the answer is yes. If the provider cannot be reached, the state gets no answer
+at all — not "no determination" — and must treat the person as not yet asked.
 
 Two possible delivery paths: the state asks the provider directly (no action required from
 the person), or the person carries a signed confirmation and shows it when asked.
@@ -82,8 +83,10 @@ is detail.
 
 What federal rule already requires: the person must be told; the exchange must be secure; a
 written agreement with use-and-disclosure safeguards must exist first; and **the state may
-never re-check this determination** — once established it is permanent by rule, so the
-number of questions ever asked about one person is one.
+not re-check this determination between scheduled renewals** — so the number of questions
+asked about one person is one per renewal period (12 months for this population), not one
+per contact. An earlier version of this document said "once, for life"; the rule's text is
+narrower than its preamble, and the state may ask again at a scheduled renewal.
 
 What must be negotiated and will not happen by itself: the shape in which the state stores
 the determination; no secondary use, analytics, cohort-building, cross-program sharing, or
@@ -102,8 +105,8 @@ large operator than a small one (§4).
 
 ### 2.3 Serial querying across providers defeats part of the design
 
-The design refuses to answer twice about the same person, so a state cannot watch an answer
-change. But a state may ask provider A ("no determination") and then provider B ("yes") —
+Within a renewal period the design replays its first answer about the same person, so a
+state cannot watch an answer change. But a state may ask provider A ("no determination") and then provider B ("yes") —
 two lawful first answers — and infer a registration pattern anyway.
 
 **We have not solved this.** The obvious fix is a shared record across providers of who has
@@ -156,16 +159,20 @@ Nations disenroll; that is a sovereign act. Because the definition is a list of
 alternatives, **a person a nation has disenrolled may still be eligible for services**, and
 a provider's record may still read yes.
 
-**Blocked.** Once the service has given a yes or a no it replays that answer with its
-original timestamp and does not look again — so a state cannot watch a determination be
-withdrawn, which would be reading a nation's governance decision through a Medicaid
-interface. And a person-carried confirmation is never cancelled because the underlying
+**Blocked, within a renewal period.** Once the service has given a yes or a no it replays
+that answer with its original timestamp until the state's next scheduled renewal and does
+not look again — so a state cannot watch a determination be withdrawn by asking twice,
+which would be reading a nation's governance decision through a Medicaid interface. And a person-carried confirmation is never cancelled because the underlying
 situation changed; cancellation is reserved for issuing errors and security problems. If we
 cancelled on change, the cancellation list would be a machine-readable disenrollment feed
 timed to your decisions.
 
 **Not blocked.** §2.3's serial querying, and everything a state does after it has an
-answer. And the uncomfortable consequence of the cancellation rule: **a confirmation may
+answer. **And the next renewal:** at a scheduled renewal the provider is asked again, so a
+yes that became a no — because the provider changed its own determination, possibly after a
+disenrollment — is visible to the state once, at that renewal. The service reads only the
+provider's own determination, never enrollment records, so a disenrollment shows up only if
+the provider changes its determination. That narrows the channel; it does not close it. And the uncomfortable consequence of the cancellation rule: **a confirmation may
 remain valid for someone a nation has since disenrolled.** We think that is correct — it
 reports what a provider determined, not what a nation decided — but you should hear it from
 us.
@@ -175,8 +182,10 @@ including "we hold no determination." A reviewer pointed out that if a state ask
 person establishes care, the honest answer is "no record" — and freezing it would mean that
 once the person does register and become eligible, the service could never say so. A rule
 meant to protect nations would have permanently locked eligible people out of the exclusion.
-Fixed: "no determination" can later become "yes"; yes and no never change. We show it
-because it is the kind of error review exists to catch.
+Fixed: "no determination" is never frozen, so it can later become "yes". A later version
+then froze yes and no for life, which read the federal rule as broader than it is; fixed
+again, so yes and no hold until the next scheduled renewal. We show both because they are
+the kind of error review exists to catch.
 
 ### 2.6 Some eligible people will not be found
 
