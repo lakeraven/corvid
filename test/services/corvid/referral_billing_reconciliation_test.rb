@@ -162,6 +162,58 @@ class Corvid::ReferralBillingReconciliationTest < ActiveSupport::TestCase
     end
   end
 
+  test "a partial denial reported as its own line in the same remittance still settles the claim" do
+    with_tenant(TENANT) do
+      claim = accepted_claim("RC-DENYLINE", billed: 500.0)
+
+      rem = remittance("REM-DENYLINE", claim, paid: 350.0, adjustment: 100.0)
+      rem[:line_items] << { claim_identifier: claim.claim_identifier, paid_amount: 0.0,
+                            denied_amount: 50.0, status: "denied" }
+      reconcile_against(claim, [ rem ])
+
+      assert_equal "paid", claim.reload.status,
+        "a denied $50 line beside $450 paid and adjusted is a partial denial, not a denied claim"
+    end
+  end
+
+  test "a denial written off as an adjustment with nothing paid is a denial" do
+    with_tenant(TENANT) do
+      claim = accepted_claim("RC-DENYADJ", billed: 425.0)
+
+      reconcile_with(claim, paid: 0.0, adjustment: 425.0, line_status: "denied")
+
+      assert_equal "denied", claim.reload.status,
+        "an 835 carries a denial as a CO adjustment; nothing was paid, so it is not paid"
+    end
+  end
+
+  test "a reversed payment does not leave the claim recorded as paid" do
+    with_tenant(TENANT) do
+      claim = accepted_claim("RC-REVERSED", billed: 425.0)
+      paid = remittance("REM-PAID", claim, paid: 425.0, date: 10.days.ago.to_date)
+      reconcile_against(claim, [ paid ])
+      assert_equal "paid", claim.reload.status
+
+      reconcile_against(claim, [ paid, remittance("REM-TAKEBACK", claim, paid: -425.0) ])
+
+      refute_equal "paid", claim.reload.status,
+        "the payer took the money back; the claim is owed again"
+      assert_equal 0, claim.paid_amount.cents
+    end
+  end
+
+  test "an unidentified remittance returned twice is counted once" do
+    with_tenant(TENANT) do
+      claim = accepted_claim("RC-NOID", billed: 500.0)
+
+      rem = remittance("REM-NOID", claim, paid: 250.0).except(:remittance_identifier)
+      reconcile_against(claim, [ rem, rem.deep_dup ])
+
+      refute_equal "paid", claim.reload.status,
+        "counting an unidentified duplicate twice would settle a half-paid claim"
+    end
+  end
+
   test "remittances that cannot be read leave the claim untouched" do
     with_tenant(TENANT) do
       claim = accepted_claim("RC-UNKNOWN", billed: 100.0)
