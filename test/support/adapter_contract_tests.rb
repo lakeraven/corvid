@@ -54,6 +54,16 @@ module AdapterContractTests
 
   REFUND_SUCCESS_STATUSES = %w[refunded succeeded].freeze
 
+  # verify_eligibility must not answer from an arbitrary coverage when the
+  # requested resource type is missing or blank (ADR 0005).
+  BLANK_VERIFY_ELIGIBILITY_RESOURCE_TYPES = [
+    nil,
+    "",
+    "   ",
+    "\t \n",
+    :""
+  ].freeze
+
   NO_IDENTIFIER_METHODS = %i[
     fetch_remittances
     get_budget_summary
@@ -577,6 +587,14 @@ module AdapterContractTests
 
     def assert_coverage_resource_type_guards(seed)
       adapter = contract_adapter
+
+      AdapterContractTests::BLANK_VERIFY_ELIGIBILITY_RESOURCE_TYPES.each do |blank_type|
+        result = adapter.verify_eligibility(seed[:patient_identifier], blank_type)
+        assert_nil result,
+                   "verify_eligibility(#{blank_type.inspect}) must be nil (undetermined), " \
+                   "never a coverage answer, got #{result.inspect}"
+      end
+
       match = adapter.verify_eligibility(seed[:patient_identifier], seed[:coverage_resource_type])
       assert_instance_of Hash, match
       assert_equal true, match[:eligible],
