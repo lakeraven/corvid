@@ -293,13 +293,14 @@ module Corvid
       # ----------------------------------------------------------------------
 
       def verify_eligibility(patient_identifier, resource_type)
-        {
+        result = {
           eligible: true,
           payer_name: "MOCK #{resource_type.to_s.upcase} PAYER",
           policy_token: store_text(case_token: "ct_x", kind: :policy, text: "MOCK-#{resource_type}-#{patient_identifier}"),
           coverage_start: Date.new(Date.current.year, 1, 1),
           coverage_end: Date.new(Date.current.year, 12, 31)
         }
+        apply_recorded_coverage(result, patient_identifier, resource_type)
       end
 
       # ----------------------------------------------------------------------
@@ -315,7 +316,7 @@ module Corvid
             tribe_name: nil,
             tribe_code: nil,
             confidence: :verified,
-            verified_at: Time.current
+            verified_at: verification_timestamp
           }
         end
 
@@ -327,31 +328,31 @@ module Corvid
           blood_quantum: enrollment[:blood_quantum],
           member_status: enrollment[:member_status],
           confidence: enrollment.fetch(:confidence, :verified),
-          verified_at: Time.current
+          verified_at: verification_timestamp
         }
       end
 
       def verify_identity_documents(patient_identifier)
         patient = @patients[patient_identifier.to_s]
-        return { ssn_present: false, dob_present: false, birthplace_present: false, verified_at: Time.current } unless patient
+        return { ssn_present: false, dob_present: false, birthplace_present: false, verified_at: verification_timestamp } unless patient
 
         {
           ssn_present: patient[:ssn_last4].present?,
           dob_present: patient[:dob].present?,
           birthplace_present: patient[:birthplace].present?,
-          verified_at: Time.current
+          verified_at: verification_timestamp
         }
       end
 
       def verify_residency(patient_identifier)
         residency = @residencies[patient_identifier.to_s]
-        return { on_reservation: false, address: nil, service_area: nil, verified_at: Time.current } unless residency
+        return { on_reservation: false, address: nil, service_area: nil, verified_at: verification_timestamp } unless residency
 
         {
           on_reservation: residency[:on_reservation],
           address: residency[:address],
           service_area: residency[:service_area],
-          verified_at: Time.current
+          verified_at: verification_timestamp
         }
       end
 
@@ -441,9 +442,10 @@ module Corvid
         @remittances[reference] = attrs
       end
 
-      def add_coverage(patient_identifier, attrs)
+      def add_coverage(patient_identifier, attrs = {}, **extra)
+        row = attrs.is_a?(Hash) ? attrs.merge(extra) : extra
         @coverages[patient_identifier.to_s] ||= []
-        @coverages[patient_identifier.to_s] << attrs
+        @coverages[patient_identifier.to_s] << row
       end
 
       def get_coverages(patient_identifier)
@@ -495,6 +497,32 @@ module Corvid
       end
 
       private
+
+      # add_coverage may supply the period and renewal date. A recorded key,
+      # even an explicit nil (an unknown or open bound), replaces the
+      # default; an omitted key keeps it. Other fields stay on the default.
+      def apply_recorded_coverage(result, patient_identifier, resource_type)
+        coverage = recorded_coverage(patient_identifier, resource_type)
+        return result unless coverage
+
+        %i[coverage_start coverage_end renewal_date].each do |key|
+          result[key] = coverage[key] if coverage.key?(key)
+        end
+        result
+      end
+
+      def recorded_coverage(patient_identifier, resource_type)
+        type = resource_type.to_s
+        get_coverages(patient_identifier).reverse.find do |coverage|
+          coverage[:resource_type].to_s == type
+        end
+      end
+
+      # Whole-second clock so a repeated check in the same second reports
+      # the same verified_at.
+      def verification_timestamp
+        Time.current.change(usec: 0)
+      end
 
       def blank_patient_identifier?(patient_identifier)
         patient_identifier.nil? || patient_identifier.to_s.strip.empty?

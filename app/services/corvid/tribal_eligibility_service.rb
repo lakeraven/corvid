@@ -1,13 +1,14 @@
 # frozen_string_literal: true
 
-require "digest"
-require "json"
-
 module Corvid
   # Composes the adapter's enrollment, identity, and residency primitives
   # into a PRC-eligibility decision, applies site-configurable rules, and
   # persists the decision as a PrcEligibilityDecision row in a single
   # database transaction.
+  #
+  # The verification snapshot stored on the row is an HMAC-SHA256 under the
+  # host's current key (ADR 0008). With no usable key, the hash and key
+  # version are left nil and the decision is still saved.
   #
   # Reason codes (stable enum strings) returned in EligibilityDecision and
   # persisted on PrcEligibilityDecision.reason_codes:
@@ -64,12 +65,8 @@ module Corvid
 
         eligible = (reasons & HARD_FAIL_REASONS).empty?
 
-        snapshot_hash = Digest::SHA256.hexdigest(
-          JSON.generate(
-            enrollment: enrollment,
-            identity: identity,
-            residency: residency
-          )
+        snapshot_hash, snapshot_key_version = SnapshotFingerprint.compute(
+          { enrollment: enrollment, identity: identity, residency: residency }
         )
 
         decision_row = PrcEligibilityDecision.new(
@@ -83,7 +80,8 @@ module Corvid
           reason_codes: reasons.map(&:to_s),
           provider_source: provider_source_for(Corvid.adapter),
           provider_confidence: enrollment[:confidence]&.to_s,
-          verification_snapshot_hash: snapshot_hash
+          verification_snapshot_hash: snapshot_hash,
+          verification_snapshot_key_version: snapshot_key_version
         )
 
         ActiveRecord::Base.transaction do

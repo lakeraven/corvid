@@ -26,6 +26,21 @@ module Corvid
     validates :resource_type, inclusion: { in: RESOURCE_TYPES }
     validates :resource_type, uniqueness: { scope: :prc_referral_id }
 
+    # ADR 0002: string values, same sets the Postgres CHECKs allow.
+    # Not an integer enum. Null on a non-medicaid row; group and source
+    # are stored together or not at all, and eligibility_group_set_at is
+    # present exactly when the group is present.
+    ELIGIBILITY_GROUPS = %w[expansion_adult waiver_adult other unknown].freeze
+    ELIGIBILITY_GROUP_SOURCES = %w[
+      eligibility_response state_case_data registration staff_entry inferred
+    ].freeze
+
+    validates :eligibility_group, inclusion: { in: ELIGIBILITY_GROUPS }, allow_nil: true
+    validates :eligibility_group_source, inclusion: { in: ELIGIBILITY_GROUP_SOURCES }, allow_nil: true
+    validate :eligibility_group_only_on_medicaid
+    validate :eligibility_group_paired_with_source
+    validate :eligibility_group_set_at_paired_with_group
+
     RESOURCE_NAMES = {
       "medicare_a" => "Medicare Part A", "medicare_b" => "Medicare Part B",
       "medicare_d" => "Medicare Part D", "medicaid" => "Medicaid",
@@ -88,14 +103,15 @@ module Corvid
     end
 
     # Seed checks for a new referral from a previous referral's results.
-    # Copies status and checked_at — stale checks will need re-verification.
-    # Coordination of benefits is per service, so a previous coordinated
-    # determination is copied as enrolled and must be coordinated again.
+    # Copies status and policy_token only. checked_at stays nil and coverage
+    # dates are not copied, so a seeded row is not a current determination
+    # (#640) and must be re-verified. Coordination of benefits is per service,
+    # so a previous coordinated determination is copied as enrolled.
     def self.seed_from_previous!(new_referral, previous_referral)
       previous_referral.alternate_resource_checks.each do |prev_check|
         new_referral.alternate_resource_checks.find_or_create_by!(resource_type: prev_check.resource_type) do |check|
           check.status = prev_check.coordinated? ? "enrolled" : prev_check.status
-          check.checked_at = prev_check.checked_at
+          check.checked_at = nil
           check.policy_token = prev_check.policy_token
         end
       end
@@ -130,25 +146,24 @@ module Corvid
 
       result = Corvid.adapter.verify_eligibility(patient_identifier, resource_type)
       # An unreadable answer is not a determination (42 CFR 136.61).
-      return false unless result.is_a?(Hash) && (result[:eligible] == true || result[:eligible] == false)
+      # coverage_start, coverage_end, and renewal_date must be an exact
+      # Date or nil. Any other type updates nothing. Absent keys store nil.
+      return false unless readable_answer?(result)
 
       next_status = status_for_eligibility(result)
       return false if next_status.nil?
 
-      update!(
-        status: next_status,
-        policy_token: result[:policy_token],
-        checked_at: Time.current
-      )
+      update!(verification_attributes(result, next_status))
       true
     end
 
     # Record that coordination of benefits for this service is done.
-    # Only active enrollment can be coordinated.
+    # Only active enrollment can be coordinated. Coordination is not a new
+    # eligibility answer, so checked_at stays at the verification time.
     def mark_coordinated!
       raise ArgumentError, "coverage is not active" unless enrolled?
 
-      update!(status: :coordinated, checked_at: Time.current)
+      update!(status: :coordinated)
       true
     end
 
@@ -165,10 +180,123 @@ module Corvid
       checked_at < max_age.ago
     end
 
+    # Current for a date of service only when the check is fresh for its
+    # resource type and any reported period still covers that date (#640).
+    # as_of is a Time; a check recorded after that moment is not current.
+    # not_enrolled is not current inside its own stored period. Exhausted
+    # and denied describe a benefit period: with a stored period they are
+    # current only inside it, and with none they are current when fresh.
+    # Absence never verifies.
+    def current_for?(date_of_service, as_of: Time.current)
+      raise ArgumentError, "date_of_service must be a Date" unless date_of_service.instance_of?(Date)
+      raise ArgumentError, "as_of must be a Time" unless as_of.is_a?(Time) || as_of.is_a?(ActiveSupport::TimeWithZone)
+
+      fresh_for?(as_of) &&
+        !negative_inside_coverage?(date_of_service) &&
+        coverage_period_covers?(date_of_service) &&
+        benefit_period_covers?(date_of_service) &&
+        renewal_current?(date_of_service, as_of)
+    end
+
     private
 
+    # checked_at is when eligibility was answered. Only a persisted row
+    # leaving not_checked or checking records one. Coordination is not an
+    # answer, and a row inserted already answered does not earn a timestamp.
+    # status_in_database is the status this save is leaving.
     def set_checked_at
-      self.checked_at = Time.current if status_previously_was == "not_checked" || status_previously_was == "checking"
+      return unless persisted?
+      return unless status_in_database == "not_checked" || status_in_database == "checking"
+
+      self.checked_at = Time.current
+    end
+
+    def verification_attributes(result, next_status)
+      {
+        status: next_status,
+        policy_token: result[:policy_token],
+        checked_at: Time.current,
+        coverage_start: result[:coverage_start],
+        coverage_end: result[:coverage_end],
+        renewal_date: result[:renewal_date]
+      }
+    end
+
+    def readable_answer?(result)
+      return false unless result.is_a?(Hash)
+      return false unless result[:eligible] == true || result[:eligible] == false
+
+      readable_coverage_dates?(result)
+    end
+
+    # Nil and a missing key are nil. DateTime is a Date subclass and is
+    # not an exact Date, so it makes the answer unreadable.
+    def readable_coverage_dates?(result)
+      %i[coverage_start coverage_end renewal_date].all? { |key| exact_date_or_nil?(result[key]) }
+    end
+
+    def exact_date_or_nil?(value)
+      value.nil? || value.instance_of?(Date)
+    end
+
+    # A checked_at later than as_of is a future answer, not a current one.
+    def fresh_for?(as_of)
+      return false if not_checked? || checking? || checked_at.nil?
+      return false if checked_at > as_of
+
+      checked_at >= as_of - configured_max_age
+    end
+
+    def configured_max_age
+      Corvid.configuration.alternate_resource_check_max_age.fetch(resource_type)
+    end
+
+    # Only not_enrolled is not current inside its own stored period.
+    def negative_inside_coverage?(date_of_service)
+      return false unless not_enrolled?
+
+      partial_period_covers?(date_of_service)
+    end
+
+    # An exhausted or denied answer is about the benefit period it reports.
+    # A 2026 exhausted period says nothing about a 2027 date of service.
+    # With no stored period the fresh answer stands.
+    def benefit_period_covers?(date_of_service)
+      return true unless exhausted? || denied?
+      return true if coverage_start.nil? && coverage_end.nil?
+
+      partial_period_covers?(date_of_service)
+    end
+
+    # A stored period covers the date of service when at least one bound
+    # is present, coverage_start is nil or on or before that date, and
+    # coverage_end is nil or on or after it.
+    def partial_period_covers?(date_of_service)
+      return false if coverage_start.nil? && coverage_end.nil?
+
+      (coverage_start.nil? || coverage_start <= date_of_service) &&
+        (coverage_end.nil? || coverage_end >= date_of_service)
+    end
+
+    def coverage_period_covers?(date_of_service)
+      return true unless has_coverage?
+
+      stored_period_covers?(date_of_service)
+    end
+
+    # coverage_start <= date of service, and coverage_end is nil or >= it.
+    def stored_period_covers?(date_of_service)
+      return false if coverage_start.nil? || coverage_start > date_of_service
+
+      coverage_end.nil? || coverage_end >= date_of_service
+    end
+
+    # renewal_date, when present, must be on or after the date of service
+    # and on or after as_of.in_time_zone.to_date.
+    def renewal_current?(date_of_service, as_of)
+      return true if renewal_date.nil?
+
+      renewal_date >= date_of_service && renewal_date >= as_of.in_time_zone.to_date
     end
 
     # Coordinated sticks only when the adapter's policy token is present
@@ -190,6 +318,28 @@ module Corvid
 
     def same_coordinated_policy?(token)
       coordinated? && token.present? && token == policy_token
+    end
+
+    def eligibility_group_only_on_medicaid
+      return if eligibility_group.nil? || resource_type == "medicaid"
+
+      errors.add(:eligibility_group, "is only recorded for medicaid")
+    end
+
+    def eligibility_group_paired_with_source
+      return if eligibility_group.nil? == eligibility_group_source.nil?
+
+      if eligibility_group.nil?
+        errors.add(:eligibility_group, "must be set when eligibility_group_source is set")
+      else
+        errors.add(:eligibility_group_source, "must be set when eligibility_group is set")
+      end
+    end
+
+    def eligibility_group_set_at_paired_with_group
+      return if eligibility_group.nil? == eligibility_group_set_at.nil?
+
+      errors.add(:eligibility_group_set_at, "must be present exactly when eligibility group is present")
     end
   end
 end
