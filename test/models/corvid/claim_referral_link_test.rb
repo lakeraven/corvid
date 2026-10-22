@@ -100,7 +100,7 @@ class Corvid::ClaimReferralLinkTest < ActiveSupport::TestCase
     end
   end
 
-  test "linked draft claim cannot reach accepted or paid without submission gate" do
+  test "linked draft claim cannot reach sent statuses without submission gate" do
     with_tenant(TENANT) do
       referral = referral_at("fac_a", "REF-BYPASS-2")
       patient = referral.case.patient_identifier
@@ -108,12 +108,86 @@ class Corvid::ClaimReferralLinkTest < ActiveSupport::TestCase
       claim = build_claim(facility: "fac_a", referral_identifier: "REF-BYPASS-2", patient: patient)
       claim.save!
 
-      %w[accepted paid].each do |target_status|
+      %w[accepted paid rejected denied appealed].each do |target_status|
         claim.status = target_status
         refute claim.save
         assert_predicate claim.errors[:status], :present?
         assert_equal "draft", claim.reload.status
-        assert_nil claim.submitted_at
+      end
+    end
+  end
+
+  test "linked error claim cannot reach sent statuses without submission gate" do
+    with_tenant(TENANT) do
+      referral = referral_at("fac_a", "REF-BYPASS-2B")
+      patient = referral.case.patient_identifier
+      authorize!(referral)
+      claim = build_claim(facility: "fac_a", referral_identifier: "REF-BYPASS-2B", patient: patient)
+      claim.save!
+      claim.update_column(:status, "error")
+
+      %w[submitted accepted paid rejected denied appealed].each do |target_status|
+        refute claim.update(status: target_status)
+        assert_predicate claim.errors[:status], :present?
+        assert_equal "error", claim.reload.status
+      end
+    end
+  end
+
+  test "linked claim cannot reach submitted via plain save from any prior status" do
+    with_tenant(TENANT) do
+      referral = referral_at("fac_a", "REF-BYPASS-2C")
+      patient = referral.case.patient_identifier
+      authorize!(referral)
+      claim = build_claim(facility: "fac_a", referral_identifier: "REF-BYPASS-2C", patient: patient)
+      claim.save!
+      claim.mark_submitted!(claim_identifier: "CLM-REJECT-RESUB")
+      claim.mark_rejected!(reason_token: "tok_reject")
+      assert_equal "rejected", claim.reload.status
+
+      refute claim.update(status: "submitted")
+      assert_predicate claim.errors[:status], :present?
+      assert_equal "rejected", claim.reload.status
+    end
+  end
+
+  test "linked draft cannot reach submitted when submitted_at was set without the gate" do
+    with_tenant(TENANT) do
+      referral = referral_at("fac_a", "REF-BYPASS-2D")
+      patient = referral.case.patient_identifier
+      authorize!(referral)
+      claim = build_claim(facility: "fac_a", referral_identifier: "REF-BYPASS-2D", patient: patient)
+      claim.save!
+      claim.update_column(:submitted_at, 1.hour.ago)
+      claim.reload
+
+      refute claim.update(status: "submitted", claim_identifier: "CLM-FAKE-SUB")
+      assert_predicate claim.errors[:status], :present?
+      assert_equal "draft", claim.reload.status
+    end
+  end
+
+  test "mark_submitted! from rejected re-runs authorization and alternate-resource gates" do
+    with_tenant(TENANT) do
+      travel_to Time.zone.parse("2025-07-01 12:00:00 UTC") do
+        referral = referral_at("fac_a", "REF-RESUB-GATE")
+        patient = referral.case.patient_identifier
+        authorize!(referral)
+        claim = build_claim(
+          facility: "fac_a", referral_identifier: "REF-RESUB-GATE", patient: patient,
+          service_date: Date.new(2025, 6, 15)
+        )
+        claim.save!
+        claim.mark_submitted!(claim_identifier: "CLM-RESUB-1")
+        claim.mark_rejected!(reason_token: "tok_resub")
+        referral.alternate_resource_checks.find_by!(resource_type: "medicaid").update!(checked_at: 31.days.ago)
+
+        Corvid.adapter.define_singleton_method(:verify_eligibility) { |_pid, _type| nil }
+
+        assert_raises(Corvid::ClaimSubmission::AlternateResourcesNotCurrent) do
+          claim.mark_submitted!(claim_identifier: "CLM-RESUB-2")
+        end
+        assert_equal "rejected", claim.reload.status
       end
     end
   end
@@ -132,13 +206,35 @@ class Corvid::ClaimReferralLinkTest < ActiveSupport::TestCase
         claim_type: "professional",
         service_date: Date.current,
         billed_amount: 100.0,
-        status: "submitted",
-        submitted_at: 1.hour.ago
+        status: "submitted"
       )
 
       assert claim.persisted?
       assert_equal referral.id, claim.prc_referral_id
       assert_equal "submitted", claim.status
+    end
+  end
+
+  test "historical import of linked paid claim does not stamp submitted_at" do
+    with_tenant(TENANT) do
+      referral = referral_at("fac_a", "REF-IMPORT-PAID")
+      patient = referral.case.patient_identifier
+
+      claim = Corvid::ClaimSubmission.create!(
+        tenant_identifier: TENANT,
+        facility_identifier: "fac_a",
+        patient_identifier: patient,
+        referral_identifier: "REF-IMPORT-PAID",
+        claim_type: "professional",
+        service_date: Date.current,
+        billed_amount: 100.0,
+        status: "paid",
+        paid_amount: 80.0
+      )
+
+      assert claim.persisted?
+      assert_equal referral.id, claim.prc_referral_id
+      assert_nil claim.reload.submitted_at
     end
   end
 
@@ -178,22 +274,68 @@ class Corvid::ClaimReferralLinkTest < ActiveSupport::TestCase
     end
   end
 
-  test "linked claim with nil submitted_at cannot reach paid from appealed status" do
+  test "legacy linked claim submitted with nil submitted_at can be paid via mark_paid!" do
     with_tenant(TENANT) do
-      referral = referral_at("fac_a", "REF-BYPASS-6")
+      referral = referral_at("fac_a", "REF-LEGACY-PAID")
       patient = referral.case.patient_identifier
-      authorize!(referral)
-      claim = build_claim(facility: "fac_a", referral_identifier: "REF-BYPASS-6", patient: patient)
+      claim = build_claim(facility: "fac_a", referral_identifier: "REF-LEGACY-PAID", patient: patient)
       claim.save!
-
-      claim.update!(status: "appealed")
-      assert_equal "appealed", claim.reload.status
+      claim.update_columns(status: "submitted", claim_identifier: "CLM-LEGACY-PAID", submitted_at: nil)
+      claim.reload
       assert_nil claim.submitted_at
 
-      refute claim.update(status: "paid", paid_amount: 100)
-      assert_predicate claim.errors[:status], :present?
-      assert_equal "appealed", claim.reload.status
+      claim.mark_paid!(paid_amount: 75.0)
+      assert_equal "paid", claim.reload.status
+    end
+  end
+
+  test "legacy linked claim submitted with nil submitted_at can be polled via check_status!" do
+    with_tenant(TENANT) do
+      referral = referral_at("fac_a", "REF-LEGACY-POLL")
+      patient = referral.case.patient_identifier
+      claim = build_claim(facility: "fac_a", referral_identifier: "REF-LEGACY-POLL", patient: patient)
+      claim.save!
+      claim.update_columns(status: "submitted", claim_identifier: "CLM-LEGACY-POLL", submitted_at: nil)
+      Corvid.adapter.add_claim("CLM-LEGACY-POLL", { status: "accepted" })
+
+      claim.check_status!
+      assert_equal "accepted", claim.reload.status
       assert_nil claim.submitted_at
+    end
+  end
+
+  test "RemittanceProcessor pays legacy submitted claims with nil submitted_at without aborting the batch" do
+    with_tenant(TENANT) do
+      referral = referral_at("fac_a", "REF-REMIT-LEG")
+      patient = referral.case.patient_identifier
+      legacy = build_claim(facility: "fac_a", referral_identifier: "REF-REMIT-LEG", patient: patient)
+      legacy.save!
+      legacy.update_columns(
+        status: "submitted", claim_identifier: "CLM-REMIT-LEG", submitted_at: nil, billed_amount_cents: 10_000
+      )
+
+      normal = build_claim(facility: "fac_a", referral_identifier: "REF-REMIT-LEG", patient: patient)
+      normal.save!
+      normal.update_columns(
+        status: "submitted", claim_identifier: "CLM-REMIT-NORM", submitted_at: 2.days.ago, billed_amount_cents: 10_000
+      )
+
+      result = Corvid::RemittanceProcessor.call([
+        {
+          remittance_identifier: "REM-LEG",
+          payer_name: "Test Payer",
+          payment_date: Date.new(2025, 6, 20),
+          total_paid: 200.0,
+          line_items: [
+            { claim_identifier: "CLM-REMIT-LEG", paid_amount: 80.0 },
+            { claim_identifier: "CLM-REMIT-NORM", paid_amount: 90.0 }
+          ]
+        }
+      ])
+
+      assert_equal 2, result.paid
+      assert_equal "paid", legacy.reload.status
+      assert_equal "paid", normal.reload.status
     end
   end
 
@@ -400,12 +542,12 @@ class Corvid::ClaimReferralLinkTest < ActiveSupport::TestCase
     )
   end
 
-  def build_claim(facility:, referral_identifier:, patient: nil)
+  def build_claim(facility:, referral_identifier:, patient: nil, service_date: Date.current)
     Corvid::ClaimSubmission.new(
       tenant_identifier: TENANT, facility_identifier: facility,
       patient_identifier: patient || "pt_claim_#{SecureRandom.hex(3)}",
       referral_identifier: referral_identifier, claim_type: "professional",
-      service_date: Date.current, billed_amount: 100.0, status: "draft"
+      service_date: service_date, billed_amount: 100.0, status: "draft"
     )
   end
 

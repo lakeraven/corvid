@@ -160,3 +160,83 @@ Then("mark_submitted! should be refused for unauthorized referral") do
   assert_kind_of Corvid::ClaimSubmission::ReferralNotAuthorized, @mark_submitted_error
   assert_match(/not authorized/, @mark_submitted_error.message)
 end
+
+Given("the claim has submitted_at set without going through submit!") do
+  @claim.update_column(:submitted_at, 1.hour.ago)
+  @claim.reload
+end
+
+Given("a submitted claim linked to that referral with service date {string}") do |iso_date|
+  @claim = Corvid::ClaimSubmission.create!(
+    tenant_identifier: @tenant,
+    facility_identifier: @facility,
+    patient_identifier: @case.patient_identifier,
+    referral_identifier: @referral.referral_identifier,
+    claim_type: "professional",
+    service_date: Date.parse(iso_date),
+    billed_amount: 100.0,
+    status: "draft"
+  )
+  assert_equal @referral.id, @claim.reload.prc_referral_id
+  @claim.mark_submitted!(claim_identifier: "CLM-CU-SUBMITTED")
+end
+
+Given("the claim status is {string}") do |status|
+  if status == "rejected"
+    @claim.mark_rejected!(reason_token: "tok_cu_reject")
+  else
+    @claim.update!(status: status)
+  end
+  @claim.reload
+end
+
+Then("the claim should remain in {string}") do |status|
+  assert_equal status, @claim.reload.status
+end
+
+When("a paid claim is imported for that referral with service date {string}") do |iso_date|
+  @claim = Corvid::ClaimSubmission.create!(
+    tenant_identifier: @tenant,
+    facility_identifier: @facility,
+    patient_identifier: @case.patient_identifier,
+    referral_identifier: @referral.referral_identifier,
+    claim_type: "professional",
+    service_date: Date.parse(iso_date),
+    billed_amount: 100.0,
+    status: "paid",
+    paid_amount: 80.0
+  )
+  assert_equal @referral.id, @claim.reload.prc_referral_id
+end
+
+Then("the imported claim should have no submitted_at") do
+  assert_nil @claim.reload.submitted_at
+end
+
+Given("a legacy submitted claim linked to that referral with service date {string}") do |iso_date|
+  @claim = Corvid::ClaimSubmission.create!(
+    tenant_identifier: @tenant,
+    facility_identifier: @facility,
+    patient_identifier: @case.patient_identifier,
+    referral_identifier: @referral.referral_identifier,
+    claim_type: "professional",
+    service_date: Date.parse(iso_date),
+    billed_amount: 100.0,
+    status: "draft"
+  )
+  @claim.update_columns(
+    status: "submitted",
+    claim_identifier: "CLM-CU-LEGACY",
+    submitted_at: nil
+  )
+  @claim.reload
+  assert_nil @claim.submitted_at
+end
+
+When("mark_paid! is applied to the claim for amount {string}") do |amount|
+  @claim.mark_paid!(paid_amount: amount.to_f)
+end
+
+Then("the claim should be paid") do
+  assert_equal "paid", @claim.reload.status
+end

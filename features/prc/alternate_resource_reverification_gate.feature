@@ -39,3 +39,37 @@ Feature: Alternate resource re-verification gates
     When mark_submitted! is attempted for claim identifier "CLM-CU-MARK"
     Then mark_submitted! should be refused for unauthorized referral
     And the claim should remain in draft with no submitted_at
+
+  Scenario: Linked draft cannot reach denied via plain save
+    Given an authorized PRC referral "REF-CU-DENIED" for patient "pt_cu_denied"
+    And a draft claim linked to that referral with service date "2025-06-15"
+    When the billing coordinator updates the claim status to "denied" without submit!
+    Then the claim update should be rejected
+    And the claim should remain in draft with no submitted_at
+
+  Scenario: Linked draft with submitted_at preset cannot bypass gate to submitted
+    Given an authorized PRC referral "REF-CU-STAMP" for patient "pt_cu_stamp"
+    And a draft claim linked to that referral with service date "2025-06-15"
+    And the claim has submitted_at set without going through submit!
+    When the billing coordinator updates the claim status to "submitted" without submit!
+    Then the claim update should be rejected
+    And the claim should remain in draft with no submitted_at
+
+  Scenario: Rejected linked claim cannot be resubmitted via plain save
+    Given an authorized PRC referral "REF-CU-RESUB" for patient "pt_cu_resub"
+    And a submitted claim linked to that referral with service date "2025-06-15"
+    And the claim status is "rejected"
+    When the billing coordinator updates the claim status to "submitted" without submit!
+    Then the claim update should be rejected
+    And the claim should remain in "rejected"
+
+  Scenario: Historical paid import does not stamp submitted_at
+    Given an authorized PRC referral "REF-CU-IMPORT" for patient "pt_cu_import"
+    When a paid claim is imported for that referral with service date "2025-06-15"
+    Then the imported claim should have no submitted_at
+
+  Scenario: Legacy submitted claim with nil submitted_at can be marked paid
+    Given an authorized PRC referral "REF-CU-LEGACY" for patient "pt_cu_legacy"
+    And a legacy submitted claim linked to that referral with service date "2025-06-15"
+    When mark_paid! is applied to the claim for amount "80.00"
+    Then the claim should be paid
