@@ -32,7 +32,7 @@ Gem::Specification.new do |spec|
   # jsonb read and on schema dumps of jsonb columns with defaults (#566).
   # 8.1.4 passes the options as keywords.
   spec.add_dependency "rails", "~> 8.1", ">= 8.1.4"
-  spec.add_dependency "aasm", "~> 5.5"
+  spec.add_dependency "aasm", ">= 5.5", "< 7.0"
   spec.add_dependency "csv", ">= 3.0"
   spec.add_dependency "json", ">= 2.7", "< 4.0"
   spec.add_dependency "money-rails", "~> 3.0"

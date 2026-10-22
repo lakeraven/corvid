@@ -49,7 +49,9 @@ module Corvid
         .where(corvid_cases: { patient_identifier: patient_identifier })
     }
 
-    aasm column: :status, whiny_transitions: false do
+    # whiny_persistence pinned: aasm 6 flipped its default to true, which would
+    # make a bang event on an invalid record raise instead of returning false.
+    aasm column: :status, whiny_transitions: false, whiny_persistence: false do
       state :draft, initial: true
       state :submitted, :eligibility_review, :management_approval, :alternate_resource_review
       state :priority_assignment, :committee_review, :exception_review
