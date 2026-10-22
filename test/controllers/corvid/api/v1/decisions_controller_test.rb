@@ -71,6 +71,21 @@ class Corvid::Api::V1::DecisionsControllerTest < ActionDispatch::IntegrationTest
     assert body.key?("decided_by_identifier")
   end
 
+  test "show exposes verification_snapshot_key_version alongside verification_snapshot_hash" do
+    snapshot_hash = "e" * 64
+    key_version = "v1-test"
+    @d1.update!(
+      verification_snapshot_hash: snapshot_hash,
+      verification_snapshot_key_version: key_version
+    )
+
+    get "/corvid/api/v1/decisions/#{@d1.id}", headers: headers
+    assert_response :success
+    body = JSON.parse(response.body)
+    assert_equal snapshot_hash, body["verification_snapshot_hash"]
+    assert_equal key_version, body["verification_snapshot_key_version"]
+  end
+
   test "show returns 404 for unknown id" do
     get "/corvid/api/v1/decisions/999999999", headers: headers
     assert_response :not_found
@@ -79,5 +94,20 @@ class Corvid::Api::V1::DecisionsControllerTest < ActionDispatch::IntegrationTest
   test "missing tenant header returns 400" do
     get "/corvid/api/v1/decisions", headers: {}
     assert_response :bad_request
+  end
+
+  test "show returns nil verification_snapshot_hash for legacy row with hash and nil key version" do
+    legacy_hash = "d" * 64
+    @d1.update_columns(
+      verification_snapshot_hash: legacy_hash,
+      verification_snapshot_key_version: nil
+    )
+
+    get "/corvid/api/v1/decisions/#{@d1.id}", headers: headers
+    assert_response :success
+    body = JSON.parse(response.body)
+
+    assert_nil body["verification_snapshot_hash"]
+    assert_nil body["verification_snapshot_key_version"]
   end
 end
