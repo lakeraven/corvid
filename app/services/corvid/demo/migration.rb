@@ -28,12 +28,12 @@ module Corvid
       # and migrates; hero_2 has NO board consent and halts — the deny path is
       # what proves the sovereignty gate is real, not just trusted.
       HEROES = {
-        "pt_broken_rock_hero_1" => {
+        "pt-broken-rock-hero-1" => {
           name: "Riverstone, Dawn (synthetic)",
           consented: true,
           entries: [
             { resource_type: "Patient",
-              data: { "resourceType" => "Patient", "id" => "pt_broken_rock_hero_1",
+              data: { "resourceType" => "Patient", "id" => "pt-broken-rock-hero-1",
                       "name" => [ { "family" => "Riverstone", "given" => [ "Dawn" ] } ] } },
             { resource_type: "Condition",
               data: { "resourceType" => "Condition", "code" => { "text" => "synthetic hypertension" } } },
@@ -41,12 +41,12 @@ module Corvid
               data: { "resourceType" => "Observation", "valueString" => "synthetic BP 128/82" } }
           ]
         },
-        "pt_broken_rock_hero_2" => {
+        "pt-broken-rock-hero-2" => {
           name: "Cedarwind, Marcus (synthetic)",
           consented: false,
           entries: [
             { resource_type: "Patient",
-              data: { "resourceType" => "Patient", "id" => "pt_broken_rock_hero_2",
+              data: { "resourceType" => "Patient", "id" => "pt-broken-rock-hero-2",
                       "name" => [ { "family" => "Cedarwind", "given" => [ "Marcus" ] } ] } },
             { resource_type: "Condition",
               data: { "resourceType" => "Condition", "code" => { "text" => "synthetic diabetes" } } }
