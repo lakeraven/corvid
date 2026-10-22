@@ -37,6 +37,10 @@ module Corvid
     attr_accessor :adapter, :edi_adapter, :phi_sanitizer, :on_provenance, :fetch_provenance
     attr_accessor :verification_snapshot_keys, :verification_snapshot_key_version
 
+    # { limit: Integer, period: ActiveSupport::Duration }, or nil.
+    # Nil fails closed: IndianHealthEligibilityService refuses every inquiry.
+    attr_accessor :indian_health_eligibility_ceiling
+
     def initialize
       @adapter = nil
       @edi_adapter = nil
@@ -45,6 +49,7 @@ module Corvid
       @phi_sanitizer = ->(_msg) { "[REDACTED]" }
       @on_provenance = nil
       @fetch_provenance = ->(**) { [] }
+      @indian_health_eligibility_ceiling = nil
       @verification_snapshot_keys = {}
       @verification_snapshot_key_version = nil
     end

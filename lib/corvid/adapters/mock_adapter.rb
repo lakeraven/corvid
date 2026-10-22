@@ -308,6 +308,12 @@ module Corvid
         eligibility_from_coverage(patient_identifier, resource_type, coverage)
       end
 
+      def indian_health_service_eligibility(patient_identifier)
+        @service_eligibilities.fetch(patient_identifier.to_s) do
+          { determination: :unknown, asserted_by: nil, determined_at: nil, confidence: :verified }
+        end
+      end
+
       # ----------------------------------------------------------------------
       # Enrollment verification
       # ----------------------------------------------------------------------
@@ -436,6 +442,10 @@ module Corvid
         @enrollments[patient_identifier.to_s] = attrs
       end
 
+      def add_service_eligibility(patient_identifier, attrs)
+        @service_eligibilities[patient_identifier.to_s] = attrs
+      end
+
       def add_residency(patient_identifier, attrs)
         @residencies[patient_identifier.to_s] = attrs
       end
@@ -506,6 +516,7 @@ module Corvid
         @text_store = {}
         @enrollments = {}
         @residencies = {}
+        @service_eligibilities = {}
         @coverages = {}
         @conditions = {}
         @medications = {}

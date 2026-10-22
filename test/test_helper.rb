@@ -18,6 +18,7 @@ def clean_corvid_tables!
   Corvid::ZipLocality.unscoped.delete_all
   Corvid::LocalityLookup.clear_cache!
   Corvid::ApiCallLog.unscoped.delete_all
+  Corvid::IndianHealthEligibilityInquiry.unscoped.delete_all
   Corvid::Payment.unscoped.delete_all
   Corvid::ClaimSubmission.unscoped.delete_all
   Corvid::BillingTransaction.unscoped.delete_all
@@ -47,6 +48,7 @@ module ActiveSupport
     setup do
       Corvid::TenantContext.reset!
       Corvid.configure { |c| c.adapter = Corvid::Adapters::MockAdapter.new }
+      Corvid.configuration.indian_health_eligibility_ceiling = nil
       clean_corvid_tables!
     end
 

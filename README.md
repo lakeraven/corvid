@@ -8,6 +8,7 @@ Corvid runs service authorization and referral workflows, eligibility and payer-
 
 - **PRC/CHS** — IHS/tribal Purchased/Referred Care referral authorization **and Medicare-Like-Rates repricing** of outside claims
 - **State Medicaid** — prior authorization and care coordination across many tribes/facilities
+- **H.R. 1 community-engagement exemption** — record the answer an Indian health provider gave about whether a person is eligible for services from an Indian health provider. Corvid stores no determination of its own.
 - **Cross-org coordination** — a de facto HIE control plane that lets programs share the right data without warehousing each other's records
 - **City homelessness** — housing placement and service delivery
 - **Foster care** — case management across counties and states
@@ -186,6 +187,7 @@ Each `cms:import` writes a `Corvid::CmsFeeScheduleRelease` record capturing the 
 | [0001](docs/adr/0001-id-vs-identifier-naming.md) | Reserve `id`/`*_id` for Rails keys; use `identifier`/`*_identifier` for external references |
 | [0002](docs/adr/0002-architectural-foundations.md) | Tenancy, table prefixes, string enums, hooks, namespacing |
 | [0003](docs/adr/0003-phi-tokenization.md) | PHI tokenization (Stripe-style for HIPAA) |
+| [0009](docs/adr/0009-indian-health-eligibility-inquiry.md) | Inquiry for eligibility for services from an Indian health provider |
 
 ## Demos
 
