@@ -239,7 +239,7 @@ module Corvid
       # best rule's requirements still lacks.
       def missing_evidence(best, actual, aian_verified:, basis:, evidence:, backed:, reason:)
         missing = []
-        missing << "evidence_refs" if reason == UNEVIDENCED_100
+        missing << "evidence_refs" if reason == UNEVIDENCED_100 && evidence.empty?
         return missing if best.nil? || best == actual
 
         missing << "aian_attestation" if best.requires_aian && !aian_verified

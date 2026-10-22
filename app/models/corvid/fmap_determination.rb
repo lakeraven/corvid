@@ -197,8 +197,11 @@ module Corvid
     def authority_is_own_facilitys
       return if facility_authority_id.nil?
       authority = facility_authority
-      return if authority && authority.facility_identifier == facility_identifier
-      errors.add(:facility_authority_id, "must be an authority of this facility in the current tenant")
+      unless authority && authority.facility_identifier == facility_identifier
+        errors.add(:facility_authority_id, "must be an authority of this facility in the current tenant")
+        return
+      end
+      errors.add(:authority_type, "must be the type of the named authority") unless authority_type == authority.authority_type
     end
 
     def supersession_is_final
