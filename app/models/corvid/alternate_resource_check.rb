@@ -239,21 +239,23 @@ module Corvid
     # After the Medicaid answer is saved. record! keeps a staff entry.
     # An EHR failure leaves that answer in place and the group as it was.
     # Nil or a non-Array from get_coverages is that failure, so record!
-    # is not called. One matching coverage that states a real group is
-    # recorded as that group. No single matching row, or one row that
-    # does not state a real group, asks record! to replace the pinned
-    # stated group. The pin is that group, source, and set_at. A newer
-    # stated group is left in place. A failed inference leaves the
-    # previous group. A staff entry stays.
+    # is not called. The pin is read before get_coverages. One matching
+    # coverage that states a real group is recorded as that group, and
+    # the pin is not passed. No single matching row, or one row that
+    # does not state a real group, asks record! to replace the pin.
+    # The pin is that group, source, and set_at. A later write changes
+    # set_at, so the locked comparison leaves the stored group. A failed
+    # inference leaves the previous group. A staff entry stays.
     def record_medicaid_eligibility_group
       return unless resource_type == "medicaid"
 
+      pinned = pinned_stated_group
       coverage = medicaid_group_coverage
       MedicaidEligibilityGroupService.new(adapter: Corvid.adapter).record!(
         self,
         coverage: coverage,
         date_of_service: medicaid_group_date_of_service,
-        **stated_group_supersede(coverage)
+        **stated_group_supersede(coverage, pinned)
       )
     rescue StandardError
       Rails.logger.warn(VERIFY_MEDICAID_ELIGIBILITY_GROUP_WARNING)
@@ -279,17 +281,15 @@ module Corvid
       rows.select { |row| resource_type_coverage?(row) }
     end
 
-    # Pin the stated group this answer would replace when the answer
-    # does not itself state a real group and the stored source is a
-    # stated one. The service supersedes only while that group, source,
-    # and set_at are still stored. Omitting the option leaves record!'s
-    # other callers, and a staff entry, on the existing path. The stored
-    # fields are read here because record! writes through another
-    # instance, so this object's attributes can lag the database.
-    def stated_group_supersede(coverage)
+    # Pass the pin read before get_coverages when the answer does not
+    # itself state a real group and that pin is a stated group. The
+    # service supersedes only while that group, source, and set_at are
+    # still stored. Omitting the option leaves record!'s other callers,
+    # and a staff entry, on the existing path. The caller reads the row
+    # because record! writes through another instance, so this object's
+    # attributes can lag the database.
+    def stated_group_supersede(coverage, pinned)
       return {} if real_stated_group?(coverage)
-
-      pinned = pinned_stated_group
       return {} unless pinned
 
       { supersede_stated: pinned }
