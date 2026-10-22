@@ -81,9 +81,11 @@ is **halted**. Both outcomes are recorded as audit `Determination`s.
 
 ## Reset between runs
 
-Each entry point resets before it runs, so **re-running the script is enough**,
-and the demos can run in any order (the PRC demo and the overlay share the
-Broken Rock facility; the overlay reset clears what the PRC demo leaves). All
+Each entry point clears its own prior demo rows before it runs, so
+**re-running the script is enough**, and the demos can run in any order (the
+PRC demo and the overlay share the Broken Rock facility; the overlay reset
+clears what the PRC demo leaves, while the PRC demo clears only its own case,
+so overlay rows stay until the next overlay run). All
 three entry points are idempotent — a second run produces the same numbers
 and does not duplicate rows. (Calling the rake task `demo:migrate` directly,
 without `demo:migration_reset` first, appends a fresh audit `Determination`
@@ -105,6 +107,9 @@ To start completely clean:
 ```bash
 dropdb corvid_dummy_development && bin/demo-overlay
 ```
+
+If you set `DATABASE_URL`, drop the database it names instead (with the same
+host, role and password).
 
 ## Rake tasks behind the entry points
 
