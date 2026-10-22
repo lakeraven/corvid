@@ -1,0 +1,85 @@
+# frozen_string_literal: true
+
+require "test_helper"
+
+module Corvid
+  # The determination's own backstop (#547 panel): a 100 percent row
+  # resting on a facility authority must rest on its own facility's
+  # authority, however it was written.
+  class FmapDeterminationFacilityTest < ActiveSupport::TestCase
+    AIAN_EVIDENCE = { "supports" => "aian_status", "ref" => "attestation:tok_example_aian" }.freeze
+
+    setup do
+      Corvid::TenantContext.current_tenant_identifier = "tnt_example"
+      FmapRuleLoader.load_defaults!
+      @contract_638 = FacilityAuthority.create!(
+        facility_identifier: "fac_638_example",
+        authority_type: "contract_638",
+        effective_on: Date.new(2020, 1, 1)
+      )
+    end
+
+    def hundred_percent_attrs(facility_identifier:)
+      rule = FmapRule.find_by!(rule_key: "us-ihs-638-100")
+      {
+        encounter_identifier: "enc_example_20",
+        facility_identifier: facility_identifier,
+        date_of_service: Date.new(2026, 3, 1),
+        jurisdiction: "XA",
+        category: rule.category,
+        fmap_percent: rule.fmap_percent,
+        rule_key: rule.rule_key,
+        rule_citations: [ rule.statutory_citation ],
+        evidence_refs: [ AIAN_EVIDENCE ],
+        aian_verified: true,
+        received_through_basis: "facility_authority",
+        facility_authority_id: @contract_638.id,
+        authority_type: "contract_638",
+        determined_at: Time.current
+      }
+    end
+
+    test "a 100 percent row backed by its own facility's authority is valid" do
+      assert FmapDetermination.new(hundred_percent_attrs(facility_identifier: "fac_638_example")).valid?
+    end
+
+    test "a 100 percent row cannot rest on another facility's authority" do
+      determination = FmapDetermination.new(hundred_percent_attrs(facility_identifier: "fac_plain_example"))
+      refute determination.valid?
+      assert_includes determination.errors[:evidence_refs].join, "received_through_evidence"
+    end
+
+    test "an unrecognised coverage group or reason is rejected by the model and the database" do
+      attrs = hundred_percent_attrs(facility_identifier: "fac_638_example")
+      refute FmapDetermination.new(attrs.merge(coverage_group: "bogus")).valid?
+      refute FmapDetermination.new(attrs.merge(determination_reason: "bogus")).valid?
+      assert FmapDetermination.new(attrs.merge(coverage_group: "unknown")).valid?
+
+      row = FmapDetermination.create!(attrs)
+      assert_raises(ActiveRecord::StatementInvalid) { row.update_columns(coverage_group: "bogus") }
+      assert_raises(ActiveRecord::StatementInvalid) { row.update_columns(determination_reason: "bogus") }
+    end
+
+    test "a correction cannot move a row onto another facility's authority" do
+      original = FmapClassificationService.classify!(
+        encounter_identifier: "enc_example_21",
+        facility_identifier: "fac_plain_example",
+        date_of_service: Date.new(2026, 3, 1),
+        jurisdiction: "XA"
+      )
+      assert_equal "fmap_regular", original.category
+
+      assert_raises(ActiveRecord::RecordInvalid) do
+        original.supersede_with!(
+          rule_key: "us-ihs-638-100",
+          aian_verified: true,
+          evidence_refs: [ AIAN_EVIDENCE ],
+          received_through_basis: "facility_authority",
+          facility_authority_id: @contract_638.id,
+          authority_type: "contract_638"
+        )
+      end
+      assert_nil original.reload.superseded_by_id
+    end
+  end
+end
