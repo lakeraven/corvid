@@ -654,6 +654,51 @@ class Corvid::Adapters::FhirAdapterTest < Minitest::Test
     end
   end
 
+  # Issue #662: a transport failure is an unavailable source, not an exception.
+  # The fault is raised from the HTTP request so fhir_read/http_get run for real.
+
+  VERIFICATION_TRANSPORT_ERRORS = [
+    Errno::ECONNREFUSED,
+    Net::OpenTimeout,
+    Net::ReadTimeout,
+    SocketError,
+    OpenSSL::SSL::SSLError,
+    EOFError,
+    Net::ProtocolError
+  ].freeze
+
+  VERIFICATION_TRANSPORT_ERRORS.each do |error_class|
+    slug = error_class.name.gsub("::", "_").downcase
+
+    define_method("test_verify_tribal_enrollment_#{slug}_is_unavailable") do
+      with_transport_failure(error_class) do
+        result = @adapter.verify_tribal_enrollment("pt_test_001")
+        assert_nil result[:enrolled]
+        assert_equal :unavailable, result[:confidence]
+        assert_nil result[:tribe_code]
+        assert_nil result[:membership_number]
+      end
+    end
+
+    define_method("test_verify_identity_documents_#{slug}_reports_nothing_present") do
+      with_transport_failure(error_class) do
+        result = @adapter.verify_identity_documents("pt_test_001")
+        assert_equal false, result[:ssn_present]
+        assert_equal false, result[:dob_present]
+        assert_equal false, result[:birthplace_present]
+      end
+    end
+
+    define_method("test_verify_residency_#{slug}_is_not_on_reservation") do
+      with_transport_failure(error_class) do
+        result = @adapter.verify_residency("pt_test_001")
+        assert_equal false, result[:on_reservation]
+        assert_nil result[:address]
+        assert_nil result[:service_area]
+      end
+    end
+  end
+
   # -- get_conditions / get_medications (issue #611) --------------------------
 
   CONDITION_CATEGORY_SYSTEM = "http://terminology.hl7.org/CodeSystem/condition-category"
@@ -1906,6 +1951,18 @@ class Corvid::Adapters::FhirAdapterTest < Minitest::Test
 
   def clinical_read_with_http_fault(method, fault)
     @adapter.stub(:http_get, ->(_url) { raise fault }) { @adapter.public_send(method, "pt_001") }
+  end
+
+  # Raises from Net::HTTP#request so execute_http, http_get, and fhir_read all run.
+  def with_transport_failure(error_class)
+    requests = 0
+    failing_http = Object.new
+    failing_http.define_singleton_method(:request) do |_req|
+      requests += 1
+      raise error_class, "synthetic transport failure"
+    end
+    @adapter.stub(:build_http, failing_http) { yield }
+    assert_equal 1, requests, "expected the Patient read to reach the transport"
   end
 
   def clinical_read_without_http(method, patient_identifier)

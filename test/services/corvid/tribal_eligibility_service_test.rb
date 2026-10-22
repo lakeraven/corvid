@@ -423,6 +423,36 @@ class Corvid::TribalEligibilityServiceTest < ActiveSupport::TestCase
     assert_nil decision.provider_confidence
   end
 
+  # Issue #662: an outage raised by the transport (not a nil read) still
+  # persists a fail-closed decision with no provider confidence.
+  [ Errno::ECONNREFUSED, Net::ReadTimeout, SocketError, OpenSSL::SSL::SSLError, EOFError ].each do |error_class|
+    test "decide persists a fail-closed decision through FhirAdapter when the transport raises #{error_class}" do
+      fhir = Corvid::Adapters::FhirAdapter.new(base_url: "https://fhir.example.com/r4")
+      failing_http = Object.new
+      failing_http.define_singleton_method(:request) { |_req| raise error_class, "synthetic transport failure" }
+      fhir.define_singleton_method(:build_http) { |_uri| failing_http }
+      Corvid.configure { |c| c.adapter = fhir }
+
+      decision = nil
+      assert_difference -> { Corvid::PrcEligibilityDecision.unscoped.count }, 1 do
+        decision = Corvid::TribalEligibilityService.decide(
+          person_identifier: "pt_test_001",
+          facility: @facility,
+          tenant_identifier: TENANT
+        )
+      end
+
+      refute decision.eligible?
+      assert_includes decision.reason_codes, :provider_unavailable_fail_closed
+      refute_includes decision.reason_codes, :not_enrolled
+      assert_nil decision.provider_confidence
+      row = Corvid::PrcEligibilityDecision.unscoped.find(decision.decision_id)
+      refute row.eligible
+      assert_includes row.reason_codes, "provider_unavailable_fail_closed"
+      assert_nil row.provider_confidence
+    end
+  end
+
   test "decide persists nil provider_confidence when enrolled is nil with verified confidence" do
     person_id = "pt_nil_enrolled_conf"
     stub_tribal_enrollment_response(
