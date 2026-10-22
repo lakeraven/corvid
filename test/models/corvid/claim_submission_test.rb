@@ -277,6 +277,17 @@ class Corvid::ClaimSubmissionTest < ActiveSupport::TestCase
     end
   end
 
+  test "check_status! keeps recorded denial codes when a later poll reports none" do
+    with_tenant(TENANT) do
+      claim = create_claim(status: "appealed", claim_identifier: "CLM-DENY-2", denial_reason_codes: [ "CO-97" ])
+      Corvid.adapter.add_claim("CLM-DENY-2", { status: "accepted", denial_reason_codes: [] })
+
+      claim.check_status!
+
+      assert_equal [ "CO-97" ], claim.reload.denial_reason_codes
+    end
+  end
+
   # -- Statistics ------------------------------------------------------------
 
   test "totals_billed_by_currency aggregates per currency" do
