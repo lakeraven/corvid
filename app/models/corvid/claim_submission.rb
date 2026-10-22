@@ -20,16 +20,18 @@ module Corvid
     STATUSES = %w[draft submitted accepted rejected paid denied appealed error].freeze
     CLAIM_TYPES = %w[professional institutional dental].freeze
     # Draft has not been sent. Error has not been sent unless the row
-    # already stores a claim_identifier or submitted_at: the adapter
-    # identified the claim, or a submission time was stamped. A plain
-    # save cannot move a PRC-linked claim from an unsent status into a
-    # sent status, and cannot set status to "submitted" from any status.
+    # already stores a claim_identifier: the adapter identified the claim.
+    # submitted_at alone does not make an error row sent. A plain save
+    # cannot move a PRC-linked claim from an unsent status into a sent
+    # status, cannot set status to "submitted" from any status, and cannot
+    # write claim_identifier or submitted_at on an unsent linked claim.
     # submit! and mark_submitted! are the only paths that do, and they
     # re-run the gates. Later moves among sent statuses, including an
     # error that was actually sent, do not depend on submitted_at. A row
     # created already sent is a historical import and is left unstamped.
     UNSENT_STATUSES = %w[draft error].freeze
     SENT_STATUSES = %w[submitted accepted rejected paid denied appealed].freeze
+    SENT_MARKER_MESSAGE = "must be set with submit! or mark_submitted!"
 
     # Raised by #submit! when this claim bills a PRC referral that has not been
     # authorized. PRC authorizes before care is purchased, so billing an
@@ -66,8 +68,13 @@ module Corvid
     # helpers, remittance processing) records when it first happened, so the
     # KPIs above still count the claim after its status moves on.
     before_save :stamp_rejection_and_denial_times, if: :will_save_change_to_status?
+    # Provenance waits for the outermost commit. A host transaction that
+    # rolls back must not have called the hook, and a hook that fails must
+    # not undo the submission.
+    before_save :schedule_submission_provenance
 
     validate :submission_status_requires_gate, on: :update
+    validate :unsent_linked_claim_cannot_gain_sent_markers, on: :update
 
     scope :by_status, ->(status) { where(status: status) }
     scope :pending, -> { where(status: %w[submitted accepted]) }
@@ -187,13 +194,11 @@ module Corvid
       # any payer re-verification.
       enforce_referral_authorization_gate!
       enforce_alternate_resources_current!
-      saved = save_through_submission_gate!(
+      save_through_submission_gate!(
         claim_identifier: claim_identifier,
         status: "submitted",
         submitted_at: Time.current
       )
-      record_submission_provenance
-      saved
     end
 
     def mark_paid!(paid_amount:)
@@ -227,7 +232,6 @@ module Corvid
         status: result[:status] == "accepted" ? "submitted" : result[:status],
         submitted_at: Time.current
       )
-      record_submission_provenance
       result
     end
 
@@ -273,12 +277,12 @@ module Corvid
 
     # PRC-linked claims: only submit! and mark_submitted! may enter
     # "submitted", from any stored status. A plain save also cannot leave
-    # an unsent row — draft, or error with neither claim_identifier nor
-    # submitted_at — for a sent status. An error that already has either
-    # was sent; a status poll, payment, or remittance may move it. Moves
-    # between sent statuses stay open whether or not submitted_at was
-    # stamped. Creating a row already sent is a historical import and is
-    # not validated here.
+    # an unsent row — draft, or error without a claim_identifier — for a
+    # sent status. An error that already has a claim_identifier was sent;
+    # a status poll, payment, or remittance may move it. Moves between
+    # sent statuses stay open whether or not submitted_at was stamped.
+    # Creating a row already sent is a historical import and is not
+    # validated here.
     def submission_status_requires_gate
       return if @submission_through_gate
       return unless guarded_status_transition?
@@ -306,10 +310,55 @@ module Corvid
     end
 
     # Adapter status "error" can still mean the claim was sent: a
-    # claim_identifier was assigned, or submitted_at was stamped.
+    # claim_identifier was assigned. submitted_at by itself does not —
+    # a draft can be stamped with a time and then saved as error.
     def sent_despite_error_status?
-      status_in_database == "error" &&
-        (claim_identifier_in_database.present? || submitted_at_in_database.present?)
+      status_in_database == "error" && claim_identifier_in_database.present?
+    end
+
+    # An unsent linked claim may gain claim_identifier or submitted_at
+    # only through save_through_submission_gate!. A save that also changes
+    # something else (status to error is allowed) keeps that change and
+    # drops the markers; a save that only sets a marker is rejected.
+    def unsent_linked_claim_cannot_gain_sent_markers
+      return if @submission_through_gate
+      return unless linked_unsent_claim? && sent_marker_changing?
+
+      if sent_marker_only_change?
+        add_sent_marker_errors
+      else
+        restore_sent_markers
+      end
+    end
+
+    def linked_unsent_claim?
+      prc_referral_id.present? && unsent_status_in_database?
+    end
+
+    def sent_marker_changing?
+      will_save_change_to_claim_identifier? || will_save_change_to_submitted_at?
+    end
+
+    def sent_marker_only_change?
+      other_changes = changes_to_save.keys - %w[claim_identifier submitted_at updated_at]
+      other_changes.empty?
+    end
+
+    def add_sent_marker_errors
+      errors.add(:claim_identifier, SENT_MARKER_MESSAGE) if will_save_change_to_claim_identifier?
+      errors.add(:submitted_at, SENT_MARKER_MESSAGE) if will_save_change_to_submitted_at?
+    end
+
+    def restore_sent_markers
+      self.claim_identifier = claim_identifier_in_database if will_save_change_to_claim_identifier?
+      self.submitted_at = submitted_at_in_database if will_save_change_to_submitted_at?
+    end
+
+    def schedule_submission_provenance
+      return unless @submission_through_gate
+      return if prc_referral.blank?
+
+      ActiveRecord.after_all_transactions_commit { record_submission_provenance }
     end
 
     def save_through_submission_gate!(attributes)

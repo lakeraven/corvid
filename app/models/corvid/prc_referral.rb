@@ -98,27 +98,21 @@ module Corvid
                     guard: :alternate_resources_exhausted?
       end
 
-      # Provenance and the EHR sync wait until the outermost transaction
-      # commits. A host hook that fails must not undo the decision, and a
-      # transition that rolls back must not be told to the EHR.
-      event :complete_priority_assignment, before: :reverify_before_complete_priority_assignment,
-            after_commit: :record_authorization_provenance do
+      event :complete_priority_assignment, before: :reverify_before_complete_priority_assignment do
         transitions from: :priority_assignment, to: :committee_review, guard: :requires_committee?
         transitions from: :priority_assignment, to: :authorized, guard: :alternate_resources_exhausted?
       end
 
-      event :authorize, before: :reverify_before_authorize,
-            after_commit: [ :sync_status_to_ehr, :record_authorization_provenance ] do
+      event :authorize, before: :reverify_before_authorize do
         transitions from: [ :priority_assignment, :committee_review ], to: :authorized,
                     guard: :alternate_resources_exhausted?
       end
 
-      event :mark_denied, after_commit: :sync_status_to_ehr do
+      event :mark_denied do
         transitions from: [ :eligibility_review, :exception_review, :priority_assignment, :committee_review ], to: :denied
       end
 
-      event :mark_deferred, after: :record_deferred_determination,
-            after_commit: :sync_status_to_ehr do
+      event :mark_deferred, after: :record_deferred_determination do
         transitions from: [ :priority_assignment, :committee_review ], to: :deferred
       end
 
@@ -134,6 +128,13 @@ module Corvid
                     to: :cancelled
       end
     end
+
+    # Bang and non-bang AASM events both end in a save. Capture the new
+    # status here and publish it after the outermost commit: a later save
+    # in the same transaction hides earlier changes, and a callback that
+    # reads the in-memory status at commit time would see only the last one.
+    # A rolled-back savepoint drops the callback with it.
+    before_save :remember_referral_status_transition
 
     def service_request
       @service_request ||= Corvid.adapter.find_referral(referral_identifier) if referral_identifier.present?
@@ -397,12 +398,18 @@ module Corvid
 
     private
 
-    # AASM's after_commit runs the block immediately unless
-    # after_commit_everywhere is loaded. Hand the callback to Active
-    # Record so it waits for the outermost joinable transaction and is
-    # skipped when that transaction rolls back.
-    def aasm_execute_after_commit(&block)
-      ActiveRecord.after_all_transactions_commit(&block)
+    def remember_referral_status_transition
+      return unless will_save_change_to_status?
+
+      new_status = status
+      ActiveRecord.after_all_transactions_commit do
+        publish_committed_referral_status(new_status)
+      end
+    end
+
+    def publish_committed_referral_status(new_status)
+      sync_status_to_ehr(new_status)
+      record_authorization_provenance if new_status == "authorized"
     end
 
     def blocker_for(resource_type, check)
@@ -529,8 +536,6 @@ module Corvid
     end
 
     def record_authorization_provenance
-      return unless authorized?
-
       AlternateResourceReverification.record!(
         self,
         activity: "UPDATE",
@@ -538,10 +543,10 @@ module Corvid
       )
     end
 
-    def sync_status_to_ehr
+    def sync_status_to_ehr(status_value = status)
       return unless referral_identifier.present?
 
-      chs_status = CHS_STATUS_MAP[status] || CHS_STATUS_DEFAULT
+      chs_status = CHS_STATUS_MAP[status_value.to_s] || CHS_STATUS_DEFAULT
       Corvid.adapter.update_referral(referral_identifier, chs_approval_status: chs_status)
     rescue NotImplementedError, StandardError => e
       # NotImplementedError descends from ScriptError, not StandardError, so a
