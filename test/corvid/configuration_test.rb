@@ -1,6 +1,9 @@
 # frozen_string_literal: true
 
 require "minitest/autorun"
+require "active_support/core_ext/numeric/time"
+require "active_support/core_ext/object/json"
+require "yaml"
 require "corvid/configuration"
 
 class Corvid::ConfigurationTest < Minitest::Test
@@ -113,5 +116,106 @@ class Corvid::ConfigurationTest < Minitest::Test
     end
     result = Corvid.configuration.fetch_provenance.call(target_type: "x", target_id: "y")
     assert_equal [ { activity: "CREATE" } ], result
+  end
+
+  # -- alternate_resource_check_max_age (#640) ------------------------------
+
+  def test_alternate_resource_check_max_age_defaults
+    max_age = Corvid.configuration.alternate_resource_check_max_age
+
+    assert max_age.frozen?
+    assert_equal 30.days, max_age.fetch("medicaid")
+    %w[medicare_a medicare_b medicare_d].each do |type|
+      assert_equal 90.days, max_age.fetch(type)
+    end
+
+    other_types = Corvid::Configuration::ALTERNATE_RESOURCE_TYPES - %w[medicaid medicare_a medicare_b medicare_d]
+    other_types.each do |type|
+      assert_equal 90.days, max_age.fetch(type), "expected 90.days default for #{type}"
+    end
+  end
+
+  def test_alternate_resource_check_max_age_can_be_overridden_per_type
+    Corvid.configure do |c|
+      c.alternate_resource_check_max_age = { "medicaid" => 14.days }
+    end
+
+    max_age = Corvid.configuration.alternate_resource_check_max_age
+    assert_equal 14.days, max_age.fetch("medicaid")
+    assert_equal 90.days, max_age.fetch("medicare_a")
+    assert_equal 90.days, max_age.fetch("private_insurance")
+  end
+
+  def test_alternate_resource_check_max_age_rejects_non_duration_values
+    error = assert_raises(ArgumentError) do
+      Corvid.configure { |c| c.alternate_resource_check_max_age = { "medicaid" => 30 } }
+    end
+    assert_match(/duration/i, error.message)
+  end
+
+  def test_alternate_resource_check_max_age_rejects_non_positive_duration
+    error = assert_raises(ArgumentError) do
+      Corvid.configure { |c| c.alternate_resource_check_max_age = { "medicaid" => 0.days } }
+    end
+    assert_match(/positive/i, error.message)
+  end
+
+  def test_alternate_resource_check_max_age_normalizes_symbol_keys_to_strings
+    Corvid.configure { |c| c.alternate_resource_check_max_age = { medicaid: 7.days } }
+
+    max_age = Corvid.configuration.alternate_resource_check_max_age
+    assert_equal 7.days, max_age.fetch("medicaid")
+  end
+
+  def test_alternate_resource_check_max_age_rejects_unknown_resource_type_keys
+    assert_raises(ArgumentError) do
+      Corvid.configure { |c| c.alternate_resource_check_max_age = { "medicaidd" => 7.days } }
+    end
+
+    assert_raises(ArgumentError) do
+      Corvid.configure { |c| c.alternate_resource_check_max_age = { unknown: 7.days } }
+    end
+  end
+
+  # -- verification snapshot keys (ADR 0008) ---------------------------------
+
+  def test_verification_snapshot_keys_defaults_to_empty_hash
+    assert_equal({}, Corvid.configuration.verification_snapshot_keys)
+  end
+
+  def test_verification_snapshot_key_version_defaults_to_nil
+    assert_nil Corvid.configuration.verification_snapshot_key_version
+  end
+
+  def test_configuration_inspect_does_not_reveal_snapshot_key_material
+    key = "test-snapshot-key-0001-xxxxxxxxxxxxxxxx"
+    Corvid.configure do |c|
+      c.verification_snapshot_keys = { "v1-test" => key }
+      c.verification_snapshot_key_version = "v1-test"
+    end
+
+    inspected = Corvid.configuration.inspect
+    refute_includes inspected, key
+    refute_includes inspected, "test-snapshot-key-0001"
+  end
+
+  def test_configuration_as_json_to_json_and_to_yaml_never_reveal_snapshot_key_material
+    key = "test-snapshot-key-0001-xxxxxxxxxxxxxxxx"
+    Corvid.configure do |c|
+      c.verification_snapshot_keys = { "v1-test" => key }
+      c.verification_snapshot_key_version = "v1-test"
+    end
+
+    config = Corvid.configuration
+    serialized_forms = [
+      config.as_json,
+      JSON.parse(config.to_json),
+      config.to_yaml
+    ]
+
+    serialized_forms.each do |serialized|
+      refute_includes serialized.to_s, key
+      refute_includes serialized.to_s, "test-snapshot-key-0001"
+    end
   end
 end

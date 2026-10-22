@@ -13,7 +13,16 @@ Feature: Committee review sync and eligibility via adapter
     When a committee review approves the referral for 75000
     Then the adapter should have the referral updated with approval status
 
+  Scenario: Committee sync blocks approved decision until alternate resources exhausted
+    Given the referral is in committee review state
+    And alternate resource checks are not exhausted for the referral
+    And a finalized committee approval exists for the referral
+    When committee sync decision is attempted for the approval
+    Then the committee sync should be blocked with alternate resource blockers
+    And the adapter should not receive a committee approval update
+
   Scenario: All 12 alternate resource types verify via adapter
+    Given the adapter has eligible coverage for all alternate resource types for patient "pt_001"
     When alternate resource checks are created for all resource types
     And all checks are verified via the adapter
     Then each check should have a status of enrolled or not_enrolled

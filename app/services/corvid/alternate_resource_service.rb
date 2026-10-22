@@ -11,9 +11,7 @@ module Corvid
       end
 
       def all_exhausted?(prc_referral)
-        prc_referral.alternate_resource_checks.all? do |check|
-          %w[not_enrolled denied exhausted].include?(check.status)
-        end
+        Corvid::AlternateResourceCheck.all_exhausted?(prc_referral)
       end
 
       def has_active_coverage?(prc_referral)

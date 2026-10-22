@@ -72,6 +72,7 @@ class Corvid::CommitteeReviewSyncServiceInjectionTest < ActiveSupport::TestCase
     # — that's the documented #264 gap. We don't poison the global here
     # because the apply half legitimately needs it until #264 lands.
     review = build_approved_review
+    exhaust_alternate_resources!(review.prc_referral)
     Corvid.configure { |c| c.adapter = Corvid::Adapters::MockAdapter.new }
     service = Corvid::CommitteeReviewSyncService.new(adapter: @fake)
 
@@ -87,6 +88,7 @@ class Corvid::CommitteeReviewSyncServiceInjectionTest < ActiveSupport::TestCase
     # us to flip it into a stricter assertion ("apply half also routes
     # through @adapter"). Until then, this is the fact on the ground.
     review = build_approved_review
+    exhaust_alternate_resources!(review.prc_referral)
     global = Corvid::Adapters::MockAdapter.new
     spy_global = []
     global.define_singleton_method(:update_referral) do |id, params|
@@ -131,6 +133,7 @@ class Corvid::CommitteeReviewSyncServiceInjectionTest < ActiveSupport::TestCase
         # trying to exercise would never run.
         status: "committee_review"
       )
+      exhaust_alternate_resources!(ref)
       Corvid::CommitteeReview.create!(
         prc_referral: ref,
         committee_date: Date.current,
