@@ -72,6 +72,23 @@ class Corvid::RemittanceProcessorTest < ActiveSupport::TestCase
     end
   end
 
+  test "a line item with no claim identifier matches no claim" do
+    with_tenant(TENANT) do
+      draft = Corvid::ClaimSubmission.create!(
+        patient_identifier: "pt_remit", claim_type: "professional", status: "draft", billed_amount: 400.0
+      )
+
+      result = Corvid::RemittanceProcessor.call([
+        remittance(claim_identifier: nil, paid_amount: 300.0)
+      ])
+
+      assert_equal 1, result.unmatched
+      assert_equal 0, result.paid
+      assert_equal "draft", draft.reload.status
+      assert_nil draft.paid_amount
+    end
+  end
+
   private
 
   def create_claim(claim_identifier)

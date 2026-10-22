@@ -360,6 +360,16 @@ class Corvid::ClaimSubmissionTest < ActiveSupport::TestCase
     end
   end
 
+  test "rejection_rate only counts rejections of claims that were sent" do
+    with_tenant(TENANT) do
+      create_claim(status: "paid", submitted_at: 1.day.ago)
+      create_claim(status: "rejected") # never recorded as sent
+      create_claim(status: "rejected") # never recorded as sent
+
+      assert_in_delta 0.0, Corvid::ClaimSubmission.rejection_rate
+    end
+  end
+
   test "denial_rate counts claims ever denied among adjudicated claims and ignores rejections" do
     with_tenant(TENANT) do
       create_claim(status: "paid")
