@@ -392,6 +392,172 @@ class Corvid::AlternateResourceCheckVerifyMedicaidEligibilityGroupTest < ActiveS
     end
   end
 
+  test "verify! re-infers when re-verification has one medicaid coverage with nil group and prior group was stated" do
+    with_tenant(TENANT) do
+      register_patient(dob: Date.new(1996, 6, 15))
+      @adapter.add_coverage(
+        PATIENT_ID,
+        coverage_type: "medicaid",
+        eligible: true,
+        state: "XA",
+        eligibility_group: "expansion_adult",
+        eligibility_group_source: "eligibility_response"
+      )
+      check = create_medicaid_check!
+      stub_verify_eligibility(eligible: true, policy_token: "TEST-POLICY-670")
+
+      assert check.verify!
+      check.reload
+      assert_equal "expansion_adult", check.eligibility_group
+      assert_equal "eligibility_response", check.eligibility_group_source
+      first_set_at = check.eligibility_group_set_at
+
+      nil_group_row = [
+        {
+          coverage_type: "medicaid",
+          eligible: true,
+          state: "XA",
+          eligibility_group: nil,
+          plan_name: "TEST REGULAR PLAN"
+        }
+      ]
+      sequencing = SequencingGetCoveragesAdapterDelegate.new(@adapter, patient_id: PATIENT_ID, sequences: [ nil_group_row ])
+
+      travel_to Time.zone.local(2026, 6, 1, 10, 0, 0) do
+        with_adapter(sequencing) { assert check.verify! }
+      end
+      check.reload
+
+      assert_equal "expansion_adult", check.eligibility_group
+      assert_equal "inferred", check.eligibility_group_source
+      refute_equal first_set_at, check.eligibility_group_set_at
+    end
+  end
+
+  test "verify! re-infers unknown when re-verification has one medicaid coverage with unknown group in ZZ and prior group was stated" do
+    with_tenant(TENANT) do
+      register_patient(dob: Date.new(1996, 6, 15))
+      @adapter.add_coverage(
+        PATIENT_ID,
+        coverage_type: "medicaid",
+        eligible: true,
+        state: "XA",
+        eligibility_group: "expansion_adult",
+        eligibility_group_source: "eligibility_response"
+      )
+      check = create_medicaid_check!
+      stub_verify_eligibility(eligible: true, policy_token: "TEST-POLICY-670")
+
+      assert check.verify!
+      check.reload
+      assert_equal "expansion_adult", check.eligibility_group
+      assert_equal "eligibility_response", check.eligibility_group_source
+
+      unknown_row = [
+        {
+          coverage_type: "medicaid",
+          eligible: true,
+          state: "ZZ",
+          eligibility_group: "unknown",
+          eligibility_group_source: "eligibility_response"
+        }
+      ]
+      sequencing = SequencingGetCoveragesAdapterDelegate.new(@adapter, patient_id: PATIENT_ID, sequences: [ unknown_row ])
+
+      travel_to Time.zone.local(2026, 6, 1, 11, 0, 0) do
+        with_adapter(sequencing) { assert check.verify! }
+      end
+      check.reload
+
+      assert_equal "unknown", check.eligibility_group
+      assert_equal "inferred", check.eligibility_group_source
+    end
+  end
+
+  test "verify! still records stated group when re-verification has one medicaid coverage that states a real group" do
+    with_tenant(TENANT) do
+      register_patient(dob: Date.new(1996, 6, 15))
+      @adapter.add_coverage(
+        PATIENT_ID,
+        coverage_type: "medicaid",
+        eligible: true,
+        state: "XA",
+        eligibility_group: "expansion_adult",
+        eligibility_group_source: "eligibility_response"
+      )
+      check = create_medicaid_check!
+      stub_verify_eligibility(eligible: true, policy_token: "TEST-POLICY-670")
+
+      assert check.verify!
+      check.reload
+      assert_equal "expansion_adult", check.eligibility_group
+      assert_equal "eligibility_response", check.eligibility_group_source
+
+      waiver_row = [
+        {
+          coverage_type: "medicaid",
+          eligible: true,
+          state: "XB",
+          eligibility_group: "waiver_adult",
+          eligibility_group_source: "state_case_data",
+          plan_name: "TEST SYNTHETIC WAIVER PLAN"
+        }
+      ]
+      sequencing = SequencingGetCoveragesAdapterDelegate.new(@adapter, patient_id: PATIENT_ID, sequences: [ waiver_row ])
+
+      travel_to Time.zone.local(2026, 6, 1, 12, 0, 0) do
+        with_adapter(sequencing) { assert check.verify! }
+      end
+      check.reload
+
+      assert_equal "waiver_adult", check.eligibility_group
+      assert_equal "state_case_data", check.eligibility_group_source
+    end
+  end
+
+  test "verify! does not overwrite newer stated group when concurrent write happens before superseding record!" do
+    with_tenant(TENANT) do
+      register_patient(dob: Date.new(1996, 6, 15))
+      @adapter.add_coverage(
+        PATIENT_ID,
+        coverage_type: "medicaid",
+        eligible: true,
+        state: "XA",
+        eligibility_group: "expansion_adult",
+        eligibility_group_source: "eligibility_response"
+      )
+      check = create_medicaid_check!
+      stub_verify_eligibility(eligible: true, policy_token: "TEST-POLICY-670")
+
+      assert check.verify!
+      check.reload
+      assert_equal "expansion_adult", check.eligibility_group
+      assert_equal "eligibility_response", check.eligibility_group_source
+
+      @adapter.add_coverage(
+        PATIENT_ID,
+        coverage_type: "medicaid",
+        eligible: false,
+        state: "XA",
+        eligibility_group: "other",
+        eligibility_group_source: "eligibility_response"
+      )
+
+      inner_service = Corvid::MedicaidEligibilityGroupService.new(adapter: @adapter)
+      concurrent_before_supersede = ConcurrentWriteBeforeSupersedeRecordService.new(inner_service)
+
+      travel_to Time.zone.local(2026, 6, 1, 13, 0, 0) do
+        Corvid::MedicaidEligibilityGroupService.stub(:new, ->(**) { concurrent_before_supersede }) do
+          assert check.verify!
+        end
+      end
+      check.reload
+
+      assert_equal "waiver_adult", check.eligibility_group
+      assert_equal "state_case_data", check.eligibility_group_source
+    end
+  end
+
   test "verify! re-infers when re-verification has ambiguous medicaid coverage and prior group was stated" do
     with_tenant(TENANT) do
       register_patient(dob: Date.new(1996, 6, 15))
@@ -544,6 +710,77 @@ class Corvid::AlternateResourceCheckVerifyMedicaidEligibilityGroupTest < ActiveS
       assert_not_nil check.checked_at
       assert_nil check.eligibility_group
       assert_warning_logged_without_phi(log_io, PATIENT_ID)
+    end
+  end
+
+  class SequencingGetCoveragesAdapterDelegate
+    def initialize(inner, patient_id:, sequences:)
+      @inner = inner
+      @patient_id = patient_id.to_s
+      @sequences = sequences.dup
+    end
+
+    def get_coverages(patient_identifier)
+      if patient_identifier.to_s == @patient_id && @sequences.any?
+        return @sequences.shift
+      end
+
+      @inner.get_coverages(patient_identifier)
+    end
+
+    def verify_eligibility(patient_identifier, resource_type)
+      @inner.verify_eligibility(patient_identifier, resource_type)
+    end
+
+    def add_coverage(patient_identifier, attrs = {}, **extra)
+      @inner.add_coverage(patient_identifier, attrs, **extra)
+    end
+
+    def add_patient(patient_identifier, **attrs)
+      @inner.add_patient(patient_identifier, **attrs)
+    end
+
+    def find_patient(patient_identifier)
+      @inner.find_patient(patient_identifier)
+    end
+
+    def respond_to_missing?(method, include_private = false)
+      @inner.respond_to?(method, include_private) || super
+    end
+
+    def method_missing(method, *args, **kwargs, &block)
+      @inner.public_send(method, *args, **kwargs, &block)
+    end
+  end
+
+  class ConcurrentWriteBeforeSupersedeRecordService
+    def initialize(inner)
+      @inner = inner
+    end
+
+    def record!(check, coverage:, date_of_service:, supersede_stated: false)
+      if supersede_stated
+        @inner.record!(
+          check,
+          coverage: {
+            state: "XA",
+            eligibility_group: "waiver_adult",
+            eligibility_group_source: "state_case_data"
+          },
+          date_of_service: date_of_service
+        )
+      end
+
+      @inner.record!(
+        check,
+        coverage: coverage,
+        date_of_service: date_of_service,
+        supersede_stated: supersede_stated
+      )
+    end
+
+    def record_staff_entry!(check, eligibility_group:)
+      @inner.record_staff_entry!(check, eligibility_group: eligibility_group)
     end
   end
 
