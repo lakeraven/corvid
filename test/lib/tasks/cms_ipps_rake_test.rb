@@ -11,6 +11,7 @@ class CmsIppsRakeTest < ActiveSupport::TestCase
     Rails.application.load_tasks if Rake::Task.tasks.empty?
     Rake::Task["cms:ipps:import_drg_weights"].reenable
     Rake::Task["cms:ipps:import_hospital_rates"].reenable
+    Rake::Task["cms:ipps:normalize_wage_index"].reenable
 
     @tmpdir = Dir.mktmpdir
   end
@@ -58,5 +59,26 @@ class CmsIppsRakeTest < ActiveSupport::TestCase
     assert_equal 2, fy.count
     assert_nil fy.find_by(locality: "02"),
                "removed locality 02 must be gone after a corrected import"
+  end
+
+  WAGE_INDEX_FIXTURE = File.expand_path("../../fixtures/cms_ipps_wage_index_sample.txt", __dir__)
+
+  test "normalize_wage_index uses the default release label when the label argument is blank" do
+    out = File.join(@tmpdir, "hosp.csv")
+    assert_output(/label=cms_fy2026_final_rule/) do
+      Rake::Task["cms:ipps:normalize_wage_index"].invoke("2026", WAGE_INDEX_FIXTURE, out, "6752.61", "")
+    end
+
+    assert_match(/\A# release_label: cms_fy2026_final_rule$/, File.read(out),
+                 "a blank label must not be written as an empty release_label")
+  end
+
+  test "normalize_wage_index writes the base rate exactly as given, never via Float" do
+    out = File.join(@tmpdir, "hosp.csv")
+    assert_output(/Wrote/) do
+      Rake::Task["cms:ipps:normalize_wage_index"].invoke("2026", WAGE_INDEX_FIXTURE, out, "6752.61", "test")
+    end
+
+    assert_match(/^NATIONAL,6752\.61,1\.0000$/, File.read(out))
   end
 end

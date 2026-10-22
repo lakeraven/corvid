@@ -78,4 +78,57 @@ class Corvid::CmsIppsWageIndexNormalizerTest < ActiveSupport::TestCase
   ensure
     partial&.unlink
   end
+
+  # Money exactness (ADR 0004): the base rate is a dollar amount and
+  # the wage index multiplies dollar amounts, so neither may pass
+  # through Float on the way into the canonical CSV.
+
+  test "normalize returns the wage index as an exact BigDecimal" do
+    rows = Corvid::CmsIppsWageIndexNormalizer.normalize(FIXTURE)
+    billings = rows.find { |r| r[:locality] == "13740" }
+
+    assert_kind_of BigDecimal, billings[:wage_index]
+    assert_equal BigDecimal("0.8961"), billings[:wage_index]
+  end
+
+  test "render writes a string base rate exactly, padded to cents" do
+    rows = [ { locality: "13740", wage_index: BigDecimal("0.8961") } ]
+    csv = Corvid::CmsIppsWageIndexNormalizer.render(rows, base_rate: "6500", release_label: "test")
+
+    assert_match(/^NATIONAL,6500\.00,1\.0000$/, csv)
+    assert_match(/^13740,6500\.00,0\.8961$/, csv)
+  end
+
+  test "render refuses a base rate with sub-cent precision instead of rounding it" do
+    rows = [ { locality: "13740", wage_index: BigDecimal("0.8961") } ]
+
+    assert_raises(ArgumentError) do
+      Corvid::CmsIppsWageIndexNormalizer.render(rows, base_rate: "6752.615", release_label: "test")
+    end
+  end
+
+  test "render refuses a non-numeric, zero or negative base rate" do
+    rows = [ { locality: "13740", wage_index: BigDecimal("0.8961") } ]
+
+    [ "abc", "", "0", "-6752.61" ].each do |bad|
+      assert_raises(ArgumentError, "base_rate=#{bad.inspect} should be refused") do
+        Corvid::CmsIppsWageIndexNormalizer.render(rows, base_rate: bad, release_label: "test")
+      end
+    end
+  end
+
+  test "a zero, negative or non-finite wage index raises instead of zeroing the rate" do
+    [ "0", "-0.5", "Infinity", "NaN" ].each do |bad|
+      file = Tempfile.new([ "bad_wi", ".txt" ])
+      File.open(file.path, "wb") do |f|
+        f.write("CBSAGEO\tCBSAGEO occmix wage index\r\n")
+        f.write("01\t#{bad}\r\n")
+      end
+      assert_raises(Corvid::CmsIppsWageIndexNormalizer::MalformedFileError, "wage index #{bad.inspect} should be refused") do
+        Corvid::CmsIppsWageIndexNormalizer.normalize(file.path)
+      end
+    ensure
+      file&.unlink
+    end
+  end
 end
