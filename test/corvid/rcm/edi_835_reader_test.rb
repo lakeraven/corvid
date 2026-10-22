@@ -234,4 +234,24 @@ class Corvid::Rcm::Edi835ReaderTest < Minitest::Test
 
     assert_match(/CAS/, error.message)
   end
+
+  # -- panel round 1: CLP01 and CLP02 are required ------------------------------
+
+  def test_a_claim_loop_with_no_status_code_raises
+    source = File.read(File.join(FIXTURES, "clean_full_pay.835")).sub("CLP*CLM-1001*1*", "CLP*CLM-1001**")
+    error = assert_raises(Corvid::Rcm::Edi835Reader::ParseError) do
+      Corvid::Rcm::Edi835Reader.new(source).parse
+    end
+
+    assert_match(/CLP02/, error.message)
+  end
+
+  def test_a_claim_loop_with_no_claim_identifier_raises
+    source = File.read(File.join(FIXTURES, "clean_full_pay.835")).sub("CLP*CLM-1001*", "CLP**")
+    error = assert_raises(Corvid::Rcm::Edi835Reader::ParseError) do
+      Corvid::Rcm::Edi835Reader.new(source).parse
+    end
+
+    assert_match(/CLP01/, error.message)
+  end
 end

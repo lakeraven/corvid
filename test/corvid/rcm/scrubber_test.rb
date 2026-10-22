@@ -694,4 +694,41 @@ class Corvid::Rcm::ScrubberTest < Minitest::Test
     assert_empty scrubber.scrub(claim, as_of: Date.new(2027, 6, 1), rules_as_of: Factory::SERVICE_DATE).findings
     assert_equal [ :future ], scrubber.scrub(claim, as_of: Date.new(2027, 6, 1)).findings.map(&:rule_id)
   end
+
+  # -- panel round 1 ------------------------------------------------------------
+
+  # Regression: structural rules carried the ruleset's adoption date as their
+  # effective start, so judging a 2025 date of service by "the rules in force
+  # then" ran none of them and a claim with no NPI came back submittable.
+  def test_rules_for_an_early_date_of_service_still_check_claim_completeness
+    result = scrub(Factory.claim(rendering_provider_npi: nil), rules_as_of: Date.new(2025, 6, 1))
+
+    assert_includes result.blocked_by, :rendering_provider_npi_present
+    refute result.submittable?
+  end
+
+  def test_completeness_and_format_rules_are_in_force_on_any_date
+    %i[rendering_provider_npi_present billing_provider_npi_present billing_provider_tax_id_present
+       rendering_provider_taxonomy_present payer_identifier_present coverage_active_on_service_date
+       patient_demographics_present service_lines_present service_line_complete
+       patient_demographics_match_subscriber diagnosis_pointers_resolve diagnosis_code_well_formed
+       timely_filing_window_expired duplicate_service_already_submitted].each do |rule_id|
+      assert Corvid::Rcm::ScrubRuleset.default.rule(rule_id).effective_on?(Date.new(2000, 1, 1)),
+             "#{rule_id} should not have an effective start"
+    end
+  end
+
+  # Absence never verifies: with no filing window on file nobody can say the
+  # claim is in time, so a human is told rather than silence passing for "yes".
+  def test_an_unconfigured_filing_window_warns
+    result = scrub(Factory.claim(coverage: Factory.coverage(timely_filing_days: nil)))
+
+    assert_only_rule(:timely_filing_window_configured, result)
+    assert_equal :warn, result.findings.first.severity
+    assert result.submittable?
+  end
+
+  def test_an_infinite_billed_amount_blocks
+    assert_only_rule(:service_line_complete, scrub(Factory.claim_with_line(billed_amount: Float::INFINITY)))
+  end
 end
