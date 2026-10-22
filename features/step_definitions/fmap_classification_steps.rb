@@ -21,7 +21,7 @@ When("an encounter at {string} with date of service {string} is classified for F
     encounter_identifier: "enc_#{facility}_#{dos}",
     facility_identifier: facility,
     date_of_service: Date.parse(dos),
-    jurisdiction: "AZ",
+    jurisdiction: "XA",
     facility_authority: @facility_authorities.fetch(facility),
     aian_verified: true,
     evidence_refs: [ { "supports" => "aian_status", "ref" => "attestation:tok_example_aian" } ]
@@ -33,7 +33,7 @@ When("an unverified-AIAN encounter at {string} with date of service {string} is 
     encounter_identifier: "enc_#{facility}_#{dos}",
     facility_identifier: facility,
     date_of_service: Date.parse(dos),
-    jurisdiction: "AZ",
+    jurisdiction: "XA",
     facility_authority: @facility_authorities.fetch(facility),
     aian_verified: false
   )
@@ -44,7 +44,7 @@ When("an encounter at {string} with date of service {string} is classified with 
     encounter_identifier: "enc_#{facility}_#{dos}",
     facility_identifier: facility,
     date_of_service: Date.parse(dos),
-    jurisdiction: "AZ",
+    jurisdiction: "XA",
     facility_authority: @facility_authorities.fetch(facility),
     aian_verified: true,
     evidence_refs: []
@@ -56,7 +56,7 @@ When("an encounter at {string} with date of service {string} is classified and r
     encounter_identifier: "enc_#{facility}_#{dos}",
     facility_identifier: facility,
     date_of_service: Date.parse(dos),
-    jurisdiction: "AZ",
+    jurisdiction: "XA",
     facility_authority: @facility_authorities.fetch(facility),
     aian_verified: true,
     evidence_refs: [ { "supports" => "aian_status", "ref" => "attestation:tok_example_aian" } ],

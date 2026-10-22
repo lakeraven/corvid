@@ -28,7 +28,7 @@ module Corvid
     test "UIO encounter inside the ARPA window is 100 percent; after it, regular" do
       inside = FmapClassificationService.classify(
         date_of_service: Date.new(2022, 6, 1),
-        jurisdiction: "AZ",
+        jurisdiction: "XA",
         facility_authority: @uio,
         aian_verified: true,
         evidence_refs: [ AIAN_EVIDENCE ]
@@ -39,7 +39,7 @@ module Corvid
 
       after = FmapClassificationService.classify(
         date_of_service: Date.new(2024, 6, 1),
-        jurisdiction: "AZ",
+        jurisdiction: "XA",
         facility_authority: @uio,
         aian_verified: true
       )
@@ -49,7 +49,7 @@ module Corvid
     test "638 encounter with AIAN evidence is 100 percent under 1905(b)" do
       result = FmapClassificationService.classify(
         date_of_service: Date.new(2026, 3, 1),
-        jurisdiction: "MT",
+        jurisdiction: "XB",
         facility_authority: @contract_638,
         aian_verified: true,
         evidence_refs: [ AIAN_EVIDENCE ]
@@ -62,7 +62,7 @@ module Corvid
     test "missing AIAN evidence downgrades visibly, naming the gap" do
       result = FmapClassificationService.classify(
         date_of_service: Date.new(2026, 3, 1),
-        jurisdiction: "MT",
+        jurisdiction: "XB",
         facility_authority: @contract_638,
         aian_verified: false
       )
@@ -76,7 +76,7 @@ module Corvid
       # Expansion-group encounter without AIAN evidence: 90 vs best 100.
       gap = FmapClassificationService.classify(
         date_of_service: Date.new(2026, 3, 1),
-        jurisdiction: "MT",
+        jurisdiction: "XB",
         facility_authority: @contract_638,
         aian_verified: false,
         coverage_group: "expansion_adult",
@@ -89,7 +89,7 @@ module Corvid
       # Regular fallback carries no percent: delta unknown, never guessed.
       unknown = FmapClassificationService.classify(
         date_of_service: Date.new(2026, 3, 1),
-        jurisdiction: "MT",
+        jurisdiction: "XB",
         facility_authority: @contract_638,
         aian_verified: false,
         billed_amount_cents: 10_000
@@ -121,7 +121,7 @@ module Corvid
       )
       result = FmapClassificationService.classify(
         date_of_service: Date.new(2026, 3, 1),
-        jurisdiction: "MT",
+        jurisdiction: "XB",
         facility_authority: lapsed,
         aian_verified: true
       )
@@ -135,7 +135,7 @@ module Corvid
         facility_identifier: "fac_uio_example",
         evidence_refs: [ AIAN_EVIDENCE ],
         date_of_service: Date.new(2022, 6, 1),
-        jurisdiction: "AZ",
+        jurisdiction: "XA",
         facility_authority: @uio,
         aian_verified: true
       )
@@ -149,7 +149,7 @@ module Corvid
       determination = FmapClassificationService.classify!(
         encounter_identifier: "enc_example_2",
         date_of_service: Date.new(2022, 6, 1),
-        jurisdiction: "AZ",
+        jurisdiction: "XA",
         facility_authority: @uio,
         aian_verified: true,
         evidence_refs: [ AIAN_EVIDENCE ],
@@ -173,7 +173,7 @@ module Corvid
     test "an unevidenced 100 percent is refused, not granted" do
       result = FmapClassificationService.classify(
         date_of_service: Date.new(2026, 3, 1),
-        jurisdiction: "MT",
+        jurisdiction: "XB",
         facility_authority: @contract_638,
         aian_verified: true,
         evidence_refs: []
@@ -190,7 +190,7 @@ module Corvid
       determination = FmapClassificationService.classify!(
         encounter_identifier: "enc_example_3",
         date_of_service: Date.new(2022, 6, 1),
-        jurisdiction: "AZ",
+        jurisdiction: "XA",
         facility_authority: @uio,
         aian_verified: true
       )
@@ -204,7 +204,7 @@ module Corvid
       determination = FmapDetermination.new(
         encounter_identifier: "enc_example_4",
         date_of_service: Date.new(2022, 6, 1),
-        jurisdiction: "AZ",
+        jurisdiction: "XA",
         category: "fmap_100_uio",
         determined_at: Time.current
       )
@@ -221,7 +221,7 @@ module Corvid
 
       result = FmapClassificationService.classify(
         date_of_service: Date.new(2026, 3, 1),
-        jurisdiction: "MT",
+        jurisdiction: "XB",
         facility_authority: @contract_638,
         aian_verified: true,
         evidence_refs: [ AIAN_EVIDENCE ]
@@ -237,7 +237,7 @@ module Corvid
     test "a date of service before every rule's window is undetermined" do
       result = FmapClassificationService.classify(
         date_of_service: Date.new(1960, 1, 1),
-        jurisdiction: "MT",
+        jurisdiction: "XB",
         aian_verified: false
       )
 
@@ -259,7 +259,7 @@ module Corvid
     test "a date of service before the authority started confers no basis" do
       result = FmapClassificationService.classify(
         date_of_service: Date.new(2018, 6, 1),
-        jurisdiction: "MT",
+        jurisdiction: "XB",
         facility_authority: @contract_638,
         aian_verified: true,
         evidence_refs: [ AIAN_EVIDENCE ]
