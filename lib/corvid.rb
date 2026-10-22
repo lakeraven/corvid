@@ -11,6 +11,7 @@ require "corvid/adapters/base"
 require "corvid/adapters/mock_adapter"
 require "corvid/adapters/fhir_adapter"
 require "corvid/auth/backend_services_client"
+require "corvid/rcm"
 
 # When loaded inside a Rails app, also load the engine.
 require "corvid/engine" if defined?(Rails::Engine)

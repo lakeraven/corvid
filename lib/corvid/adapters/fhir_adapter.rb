@@ -354,7 +354,6 @@ module Corvid
         end
 
         fhir_update("ServiceRequest", referral_identifier, existing)
-        true
       end
 
       def list_referrals(patient_identifier)
@@ -483,16 +482,7 @@ module Corvid
 
       def verify_eligibility(patient_identifier, resource_type)
         bundle = fhir_search("Coverage", beneficiary: "Patient/#{patient_identifier}")
-        coverages = extract_entries(bundle)
-
-        coverage = if resource_type.to_s != ""
-          fhir_code = COVERAGE_TYPE_MAP[resource_type.to_s]
-          coverages.find do |c|
-            type_code = c.dig("type", "coding", 0, "code")
-            type_code == fhir_code || type_code == resource_type.to_s
-          end
-        end
-        coverage ||= coverages.first
+        coverage = coverage_for_resource_type(extract_entries(bundle), resource_type)
         return nil unless coverage
 
         {
@@ -518,25 +508,13 @@ module Corvid
       US_CORE_BIRTHPLACE_URL = "http://hl7.org/fhir/us/core/StructureDefinition/us-core-birthplace"
 
       def verify_tribal_enrollment(patient_identifier)
-        unavailable = {
-          enrolled: false, membership_number: nil, tribe_name: nil, tribe_code: nil,
-          confidence: :unavailable, verified_at: Time.current
-        }
-
         patient = fhir_read("Patient", patient_identifier)
-        return unavailable unless patient
+        return tribal_enrollment_unavailable unless patient
 
         ext = find_extension(patient, TRIBAL_ENROLLMENT_EXTENSION_URL)
-        return unavailable unless ext
+        return tribal_enrollment_unavailable unless ext
 
-        {
-          enrolled: sub_extension_value(ext, "enrolled") == true,
-          membership_number: sub_extension_value(ext, "membershipNumber"),
-          tribe_name: sub_extension_value(ext, "tribeName"),
-          tribe_code: sub_extension_value(ext, "tribeCode"),
-          confidence: (sub_extension_value(ext, "confidence") || "verified").to_sym,
-          verified_at: Time.current
-        }
+        tribal_enrollment_from(ext)
       end
 
       def verify_identity_documents(patient_identifier)
@@ -580,8 +558,11 @@ module Corvid
         { claim_identifier: nil, status: "unsupported" }
       end
 
-      def check_claim_status(_claim_identifier)
-        { status: "unsupported" }
+      def check_claim_status(claim_identifier)
+        return nil if claim_identifier.nil? || claim_identifier.to_s.empty?
+        return nil unless fhir_read("Claim", claim_identifier)
+
+        { status: "unsupported", paid_amount: nil, adjustment_amount: nil, paid_date: nil }
       end
 
       def fetch_remittances(date_range: nil)
@@ -620,6 +601,21 @@ module Corvid
           "FhirAdapter#create_obligation requires a budget backend — " \
           "stock FHIR cannot encumber CHS funds, so reporting success here " \
           "would record an obligation that was never made"
+      end
+
+      # Stock FHIR cannot make obligations, so it has none to read. These
+      # raise rather than answer nil / [] so a lookup is never mistaken for
+      # "no obligation" (same posture as #create_obligation).
+      def get_obligation(_obligation_id)
+        raise NotImplementedError, "FhirAdapter#get_obligation requires a budget backend"
+      end
+
+      def get_obligation_by_referral(_referral_identifier)
+        raise NotImplementedError, "FhirAdapter#get_obligation_by_referral requires a budget backend"
+      end
+
+      def get_payments(obligation_id:)
+        raise NotImplementedError, "FhirAdapter#get_payments requires a budget backend"
       end
 
       private
@@ -1211,6 +1207,65 @@ module Corvid
       def extract_npi(resource)
         npi = Array(resource["identifier"]).find { |id| id["system"] == "http://hl7.org/fhir/sid/us-npi" }
         npi&.dig("value")
+      end
+
+      def tribal_enrollment_unavailable
+        {
+          enrolled: false,
+          membership_number: nil,
+          tribe_name: nil,
+          tribe_code: nil,
+          member_status: nil,
+          blood_quantum: nil,
+          confidence: :unavailable,
+          verified_at: Time.current
+        }
+      end
+
+      def tribal_enrollment_from(ext)
+        {
+          enrolled: sub_extension_value(ext, "enrolled") == true,
+          membership_number: sub_extension_value(ext, "membershipNumber"),
+          tribe_name: sub_extension_value(ext, "tribeName"),
+          tribe_code: sub_extension_value(ext, "tribeCode"),
+          member_status: sub_extension_value(ext, "memberStatus"),
+          blood_quantum: normalize_blood_quantum(blood_quantum_extension_value(ext)),
+          confidence: tribal_confidence(ext),
+          verified_at: Time.current
+        }
+      end
+
+      # A missing or unrecognized confidence sub-extension is not :verified.
+      # Only the documented symbols count; anything else fails closed.
+      def tribal_confidence(ext)
+        normalize_tribal_confidence(sub_extension_value(ext, "confidence"))
+      end
+
+      def blood_quantum_extension_value(extension)
+        sub = Array(extension["extension"]).find { |entry| entry["url"] == "bloodQuantum" }
+        return nil unless sub
+
+        %w[valueDecimal valueInteger valueString].each do |key|
+          return sub[key] if sub.key?(key)
+        end
+
+        nil
+      end
+
+      # Blank resource_type keeps the first coverage. A requested type that
+      # matches nothing is unknown — never another type's coverage.
+      def coverage_for_resource_type(coverages, resource_type)
+        return coverages.first if resource_type.to_s.empty?
+
+        coverages.find { |coverage| coverage_type_matches?(coverage, resource_type) }
+      end
+
+      def coverage_type_matches?(coverage, resource_type)
+        type_code = coverage.dig("type", "coding", 0, "code")
+        return false if type_code.nil? || type_code.to_s.empty?
+
+        requested = resource_type.to_s
+        type_code == requested || type_code == COVERAGE_TYPE_MAP[requested]
       end
 
       def find_extension(resource, url)

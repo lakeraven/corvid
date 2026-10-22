@@ -99,9 +99,13 @@ module Corvid
         # by the foreign key once any referral carried a report. Rebuilding a
         # demo tenant is the one legitimate reason to discard them, so it is
         # done here explicitly rather than by weakening the guarantee.
-        Corvid::ReferralFulfilmentReport
-          .where(prc_referral_id: Corvid::PrcReferral.for_facility(facility).select(:id))
-          .delete_all
+        referral_ids = Corvid::PrcReferral.for_facility(facility).select(:id)
+        Corvid::ReferralFulfilmentReport.where(prc_referral_id: referral_ids).delete_all
+        # The narrated PRC demo shares this facility and seeds alternate-
+        # resource checks (and could open a committee review); clear them so
+        # the demos can run in any order.
+        Corvid::AlternateResourceCheck.where(prc_referral_id: referral_ids).delete_all
+        Corvid::CommitteeReview.where(prc_referral_id: referral_ids).delete_all
         Corvid::PrcReferral.for_facility(facility).delete_all
         Corvid::Case.for_facility(facility).delete_all
       end
