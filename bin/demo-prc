@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+# Entry point: narrated PRC happy-path demo — registration -> eligibility /
+# tribal enrollment -> referral -> management approval -> obligation/budget.
+# Every beat is tagged [REAL] (engine-native, PG-backed) or [MOCK] (offline
+# adapter). Fully synthetic, fully offline. See docs/demo.md.
+#
+# This demo is self-resetting: it destroys its own prior case on each run, so
+# there is no separate reset task.
+set -euo pipefail
+# The demos own the development database. An inherited RAILS_ENV (e.g. a shell
+# set up for the suites) would aim the reset at the test database instead.
+if [ "${RAILS_ENV:-development}" != "development" ]; then
+  echo "$(basename "$0"): refusing to run with RAILS_ENV=${RAILS_ENV}; the demos use development" >&2
+  exit 64
+fi
+export RAILS_ENV=development
+cd "$(dirname "$0")/../test/dummy"
+
+bundle check >/dev/null 2>&1 || bundle install
+bin/rails db:prepare
+exec bin/rails demo:prc

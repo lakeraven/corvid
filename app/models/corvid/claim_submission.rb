@@ -204,6 +204,9 @@ module Corvid
     def check_status!
       return unless claim_identifier
       result = Corvid.adapter.check_claim_status(claim_identifier)
+      # Unknown claim: fail closed and leave every attribute unchanged.
+      return nil if result.nil?
+
       attrs = { last_checked_at: Time.current }
       attrs[:status] = result[:status] if STATUSES.include?(result[:status])
       attrs[:rejection_reason_token] = result[:rejection_reason_token] if result[:rejection_reason_token]

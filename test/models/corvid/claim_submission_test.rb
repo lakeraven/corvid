@@ -443,6 +443,21 @@ class Corvid::ClaimSubmissionTest < ActiveSupport::TestCase
     end
   end
 
+  test "check_status! when adapter returns nil does not raise and leaves claim unchanged" do
+    with_tenant(TENANT) do
+      claim = create_claim(status: "submitted", claim_identifier: "CLM_STATUS_NIL")
+      Corvid.adapter.define_singleton_method(:check_claim_status) { |_claim_id| nil }
+
+      before_attrs = claim.attributes.slice("status", "paid_amount", "adjustment_amount", "paid_date", "last_checked_at")
+
+      result = claim.check_status!
+
+      claim.reload
+      assert_nil result
+      assert_equal before_attrs, claim.attributes.slice("status", "paid_amount", "adjustment_amount", "paid_date", "last_checked_at")
+    end
+  end
+
   # -- CLAIM_TYPES -----------------------------------------------------------
 
   test "accepts valid claim types" do

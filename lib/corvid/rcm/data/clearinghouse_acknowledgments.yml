@@ -1,0 +1,34 @@
+# Canned 999 / 277CA acknowledgments for the fixture clearinghouse client.
+#
+# These are REJECTIONS — front-door refusals, never adjudicated, never
+# appealable. The only correct response is fix-and-resubmit. Keyed by claim
+# identifier so a scenario is reproduced by submitting the same claim id.
+default_outcome: accepted
+default_transaction_set: "277CA"
+
+rejections:
+  CLM-RJ-0001:
+    transaction_set: "277CA"
+    edits:
+      - code: "A7:562"
+        description: "Entity's National Provider Identifier (NPI) — the billing provider NPI is not on file with this payer."
+        element: "NM1*85 billing provider"
+        level: claim
+  CLM-RJ-0002:
+    transaction_set: "999"
+    edits:
+      - code: "IK403:I12"
+        description: "Implementation pattern match failure — the subscriber member identifier is not in a format this payer accepts."
+        element: "NM1*IL*09 subscriber member id"
+        level: segment
+  CLM-RJ-0003:
+    transaction_set: "277CA"
+    edits:
+      - code: "A3:21"
+        description: "Missing or invalid information — the diagnosis code pointed to by the service line is not a billable code."
+        element: "HI*ABK diagnosis"
+        level: claim
+      - code: "A3:249"
+        description: "Missing or invalid information — the place of service code conflicts with the submitted modifier."
+        element: "SV105 place of service"
+        level: line

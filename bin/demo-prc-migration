@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+# Entry point: governed PRC migration demo (consent gate + minimum-necessary
+# bundle + audit Determination), against an in-process stub target so it runs
+# fully offline. Fully synthetic. See docs/demo.md.
+set -euo pipefail
+# The demos own the development database. An inherited RAILS_ENV (e.g. a shell
+# set up for the suites) would aim the reset at the test database instead.
+if [ "${RAILS_ENV:-development}" != "development" ]; then
+  echo "$(basename "$0"): refusing to run with RAILS_ENV=${RAILS_ENV}; the demos use development" >&2
+  exit 64
+fi
+export RAILS_ENV=development
+cd "$(dirname "$0")/../test/dummy"
+
+bundle check >/dev/null 2>&1 || bundle install
+bin/rails db:prepare
+bin/rails demo:migration_reset
+exec bin/rails demo:migrate

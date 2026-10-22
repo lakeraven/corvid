@@ -46,8 +46,15 @@ class Corvid::AlternateResourceCheckTest < ActiveSupport::TestCase
 
   test "verify! transitions to enrolled or not_enrolled" do
     with_tenant(TENANT) do
+      referral = create_referral
+      patient_identifier = referral.case.patient_identifier
+      Corvid.adapter.add_coverage(patient_identifier,
+                                  coverage_type: "medicare_a",
+                                  payer_name: "MOCK MEDICARE A PAYER",
+                                  plan_name: "Mock Medicare A",
+                                  eligible: true)
       check = Corvid::AlternateResourceCheck.create!(
-        prc_referral: create_referral, resource_type: "medicare_a"
+        prc_referral: referral, resource_type: "medicare_a"
       )
       check.verify!
       assert %w[enrolled not_enrolled].include?(check.status)
