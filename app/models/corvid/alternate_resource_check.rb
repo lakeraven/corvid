@@ -78,6 +78,14 @@ module Corvid
     # Coordinated coverage is still active: that payer pays first.
     COVERAGE_STATUSES = %w[enrolled pending_enrollment coordinated].freeze
 
+    # An ineligible Medicaid answer moves the row to pending_enrollment
+    # only from these statuses, and only when an application date is on
+    # file. A recorded denial stays denied.
+    MEDICAID_OPEN_APPLICATION_STATUSES = %w[
+      not_checked checking pending_enrollment not_enrolled
+    ].freeze
+    private_constant :MEDICAID_OPEN_APPLICATION_STATUSES
+
     scope :active_coverage, -> { where(status: COVERAGE_STATUSES) }
     scope :unavailable, -> { where(status: UNAVAILABLE_STATUSES) }
     scope :pending, -> { where(status: %w[not_checked checking pending_enrollment]) }
@@ -339,16 +347,28 @@ module Corvid
 
     def ineligible_status
       return :pending_enrollment if open_medicaid_application?
+      return :denied if recorded_medicaid_denial?
 
       :not_enrolled
     end
 
     # An application_date on Medicaid means an application is on file.
-    # An ineligible answer does not finish it, from not_checked, checking,
+    # An ineligible answer does not finish it from not_checked, checking,
     # pending_enrollment, or not_enrolled: the row moves to
-    # pending_enrollment until denial, enrollment, coordination, or
-    # exhaustion. Without an application_date, ineligible is not_enrolled.
+    # pending_enrollment. A recorded denial stays denied. Enrollment,
+    # coordination, and exhaustion take not_enrolled, which is what an
+    # ineligible answer did before an application date could reopen
+    # them. Without an application_date, ineligible is not_enrolled.
     def open_medicaid_application?
+      medicaid_application_on_file? &&
+        MEDICAID_OPEN_APPLICATION_STATUSES.include?(status)
+    end
+
+    def recorded_medicaid_denial?
+      medicaid_application_on_file? && denied?
+    end
+
+    def medicaid_application_on_file?
       resource_type == "medicaid" && application_date.present?
     end
 

@@ -50,7 +50,7 @@ module Corvid
     validates :patient_identifier, presence: true
     validates :status, inclusion: { in: STATUSES }
     validates :claim_type, inclusion: { in: CLAIM_TYPES }
-    validate :draft_leaves_only_through_submission
+    validate :never_submitted_claim_stays_unsubmitted
     validate :medicaid_hold_override_not_assigned_directly
     validate :medicaid_hold_override_all_or_none
 
@@ -70,10 +70,16 @@ module Corvid
     MEDICAID_APPLICATION_ENDED_STATUSES = %w[denied enrolled coordinated exhausted].freeze
     private_constant :MEDICAID_APPLICATION_ENDED_STATUSES
 
-    # A plain save cannot move a draft into the submission lifecycle.
-    # Creating a row that is already submitted stays allowed.
+    # A plain save cannot move a never-submitted claim into the
+    # submission lifecycle. error counts: a draft may stop there, and
+    # the next save still cannot submit it. Creating a row that is
+    # already submitted stays allowed. A row that already has
+    # submitted_at, or whose status is already past draft and error,
+    # can still change status.
     DRAFT_SUBMISSION_STATUSES = %w[submitted accepted paid].freeze
     private_constant :DRAFT_SUBMISSION_STATUSES
+    NEVER_SUBMITTED_STATUSES = %w[draft error].freeze
+    private_constant :NEVER_SUBMITTED_STATUSES
 
     # The link is derived from referral_identifier + facility_identifier +
     # patient_identifier, so it is recomputed whenever any of those change.
@@ -205,8 +211,11 @@ module Corvid
     end
 
     def mark_submitted!(claim_identifier:)
-      enforce_pending_medicaid_hold!
-      record_claim_submission!(claim_identifier:, status: "submitted")
+      prepare_medicaid_hold_submission!
+      with_lock do
+        enforce_pending_medicaid_hold!
+        record_claim_submission!(claim_identifier:, status: "submitted")
+      end
     end
 
     def mark_paid!(paid_amount:)
@@ -244,14 +253,10 @@ module Corvid
     end
 
     def submit!
+      prepare_medicaid_hold_submission!
       enforce_referral_authorization_gate!
-      enforce_pending_medicaid_hold!
-      result = Corvid.adapter.submit_claim(to_claim_data)
-      record_claim_submission!(
-        claim_identifier: result[:claim_identifier],
-        status: clearinghouse_submission_status(result[:status])
-      )
-      result
+      discard_resolved_referral_link!
+      with_lock { submit_locked! }
     end
 
     def check_status!
@@ -444,16 +449,22 @@ module Corvid
       )
     end
 
-    def draft_leaves_only_through_submission
+    def never_submitted_claim_stays_unsubmitted
       return if @recording_claim_submission
-      return unless persisted_draft_entering_submission?
+      return unless never_submitted_entering_submission?
 
-      errors.add(:status, "can only leave draft through submit! or mark_submitted!")
+      errors.add(:status, "can only become submitted, accepted, or paid through submit! or mark_submitted!")
     end
 
-    def persisted_draft_entering_submission?
+    # submitted_at_in_database is the persisted signal that this claim
+    # has been sent. Setting submitted_at on the same save does not
+    # count. Fixtures created already submitted, accepted, or paid have
+    # a status outside NEVER_SUBMITTED_STATUSES, so later status edits
+    # stay valid even when that timestamp was left nil.
+    def never_submitted_entering_submission?
       persisted? &&
-        status_in_database == "draft" &&
+        submitted_at_in_database.nil? &&
+        NEVER_SUBMITTED_STATUSES.include?(status_in_database) &&
         DRAFT_SUBMISSION_STATUSES.include?(status)
     end
 
@@ -503,14 +514,71 @@ module Corvid
     # resolution passes "unknown".
     #
     # An override releases the hold only from the persisted columns.
-    # Unsaved assignments are ignored, and any of them refuses this call
-    # before the clearinghouse adapter runs. A Medicaid check created or
-    # updated after medicaid_hold_overridden_at ends the release.
+    # Unsaved assignments are ignored. Unsaved changes to the bill's
+    # basis refuse this call before the clearinghouse adapter runs,
+    # because the in-memory bill and the row under the lock would
+    # disagree. A Case, PrcReferral, or Medicaid check for this patient
+    # created or updated after medicaid_hold_overridden_at ends the
+    # release. Those reads stay on the tenant-scoped models (ADR 0002).
     def enforce_pending_medicaid_hold!
       refuse_unsaved_medicaid_hold_override!
       return if active_persisted_medicaid_hold_override?
 
       raise_for_pending_medicaid_hold!
+    end
+
+    # Called before the row lock. lock! refuses a dirty record, and a
+    # reload would hide the unsaved basis the caller asked us to refuse.
+    def prepare_medicaid_hold_submission!
+      refuse_unsaved_hold_basis_changes!
+      refuse_unsaved_medicaid_hold_override!
+    end
+
+    # The basis on the locked row is the only basis we can hold against.
+    # An unsaved patient, service date, or referral link makes the window
+    # undetermined. Do not evaluate either version, and do not consume
+    # an override.
+    def refuse_unsaved_hold_basis_changes!
+      return unless persisted? && hold_basis_changed?
+
+      raise HeldForPendingMedicaid, HeldForPendingMedicaid::WINDOW_UNDETERMINED
+    end
+
+    # The authorization gate links a blank prc_referral_id in memory.
+    # That is not a caller edit. lock! refuses a dirty record, so drop
+    # the link before taking the lock. The gate has already run.
+    def discard_resolved_referral_link!
+      return unless persisted?
+      return unless changed == [ "prc_referral_id" ]
+
+      reload
+    end
+
+    # The row lock covers the hold check, the adapter call, and the
+    # status update. The override is cleared before the adapter so a
+    # second submit! on this connection, while the adapter is in flight,
+    # re-reads a row whose override is already spent and is held.
+    # A later submit! on another connection blocks on the lock, then
+    # re-reads the committed row. A failed adapter rolls the clear back
+    # with the rest of the transaction.
+    def submit_locked!
+      enforce_pending_medicaid_hold!
+      release_persisted_medicaid_hold_override!
+      result = Corvid.adapter.submit_claim(to_claim_data)
+      record_claim_submission!(
+        claim_identifier: result[:claim_identifier],
+        status: clearinghouse_submission_status(result[:status])
+      )
+      result
+    end
+
+    def release_persisted_medicaid_hold_override!
+      return if complete_persisted_override_at.nil?
+
+      @writing_medicaid_hold_override = true
+      update!(cleared_medicaid_hold_override_attributes)
+    ensure
+      @writing_medicaid_hold_override = false
     end
 
     def refuse_unsaved_medicaid_hold_override!
@@ -530,11 +598,18 @@ module Corvid
     # Fresh read, not the in-memory attributes. A rolled-back
     # override_medicaid_hold! can leave those looking saved.
     def active_persisted_medicaid_hold_override?
-      token, actor, overridden_at = persisted_medicaid_hold_override
-      return false unless token.present? && actor.present? && overridden_at.present?
-      return false if medicaid_checks_changed_since?(overridden_at)
+      overridden_at = complete_persisted_override_at
+      return false if overridden_at.nil?
+      return false if patient_records_changed_since?(overridden_at)
 
       true
+    end
+
+    def complete_persisted_override_at
+      token, actor, overridden_at = persisted_medicaid_hold_override
+      return unless token.present? && actor.present? && overridden_at.present?
+
+      overridden_at
     end
 
     def persisted_medicaid_hold_override
@@ -543,11 +618,32 @@ module Corvid
       self.class.where(id: id).pick(*MEDICAID_HOLD_OVERRIDE_COLUMNS)
     end
 
-    def medicaid_checks_changed_since?(overridden_at)
-      patient_medicaid_checks.where(
-        "updated_at > :overridden_at OR created_at > :overridden_at",
-        overridden_at: overridden_at
+    # Cases and referrals are tenant-scoped (ADR 0002). Medicaid checks
+    # have no tenant column; they are reached through those referrals,
+    # so another tenant's application is not a change.
+    def patient_records_changed_since?(overridden_at)
+      return false if patient_identifier.blank?
+
+      [ patient_cases, patient_referrals, patient_medicaid_checks ].any? do |relation|
+        changed_since?(relation, overridden_at)
+      end
+    end
+
+    def changed_since?(relation, overridden_at)
+      table = relation.arel_table
+      relation.where(
+        table[:updated_at].gt(overridden_at).or(table[:created_at].gt(overridden_at))
       ).exists?
+    end
+
+    def patient_cases
+      return Case.none if patient_identifier.blank?
+
+      Case.where(patient_identifier: patient_identifier)
+    end
+
+    def patient_referrals
+      PrcReferral.where(case_id: patient_case_ids)
     end
 
     def clearinghouse_submission_status(status)
@@ -616,11 +712,11 @@ module Corvid
     end
 
     def patient_referral_ids
-      PrcReferral.where(case_id: patient_case_ids).select(:id)
+      patient_referrals.select(:id)
     end
 
     def patient_case_ids
-      Case.where(patient_identifier: patient_identifier).select(:id)
+      patient_cases.select(:id)
     end
 
     # A future application date is not a window. Missing service date,
