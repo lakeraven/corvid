@@ -41,7 +41,7 @@ Feature: Alternate resource exhaustion before authorization
     And today's date is "2025-07-01"
     And all twelve alternate resource checks are current except "medicaid" verified 31 days ago
     And the adapter confirms "medicaid" as not enrolled when re-verified
-    When the Referral Specialist verifies alternate resources
+    When the Referral Specialist attempts to verify alternate resources
     Then "medicaid" eligibility should have been re-verified for patient "pt_test_001"
     And the Referral Specialist completes priority assignment
     Then the referral should be "authorized"

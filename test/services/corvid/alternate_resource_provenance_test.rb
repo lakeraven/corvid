@@ -32,7 +32,7 @@ class Corvid::AlternateResourceProvenanceTest < ActiveSupport::TestCase
 
         entities = captured[:entities]
         refute_nil entities
-        assert_equal AlternateResourceCheck::RESOURCE_TYPES.size, entities.size
+        assert_equal Corvid::AlternateResourceCheck::RESOURCE_TYPES.size, entities.size
 
         sample = entities.find { |e| e[:resource_type] == "medicaid" }
         refute_nil sample
