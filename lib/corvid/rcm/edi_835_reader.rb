@@ -105,6 +105,11 @@ module Corvid
           when "CLP"
             claims << finalize_claim(current_claim, current_service) if current_claim
             current_service = nil
+            # CLP01 ties the payment to a claim and CLP02 says what the payer
+            # did with it; without either nothing about the loop can be posted.
+            raise ParseError, "missing CLP01 claim identifier" if elements[1].to_s.strip.empty?
+            raise ParseError, "missing CLP02 claim status on claim #{elements[1].inspect}" if elements[2].to_s.strip.empty?
+
             current_claim = {
               claim_identifier: elements[1],
               status_code: elements[2],

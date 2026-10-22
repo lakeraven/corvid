@@ -10,6 +10,12 @@
 #   block — do not transmit. The claim will be rejected or denied as submitted.
 #   warn  — transmit, but a human should see it.
 #
+# `effective_start` belongs only on rules that encode a DATED policy (the
+# post-PHE telehealth POS split, a revision-sensitive code list). Completeness,
+# format, filing and duplicate rules have always held, so they carry no start
+# date: giving them the ruleset's adoption date would mean a claim judged by
+# the rules of an earlier date of service runs none of them and passes.
+#
 # Editing this file is a data change: adding a payer's filing window or a new
 # time threshold does not require touching Ruby.
 ruleset_version: "1.0.0"
@@ -21,7 +27,6 @@ rules:
   - id: rendering_provider_npi_present
     category: structural_completeness
     severity: block
-    effective_start: "2026-01-01"
     check: npi_valid
     params:
       field: rendering_provider_npi
@@ -32,7 +37,6 @@ rules:
   - id: billing_provider_npi_present
     category: structural_completeness
     severity: block
-    effective_start: "2026-01-01"
     check: npi_valid
     params:
       field: billing_provider_npi
@@ -43,7 +47,6 @@ rules:
   - id: billing_provider_tax_id_present
     category: structural_completeness
     severity: block
-    effective_start: "2026-01-01"
     check: tax_id_valid
     params:
       field: billing_provider_tax_id
@@ -53,7 +56,6 @@ rules:
   - id: rendering_provider_taxonomy_present
     category: structural_completeness
     severity: block
-    effective_start: "2026-01-01"
     check: taxonomy_valid
     params:
       field: rendering_provider_taxonomy
@@ -63,7 +65,6 @@ rules:
   - id: payer_identifier_present
     category: structural_completeness
     severity: block
-    effective_start: "2026-01-01"
     check: coverage_field_present
     params:
       field: payer_identifier
@@ -74,7 +75,6 @@ rules:
   - id: coverage_active_on_service_date
     category: structural_completeness
     severity: block
-    effective_start: "2026-01-01"
     check: coverage_active_on_service_date
     params: {}
     message: "Coverage is %{problem} for the date of service."
@@ -83,7 +83,6 @@ rules:
   - id: patient_demographics_present
     category: structural_completeness
     severity: block
-    effective_start: "2026-01-01"
     check: patient_demographics_present
     params: {}
     message: "The claim is missing the patient's %{missing}."
@@ -92,7 +91,6 @@ rules:
   - id: service_lines_present
     category: structural_completeness
     severity: block
-    effective_start: "2026-01-01"
     check: service_lines_present
     params: {}
     message: "The claim has no service lines."
@@ -101,7 +99,6 @@ rules:
   - id: service_line_complete
     category: structural_completeness
     severity: block
-    effective_start: "2026-01-01"
     check: service_line_complete
     params: {}
     message: "%{problem}"
@@ -110,7 +107,6 @@ rules:
   - id: patient_demographics_match_subscriber
     category: structural_completeness
     severity: block
-    effective_start: "2026-01-01"
     check: subscriber_demographics_match
     params: {}
     message: "The patient's demographics do not match the coverage subscriber: %{problem}."
@@ -119,7 +115,6 @@ rules:
   - id: diagnosis_pointers_resolve
     category: structural_completeness
     severity: block
-    effective_start: "2026-01-01"
     check: diagnosis_pointers_resolve
     params: {}
     message: "%{problem}"
@@ -179,7 +174,6 @@ rules:
   - id: psychotherapy_60_minute_time_support
     category: time_supported_coding
     severity: block
-    effective_start: "2026-01-01"
     check: minimum_documented_minutes
     params:
       procedure_code: "90837"
@@ -190,7 +184,6 @@ rules:
   - id: psychotherapy_45_minute_time_support
     category: time_supported_coding
     severity: block
-    effective_start: "2026-01-01"
     check: documented_minutes_in_range
     params:
       procedure_code: "90834"
@@ -203,7 +196,6 @@ rules:
   - id: diagnostic_evaluation_repeat_within_window
     category: time_supported_coding
     severity: warn
-    effective_start: "2026-01-01"
     check: repeat_service_within_months
     params:
       procedure_code: "90791"
@@ -231,7 +223,6 @@ rules:
   - id: diagnosis_code_well_formed
     category: diagnosis_coding
     severity: block
-    effective_start: "2026-01-01"
     check: diagnosis_code_well_formed
     params: {}
     message: "%{problem}"
@@ -303,17 +294,23 @@ rules:
   - id: timely_filing_window_half_elapsed
     category: timely_filing
     severity: warn
-    effective_start: "2026-01-01"
     check: timely_filing_elapsed
     params:
       at_least_fraction: 0.5
     message: "%{elapsed} of the payer's %{window}-day filing window has already elapsed on %{code} (date of service %{serviced_date}); %{remaining} days remain."
     remedy: "File this claim now rather than batching it. Half the window is the point where a rejection-and-rework cycle stops fitting in the time left."
 
+  - id: timely_filing_window_configured
+    category: timely_filing
+    severity: warn
+    check: timely_filing_window_configured
+    params: {}
+    message: "No filing window is configured for this payer, so Corvid cannot tell whether the claim is still in time."
+    remedy: "Record the payer's timely-filing limit on the coverage configuration. Until it is there, check the payer's limit by hand before relying on this scrub."
+
   - id: timely_filing_window_expired
     category: timely_filing
     severity: block
-    effective_start: "2026-01-01"
     check: timely_filing_expired
     params: {}
     message: "The payer's %{window}-day filing window for %{code} (date of service %{serviced_date}) closed on %{deadline}."
@@ -329,7 +326,6 @@ rules:
   - id: duplicate_service_already_submitted
     category: duplicate
     severity: block
-    effective_start: "2026-01-01"
     check: duplicate_service
     params:
       distinguishing_modifiers: [ "59", "XE", "XP", "XS", "XU", "76", "77" ]

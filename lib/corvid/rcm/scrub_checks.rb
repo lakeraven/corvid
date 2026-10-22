@@ -199,6 +199,7 @@ module Corvid
         return "no billed amount" if blank?(item.billed_amount)
 
         amount = BigDecimal(item.billed_amount.to_s)
+        return "a billed amount that is not a finite number" unless amount.finite?
         return "a billed amount that is not positive" unless amount.positive?
         return "a billed amount with fractions of a cent" unless amount.round(2) == amount
 
@@ -402,6 +403,16 @@ module Corvid
         end
       end
 
+      # The other filing rules are silent without a window, so this is the one
+      # that says so: an unknown window is not evidence the claim is in time.
+      def timely_filing_window_configured(claim, _params, _context)
+        window = claim.coverage&.timely_filing_days
+        return [] if claim.coverage.nil? # the payer-identifier rule reports this
+        return [] if window && window.to_i.positive?
+
+        fail_with({})
+      end
+
       def timely_filing_expired(claim, _params, context)
         filing_lines(claim, context).flat_map do |item, window, deadline|
           next [] unless context.as_of > deadline
@@ -480,9 +491,8 @@ module Corvid
 
       # Lines that can be judged against a filing window at all: the payer's
       # window has to be configured and the line has to have a date of service.
-      # An unconfigured window produces no finding — silence, not a false
-      # negative dressed up as a pass, and the coverage-configuration gap is
-      # visible in the tenant's setup rather than invented here.
+      # An unconfigured window yields no lines here; `timely_filing_window_configured`
+      # is the rule that reports the gap.
       def filing_lines(claim, context)
         window = claim.coverage&.timely_filing_days
         return [] if window.nil? || window.to_i <= 0
