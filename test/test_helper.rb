@@ -4,6 +4,7 @@ ENV["RAILS_ENV"] = "test"
 
 require_relative "dummy/config/environment"
 require "rails/test_help"
+require_relative "../features/support/alternate_resource_exhaustion_helper"
 
 # FK-correct table cleanup. Mirrors features/support/env.rb so minitest
 # and cucumber share the same deletion order.

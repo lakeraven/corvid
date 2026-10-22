@@ -141,7 +141,11 @@ Then("I should see patient {string} pre-selected") do |_name|
 end
 
 Then("I should see the patient's eligibility status") do
-  refute_nil @wizard.patient_eligibility_status
+  if @patient_eligibility_status
+    assert_equal @patient_eligibility_status, @wizard.patient_eligibility_status
+  else
+    refute_equal "verified", @wizard.patient_eligibility_status.to_s
+  end
 end
 
 Then("I should see the patient's active coverage information") do
@@ -151,6 +155,17 @@ end
 
 Given("patient {string} has eligibility status {string}") do |_name, status|
   @patient_eligibility_status = status
+end
+
+Given("the authorization wizard has no patient selected") do
+  @wizard = Corvid::AuthorizationWizard.new(
+    tenant_identifier: @tenant,
+    facility_identifier: @facility
+  )
+end
+
+When("I assign patient {string} to the wizard") do |patient_id|
+  @wizard.patient_identifier = patient_id
 end
 
 Then("I should see a warning {string}") do |message|
@@ -260,6 +275,35 @@ Then("I should see updated status for each resource") do
   @wizard.alternate_resources.each do |type, resource|
     refute_equal :not_checked, resource[:status], "Resource #{type} still not checked"
   end
+end
+
+Given("every payer eligibility lookup is unavailable") do
+  @eligibility_lookup_previous_adapter = Corvid.adapter
+  adapter = Corvid::Adapters::MockAdapter.new
+  adapter.define_singleton_method(:verify_eligibility) { |_, _| nil }
+  Corvid.configure { |c| c.adapter = adapter }
+end
+
+After do
+  if @eligibility_lookup_previous_adapter
+    Corvid.configure { |c| c.adapter = @eligibility_lookup_previous_adapter }
+    @eligibility_lookup_previous_adapter = nil
+  end
+end
+
+Then("no alternate resource should be marked not enrolled") do
+  @wizard.alternate_resources.each do |type, resource|
+    refute_equal :not_enrolled, resource[:status], "Expected #{type} not to be not_enrolled"
+  end
+end
+
+Then("the alternate resources summary should not read {string}") do |status|
+  refute_equal status, @wizard.summary[:alternate_resources_status].to_s
+end
+
+Then("I should see a warning containing {string}") do |phrase|
+  assert @wizard.warnings.any? { |w| w.include?(phrase) },
+    "Expected a warning containing '#{phrase}' in #{@wizard.warnings}"
 end
 
 # --- Review & submit ---

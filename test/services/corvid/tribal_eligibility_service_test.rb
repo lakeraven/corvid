@@ -1,6 +1,9 @@
 # frozen_string_literal: true
 
 require "test_helper"
+require "digest"
+require "json"
+require "corvid/adapters/fhir_adapter"
 
 # Tests the four eligibility-matrix scenarios against MockAdapter:
 #   - True positive       (enrolled in contracted tribe, all checks pass)
@@ -44,8 +47,61 @@ class Corvid::TribalEligibilityServiceTest < ActiveSupport::TestCase
     @adapter = Corvid.adapter
   end
 
+  SNAPSHOT_VERSION_V1 = "v1-test"
+  SNAPSHOT_VERSION_V2 = "v2-test"
+  SNAPSHOT_KEY_V1 = "test-snapshot-key-0001-xxxxxxxxxxxxxxxx"
+  SNAPSHOT_KEY_V2 = "test-snapshot-key-0002-yyyyyyyyyyyyyyyy"
+
   teardown do
     Corvid::TenantContext.reset!
+    Corvid.reset_configuration!
+  end
+
+  def configure_snapshot_keys!(version:, keys:)
+    Corvid.configure do |c|
+      c.verification_snapshot_keys = keys
+      c.verification_snapshot_key_version = version
+    end
+  end
+
+  def seed_verified_enrollment_baseline(person_id, confidence: :verified, tribe_code: "DEMO")
+    @adapter.add_enrollment(person_id,
+                            enrolled: true, tribe_code: tribe_code, tribe_name: "Demo Tribe",
+                            member_status: "enrolled", confidence: confidence)
+    @adapter.add_patient(person_id, ssn_last4: "1234", dob: Date.new(1980, 1, 1), birthplace: "Springfield")
+    @adapter.define_singleton_method(:verify_residency) do |pid|
+      { on_reservation: true, address: "Rd", verified_at: Time.current } if pid == person_id
+    end
+  end
+
+  # MockAdapter normalizes confidence (adapter contract), so a
+  # contract-violating adapter is simulated by returning the raw value.
+  def seed_raw_confidence_enrollment(person_id, raw_confidence)
+    seed_verified_enrollment_baseline(person_id)
+    seeded = @adapter.verify_tribal_enrollment(person_id)
+    @adapter.define_singleton_method(:verify_tribal_enrollment) do |pid|
+      seeded.merge(confidence: raw_confidence) if pid == person_id
+    end
+  end
+
+  def fixed_adapter_responses_for(person_id)
+    @adapter.add_enrollment(person_id,
+                            enrolled: true, tribe_code: "DEMO", tribe_name: "Demo Tribe",
+                            member_status: "enrolled", confidence: :verified)
+    @adapter.add_patient(person_id, ssn_last4: "1234", dob: Date.new(1980, 1, 1), birthplace: "Springfield")
+    @adapter.define_singleton_method(:verify_residency) do |pid|
+      if pid == person_id
+        { on_reservation: true, address: "Rd", verified_at: Time.parse("2026-05-16T12:00:00Z") }
+      end
+    end
+  end
+
+  def adapter_snapshot_payload(person_id)
+    {
+      enrollment: @adapter.verify_tribal_enrollment(person_id),
+      identity: @adapter.verify_identity_documents(person_id),
+      residency: @adapter.verify_residency(person_id)
+    }
   end
 
   # ---- True positive --------------------------------------------------------
@@ -74,7 +130,12 @@ class Corvid::TribalEligibilityServiceTest < ActiveSupport::TestCase
   # ---- True negative --------------------------------------------------------
 
   test "decide denies a not-enrolled person with reason :not_enrolled" do
-    # No add_enrollment — MockAdapter returns enrolled: false
+    @adapter.add_enrollment("pt_tn",
+                            enrolled: false,
+                            tribe_name: nil,
+                            tribe_code: nil,
+                            member_status: "denied",
+                            confidence: :verified)
 
     decision = Corvid::TribalEligibilityService.decide(
       person_identifier: "pt_tn",
@@ -84,6 +145,23 @@ class Corvid::TribalEligibilityServiceTest < ActiveSupport::TestCase
 
     refute decision.eligible?
     assert_includes decision.reason_codes, :not_enrolled
+  end
+
+  test "decide denies enrolled person when adapter reports confidence unavailable" do
+    @adapter.add_enrollment("pt_unavail_conf",
+                            enrolled: true, tribe_name: "Demo Tribe",
+                            tribe_code: "DEMO", member_status: "enrolled",
+                            confidence: :unavailable)
+
+    decision = Corvid::TribalEligibilityService.decide(
+      person_identifier: "pt_unavail_conf",
+      facility: @facility,
+      tenant_identifier: TENANT
+    )
+
+    refute decision.eligible?
+    assert_includes decision.reason_codes, :provider_unavailable_fail_closed
+    refute_includes decision.reason_codes, :not_enrolled
   end
 
   # ---- Would-be false positive (wrong-tribe enrollee caught) ----------------
@@ -102,6 +180,346 @@ class Corvid::TribalEligibilityServiceTest < ActiveSupport::TestCase
 
     refute decision.eligible?
     assert_includes decision.reason_codes, :not_enrolled_in_contracted_tribe
+  end
+
+  # ---- Issue #662: fail closed on non-canonical confidence ------------------
+
+  test "decide denies when adapter returns confidence :unverified" do
+    seed_raw_confidence_enrollment("pt_bad_conf", :unverified)
+
+    decision = Corvid::TribalEligibilityService.decide(
+      person_identifier: "pt_bad_conf",
+      facility: @facility,
+      tenant_identifier: TENANT
+    )
+
+    refute decision.eligible?
+    assert_includes decision.reason_codes, :provider_unavailable_fail_closed
+  end
+
+  test "decide denies when adapter returns confidence :VERIFIED symbol" do
+    seed_raw_confidence_enrollment("pt_upper_sym", :VERIFIED)
+
+    decision = Corvid::TribalEligibilityService.decide(
+      person_identifier: "pt_upper_sym",
+      facility: @facility,
+      tenant_identifier: TENANT
+    )
+
+    refute decision.eligible?
+    assert_includes decision.reason_codes, :provider_unavailable_fail_closed
+  end
+
+  test "decide denies when adapter returns nil confidence" do
+    seed_raw_confidence_enrollment("pt_nil_conf", nil)
+
+    decision = Corvid::TribalEligibilityService.decide(
+      person_identifier: "pt_nil_conf",
+      facility: @facility,
+      tenant_identifier: TENANT
+    )
+
+    refute decision.eligible?
+    assert_includes decision.reason_codes, :provider_unavailable_fail_closed
+  end
+
+  test "decide denies when adapter returns confidence as string verified" do
+    seed_raw_confidence_enrollment("pt_str_conf", "verified")
+
+    decision = Corvid::TribalEligibilityService.decide(
+      person_identifier: "pt_str_conf",
+      facility: @facility,
+      tenant_identifier: TENANT
+    )
+
+    refute decision.eligible?
+    assert_includes decision.reason_codes, :provider_unavailable_fail_closed
+  end
+
+  test "decide denies enrolled person with blank tribe_code when facility has contracted tribe" do
+    seed_verified_enrollment_baseline("pt_no_tribe", tribe_code: "", confidence: :verified)
+
+    decision = Corvid::TribalEligibilityService.decide(
+      person_identifier: "pt_no_tribe",
+      facility: @facility,
+      tenant_identifier: TENANT
+    )
+
+    refute decision.eligible?
+    assert_includes decision.reason_codes, :not_enrolled_in_contracted_tribe
+  end
+
+  test "decide denies enrolled person with nil tribe_code when facility has contracted tribe" do
+    seed_verified_enrollment_baseline("pt_nil_tribe", tribe_code: nil, confidence: :verified)
+
+    decision = Corvid::TribalEligibilityService.decide(
+      person_identifier: "pt_nil_tribe",
+      facility: @facility,
+      tenant_identifier: TENANT
+    )
+
+    refute decision.eligible?
+    assert_includes decision.reason_codes, :not_enrolled_in_contracted_tribe
+  end
+
+  # ---- Issue #662 round 2: canonical enrolled flag and adapter shape ---------
+
+  def stub_tribal_enrollment_response(person_id, enrollment_payload)
+    @adapter.add_patient(person_id, ssn_last4: "1234", dob: Date.new(1980, 1, 1), birthplace: "Springfield")
+    @adapter.define_singleton_method(:verify_residency) do |pid|
+      { on_reservation: true, address: "Rd", verified_at: Time.current } if pid == person_id
+    end
+    @adapter.define_singleton_method(:verify_tribal_enrollment) do |pid|
+      pid == person_id ? enrollment_payload : super(pid)
+    end
+  end
+
+  test "decide persists ineligible decision when verify_tribal_enrollment returns nil without raising" do
+    person_id = "pt_nil_enroll"
+    stub_tribal_enrollment_response(person_id, nil)
+
+    decision = nil
+    assert_difference "Corvid::PrcEligibilityDecision.count", 1 do
+      assert_nothing_raised do
+        decision = Corvid::TribalEligibilityService.decide(
+          person_identifier: person_id,
+          facility: @facility,
+          tenant_identifier: TENANT
+        )
+      end
+    end
+
+    refute decision.eligible?
+    assert_includes decision.reason_codes, :provider_unavailable_fail_closed
+    assert_nil decision.provider_confidence
+    row = Corvid::PrcEligibilityDecision.find(decision.decision_id)
+    assert_nil row.provider_confidence
+  end
+
+  test "decide persists ineligible decision when verify_tribal_enrollment returns non-Hash without raising" do
+    person_id = "pt_bad_enroll"
+    stub_tribal_enrollment_response(person_id, "not-a-hash")
+
+    decision = nil
+    assert_difference "Corvid::PrcEligibilityDecision.count", 1 do
+      assert_nothing_raised do
+        decision = Corvid::TribalEligibilityService.decide(
+          person_identifier: person_id,
+          facility: @facility,
+          tenant_identifier: TENANT
+        )
+      end
+    end
+
+    refute decision.eligible?
+    assert_includes decision.reason_codes, :provider_unavailable_fail_closed
+  end
+
+  test "decide fails closed when enrolled is string false with verified confidence" do
+    person_id = "pt_str_false"
+    stub_tribal_enrollment_response(
+      person_id,
+      enrolled: "false", tribe_code: "DEMO", confidence: :verified, verified_at: Time.current
+    )
+
+    decision = Corvid::TribalEligibilityService.decide(
+      person_identifier: person_id,
+      facility: @facility,
+      tenant_identifier: TENANT
+    )
+
+    refute decision.eligible?
+    assert_includes decision.reason_codes, :provider_unavailable_fail_closed
+    refute_includes decision.reason_codes, :not_enrolled
+    assert_nil decision.provider_confidence
+  end
+
+  test "decide fails closed when enrolled is string true with verified confidence" do
+    person_id = "pt_str_true"
+    stub_tribal_enrollment_response(
+      person_id,
+      enrolled: "true", tribe_code: "DEMO", confidence: :verified, verified_at: Time.current
+    )
+
+    decision = Corvid::TribalEligibilityService.decide(
+      person_identifier: person_id,
+      facility: @facility,
+      tenant_identifier: TENANT
+    )
+
+    refute decision.eligible?
+    assert_includes decision.reason_codes, :provider_unavailable_fail_closed
+  end
+
+  test "decide fails closed when enrolled key is nil with verified confidence" do
+    person_id = "pt_nil_enrolled_key"
+    stub_tribal_enrollment_response(
+      person_id,
+      enrolled: nil, tribe_code: "DEMO", confidence: :verified, verified_at: Time.current
+    )
+
+    decision = Corvid::TribalEligibilityService.decide(
+      person_identifier: person_id,
+      facility: @facility,
+      tenant_identifier: TENANT
+    )
+
+    refute decision.eligible?
+    assert_includes decision.reason_codes, :provider_unavailable_fail_closed
+  end
+
+  test "decide uses not_enrolled when enrolled is false and confidence is unavailable" do
+    person_id = "pt_false_unavail"
+    stub_tribal_enrollment_response(
+      person_id,
+      enrolled: false, tribe_code: nil, confidence: :unavailable, verified_at: Time.current
+    )
+
+    decision = Corvid::TribalEligibilityService.decide(
+      person_identifier: person_id,
+      facility: @facility,
+      tenant_identifier: TENANT
+    )
+
+    refute decision.eligible?
+    assert_includes decision.reason_codes, :not_enrolled
+    refute_includes decision.reason_codes, :provider_unavailable_fail_closed
+  end
+
+  test "decide uses not_enrolled when enrolled is false and confidence is missing" do
+    person_id = "pt_false_no_conf"
+    stub_tribal_enrollment_response(
+      person_id,
+      { enrolled: false, tribe_code: nil, verified_at: Time.current }
+    )
+
+    decision = Corvid::TribalEligibilityService.decide(
+      person_identifier: person_id,
+      facility: @facility,
+      tenant_identifier: TENANT
+    )
+
+    refute decision.eligible?
+    assert_includes decision.reason_codes, :not_enrolled
+    refute_includes decision.reason_codes, :provider_unavailable_fail_closed
+  end
+
+  # ---- Issue #662 round 4: adapter outage shapes and provider_confidence ----
+
+  test "decide fails closed for MockAdapter unknown patient without not_enrolled" do
+    decision = Corvid::TribalEligibilityService.decide(
+      person_identifier: "pt_unknown_e2e",
+      facility: @facility,
+      tenant_identifier: TENANT
+    )
+
+    refute decision.eligible?
+    assert_includes decision.reason_codes, :provider_unavailable_fail_closed
+    refute_includes decision.reason_codes, :not_enrolled
+    assert_nil decision.provider_confidence
+    row = Corvid::PrcEligibilityDecision.find(decision.decision_id)
+    assert_nil row.provider_confidence
+  end
+
+  test "decide fails closed through FhirAdapter when Patient read returns nil" do
+    fhir = Corvid::Adapters::FhirAdapter.new(base_url: "https://fhir.example.com/r4")
+    fhir.define_singleton_method(:fhir_read) { |_resource, _id| nil }
+    Corvid.configure { |c| c.adapter = fhir }
+
+    decision = Corvid::TribalEligibilityService.decide(
+      person_identifier: "pt_fhir_missing",
+      facility: @facility,
+      tenant_identifier: TENANT
+    )
+
+    refute decision.eligible?
+    assert_includes decision.reason_codes, :provider_unavailable_fail_closed
+    refute_includes decision.reason_codes, :not_enrolled
+    assert_nil decision.provider_confidence
+  end
+
+  # Issue #662: an outage raised by the transport (not a nil read) still
+  # persists a fail-closed decision with no provider confidence.
+  [ Errno::ECONNREFUSED, Net::ReadTimeout, SocketError, OpenSSL::SSL::SSLError, EOFError ].each do |error_class|
+    test "decide persists a fail-closed decision through FhirAdapter when the transport raises #{error_class}" do
+      fhir = Corvid::Adapters::FhirAdapter.new(base_url: "https://fhir.example.com/r4")
+      failing_http = Object.new
+      failing_http.define_singleton_method(:request) { |_req| raise error_class, "synthetic transport failure" }
+      fhir.define_singleton_method(:build_http) { |_uri| failing_http }
+      Corvid.configure { |c| c.adapter = fhir }
+
+      decision = nil
+      assert_difference -> { Corvid::PrcEligibilityDecision.unscoped.count }, 1 do
+        decision = Corvid::TribalEligibilityService.decide(
+          person_identifier: "pt_test_001",
+          facility: @facility,
+          tenant_identifier: TENANT
+        )
+      end
+
+      refute decision.eligible?
+      assert_includes decision.reason_codes, :provider_unavailable_fail_closed
+      refute_includes decision.reason_codes, :not_enrolled
+      assert_nil decision.provider_confidence
+      row = Corvid::PrcEligibilityDecision.unscoped.find(decision.decision_id)
+      refute row.eligible
+      assert_includes row.reason_codes, "provider_unavailable_fail_closed"
+      assert_nil row.provider_confidence
+    end
+  end
+
+  test "decide persists nil provider_confidence when enrolled is nil with verified confidence" do
+    person_id = "pt_nil_enrolled_conf"
+    stub_tribal_enrollment_response(
+      person_id,
+      enrolled: nil, tribe_code: "DEMO", confidence: :verified, verified_at: Time.current
+    )
+
+    decision = Corvid::TribalEligibilityService.decide(
+      person_identifier: person_id,
+      facility: @facility,
+      tenant_identifier: TENANT
+    )
+
+    refute decision.eligible?
+    assert_includes decision.reason_codes, :provider_unavailable_fail_closed
+    assert_nil decision.provider_confidence
+    row = Corvid::PrcEligibilityDecision.find(decision.decision_id)
+    assert_nil row.provider_confidence
+  end
+
+  test "decide persists nil provider_confidence when enrolled is string true with verified confidence" do
+    person_id = "pt_str_true_conf"
+    stub_tribal_enrollment_response(
+      person_id,
+      enrolled: "true", tribe_code: "DEMO", confidence: :verified, verified_at: Time.current
+    )
+
+    decision = Corvid::TribalEligibilityService.decide(
+      person_identifier: person_id,
+      facility: @facility,
+      tenant_identifier: TENANT
+    )
+
+    refute decision.eligible?
+    assert_includes decision.reason_codes, :provider_unavailable_fail_closed
+    assert_nil decision.provider_confidence
+    row = Corvid::PrcEligibilityDecision.find(decision.decision_id)
+    assert_nil row.provider_confidence
+  end
+
+  test "decide persists verified provider_confidence only when enrolled is canonical true" do
+    seed_verified_enrollment_baseline("pt_good_conf")
+
+    decision = Corvid::TribalEligibilityService.decide(
+      person_identifier: "pt_good_conf",
+      facility: @facility,
+      tenant_identifier: TENANT
+    )
+
+    assert_equal "verified", decision.provider_confidence
+    row = Corvid::PrcEligibilityDecision.find(decision.decision_id)
+    assert_equal "verified", row.provider_confidence
   end
 
   # ---- Would-be false negative (stale data must not deny on its own) --------
@@ -129,6 +547,20 @@ class Corvid::TribalEligibilityServiceTest < ActiveSupport::TestCase
   end
 
   # ---- Persistence contract -------------------------------------------------
+
+  test "decide treats blank tenant_identifier as absent and uses TenantContext tenant" do
+    with_tenant("tnt_test") do
+      assert_difference "Corvid::PrcEligibilityDecision.count", 1 do
+        Corvid::TribalEligibilityService.decide(
+          person_identifier: "pt_blank_tenant",
+          facility: @facility,
+          tenant_identifier: ""
+        )
+      end
+
+      assert_equal "tnt_test", Corvid::PrcEligibilityDecision.last.tenant_identifier
+    end
+  end
 
   test "decide persists a PrcEligibilityDecision row per call" do
     assert_difference "Corvid::PrcEligibilityDecision.count", 1 do
@@ -167,5 +599,411 @@ class Corvid::TribalEligibilityServiceTest < ActiveSupport::TestCase
     # matters — same inputs → same eligible? result.
     assert_equal row1.eligible, row2.eligible
     assert_equal row1.reason_codes, row2.reason_codes
+  end
+
+  # ---- Keyed verification snapshot fingerprint (issue #629 / ADR 0008) ------
+
+  test "decide stores keyed verification_snapshot_hash and verification_snapshot_key_version" do
+    configure_snapshot_keys!(
+      version: SNAPSHOT_VERSION_V1,
+      keys: { SNAPSHOT_VERSION_V1 => SNAPSHOT_KEY_V1 }
+    )
+    fixed_adapter_responses_for("pt_keyed")
+
+    Corvid::TribalEligibilityService.decide(
+      person_identifier: "pt_keyed",
+      facility: @facility,
+      tenant_identifier: TENANT
+    )
+
+    row = Corvid::PrcEligibilityDecision.last
+    payload = adapter_snapshot_payload("pt_keyed")
+    expected_digest, expected_version = Corvid::SnapshotFingerprint.compute(payload)
+
+    assert_equal expected_digest, row.verification_snapshot_hash
+    assert_equal expected_version, row.verification_snapshot_key_version
+  end
+
+  test "decide produces identical snapshot fingerprint for identical adapter responses and key" do
+    configure_snapshot_keys!(
+      version: SNAPSHOT_VERSION_V1,
+      keys: { SNAPSHOT_VERSION_V1 => SNAPSHOT_KEY_V1 }
+    )
+    fixed_adapter_responses_for("pt_same")
+
+    Corvid::TribalEligibilityService.decide(
+      person_identifier: "pt_same",
+      facility: @facility,
+      tenant_identifier: TENANT
+    )
+    hash1 = Corvid::PrcEligibilityDecision.last.verification_snapshot_hash
+    version1 = Corvid::PrcEligibilityDecision.last.verification_snapshot_key_version
+
+    Corvid::TribalEligibilityService.decide(
+      person_identifier: "pt_same",
+      facility: @facility,
+      tenant_identifier: TENANT
+    )
+    hash2 = Corvid::PrcEligibilityDecision.last.verification_snapshot_hash
+    version2 = Corvid::PrcEligibilityDecision.last.verification_snapshot_key_version
+
+    assert_equal hash1, hash2
+    assert_equal version1, version2
+  end
+
+  test "decide snapshot fingerprint changes when verification_snapshot_key_version changes" do
+    fixed_adapter_responses_for("pt_ver")
+
+    configure_snapshot_keys!(
+      version: SNAPSHOT_VERSION_V1,
+      keys: { SNAPSHOT_VERSION_V1 => SNAPSHOT_KEY_V1, SNAPSHOT_VERSION_V2 => SNAPSHOT_KEY_V2 }
+    )
+    Corvid::TribalEligibilityService.decide(
+      person_identifier: "pt_ver",
+      facility: @facility,
+      tenant_identifier: TENANT
+    )
+    hash_v1 = Corvid::PrcEligibilityDecision.last.verification_snapshot_hash
+
+    configure_snapshot_keys!(
+      version: SNAPSHOT_VERSION_V2,
+      keys: { SNAPSHOT_VERSION_V1 => SNAPSHOT_KEY_V1, SNAPSHOT_VERSION_V2 => SNAPSHOT_KEY_V2 }
+    )
+    Corvid::TribalEligibilityService.decide(
+      person_identifier: "pt_ver",
+      facility: @facility,
+      tenant_identifier: TENANT
+    )
+    hash_v2 = Corvid::PrcEligibilityDecision.last.verification_snapshot_hash
+
+    refute_equal hash_v1, hash_v2
+  end
+
+  test "decide leaves snapshot hash and key version nil when no snapshot key is configured" do
+    Corvid.reset_configuration!
+    Corvid.configure { |c| c.adapter = @adapter }
+
+    fixed_adapter_responses_for("pt_nokey")
+
+    decision = Corvid::TribalEligibilityService.decide(
+      person_identifier: "pt_nokey",
+      facility: @facility,
+      tenant_identifier: TENANT
+    )
+
+    row = Corvid::PrcEligibilityDecision.find(decision.decision_id)
+    assert decision.eligible?
+    assert_nil row.verification_snapshot_hash
+    assert_nil row.verification_snapshot_key_version
+  end
+
+  test "decide logs the fixed warning and saves nil snapshot columns when the configured key is missing" do
+    configure_snapshot_keys!(version: SNAPSHOT_VERSION_V1, keys: {})
+    fixed_adapter_responses_for("pt_missing_key")
+
+    log_io = StringIO.new
+    original_logger = Rails.logger
+    Rails.logger = ActiveSupport::Logger.new(log_io)
+    begin
+      decision = Corvid::TribalEligibilityService.decide(
+        person_identifier: "pt_missing_key",
+        facility: @facility,
+        tenant_identifier: TENANT
+      )
+    ensure
+      Rails.logger = original_logger
+    end
+
+    row = Corvid::PrcEligibilityDecision.find(decision.decision_id)
+    assert decision.eligible?
+    assert_nil row.verification_snapshot_hash
+    assert_nil row.verification_snapshot_key_version
+    assert_includes log_io.string, Corvid::SnapshotFingerprint::UNUSABLE_KEY_MESSAGE
+    refute_includes log_io.string, SNAPSHOT_VERSION_V1
+  end
+
+  test "decide saves the decision with nil snapshot columns when an adapter returns a cyclic response" do
+    configure_snapshot_keys!(
+      version: SNAPSHOT_VERSION_V1,
+      keys: { SNAPSHOT_VERSION_V1 => SNAPSHOT_KEY_V1 }
+    )
+    fixed_adapter_responses_for("pt_cyclic")
+    @adapter.define_singleton_method(:verify_residency) do |pid|
+      next unless pid == "pt_cyclic"
+
+      response = { on_reservation: true, address: "Rd", verified_at: Time.current }
+      response[:source] = response
+      response
+    end
+
+    decision = nil
+    assert_nothing_raised do
+      decision = Corvid::TribalEligibilityService.decide(
+        person_identifier: "pt_cyclic",
+        facility: @facility,
+        tenant_identifier: TENANT
+      )
+    end
+
+    row = Corvid::PrcEligibilityDecision.find(decision.decision_id)
+    assert decision.eligible?
+    assert_nil row.verification_snapshot_hash
+    assert_nil row.verification_snapshot_key_version
+  end
+
+  test "decide snapshot hash is not a plain SHA256 of adapter responses" do
+    configure_snapshot_keys!(
+      version: SNAPSHOT_VERSION_V1,
+      keys: { SNAPSHOT_VERSION_V1 => SNAPSHOT_KEY_V1 }
+    )
+    fixed_adapter_responses_for("pt_not_plain")
+
+    Corvid::TribalEligibilityService.decide(
+      person_identifier: "pt_not_plain",
+      facility: @facility,
+      tenant_identifier: TENANT
+    )
+
+    row = Corvid::PrcEligibilityDecision.last
+    payload = adapter_snapshot_payload("pt_not_plain")
+    plain_sha = Digest::SHA256.hexdigest(JSON.generate(payload))
+
+    refute_equal plain_sha, row.verification_snapshot_hash
+  end
+
+  test "decide saves nil snapshot hash and version when configured key version exceeds 64 characters" do
+    long_version = "v" * 65
+    configure_snapshot_keys!(
+      version: long_version,
+      keys: { long_version => SNAPSHOT_KEY_V1 }
+    )
+    fixed_adapter_responses_for("pt_longver")
+
+    decision = Corvid::TribalEligibilityService.decide(
+      person_identifier: "pt_longver",
+      facility: @facility,
+      tenant_identifier: TENANT
+    )
+
+    row = Corvid::PrcEligibilityDecision.find(decision.decision_id)
+    assert decision.eligible?
+    assert_nil row.verification_snapshot_hash
+    assert_nil row.verification_snapshot_key_version
+  end
+
+  # ---- Issue #629 gate round 4 (failing until implemented) ------------------
+
+  test "decide saves nil snapshot hash and version when configured version contains null byte" do
+    version_with_nul = "#{SNAPSHOT_VERSION_V1}\0"
+    configure_snapshot_keys!(
+      version: version_with_nul,
+      keys: { version_with_nul => SNAPSHOT_KEY_V1 }
+    )
+    fixed_adapter_responses_for("pt_nul_ver")
+
+    decision = nil
+    begin
+      decision = Corvid::TribalEligibilityService.decide(
+        person_identifier: "pt_nul_ver",
+        facility: @facility,
+        tenant_identifier: TENANT
+      )
+    rescue StandardError => error
+      flunk "expected decide not to raise, got #{error.class}"
+    end
+
+    row = Corvid::PrcEligibilityDecision.find(decision.decision_id)
+    assert decision.eligible?
+    assert_nil row.verification_snapshot_hash
+    assert_nil row.verification_snapshot_key_version
+  end
+
+  test "decide saves nil snapshot hash and version when configured version contains tab control character" do
+    version_with_tab = "#{SNAPSHOT_VERSION_V1}\t"
+    configure_snapshot_keys!(
+      version: version_with_tab,
+      keys: { version_with_tab => SNAPSHOT_KEY_V1 }
+    )
+    fixed_adapter_responses_for("pt_tab_ver")
+
+    decision = Corvid::TribalEligibilityService.decide(
+      person_identifier: "pt_tab_ver",
+      facility: @facility,
+      tenant_identifier: TENANT
+    )
+
+    row = Corvid::PrcEligibilityDecision.find(decision.decision_id)
+    assert decision.eligible?
+    assert_nil row.verification_snapshot_hash
+    assert_nil row.verification_snapshot_key_version
+  end
+
+  test "decide saves nil snapshot hash and version when configured version has invalid UTF-8 encoding" do
+    bad_version = "\xFFv1".dup.force_encoding("UTF-8")
+    configure_snapshot_keys!(
+      version: bad_version,
+      keys: { bad_version => SNAPSHOT_KEY_V1 }
+    )
+    fixed_adapter_responses_for("pt_bad_utf8_ver")
+
+    decision = nil
+    begin
+      decision = Corvid::TribalEligibilityService.decide(
+        person_identifier: "pt_bad_utf8_ver",
+        facility: @facility,
+        tenant_identifier: TENANT
+      )
+    rescue StandardError => error
+      flunk "expected decide not to raise, got #{error.class}"
+    end
+
+    row = Corvid::PrcEligibilityDecision.find(decision.decision_id)
+    assert decision.eligible?
+    assert_nil row.verification_snapshot_hash
+    assert_nil row.verification_snapshot_key_version
+  end
+
+  # ---- Issue #629 maintainer decisions (failing until implemented) ----------
+
+  test "decide records same verification_snapshot_hash when only verified_at changes between calls" do
+    configure_snapshot_keys!(
+      version: SNAPSHOT_VERSION_V1,
+      keys: { SNAPSHOT_VERSION_V1 => SNAPSHOT_KEY_V1 }
+    )
+
+    person_id = "pt_verified_at_stable"
+    @adapter.add_enrollment(
+      person_id,
+      enrolled: true,
+      tribe_code: "DEMO",
+      tribe_name: "Demo Tribe",
+      member_status: "enrolled",
+      confidence: :verified
+    )
+    @adapter.add_patient(person_id, ssn_last4: "1234", dob: Date.new(1980, 1, 1), birthplace: "Springfield")
+    @adapter.define_singleton_method(:verify_residency) do |pid|
+      next unless pid == person_id
+
+      { on_reservation: true, address: "Rd", verified_at: Time.current }
+    end
+
+    travel_to Time.utc(2026, 3, 10, 14, 0, 0) do
+      Corvid::TribalEligibilityService.decide(
+        person_identifier: person_id,
+        facility: @facility,
+        tenant_identifier: TENANT
+      )
+    end
+    hash_first = Corvid::PrcEligibilityDecision.last.verification_snapshot_hash
+
+    travel_to Time.utc(2028, 11, 2, 8, 15, 30) do
+      Corvid::TribalEligibilityService.decide(
+        person_identifier: person_id,
+        facility: @facility,
+        tenant_identifier: TENANT
+      )
+    end
+    hash_second = Corvid::PrcEligibilityDecision.last.verification_snapshot_hash
+
+    refute_nil hash_first
+    assert_equal hash_first, hash_second
+  end
+
+  test "decide saves nil snapshot hash and version for ideographic-space-only key version" do
+    version = "\u3000"
+    configure_snapshot_keys!(version: version, keys: { version => SNAPSHOT_KEY_V1 })
+    fixed_adapter_responses_for("pt_ws_ver")
+
+    decision = nil
+    assert_nothing_raised do
+      decision = Corvid::TribalEligibilityService.decide(
+        person_identifier: "pt_ws_ver",
+        facility: @facility,
+        tenant_identifier: TENANT
+      )
+    end
+
+    row = Corvid::PrcEligibilityDecision.find(decision.decision_id)
+    assert decision.eligible?
+    assert_nil row.verification_snapshot_hash
+    assert_nil row.verification_snapshot_key_version
+  end
+
+  # Whitespace-only or invisible versions are no usable key: decide must not
+  # raise RecordInvalid from the model's presence check.
+  [
+    [ "ascii space", " " ],
+    [ "no-break space", " " ],
+    [ "em space", " " ],
+    [ "zero-width space", "​" ],
+    [ "byte order mark", "﻿" ],
+    [ "no-break space and zero-width space", " ​" ]
+  ].each do |label, version|
+    test "decide saves nil snapshot hash and version for #{label}-only key version" do
+      person_id = "pt_blank_ver_#{label.tr(' -', '__')}"
+      configure_snapshot_keys!(version: version, keys: { version => SNAPSHOT_KEY_V1 })
+      fixed_adapter_responses_for(person_id)
+
+      decision = nil
+      assert_nothing_raised do
+        decision = Corvid::TribalEligibilityService.decide(
+          person_identifier: person_id,
+          facility: @facility,
+          tenant_identifier: TENANT
+        )
+      end
+
+      row = Corvid::PrcEligibilityDecision.find(decision.decision_id)
+      assert decision.eligible?
+      assert_nil row.verification_snapshot_hash
+      assert_nil row.verification_snapshot_key_version
+    end
+  end
+
+  test "decide stored fingerprint matches a re-check that differs only in verified_at" do
+    configure_snapshot_keys!(
+      version: SNAPSHOT_VERSION_V1,
+      keys: { SNAPSHOT_VERSION_V1 => SNAPSHOT_KEY_V1 }
+    )
+    fixed_adapter_responses_for("pt_recheck")
+
+    decision = Corvid::TribalEligibilityService.decide(
+      person_identifier: "pt_recheck",
+      facility: @facility,
+      tenant_identifier: TENANT
+    )
+    row = Corvid::PrcEligibilityDecision.find(decision.decision_id)
+
+    recheck = travel_to(Time.utc(2026, 9, 1, 8, 30, 0)) { adapter_snapshot_payload("pt_recheck") }
+    recheck[:residency] = recheck[:residency].merge(verified_at: Time.utc(2026, 9, 1, 8, 30, 0))
+
+    assert Corvid::SnapshotFingerprint.matches?(
+      hash: row.verification_snapshot_hash,
+      version: row.verification_snapshot_key_version,
+      payload: recheck
+    )
+  end
+
+  test "decide saves nil snapshot hash and version for key version with zero-width space format character" do
+    version_with_zwsp = "#{SNAPSHOT_VERSION_V1}\u200b"
+    configure_snapshot_keys!(
+      version: version_with_zwsp,
+      keys: { version_with_zwsp => SNAPSHOT_KEY_V1 }
+    )
+    fixed_adapter_responses_for("pt_zwsp_ver")
+
+    decision = nil
+    assert_nothing_raised do
+      decision = Corvid::TribalEligibilityService.decide(
+        person_identifier: "pt_zwsp_ver",
+        facility: @facility,
+        tenant_identifier: TENANT
+      )
+    end
+
+    row = Corvid::PrcEligibilityDecision.find(decision.decision_id)
+    assert decision.eligible?
+    assert_nil row.verification_snapshot_hash
+    assert_nil row.verification_snapshot_key_version
   end
 end

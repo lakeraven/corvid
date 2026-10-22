@@ -6,6 +6,7 @@ ENV["RAILS_ENV"] = "test"
 # expects config/environment at project root.
 require_relative "../../test/dummy/config/environment"
 require "minitest/assertions"
+require_relative "alternate_resource_exhaustion_helper"
 
 World(Minitest::Assertions)
 

@@ -8,12 +8,19 @@ Given("the adapter has enrollment data for patient {string}:") do |patient_id, t
     sex: "F",
     ssn_last4: row["ssn_last4"].presence
   )
-  Corvid.adapter.add_enrollment(patient_id,
-    enrolled: row["enrolled"] == "true",
+  enrolled = row["enrolled"] == "true"
+  enrollment_attrs = {
+    enrolled: enrolled,
     membership_number: row["membership_number"].presence,
     tribe_name: row["tribe_name"].presence,
-    member_status: row["enrolled"] == "true" ? "enrolled" : "denied"
-  )
+    member_status: enrolled ? "enrolled" : "denied"
+  }
+  if row["confidence"].present?
+    enrollment_attrs[:confidence] = row["confidence"].to_sym
+  elsif enrolled
+    enrollment_attrs[:confidence] = :verified
+  end
+  Corvid.adapter.add_enrollment(patient_id, **enrollment_attrs)
   Corvid.adapter.add_residency(patient_id,
     on_reservation: row["on_reservation"] == "true",
     address: row["address"].presence,

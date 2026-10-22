@@ -44,7 +44,7 @@ module Corvid
     # a placeholder, which is the intended failure — a missing name is a
     # smaller problem than a name nobody meant to store.
     def display_name
-      patient&.display_name || "Unknown Patient"
+      patient&.display_name.presence || "Unknown Patient"
     end
 
     def program_case?

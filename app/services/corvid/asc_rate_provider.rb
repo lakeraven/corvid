@@ -38,7 +38,7 @@ module Corvid
         rate = (rate_row.payment_weight * cf_row.conversion_factor * cf_row.wage_index).round(2)
         label = [ rate_row.release_label, cf_row.release_label ]
                   .compact.find { |l| l.to_s.start_with?("stub") } ||
-                rate_row.release_label || cf_row.release_label
+                rate_row.release_label.presence || cf_row.release_label.presence
         Lookup.new(rate: rate, release_label: label)
       end
 

@@ -34,6 +34,12 @@ module Corvid
         determination: "de"
       }.freeze
 
+      # Fixed directory. search_payers filters this; it does not invent a hit
+      # whose name contains the query.
+      SEEDED_PAYERS = [
+        { payer_identifier: "MOCK_PAYER", name: "Mock Payer" }
+      ].freeze
+
       def initialize
         reset!
         seed!
@@ -159,7 +165,10 @@ module Corvid
       end
 
       def dereference_many(tokens)
-        tokens.each_with_object({}) { |t, h| h[t] = dereference(t) }
+        tokens.each_with_object({}) do |token, records|
+          value = dereference(token)
+          records[token] = value unless value.nil?
+        end
       end
 
       # ----------------------------------------------------------------------
@@ -293,13 +302,10 @@ module Corvid
       # ----------------------------------------------------------------------
 
       def verify_eligibility(patient_identifier, resource_type)
-        {
-          eligible: true,
-          payer_name: "MOCK #{resource_type.to_s.upcase} PAYER",
-          policy_token: store_text(case_token: "ct_x", kind: :policy, text: "MOCK-#{resource_type}-#{patient_identifier}"),
-          coverage_start: Date.new(Date.current.year, 1, 1),
-          coverage_end: Date.new(Date.current.year, 12, 31)
-        }
+        coverage = coverage_for(patient_identifier, resource_type, :coverage_type)
+        return nil unless coverage
+
+        eligibility_from_coverage(patient_identifier, resource_type, coverage)
       end
 
       def indian_health_service_eligibility(patient_identifier)
@@ -314,50 +320,41 @@ module Corvid
 
       def verify_tribal_enrollment(patient_identifier)
         enrollment = @enrollments[patient_identifier.to_s]
-        unless enrollment
-          return {
-            enrolled: false,
-            membership_number: nil,
-            tribe_name: nil,
-            tribe_code: nil,
-            confidence: :verified,
-            verified_at: Time.current
-          }
-        end
+        return tribal_enrollment_unavailable unless enrollment
 
         {
           enrolled: enrollment[:enrolled],
           membership_number: enrollment[:membership_number],
           tribe_name: enrollment[:tribe_name],
           tribe_code: enrollment[:tribe_code],
-          blood_quantum: enrollment[:blood_quantum],
+          blood_quantum: normalize_blood_quantum(enrollment[:blood_quantum]),
           member_status: enrollment[:member_status],
-          confidence: enrollment.fetch(:confidence, :verified),
-          verified_at: Time.current
+          confidence: normalize_tribal_confidence(enrollment[:confidence]),
+          verified_at: verification_timestamp
         }
       end
 
       def verify_identity_documents(patient_identifier)
         patient = @patients[patient_identifier.to_s]
-        return { ssn_present: false, dob_present: false, birthplace_present: false, verified_at: Time.current } unless patient
+        return { ssn_present: false, dob_present: false, birthplace_present: false, verified_at: verification_timestamp } unless patient
 
         {
           ssn_present: patient[:ssn_last4].present?,
           dob_present: patient[:dob].present?,
           birthplace_present: patient[:birthplace].present?,
-          verified_at: Time.current
+          verified_at: verification_timestamp
         }
       end
 
       def verify_residency(patient_identifier)
         residency = @residencies[patient_identifier.to_s]
-        return { on_reservation: false, address: nil, service_area: nil, verified_at: Time.current } unless residency
+        return { on_reservation: false, address: nil, service_area: nil, verified_at: verification_timestamp } unless residency
 
         {
           on_reservation: residency[:on_reservation],
           address: residency[:address],
           service_area: residency[:service_area],
-          verified_at: Time.current
+          verified_at: verification_timestamp
         }
       end
 
@@ -373,7 +370,7 @@ module Corvid
 
       def check_claim_status(claim_identifier)
         claim = @claims[claim_identifier]
-        return { status: "unknown" } unless claim
+        return nil unless claim
 
         { status: claim[:status] || "accepted",
           paid_amount: claim[:paid_amount],
@@ -385,14 +382,25 @@ module Corvid
         @remittances.values
       end
 
+      # A check that names no payer is undetermined, never the first coverage.
       def check_eligibility_detailed(patient_identifier, payer_identifier)
-        { eligible: true, payer_name: "MOCK #{payer_identifier}", plan_name: "Mock Plan",
-          coverage_start: Date.new(Date.current.year, 1, 1),
-          coverage_end: Date.new(Date.current.year, 12, 31) }
+        return undetermined_detailed_eligibility if payer_identifier.to_s.strip.empty?
+
+        coverage = coverage_for(patient_identifier, payer_identifier, :payer_identifier)
+        return undetermined_detailed_eligibility unless coverage
+
+        detailed_eligibility_from_coverage(payer_identifier, coverage)
       end
 
       def search_payers(query)
-        [ { payer_identifier: "MOCK_PAYER", name: "Mock Payer matching '#{query}'" } ]
+        pattern = query.to_s.downcase
+        SEEDED_PAYERS.filter_map do |payer|
+          name = payer[:name].to_s.downcase
+          identifier = payer[:payer_identifier].to_s.downcase
+          next unless name.include?(pattern) || identifier.include?(pattern)
+
+          payer.dup
+        end
       end
 
       def process_payment(amount_cents:, patient_identifier:, description:)
@@ -403,11 +411,10 @@ module Corvid
       end
 
       def refund_payment(payment_identifier)
-        # Track the refund if the payment was created via process_payment,
-        # but also allow refunds for externally-created payments (seeded in tests
-        # or imported from other systems) by key presence.
         payment = @payments_store[payment_identifier]
-        payment[:status] = "refunded" if payment
+        return { refund_identifier: nil, status: "not_found" } unless payment
+
+        payment[:status] = "refunded"
         { refund_identifier: "REF_#{ULID.generate}", status: "refunded" }
       end
 
@@ -451,13 +458,54 @@ module Corvid
         @remittances[reference] = attrs
       end
 
-      def add_coverage(patient_identifier, attrs)
+      def add_coverage(patient_identifier, attrs = {}, **extra)
+        row = attrs.is_a?(Hash) ? attrs.merge(extra) : extra
         @coverages[patient_identifier.to_s] ||= []
-        @coverages[patient_identifier.to_s] << attrs
+        @coverages[patient_identifier.to_s] << row
       end
 
       def get_coverages(patient_identifier)
         @coverages[patient_identifier.to_s] || []
+      end
+
+      def add_condition(patient_identifier, reference)
+        unless reference.is_a?(Corvid::ConditionReference)
+          raise ArgumentError, "expected ConditionReference"
+        end
+
+        (@conditions[patient_identifier.to_s] ||= []) << reference
+      end
+
+      def get_conditions(patient_identifier)
+        return nil if blank_patient_identifier?(patient_identifier)
+
+        copied_references(@conditions[patient_identifier.to_s])
+      end
+
+      def add_medication(patient_identifier, reference)
+        unless reference.is_a?(Corvid::MedicationReference)
+          raise ArgumentError, "expected MedicationReference"
+        end
+
+        (@medications[patient_identifier.to_s] ||= []) << reference
+      end
+
+      def get_medications(patient_identifier)
+        return nil if blank_patient_identifier?(patient_identifier)
+
+        copied_references(@medications[patient_identifier.to_s])
+      end
+
+      def add_claim_line(patient_identifier, reference)
+        unless reference.is_a?(Corvid::ClaimLineReference)
+          raise ArgumentError, "expected ClaimLineReference"
+        end
+
+        (@claim_lines[patient_identifier.to_s] ||= []) << reference
+      end
+
+      def list_claims(patient_identifier)
+        copied_references(@claim_lines[patient_identifier.to_s])
       end
 
       def reset!
@@ -470,12 +518,136 @@ module Corvid
         @residencies = {}
         @service_eligibilities = {}
         @coverages = {}
+        @conditions = {}
+        @medications = {}
+        @claim_lines = {}
         @claims = {}
         @remittances = {}
         @payments_store = {}
       end
 
       private
+
+      # Unknown record is not a denial. enrolled stays nil.
+      def tribal_enrollment_unavailable
+        {
+          enrolled: nil,
+          membership_number: nil,
+          tribe_name: nil,
+          tribe_code: nil,
+          member_status: nil,
+          blood_quantum: nil,
+          confidence: :unavailable,
+          verified_at: verification_timestamp
+        }
+      end
+
+      # Matches the request against the coverage's own fields: its type
+      # (coverage_type, or resource_type when coverage_type is absent) for a
+      # type, payer_identifier for a payer. A payer or plan name that
+      # happens to spell the requested word is not a match, and a request
+      # that matches nothing is unknown. Never substitute a different
+      # coverage. The most recently recorded match wins.
+      def coverage_for(patient_identifier, requested, field)
+        coverages = @coverages[patient_identifier.to_s]
+        return nil if coverages.nil? || coverages.empty?
+
+        needle = requested.to_s.downcase
+        return coverages.first if needle.empty?
+
+        coverages.reverse.find { |coverage| coverage_field(coverage, field).to_s.downcase == needle }
+      end
+
+      def coverage_field(coverage, field)
+        return coverage[field] unless field == :coverage_type
+
+        coverage.key?(:coverage_type) ? coverage[:coverage_type] : coverage[:resource_type]
+      end
+
+      # A recorded period or renewal key, even an explicit nil (an unknown
+      # or open bound), replaces the default; an omitted key keeps it.
+      def apply_recorded_dates(result, coverage)
+        %i[coverage_start coverage_end renewal_date].each do |key|
+          result[key] = coverage[key] if coverage.key?(key)
+        end
+        result
+      end
+
+      # Only an explicit eligible: true verifies; a coverage that does not
+      # say is not eligible. A non-boolean answer stays undetermined (nil).
+      def eligibility_from_coverage(patient_identifier, resource_type, coverage)
+        eligible = coverage[:eligible]
+        return nil if coverage.key?(:eligible) && eligible != true && eligible != false
+
+        result = {
+          eligible: eligible == true,
+          payer_name: coverage[:payer_name] || "MOCK #{resource_type.to_s.upcase} PAYER",
+          policy_token: coverage[:policy_token] || policy_token_for(patient_identifier, resource_type),
+          coverage_start: year_start,
+          coverage_end: year_end
+        }
+        apply_recorded_dates(result, coverage)
+      end
+
+      def detailed_eligibility_from_coverage(payer_identifier, coverage)
+        {
+          eligible: coverage[:eligible] == true,
+          payer_name: coverage[:payer_name] || "MOCK #{payer_identifier}",
+          plan_name: coverage[:plan_name] || "Mock Plan",
+          coverage_start: coverage[:coverage_start] || year_start,
+          coverage_end: coverage[:coverage_end] || year_end
+        }
+      end
+
+      def undetermined_detailed_eligibility
+        {
+          eligible: false,
+          payer_name: nil,
+          plan_name: nil,
+          coverage_start: nil,
+          coverage_end: nil
+        }
+      end
+
+      def policy_token_for(patient_identifier, resource_type)
+        store_text(
+          case_token: "ct_x",
+          kind: :policy,
+          text: "MOCK-#{resource_type}-#{patient_identifier}"
+        )
+      end
+
+      def year_start
+        Date.new(Date.current.year, 1, 1)
+      end
+
+      def year_end
+        Date.new(Date.current.year, 12, 31)
+      end
+
+      # Whole-second clock so a repeated check in the same second reports
+      # the same verified_at.
+      def verification_timestamp
+        Time.current.change(usec: 0)
+      end
+
+      def blank_patient_identifier?(patient_identifier)
+        patient_identifier.nil? || patient_identifier.to_s.strip.empty?
+      end
+
+      # Frozen string copies so a caller cannot mutate stored clinical data.
+      def copied_references(stored)
+        (stored || []).map { |reference| copied_reference(reference) }
+      end
+
+      def copied_reference(reference)
+        values = reference.to_h.transform_values { |value| frozen_string_copy(value) }
+        reference.class.new(**values)
+      end
+
+      def frozen_string_copy(value)
+        value.is_a?(String) ? value.dup.freeze : value
+      end
 
       def build_referral_reference(identifier, attrs)
         Corvid::ReferralReference.new(

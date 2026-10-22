@@ -157,15 +157,19 @@ module Corvid
       end
 
       # ----------------------------------------------------------------------
-      # Clinical reads (optional — adapters may return empty arrays)
+      # Clinical reads.
+      # Elements are ConditionReference / MedicationReference.
+      # nil means unknown (the source did not answer). Adapters that cannot
+      # read these return nil. [] means the source answered "none".
+      # In memory only — never persist or log (ADR 0003).
       # ----------------------------------------------------------------------
 
       def get_conditions(patient_identifier)
-        []
+        nil
       end
 
       def get_medications(patient_identifier)
-        []
+        nil
       end
 
       def get_coverages(patient_identifier)
@@ -185,7 +189,14 @@ module Corvid
       # ----------------------------------------------------------------------
 
       # Verify enrollment for a patient against a coverage type.
-      # Returns a hash of eligibility info or nil.
+      #
+      # Returns a Hash with symbol key :eligible set to exactly true or
+      # false when the payer answered. Returns nil, or a Hash without a
+      # boolean :eligible, when the answer could not be determined.
+      # The result may carry coverage_start, coverage_end, and
+      # renewal_date as Date or nil. Any other type makes the answer
+      # unreadable. Callers treat anything else as undetermined, never
+      # as no coverage (42 CFR 136.61).
       def verify_eligibility(patient_identifier, resource_type)
         raise NotImplementedError, "#{self.class}#verify_eligibility not implemented"
       end
@@ -206,18 +217,28 @@ module Corvid
       # Enrollment verification (for PRC eligibility checklist)
       # ----------------------------------------------------------------------
 
-      # Returns { enrolled: bool, membership_number: str|nil,
+      # Returns { enrolled: true|false|nil, membership_number: str|nil,
       #           tribe_name: str|nil, tribe_code: str|nil,
-      #           member_status: str|nil, blood_quantum: hash|nil,
+      #           member_status: str|nil,
+      #           blood_quantum: { display: String, decimal: Float|nil }|nil,
       #           confidence: :verified|:stale|:unavailable,
       #           verified_at: datetime }
+      #
+      # `enrolled` is nil when the source is unreachable or the record is
+      # unknown. true and false are answers from the source.
+      #
+      # `blood_quantum` is nil when the source has none. `display` is the
+      # source text (for example "1/4" or "0.25"). `decimal` is that value
+      # as a Float when it parses as a Rational, and nil when it does not.
       #
       # `tribe_code` lets eligibility services compare the enrollee's tribe
       # against a facility's contracted tribe (preventing wrong-tribe false
       # positives). `confidence` reflects how fresh the underlying data is —
       # `:verified` is canonical; `:stale` means the source returned data
       # but flagged it as out-of-date; `:unavailable` means the source could
-      # not be reached.
+      # not be reached. A missing or unrecognized confidence is also
+      # `:unavailable`, not `:verified`. Consumers must treat anything other
+      # than :verified/:stale as not verified.
       def verify_tribal_enrollment(patient_identifier)
         raise NotImplementedError, "#{self.class}#verify_tribal_enrollment not implemented"
       end
@@ -272,6 +293,65 @@ module Corvid
       # Refund a payment. Returns { refund_identifier: str, status: str }
       def refund_payment(payment_identifier)
         raise NotImplementedError, "#{self.class}#refund_payment not implemented"
+      end
+
+      # Missing or unrecognized confidence is not :verified.
+      TRIBAL_CONFIDENCE_VALUES = %i[verified stale unavailable].freeze
+
+      private
+
+      # Canonical blood-quantum hash. nil stays nil. Strings keep their
+      # display text; numerics display via their usual decimal spelling.
+      def normalize_blood_quantum(value)
+        scalar = unwrap_blood_quantum(value)
+        return nil if scalar.nil?
+
+        case scalar
+        when Numeric
+          { display: blood_quantum_numeric_display(scalar), decimal: scalar.to_f }
+        when String
+          blood_quantum_from_string(scalar)
+        end
+      end
+
+      # Allow-list: an exact documented Symbol, or its exact String spelling
+      # (FHIR sends valueString). Anything else, including blank, other case
+      # or padding, is :unavailable. Never raises.
+      def normalize_tribal_confidence(value)
+        return :unavailable unless value.is_a?(Symbol) || value.is_a?(String)
+
+        symbol = value.to_sym
+        TRIBAL_CONFIDENCE_VALUES.include?(symbol) ? symbol : :unavailable
+      end
+
+      def unwrap_blood_quantum(value)
+        return value unless value.is_a?(Hash)
+
+        %i[display fraction value blood_quantum decimal].each do |key|
+          raw = value.key?(key) ? value[key] : value[key.to_s]
+          return raw unless raw.nil?
+        end
+
+        nil
+      end
+
+      def blood_quantum_from_string(text)
+        display = text.strip
+        return nil if display.empty?
+
+        { display: display, decimal: parse_blood_quantum_decimal(display) }
+      end
+
+      def parse_blood_quantum_decimal(display)
+        Rational(display).to_f
+      rescue ArgumentError, ZeroDivisionError
+        nil
+      end
+
+      def blood_quantum_numeric_display(number)
+        return number.to_s if number.is_a?(Integer) || number.is_a?(Float)
+
+        number.to_f.to_s
       end
     end
   end
