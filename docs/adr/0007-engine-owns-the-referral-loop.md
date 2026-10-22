@@ -1,7 +1,8 @@
 # ADR 0007: The engine owns the referral loop and reads any EHR
 
 **Status:** Proposed
-**Date:** 2026-10-08 (revised 2026-10-22)
+**Date:** 2026-10-08 (revised 2026-10-22; owner decisions on key custody, patient lookup and
+audit failure recorded the same day)
 
 ## Context
 
@@ -28,10 +29,12 @@ Some of the engine work this ADR depends on has already landed on main or is ope
   refuses a page whose `total` disagrees with its entries (`consistent_search_total?`). General
   searches follow only same-origin `next` links (`same_origin_url?`), stop at
   `MAX_SEARCH_PAGES = 100`, and discard everything on a repeated link or the page cap.
-- **SMART Backend Services auth is open as #531.** It adds `Corvid::Auth::BackendServicesClient`
-  (signed-JWT client credentials, RS384 and ES384, token caching with a refresh skew) and a
-  `token_source:` option on `FhirAdapter` that is resolved per request, with credentials sent only
-  to URLs under `base_url`. Static `bearer_token:` still works.
+- **SMART Backend Services auth is on main via #531 (merged).** It added
+  `Corvid::Auth::BackendServicesClient` (`lib/corvid/auth/backend_services_client.rb`: signed-JWT
+  client credentials, RS384 and ES384, token caching with a refresh skew) and a `token_source:`
+  option on `FhirAdapter` that is resolved per request, with credentials sent only to URLs under
+  `base_url`. Static `bearer_token:` still works. #531 holds no keys: key custody and the JWKS
+  endpoint were left to the host.
 - **Models still use the global adapter.** ADR 0005 moves services to `adapter:` injection but
   leaves models on `Corvid.adapter` until #264. `PrcReferral#sync_status_to_ehr` (an `after:`
   callback on `authorize`, `mark_denied` and `mark_deferred`) and `ClaimSubmission#submit!` both
@@ -41,11 +44,11 @@ Some of the engine work this ADR depends on has already landed on main or is ope
 Two further facts shape the decision:
 
 1. **The engine's FHIR adapter is already the right seam.** It speaks FHIR R4 to any server and
-   already parses clinical reads fail-closed, but on main it authenticates with one static bearer
-   token. Certified EHRs expose standard FHIR read APIs, and certification requires SMART Backend
+   already parses clinical reads fail-closed and, since #531, can authenticate with SMART Backend
+   Services through `token_source:`. Nothing yet builds that client per clinic. Certified EHRs expose standard FHIR read APIs, and certification requires SMART Backend
    Services for bulk export; many also allow system-scoped searches for a single patient, which is
-   what this read needs, though certification does not require it. A static token works with none
-   of them in production.
+   what this read needs, though certification does not require it. A static bearer token works
+   with none of them in production.
 2. **One EHR connection per process.** Both the adapter and `ChartSource` are configured at boot.
    ADR 0005 already names per-tenant adapter routing as the missing capability; a clinic on one
    EHR and a clinic on another cannot share a deployment.
@@ -66,9 +69,9 @@ engine than per host:
 
 This ADR cannot be implemented in full until these land. Each can be built and merged on its own.
 
-1. **#531, SMART Backend Services in `FhirAdapter`.** The chart read authenticates through
-   `Corvid::Auth::BackendServicesClient` passed as `token_source:`. This ADR adds no second auth
-   path.
+1. **#531, SMART Backend Services in `FhirAdapter` (merged).** The chart read authenticates
+   through `Corvid::Auth::BackendServicesClient` passed as `token_source:`. This ADR adds no second
+   auth path.
 2. **#264, models off the global adapter.** Sharing a deployment across clinics (Decision 3)
    needs every write in the loop to use the clinic's connection, including model callbacks such as
    `PrcReferral#sync_status_to_ehr` and `ClaimSubmission#submit!`. Injecting `adapter:` into
@@ -93,11 +96,22 @@ This ADR cannot be implemented in full until these land. Each can be built and m
    the result is unknown. The static-token mode stays for local stand-ins. `ChartSource` is
    retired; its callers use a `Corvid::ChartSummary` service over the adapter.
 
-3. **Each clinic configures its own EHR connection.** A tenant-scoped connection record holds the
-   FHIR base URL, token URL, client id and the identifier system that names the clinic's patients.
-   Where the signing keys and the JWKS endpoint live is an open question (see below). Adapter
-   resolution follows ADR 0005: services take `adapter:`, and the tenant's connection builds it.
-   Per-tenant routing is safe only after #264 (Prerequisite 2).
+3. **Each clinic configures its own EHR connection, and the host holds the keys.**
+   - The engine ships a tenant-scoped connection record with no secrets in it: the FHIR base URL,
+     token URL, client id, signing algorithm, key id and the identifier system that names the
+     clinic's patients.
+   - The host holds each clinic's private signing keys. The engine never holds, stores or receives
+     a private key. Where and how the host keeps them (its credentials store, a key service) and
+     how it rotates them is the host's choice.
+   - The engine ships a key-lookup interface that the host implements. Given a connection, it
+     returns the signing key the host holds for it.
+   - The host builds one `BackendServicesClient` per clinic from the connection record and its own
+     key, and passes it to the clinic's `FhirAdapter` as `token_source:`.
+   - The host serves the JWKS route each clinic registers with its EHR. The engine ships a JWKS
+     document builder the route calls, so every host publishes the same public-key document. The
+     builder takes public keys only.
+   - Adapter resolution follows ADR 0005: services take `adapter:`, and the tenant's connection
+     builds it. Per-tenant routing is safe only after #264 (Prerequisite 2).
 
 4. **US Core is the contract.**
    - `MedicationRequest` and `Condition` are required. Both are US Core profiles, and main's
@@ -107,7 +121,13 @@ This ADR cannot be implemented in full until these land. Each can be built and m
      it is still a working connection, and its absence never makes the chart unavailable.
    - Labels follow main: the first coding with a non-empty code supplies the label from
      `coding.display`, falling back to `CodeableConcept.text`.
-   - The patient is resolved by the clinic's configured identifier system.
+   - The patient is found from Corvid's opaque patient token (ADR 0003) by the tenant adapter's
+     `dereference`, in memory, on every read. It gives the clinic's identifier (the configured
+     system and a value), which is then resolved to exactly one EHR Patient. Nothing new is stored:
+     no MRN, no EHR Patient id, and no crosswalk table in the engine or the host. A token that
+     does not dereference, or matches no patient or more than one, makes the chart unavailable.
+     On main, `FhirAdapter#dereference` raises `NotImplementedError`, so the tenant adapter must
+     supply a vault-backed implementation.
    - Conformance is proven against more than one server: an open-source FHIR server, the public
      SMART reference server, and at least one commercial EHR sandbox.
    - An EHR that cannot connect degrades to "chart unavailable"; referral, authorization and
@@ -121,7 +141,9 @@ This ADR cannot be implemented in full until these land. Each can be built and m
      source and its EHR does not supply that metadata, the chart read is withheld in full for that
      clinic. The detailed rules follow the Part 2 design (Prerequisite 3).
    - **Audit.** Every chart view writes an audit event: receiving account, user, referral, time,
-     and the resource types returned, never their content (ADR 0003). This supersedes ADR 0003 §14
+     and the resource types returned, never their content (ADR 0003). The event is written durably
+     before any chart content is returned. If the write fails, the view is blocked (fail closed):
+     no audit record means no chart data, and the user sees "chart unavailable". This supersedes ADR 0003 §14
      ("read audit logging is a host responsibility") **for chart views only**. The reason is that
      the engine now makes the access decision and is the only layer that knows which referral
      granted the view and which resource types went back. Host middleware sees a request, and the
@@ -134,8 +156,9 @@ This ADR cannot be implemented in full until these land. Each can be built and m
 
 6. **The chart has three distinct empty states, and screens must show them differently.** Each
    section (conditions, medications) is one of:
-   - **Unavailable: `nil`.** The read failed, the connection is missing, or the page broke a
-     parsing rule. The section says the chart could not be read. It is never shown as "none".
+   - **Unavailable: `nil`.** The read failed, the connection is missing, the page broke a parsing
+     rule, the patient token did not resolve to exactly one patient, or the audit write failed. The
+     section says the chart could not be read. It is never shown as "none".
    - **None: `[]`.** The server answered cleanly with no matching records. The section says there
      are none on file.
    - **Withheld.** Records were held back under Part 2. The section says some records are withheld
@@ -155,54 +178,6 @@ This ADR cannot be implemented in full until these land. Each can be built and m
    authentication hooks) is deferred: it depends on how many hosts exist and how much their screens
    diverge.
 
-## Open questions for the owner
-
-These are not decided by this ADR.
-
-### 1. Who holds the signing keys and publishes the JWKS: the engine or the host?
-
-#531 leaves key custody and the JWKS endpoint to the host. This ADR's first draft put them in
-the engine. Both work with #531's `token_source:` seam.
-
-- **Option A: the host holds them.** The engine takes a `token_source:` and never sees a private
-  key. The host stores the keys (for example in its credentials store or a key service), builds
-  one `BackendServicesClient` per clinic, and serves the JWKS route.
-  - For: the engine stays free of secrets, as #531 intends. Key storage, rotation and HSM or
-    cloud key-service use follow each deployment's own security practice.
-  - Against: every host must build and secure a JWKS route and key rotation, and they may do it
-    differently.
-- **Option B: the engine holds them.** An engine model stores each clinic's key encrypted at rest
-  (or one engine-wide key set), and a mountable engine route serves the JWKS.
-  - For: every host gets the same rotation and publishing behaviour, and the connection record is
-    complete in one place.
-  - Against: the engine takes on secret custody and an encryption-key dependency, which goes
-    against #531's design. A key leak becomes an engine-wide concern.
-
-**Recommendation: Option A.** It matches #531, which is the auth dependency for this ADR, and
-keeps the engine without secrets. The engine can still own the parts that should be uniform: the
-connection record without secrets, a key-lookup interface the host implements, and a JWKS
-document builder the host's route calls. That way publishing stays consistent without the engine
-holding keys.
-
-### 2. How does the opaque patient token become an EHR identifier?
-
-Corvid stores `Case#patient_identifier` as an opaque vault token (ADR 0003). That token is not a
-value the EHR can search, and storing the MRN would break ADR 0003. Today `clinical_search`
-passes the identifier straight through as the FHIR `patient` parameter.
-
-- Option A: the tenant's adapter resolves the token through `dereference`, in memory only, to the
-  clinic's identifier (system and value) and then to the EHR's Patient id.
-- Option B: the host keeps a crosswalk, as #531's follow-ups plan.
-
-Recommendation: Option A. It keeps PHI resolution inside the adapter, which ADR 0003 already makes
-the only path to PHI.
-
-### 3. Does a failed audit write block the view?
-
-Recommendation: yes. The audit event is written durably before any chart content is returned,
-and a failed write makes the chart unavailable. Otherwise data could be shown with no record of
-who saw it.
-
 ## Consequences
 
 ### Positive
@@ -215,8 +190,11 @@ who saw it.
 ### Negative
 - Engine migrations for dispatches, fulfilment-report source, EHR connections and view audit;
   hosts that already hold dispatch rows need a data migration.
-- Per-clinic connections add configuration and, depending on Open question 1, key-management work
-  in the engine or in each host.
+- Per-clinic connections add configuration, and each host must store and rotate clinics' signing
+  keys and serve the JWKS route (with the engine's document builder).
+- A chart view depends on the audit store: when it cannot be written, specialists see "chart
+  unavailable" even if the EHR is up.
+- Resolving the patient token on every read costs a vault lookup per view.
 - Multi-clinic deployments wait on #264.
 - Commercial EHR sandboxes require app registration per vendor before conformance can be
   proven; until then "any certified EHR" describes the design, not a tested property.
@@ -233,6 +211,14 @@ who saw it.
   authentication and parsing rules drift apart.
 - **Expose the loop only through the engine's JSON API.** Deferred: the API is not mounted until
   its authentication design is settled, and hosts still need the same services underneath.
+- **The engine holds the signing keys and serves the JWKS.** Rejected: it would give the engine
+  secret custody and an encryption-key dependency, against #531's design, and make a key leak an
+  engine-wide concern. A uniform JWKS document comes from the engine's builder instead.
+- **A stored crosswalk from patient token to EHR Patient id** (in the host or the engine).
+  Rejected: it puts a new patient identifier at rest, which ADR 0003 avoids; the adapter's
+  `dereference` already resolves tokens in memory.
+- **Show the chart when the audit write fails, and log the failure.** Rejected: clinical data
+  could then be disclosed with no record of who saw it.
 - **Push referrals into the specialist's EHR.** Out of scope: delivery into another EHR is a
   messaging problem (Direct with C-CDA, closed-loop referral profiles where supported), not a
   FHIR read; it can be added later as another dispatch channel.
@@ -241,7 +227,7 @@ who saw it.
 - ADR 0003: PHI tokenization (Corvid stores no name, birth date or clinical content). §14 is
   superseded for chart views only (Decision 5).
 - ADR 0005: Adapter dependency injection in services, and its model-callback limitation
-- #531: SMART Backend Services for `FhirAdapter` (`Corvid::Auth::BackendServicesClient`)
+- #531 (merged): SMART Backend Services for `FhirAdapter` (`Corvid::Auth::BackendServicesClient`)
 - #264: Decouple models from the `Corvid.adapter` global
 - #658, #666: fail-closed condition and medication reads, same-origin paging
 - `Corvid::ReferralFulfilment` and the fulfilment report trail
