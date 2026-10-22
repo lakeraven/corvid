@@ -1438,6 +1438,155 @@ class Corvid::AlternateResourceCheckTest < ActiveSupport::TestCase
     end
   end
 
+  # -- Medicaid application date and state (issue #639) ------------------------
+
+  APPLICATION_DATE_SOURCE_CHECK = "corvid_arc_application_date_source_check"
+  MEDICAID_STATE_CODE_CHECK = "corvid_arc_medicaid_state_code_check"
+  APPLICATION_DATE_PAIR_CHECK = "corvid_arc_application_date_pair_check"
+  APPLICATION_DATE_MEDICAID_ONLY_CHECK = "corvid_arc_application_date_medicaid_only_check"
+
+  test "medicaid check accepts application_date source and medicaid_state_code" do
+    with_tenant("tnt_test") do
+      check = build_check(resource_type: "medicaid")
+      check.application_date = Date.new(2026, 6, 15)
+      check.application_date_source = "staff_entry"
+      check.medicaid_state_code = "XA"
+      assert check.valid?
+    end
+  end
+
+  test "rejects invalid application_date_source on model" do
+    with_tenant("tnt_test") do
+      check = build_check(resource_type: "medicaid")
+      check.application_date = Date.new(2026, 6, 15)
+      check.application_date_source = "guesswork"
+      check.medicaid_state_code = "XA"
+      refute check.valid?
+      assert check.errors[:application_date_source].present?
+    end
+  end
+
+  test "rejects invalid medicaid_state_code on model" do
+    with_tenant("tnt_test") do
+      check = build_check(resource_type: "medicaid")
+      check.application_date = Date.new(2026, 6, 15)
+      check.application_date_source = "staff_entry"
+      check.medicaid_state_code = "Texas"
+      refute check.valid?
+      assert check.errors[:medicaid_state_code].present?
+    end
+  end
+
+  test "rejects application fields on non-medicaid resource types" do
+    with_tenant("tnt_test") do
+      check = build_check(resource_type: "medicare_a")
+      check.application_date = Date.new(2026, 6, 15)
+      check.application_date_source = "staff_entry"
+      check.medicaid_state_code = "XA"
+      refute check.valid?
+      assert(
+        check.errors[:application_date].present? ||
+          check.errors[:application_date_source].present? ||
+          check.errors[:medicaid_state_code].present?
+      )
+    end
+  end
+
+  test "requires application_date and application_date_source both present or both absent" do
+    with_tenant("tnt_test") do
+      date_only = build_check(resource_type: "medicaid")
+      date_only.application_date = Date.new(2026, 6, 15)
+      date_only.medicaid_state_code = "XA"
+      refute date_only.valid?
+
+      source_only = build_check(resource_type: "medicaid")
+      source_only.application_date_source = "inferred"
+      source_only.medicaid_state_code = "XA"
+      refute source_only.valid?
+    end
+  end
+
+  test "rejects future application_date relative to Date.current" do
+    with_tenant("tnt_test") do
+      travel_to Date.new(2027, 6, 1) do
+        check = build_check(resource_type: "medicaid")
+        check.application_date = Date.new(2027, 6, 2)
+        check.application_date_source = "staff_entry"
+        check.medicaid_state_code = "XA"
+        refute check.valid?
+        assert check.errors[:application_date].present?
+      end
+    end
+  end
+
+  test "database enforces application_date_source enum check constraint" do
+    with_tenant("tnt_test") do
+      assert check_constraint_exists?(APPLICATION_DATE_SOURCE_CHECK)
+
+      check = create_medicaid_check!
+      assert_raises(ActiveRecord::StatementInvalid) do
+        update_application_date_columns!(
+          check,
+          application_date: Date.new(2026, 6, 15),
+          application_date_source: "bogus_source",
+          medicaid_state_code: "XA"
+        )
+      end
+    end
+  end
+
+  test "database enforces medicaid_state_code format check constraint" do
+    with_tenant("tnt_test") do
+      assert check_constraint_exists?(MEDICAID_STATE_CODE_CHECK)
+
+      check = create_medicaid_check!
+      assert_raises(ActiveRecord::StatementInvalid) do
+        update_application_date_columns!(
+          check,
+          application_date: Date.new(2026, 6, 15),
+          application_date_source: "staff_entry",
+          medicaid_state_code: "xx"
+        )
+      end
+    end
+  end
+
+  test "database enforces medicaid-only application fields check constraint" do
+    with_tenant("tnt_test") do
+      assert check_constraint_exists?(APPLICATION_DATE_MEDICAID_ONLY_CHECK)
+
+      check = Corvid::AlternateResourceCheck.create!(
+        prc_referral: create_referral,
+        resource_type: "medicare_a",
+        status: "checking"
+      )
+      assert_raises(ActiveRecord::StatementInvalid) do
+        update_application_date_columns!(
+          check,
+          application_date: Date.new(2026, 6, 15),
+          application_date_source: "staff_entry",
+          medicaid_state_code: "XA"
+        )
+      end
+    end
+  end
+
+  test "database enforces paired application_date columns check constraint" do
+    with_tenant("tnt_test") do
+      assert check_constraint_exists?(APPLICATION_DATE_PAIR_CHECK)
+
+      check = create_medicaid_check!
+      assert_raises(ActiveRecord::StatementInvalid) do
+        update_application_date_columns!(
+          check,
+          application_date: Date.new(2026, 6, 15),
+          application_date_source: nil,
+          medicaid_state_code: "XA"
+        )
+      end
+    end
+  end
+
   test "database enforces eligibility_group_set_at paired with group via check constraint" do
     with_tenant(TENANT) do
       assert check_constraint_exists?(ELIGIBILITY_GROUP_SET_AT_CHECK)
@@ -1550,6 +1699,30 @@ class Corvid::AlternateResourceCheckTest < ActiveSupport::TestCase
       SET eligibility_group = #{group_sql},
           eligibility_group_source = #{source_sql},
           eligibility_group_set_at = #{set_at_sql}
+      WHERE id = #{check.id}
+    SQL
+  end
+
+  def update_application_date_columns!(
+    check,
+    application_date:,
+    application_date_source:,
+    medicaid_state_code: :unchanged
+  )
+    conn = ActiveRecord::Base.connection
+    date_sql = application_date.nil? ? "NULL" : conn.quote(application_date)
+    source_sql = application_date_source.nil? ? "NULL" : conn.quote(application_date_source)
+    state_sql =
+      case medicaid_state_code
+      when :unchanged then "NULL"
+      when nil then "NULL"
+      else conn.quote(medicaid_state_code)
+      end
+    conn.execute(<<~SQL.squish)
+      UPDATE corvid_alternate_resource_checks
+      SET application_date = #{date_sql},
+          application_date_source = #{source_sql},
+          medicaid_state_code = #{state_sql}
       WHERE id = #{check.id}
     SQL
   end

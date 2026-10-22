@@ -274,3 +274,9 @@ Feature: Alternate resource tracking (payer of last resort)
     Then 3 checks should still be pending
     And 7 checks should have status "not_enrolled"
     And the referral should not be ready for authorization
+
+  Scenario: Pending Medicaid records application date and state
+    Given an alternate resource check for "medicaid" exists with status "pending_enrollment"
+    When I record medicaid application filed on "2026-06-15" from "staff_entry" in state "XA"
+    Then the medicaid check should have application date "2026-06-15"
+    And the medicaid check medicaid state code should be "XA"

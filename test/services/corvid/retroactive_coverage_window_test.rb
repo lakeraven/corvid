@@ -277,20 +277,51 @@ class Corvid::RetroactiveCoverageWindowTest < ActiveSupport::TestCase
     end
   end
 
-  # -- for_application: pre-H.R. 1 -------------------------------------------
+  # -- for_application: pre-H.R. 1 (prior three-month federal rule) ----------
 
-  test "for_application returns undetermined when application predates H.R. 1 effective date" do
+  test "pre-H.R. 1 application on configured state uses PRE_HR1_RETRO_COVERAGE_MONTHS" do
     with_tenant(TENANT) do
+      assert_equal 3, Corvid::StateMedicaidRules::PRE_HR1_RETRO_COVERAGE_MONTHS
+
       rule_set = xa_expansion_adult_rule_set
-      result = for_application(application_date: Date.new(2026, 12, 31), rule_set:)
+      result = for_application(application_date: Date.new(2026, 6, 15), rule_set:)
 
       assert_retroactive_window(
         result,
-        earliest_covered_date: nil,
-        window_months: nil,
-        status: "undetermined",
-        reasons: [ "application_predates_hr1" ]
+        earliest_covered_date: Date.new(2026, 3, 1),
+        window_months: 3,
+        status: "determined",
+        reasons: []
       )
+    end
+  end
+
+  test "pre-H.R. 1 application on unconfigured state stays undetermined" do
+    with_tenant(TENANT) do
+      rule_set = Corvid::MedicaidRuleSetResolver.resolve(
+        eligibility_group: "expansion_adult",
+        state: "ZZ",
+        indian_exemption: "unknown"
+      )
+      result = for_application(application_date: Date.new(2026, 6, 15), rule_set:)
+
+      assert_equal "undetermined", result.status
+      assert_nil result.earliest_covered_date
+      assert_includes result.reasons, "retroactive_window_undetermined"
+      assert_includes result.reasons, "state_not_configured"
+      refute_includes result.reasons, "application_predates_hr1"
+    end
+  end
+
+  test "pre-H.R. 1 application with unknown eligibility group stays undetermined" do
+    with_tenant(TENANT) do
+      rule_set = undetermined_rule_set
+      result = for_application(application_date: Date.new(2026, 6, 15), rule_set:)
+
+      assert_equal "undetermined", result.status
+      assert_nil result.earliest_covered_date
+      assert_includes result.reasons, "retroactive_window_undetermined"
+      refute_includes result.reasons, "application_predates_hr1"
     end
   end
 
@@ -343,7 +374,7 @@ class Corvid::RetroactiveCoverageWindowTest < ActiveSupport::TestCase
     end
   end
 
-  test "for_application appends rule set reasons on pre-H.R. 1 application without duplicates" do
+  test "for_application appends rule set reasons on pre-H.R. 1 determined window without duplicates" do
     with_tenant(TENANT) do
       rule_set = Corvid::MedicaidRuleSetResolver.resolve(
         eligibility_group: "expansion_adult",
@@ -352,8 +383,9 @@ class Corvid::RetroactiveCoverageWindowTest < ActiveSupport::TestCase
       )
       result = for_application(application_date: Date.new(2026, 6, 1), rule_set:)
 
-      assert_equal "undetermined", result.status
-      assert_equal [ "application_predates_hr1", "indian_exemption_unconfirmed" ], result.reasons
+      assert_equal "determined", result.status
+      assert_equal Date.new(2026, 3, 1), result.earliest_covered_date
+      assert_equal [ "indian_exemption_unconfirmed" ], result.reasons
     end
   end
 
@@ -441,14 +473,19 @@ class Corvid::RetroactiveCoverageWindowTest < ActiveSupport::TestCase
     end
   end
 
-  test "covers? is nil when application predates H.R. 1" do
+  test "covers? for pre-H.R. 1 application follows three month window on configured state" do
     with_tenant(TENANT) do
       rule_set = xa_expansion_adult_rule_set
-      dos = Date.new(2026, 11, 1)
+      application_date = Date.new(2026, 6, 15)
 
-      assert_nil covers?(
-        date_of_service: dos,
-        application_date: Date.new(2026, 12, 1),
+      assert covers?(
+        date_of_service: Date.new(2026, 3, 1),
+        application_date:,
+        rule_set:
+      )
+      refute covers?(
+        date_of_service: Date.new(2026, 2, 28),
+        application_date:,
         rule_set:
       )
     end
