@@ -302,6 +302,168 @@ class Corvid::AlternateResourceCheckVerifyMedicaidEligibilityGroupTest < ActiveS
 
       assert_equal "waiver_adult", check.eligibility_group
       assert_equal "staff_entry", check.eligibility_group_source
+
+      @adapter.add_coverage(
+        PATIENT_ID,
+        coverage_type: "medicaid",
+        eligible: false,
+        state: "XA",
+        eligibility_group: "other",
+        eligibility_group_source: "eligibility_response"
+      )
+
+      travel_to Time.zone.local(2026, 6, 1, 10, 0, 0) do
+        assert check.verify!
+      end
+      check.reload
+
+      assert_equal "waiver_adult", check.eligibility_group
+      assert_equal "staff_entry", check.eligibility_group_source
+    end
+  end
+
+  test "verify! completes without calling record! when get_coverages returns nil" do
+    with_tenant(TENANT) do
+      register_patient(dob: Date.new(1996, 6, 15))
+      @adapter.add_coverage(
+        PATIENT_ID,
+        coverage_type: "medicaid",
+        eligible: true,
+        state: "XA",
+        eligibility_group: "expansion_adult",
+        eligibility_group_source: "eligibility_response"
+      )
+      check = create_medicaid_check!
+      stub_verify_eligibility(eligible: true, policy_token: "TEST-POLICY-670")
+      recorder = RecordingMedicaidEligibilityGroupService.new
+
+      assert check.verify!
+      check.reload
+      prior_group = check.eligibility_group
+      prior_source = check.eligibility_group_source
+      prior_set_at = check.eligibility_group_set_at
+      assert_equal "expansion_adult", prior_group
+      recorder.calls.clear
+
+      broken = FixedGetCoveragesReturnAdapterDelegate.new(@adapter, get_coverages_return: nil)
+      log_io = capture_rails_warn_log do
+        Corvid::MedicaidEligibilityGroupService.stub(:new, ->(**) { recorder }) do
+          with_adapter(broken) do
+            travel_to Time.zone.local(2026, 2, 1, 10, 0, 0) { assert check.verify! }
+          end
+        end
+      end
+
+      check.reload
+      assert_equal "enrolled", check.status
+      assert_not_nil check.checked_at
+      assert_empty recorder.calls
+      assert_equal prior_group, check.eligibility_group
+      assert_equal prior_source, check.eligibility_group_source
+      assert_equal prior_set_at, check.eligibility_group_set_at
+      assert_warning_logged_without_phi(log_io, PATIENT_ID)
+    end
+  end
+
+  test "verify! completes without calling record! when get_coverages returns non-array" do
+    with_tenant(TENANT) do
+      register_patient(dob: Date.new(1996, 6, 15))
+      check = create_medicaid_check!
+      stub_verify_eligibility(eligible: true, policy_token: "TEST-POLICY-670")
+      recorder = RecordingMedicaidEligibilityGroupService.new
+      broken = FixedGetCoveragesReturnAdapterDelegate.new(@adapter, get_coverages_return: { status: "no_answer" })
+
+      log_io = capture_rails_warn_log do
+        Corvid::MedicaidEligibilityGroupService.stub(:new, ->(**) { recorder }) do
+          with_adapter(broken) { assert check.verify! }
+        end
+      end
+
+      check.reload
+      assert_equal "enrolled", check.status
+      assert_not_nil check.checked_at
+      assert_empty recorder.calls
+      assert_nil check.eligibility_group
+      assert_nil check.eligibility_group_source
+      assert_nil check.eligibility_group_set_at
+      assert_warning_logged_without_phi(log_io, PATIENT_ID)
+    end
+  end
+
+  test "verify! re-infers when re-verification has ambiguous medicaid coverage and prior group was stated" do
+    with_tenant(TENANT) do
+      register_patient(dob: Date.new(1996, 6, 15))
+      @adapter.add_coverage(
+        PATIENT_ID,
+        coverage_type: "medicaid",
+        eligible: true,
+        state: "XA",
+        eligibility_group: "expansion_adult",
+        eligibility_group_source: "eligibility_response"
+      )
+      check = create_medicaid_check!
+      stub_verify_eligibility(eligible: true, policy_token: "TEST-POLICY-670")
+
+      assert check.verify!
+      check.reload
+      assert_equal "expansion_adult", check.eligibility_group
+      assert_equal "eligibility_response", check.eligibility_group_source
+      first_set_at = check.eligibility_group_set_at
+
+      @adapter.add_coverage(
+        PATIENT_ID,
+        coverage_type: "medicaid",
+        eligible: false,
+        state: "XA",
+        eligibility_group: "other",
+        eligibility_group_source: "eligibility_response"
+      )
+
+      travel_to Time.zone.local(2026, 6, 1, 10, 0, 0) { assert check.verify! }
+      check.reload
+
+      assert_equal "unknown", check.eligibility_group
+      assert_equal "inferred", check.eligibility_group_source
+      assert_operator check.eligibility_group_set_at, :>=, Time.zone.local(2026, 6, 1, 10, 0, 0)
+      refute_equal first_set_at, check.eligibility_group_set_at
+    end
+  end
+
+  test "verify! re-infers when re-verification has ambiguous medicaid coverage and prior group was inferred" do
+    with_tenant(TENANT) do
+      register_patient(dob: Date.new(1996, 6, 15))
+      @adapter.add_coverage(
+        PATIENT_ID,
+        coverage_type: "medicaid",
+        eligible: true,
+        state: "XA",
+        plan_name: "TEST REGULAR PLAN"
+      )
+      check = create_medicaid_check!
+      stub_verify_eligibility(eligible: true, policy_token: "TEST-POLICY-670")
+
+      assert check.verify!
+      check.reload
+      assert_equal "expansion_adult", check.eligibility_group
+      assert_equal "inferred", check.eligibility_group_source
+      first_set_at = check.eligibility_group_set_at
+
+      @adapter.add_coverage(
+        PATIENT_ID,
+        coverage_type: "medicaid",
+        eligible: true,
+        state: "XA",
+        eligibility_group: "other",
+        eligibility_group_source: "eligibility_response"
+      )
+
+      travel_to Time.zone.local(2026, 6, 1, 10, 0, 0) { assert check.verify! }
+      check.reload
+
+      assert_equal "unknown", check.eligibility_group
+      assert_equal "inferred", check.eligibility_group_source
+      assert_operator check.eligibility_group_set_at, :>=, Time.zone.local(2026, 6, 1, 10, 0, 0)
+      refute_equal first_set_at, check.eligibility_group_set_at
     end
   end
 
@@ -410,6 +572,41 @@ class Corvid::AlternateResourceCheckVerifyMedicaidEligibilityGroupTest < ActiveS
   class RaisingMedicaidEligibilityGroupService
     def record!(*)
       raise StandardError, "synthetic record failure"
+    end
+  end
+
+  class FixedGetCoveragesReturnAdapterDelegate
+    def initialize(inner, get_coverages_return:)
+      @inner = inner
+      @get_coverages_return = get_coverages_return
+    end
+
+    def get_coverages(_patient_identifier)
+      @get_coverages_return
+    end
+
+    def verify_eligibility(patient_identifier, resource_type)
+      @inner.verify_eligibility(patient_identifier, resource_type)
+    end
+
+    def add_coverage(patient_identifier, attrs = {}, **extra)
+      @inner.add_coverage(patient_identifier, attrs, **extra)
+    end
+
+    def add_patient(patient_identifier, **attrs)
+      @inner.add_patient(patient_identifier, **attrs)
+    end
+
+    def find_patient(patient_identifier)
+      @inner.find_patient(patient_identifier)
+    end
+
+    def respond_to_missing?(method, include_private = false)
+      @inner.respond_to?(method, include_private) || super
+    end
+
+    def method_missing(method, *args, **kwargs, &block)
+      @inner.public_send(method, *args, **kwargs, &block)
     end
   end
 
