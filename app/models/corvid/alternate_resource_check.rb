@@ -35,6 +35,10 @@ module Corvid
       eligibility_response state_case_data registration staff_entry inferred
     ].freeze
 
+    # Fixed text only. No patient identifier and no exception text (ADR 0003).
+    VERIFY_MEDICAID_ELIGIBILITY_GROUP_WARNING =
+      "medicaid eligibility group could not be recorded during verification"
+
     validates :eligibility_group, inclusion: { in: ELIGIBILITY_GROUPS }, allow_nil: true
     validates :eligibility_group_source, inclusion: { in: ELIGIBILITY_GROUP_SOURCES }, allow_nil: true
     validate :eligibility_group_only_on_medicaid
@@ -154,6 +158,7 @@ module Corvid
       return false if next_status.nil?
 
       update!(verification_attributes(result, next_status))
+      record_medicaid_eligibility_group
       true
     end
 
@@ -220,6 +225,65 @@ module Corvid
         coverage_end: result[:coverage_end],
         renewal_date: result[:renewal_date]
       }
+    end
+
+    # After the Medicaid answer is saved. record! keeps a staff entry.
+    # An EHR failure leaves that answer in place and the group as it was.
+    def record_medicaid_eligibility_group
+      return unless resource_type == "medicaid"
+
+      MedicaidEligibilityGroupService.new(adapter: Corvid.adapter).record!(
+        self,
+        coverage: medicaid_group_coverage,
+        date_of_service: medicaid_group_date_of_service
+      )
+    rescue StandardError
+      Rails.logger.warn(VERIFY_MEDICAID_ELIGIBILITY_GROUP_WARNING)
+    end
+
+    # The sole get_coverages row whose type matches this check.
+    # coverage_type when that key is present, otherwise resource_type.
+    # None or more than one states nothing.
+    def medicaid_group_coverage
+      matches = coverages_for_resource_type
+      return {} unless matches.one?
+
+      matches.first
+    end
+
+    def coverages_for_resource_type
+      patient_identifier = prc_referral.case&.patient_identifier
+      rows = Corvid.adapter.get_coverages(patient_identifier)
+      return [] unless rows.is_a?(Array)
+
+      rows.select { |row| resource_type_coverage?(row) }
+    end
+
+    def resource_type_coverage?(coverage)
+      return false unless coverage.is_a?(Hash)
+
+      coverage_type_value(coverage).to_s.downcase == resource_type
+    end
+
+    def coverage_type_value(coverage)
+      return coverage[:coverage_type] if coverage.key?(:coverage_type)
+      return coverage["coverage_type"] if coverage.key?("coverage_type")
+      return coverage[:resource_type] if coverage.key?(:resource_type)
+
+      coverage["resource_type"]
+    end
+
+    # The referral service date when that attribute is present. Otherwise
+    # the date eligibility was answered. Never Date.current.
+    def medicaid_group_date_of_service
+      referral_service_date || checked_at.to_date
+    end
+
+    def referral_service_date
+      referral = prc_referral
+      return unless referral.has_attribute?(:service_date)
+
+      referral.service_date
     end
 
     def readable_answer?(result)
