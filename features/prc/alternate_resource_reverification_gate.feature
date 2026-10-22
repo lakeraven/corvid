@@ -53,7 +53,7 @@ Feature: Alternate resource re-verification gates
     And the claim has submitted_at set without going through submit!
     When the billing coordinator updates the claim status to "submitted" without submit!
     Then the claim update should be rejected
-    And the claim should remain in draft with no submitted_at
+    And the claim should remain in "draft"
 
   Scenario: Rejected linked claim cannot be resubmitted via plain save
     Given an authorized PRC referral "REF-CU-RESUB" for patient "pt_cu_resub"

@@ -103,8 +103,7 @@ class Corvid::CommitteeReviewSyncServiceInjectionTest < ActiveSupport::TestCase
     travel_to Time.zone.parse("2025-07-01 12:00:00 UTC") do
       review = build_approved_review
       medicaid = review.prc_referral.alternate_resource_checks.find_by!(resource_type: "medicaid")
-      medicaid.update!(checked_at: 31.days.ago)
-      exhaust_alternate_resources!(review.prc_referral)
+      medicaid.update!(checked_at: 31.days.ago) # after build_approved_review exhausts checks
       global_verify_calls = []
       global = Corvid::Adapters::MockAdapter.new
       global.define_singleton_method(:verify_eligibility) do |patient_identifier, resource_type|
