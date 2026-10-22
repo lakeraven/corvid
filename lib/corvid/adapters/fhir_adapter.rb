@@ -75,7 +75,8 @@ module Corvid
       ].freeze
       BLOCKING_OUTCOME_SEVERITIES = %w[error fatal].freeze
       # These issue codes make the page unknown at any severity, including
-      # when the code differs only by case or surrounding ASCII whitespace.
+      # when the code differs only by case, or by Unicode whitespace
+      # ([[:space:]]) or format characters (\p{Cf}) anywhere in it.
       # Other codes still follow BLOCKING_OUTCOME_SEVERITIES.
       UNTRUSTED_OUTCOME_CODES = %w[
         suppressed incomplete too-costly timeout throttled too-long exception
@@ -368,7 +369,8 @@ module Corvid
       # Refuted and entered-in-error are excluded in any system. The same
       # codes given only as verificationStatus text, stripped and
       # case-insensitive, are excluded too. Entered-in-error is dropped
-      # even when clinical status is unusable. Never raises.
+      # even when clinical status is unusable. An OperationOutcome issue
+      # code present but not a String is unknown at any severity. Never raises.
       # In memory only — never persisted or logged (ADR 0003).
       def get_conditions(patient_identifier)
         clinical_search("Condition", patient_identifier) do |bundle|
@@ -392,9 +394,10 @@ module Corvid
       # doNotPerform value makes the page unknown. Code is the first
       # coding with a non-empty code; display falls back to that coding's
       # display, then text. No such coding and no text is unknown. Invalid
-      # Medication ids are not requested. Never raises. Array of
-      # MedicationReference, or nil when unknown. In memory only — never
-      # persisted or logged (ADR 0003).
+      # Medication ids are not requested. An OperationOutcome issue code
+      # present but not a String is unknown at any severity. Never raises.
+      # Array of MedicationReference, or nil when unknown. In memory only —
+      # never persisted or logged (ADR 0003).
       def get_medications(patient_identifier)
         clinical_search("MedicationRequest", patient_identifier) do |bundle|
           map_medication_entries(bundle, patient_identifier)
@@ -462,7 +465,8 @@ module Corvid
       # Bundle.type must equal "searchset" or the search is nil. Pages
       # come from #collect_search_pages: one next-link walker, the same
       # origin and path checks, and the same repeat detection as
-      # #fhir_search. The Coverage cap is MAX_COVERAGE_PAGES. A chain
+      # #fhir_search. Each page is loaded through #fetch_bundle_page.
+      # The Coverage cap is MAX_COVERAGE_PAGES. A chain
       # that long is unknown. A relation containing a Unicode format
       # character (general category Cf, such as U+200B or U+FEFF) is
       # unknown and is not requested.
@@ -524,7 +528,9 @@ module Corvid
       # severity other than exactly "fatal", "error", "warning", or
       # "information". An issue code present but not a String is nil.
       # UNTRUSTED_OUTCOME_CODES are nil at any severity. A String code
-      # that matches one of them after strip and downcase is the same.
+      # that matches one of them after every [[:space:]] character and
+      # every format character (\p{Cf}) is removed, then downcased, is
+      # the same.
       # "error" and "fatal" still block. A well-formed warning or
       # information issue with another String code is ignored. A
       # resourceType equal to "OperationOutcome" case-insensitively or
@@ -558,12 +564,13 @@ module Corvid
       # an off-origin / cyclic / over-limit next link, a next relation
       # that matches only after removing [[:space:]] or case-folding,
       # or a relation that contains a format character,
-      # or a transport error
+      # or a transport or URI error
       # (Timeout::Error, including Net::ReadTimeout and Net::OpenTimeout,
       # SocketError, SystemCallError, OpenSSL::SSL::SSLError, IOError,
       # Net::ProtocolError, Net::HTTPBadResponse,
-      # Net::HTTPHeaderSyntaxError, Zlib::Error).
-      # Callers fail closed; a partial page list is never returned.
+      # Net::HTTPHeaderSyntaxError, Zlib::Error, URI::Error, ArgumentError).
+      # A non-http(s) base_url raises ArgumentError inside Net::HTTP and
+      # yields nil. Callers fail closed; a partial page list is never returned.
       # ----------------------------------------------------------------------
 
       def get_coverages(patient_identifier)
@@ -574,7 +581,8 @@ module Corvid
         coverage_rows_from_pages(pages, patient_identifier) if pages
       rescue Timeout::Error, SocketError, SystemCallError,
              OpenSSL::SSL::SSLError, IOError, Net::ProtocolError,
-             Net::HTTPBadResponse, Net::HTTPHeaderSyntaxError, Zlib::Error
+             Net::HTTPBadResponse, Net::HTTPHeaderSyntaxError, Zlib::Error,
+             URI::Error, ArgumentError
         nil
       end
 
@@ -814,6 +822,8 @@ module Corvid
         pages
       end
 
+      # One Bundle page, or nil when it cannot be read. Subclasses override
+      # this to replace HTTP. #collect_search_pages is the only caller.
       def fetch_bundle_page(url)
         response = http_get(url)
         return unless response.is_a?(Net::HTTPSuccess)
@@ -1814,8 +1824,11 @@ module Corvid
         issues.any? { |issue| blocking_issue?(issue) }
       end
 
+      # A code that is present but not a String is unknown at any severity.
+      # A missing code is not, and still follows severity.
       def blocking_issue?(issue)
         return true unless issue.is_a?(Hash)
+        return true if non_string_issue_code?(issue["code"])
 
         untrusted_outcome?(issue) || blocking_severity?(issue)
       end
@@ -1825,10 +1838,12 @@ module Corvid
         !code.nil? && UNTRUSTED_OUTCOME_CODES.include?(code)
       end
 
+      # Drop every Unicode space and format character, then downcase, so a
+      # padded, zero-width, or BOM-prefixed untrusted code still matches.
       def normalized_outcome_code(code)
         return unless code.is_a?(String) && code.valid_encoding?
 
-        code.strip.downcase
+        code.gsub(/[[:space:]]|\p{Cf}/, "").downcase
       end
 
       def blocking_severity?(issue)
