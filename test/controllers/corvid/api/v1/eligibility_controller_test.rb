@@ -76,6 +76,33 @@ class Corvid::Api::V1::EligibilityControllerTest < ActionDispatch::IntegrationTe
     assert_includes body["reason_codes"], "not_enrolled_in_contracted_tribe"
   end
 
+  test "check omits provider_confidence when enrollment enrolled flag is not canonical" do
+    Corvid.adapter.define_singleton_method(:verify_tribal_enrollment) do |pid|
+      next super(pid) unless pid == "pt_unusable"
+
+      { enrolled: nil, tribe_code: "DEMO", confidence: :verified, verified_at: Time.current }
+    end
+
+    post "/corvid/api/v1/eligibility/check", params: check_body("pt_unusable"), headers: headers
+
+    assert_response :success
+    body = JSON.parse(response.body)
+    refute body["eligible"]
+    assert_includes body["reason_codes"], "provider_unavailable_fail_closed"
+    assert_nil body["provider_confidence"]
+  end
+
+  test "check records provider unavailable for unknown MockAdapter patient" do
+    post "/corvid/api/v1/eligibility/check", params: check_body("pt_no_record"), headers: headers
+
+    assert_response :success
+    body = JSON.parse(response.body)
+    refute body["eligible"]
+    assert_includes body["reason_codes"], "provider_unavailable_fail_closed"
+    refute_includes body["reason_codes"], "not_enrolled"
+    assert_nil body["provider_confidence"]
+  end
+
   test "check requires X-Tenant-Identifier header" do
     post "/corvid/api/v1/eligibility/check",
          params: check_body("pt_tp"),

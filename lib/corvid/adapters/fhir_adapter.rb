@@ -498,9 +498,9 @@ module Corvid
       # Enrollment verification — FHIR R4 / US Core have no native tribal
       # enrollment concept, so this reads Lakeraven's tribal-enrollment
       # extension on Patient (see TRIBAL_ENROLLMENT_EXTENSION_URL below).
-      # Servers that don't populate the extension fall back to
-      # "unavailable" (fail-closed) exactly as before — this is additive,
-      # not a behavior change for plain-vanilla FHIR servers.
+      # A failed Patient read (including a transport failure), or a Patient
+      # with no tribal-enrollment extension, is unknown enrollment: enrolled is nil and confidence
+      # is :unavailable. That is not a recorded denial.
       # ----------------------------------------------------------------------
 
       TRIBAL_ENROLLMENT_EXTENSION_URL = "#{EXTENSION_BASE_URL}/tribal-enrollment"
@@ -508,7 +508,7 @@ module Corvid
       US_CORE_BIRTHPLACE_URL = "http://hl7.org/fhir/us/core/StructureDefinition/us-core-birthplace"
 
       def verify_tribal_enrollment(patient_identifier)
-        patient = fhir_read("Patient", patient_identifier)
+        patient = verification_patient_read(patient_identifier)
         return tribal_enrollment_unavailable unless patient
 
         ext = find_extension(patient, TRIBAL_ENROLLMENT_EXTENSION_URL)
@@ -520,7 +520,7 @@ module Corvid
       def verify_identity_documents(patient_identifier)
         empty = { ssn_present: false, dob_present: false, birthplace_present: false, verified_at: Time.current }
 
-        patient = fhir_read("Patient", patient_identifier)
+        patient = verification_patient_read(patient_identifier)
         return empty unless patient
 
         {
@@ -534,7 +534,7 @@ module Corvid
       def verify_residency(patient_identifier)
         unavailable = { on_reservation: false, address: nil, service_area: nil, verified_at: Time.current }
 
-        patient = fhir_read("Patient", patient_identifier)
+        patient = verification_patient_read(patient_identifier)
         return unavailable unless patient
 
         ext = find_extension(patient, RESIDENCY_EXTENSION_URL)
@@ -627,6 +627,16 @@ module Corvid
 
         response = http_get("#{@base_url}/#{resource_type}/#{id}")
         parse_success_json(response)
+      end
+
+      # Patient read for the verification primitives. A transport or parse
+      # fault (connection refused, timeout, TLS, EOF, protocol) is an
+      # unavailable source — nil, same as a failed read — never an exception
+      # that would stop a fail-closed decision from being recorded.
+      def verification_patient_read(patient_identifier)
+        fhir_read("Patient", patient_identifier)
+      rescue *CLINICAL_READ_ERRORS
+        nil
       end
 
       # Returns one Bundle whose `entry` array is every page, in order.
@@ -1209,9 +1219,10 @@ module Corvid
         npi&.dig("value")
       end
 
+      # Unknown enrollment, not a recorded denial: enrolled is nil.
       def tribal_enrollment_unavailable
         {
-          enrolled: false,
+          enrolled: nil,
           membership_number: nil,
           tribe_name: nil,
           tribe_code: nil,
@@ -1224,7 +1235,7 @@ module Corvid
 
       def tribal_enrollment_from(ext)
         {
-          enrolled: sub_extension_value(ext, "enrolled") == true,
+          enrolled: enrolled_value(ext),
           membership_number: sub_extension_value(ext, "membershipNumber"),
           tribe_name: sub_extension_value(ext, "tribeName"),
           tribe_code: sub_extension_value(ext, "tribeCode"),
@@ -1236,7 +1247,8 @@ module Corvid
       end
 
       # A missing or unrecognized confidence sub-extension is not :verified.
-      # Only the documented symbols count; anything else fails closed.
+      # Only the exact documented spellings count; anything else, including
+      # blank, other case, or a non-String value, fails closed.
       def tribal_confidence(ext)
         normalize_tribal_confidence(sub_extension_value(ext, "confidence"))
       end
@@ -1270,6 +1282,16 @@ module Corvid
 
       def find_extension(resource, url)
         Array(resource["extension"]).find { |e| e["url"] == url }
+      end
+
+      # Exact boolean valueBoolean only. A missing enrolled sub-extension, or
+      # any other FHIR value, is nil rather than a denial.
+      def enrolled_value(extension)
+        sub = Array(extension["extension"]).find { |entry| entry.is_a?(Hash) && entry["url"] == "enrolled" }
+        return nil unless sub
+
+        value = sub["valueBoolean"]
+        value if value == true || value == false
       end
 
       def sub_extension_value(extension, sub_url)
