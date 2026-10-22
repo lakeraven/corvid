@@ -1504,11 +1504,11 @@ module Corvid
         patient_reference?(subject["reference"], patient_identifier)
       end
 
+      # Non-String identifiers are not coerced (an Integer must not match).
       def patient_reference?(reference, patient_identifier)
-        identifier = id_from_reference(reference, type: "Patient")
-        return false if identifier.nil?
+        return false unless patient_identifier.is_a?(String)
 
-        identifier == patient_identifier
+        id_from_reference(reference, type: "Patient") == patient_identifier
       end
 
       # Conditions ------------------------------------------------------------

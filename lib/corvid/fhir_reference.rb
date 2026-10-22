@@ -6,17 +6,20 @@ module Corvid
   # Accepts "Type/id" and "Type/id/_history/version". When +base_url+ is
   # given, accepts only that server's absolute form of those shapes (the
   # base URL may have a trailing slash). After ASCII whitespace is stripped,
-  # the id must match FHIR id syntax plus underscore. +type+ is a resource
-  # name or a list of names. nil, blank, a non-String, a missing or invalid
-  # id, a contained reference, extra path segments, a foreign absolute URL,
-  # a different type, and a string with invalid encoding are nil. A reference
-  # whose encoding is not ASCII-compatible is read as UTF-8 when the bytes
-  # transcode, and is nil when they do not. A base_url that is not
-  # ASCII-compatible is nil. Never raises, and never returns the raw
-  # reference.
+  # the id and the _history version must match FHIR id syntax (no
+  # underscore). +type+ is a resource name or a list of names. nil, blank, a
+  # non-String, a missing or invalid id, a contained reference, extra path
+  # segments, a foreign absolute URL, a different type, and a string with
+  # invalid encoding are nil. A reference whose encoding is not
+  # ASCII-compatible is read as UTF-8 when the bytes transcode, and is nil
+  # when they do not. A base_url that is not ASCII-compatible is nil. A
+  # reference and base_url that cannot be compared (Windows-1252 or BINARY
+  # high bytes against non-ASCII UTF-8, or the reverse) are nil. Those
+  # ASCII-compatible strings are not transcoded into a match. Never raises,
+  # and never returns the raw reference.
   module FhirReference
     RESOURCE_TYPE = /\A[A-Z][A-Za-z0-9]*\z/
-    ID_SYNTAX = /\A[A-Za-z0-9._-]{1,64}\z/
+    ID_SYNTAX = /\A[A-Za-z0-9\-\.]{1,64}\z/
     PROVIDER_TYPES = %w[Practitioner PractitionerRole Organization].freeze
 
     class << self
@@ -54,11 +57,14 @@ module Corvid
 
       def strip_base_url(ref, base_url)
         return nil unless compatible_base_url?(base_url)
+        return nil unless Encoding.compatible?(ref, base_url)
 
         prefix = "#{base_url.chomp("/")}/"
         return nil unless ref.start_with?(prefix)
 
         ref.delete_prefix(prefix)
+      rescue EncodingError
+        nil
       end
 
       def compatible_base_url?(base_url)
@@ -87,11 +93,12 @@ module Corvid
         when 2
           segments[1]
         when 4
-          return unless segments[2] == "_history"
-          return if ascii_strip(segments[3]).empty?
-
-          segments[1]
+          segments[1] if history_version?(segments)
         end
+      end
+
+      def history_version?(segments)
+        segments[2] == "_history" && ascii_strip(segments[3]).match?(ID_SYNTAX)
       end
 
       def ascii_strip(value)

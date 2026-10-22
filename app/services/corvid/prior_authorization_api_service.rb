@@ -224,13 +224,33 @@ module Corvid
       private
 
       def extract_patient_identifier(fhir_claim)
-        ref = fhir_claim.dig(:patient, :reference) || fhir_claim.dig("patient", "reference")
-        Corvid::FhirReference.id_from(ref, type: "Patient")
+        Corvid::FhirReference.id_from(element_reference(fhir_claim, :patient), type: "Patient")
       end
 
       def extract_provider_identifier(fhir_claim)
-        ref = fhir_claim.dig(:provider, :reference) || fhir_claim.dig("provider", "reference")
-        Corvid::FhirReference.id_from(ref, type: Corvid::FhirReference::PROVIDER_TYPES)
+        Corvid::FhirReference.id_from(
+          element_reference(fhir_claim, :provider),
+          type: Corvid::FhirReference::PROVIDER_TYPES
+        )
+      end
+
+      # A non-Hash element is not a reference object. Patient then fails
+      # closed (nil id, caller raises). Provider is optional, so nil.
+      def element_reference(claim, name)
+        elements = claim_elements(claim, name)
+        return nil if elements.empty? || !elements.all?(Hash)
+
+        elements.each do |element|
+          ref = element[:reference] || element["reference"]
+          return ref if ref
+        end
+        nil
+      end
+
+      def claim_elements(claim, name)
+        return [] unless claim.is_a?(Hash)
+
+        [ name.to_sym, name.to_s ].uniq.filter_map { |key| claim[key] if claim.key?(key) }
       end
 
       def extract_service_description(fhir_claim)
