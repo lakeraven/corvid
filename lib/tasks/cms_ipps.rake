@@ -10,7 +10,7 @@ namespace :cms do
       abort "File not found: #{args[:path]}" unless File.exist?(args[:path])
 
       year = args[:year].to_i
-      label = args[:label] || "manual"
+      label = args[:label].presence || "manual"
       rows = Corvid::CmsIppsParser.parse_drg_weights(
         File.read(args[:path]), fiscal_year: year, release_label: label
       )
@@ -29,7 +29,7 @@ namespace :cms do
       abort "File not found: #{args[:path]}" unless File.exist?(args[:path])
 
       year = args[:year].to_i
-      label = args[:label] || "manual"
+      label = args[:label].presence || "manual"
       rows = Corvid::CmsIppsParser.parse_hospital_rates(
         File.read(args[:path]), fiscal_year: year, release_label: label
       )

@@ -7,7 +7,7 @@ namespace :cms do
       abort "Usage: rake cms:cah:normalize_pos[input.csv,output.csv,release_label]" unless args[:input] && args[:output]
       abort "Input not found: #{args[:input]}" unless File.exist?(args[:input])
 
-      label = args[:label] || "cms_pos_manual"
+      label = args[:label].presence || "cms_pos_manual"
       result = Corvid::CmsPosCahNormalizer.normalize(args[:input])
       rows = result[:rows]
       rejects = result[:rejects]
@@ -34,7 +34,7 @@ namespace :cms do
       abort "Usage: rake cms:cah:import[/path/to/cah.csv,release_label]" unless args[:path]
       abort "File not found: #{args[:path]}" unless File.exist?(args[:path])
 
-      label = args[:label] || "manual"
+      label = args[:label].presence || "manual"
       result = Corvid::CmsFacilityListParser.parse(File.read(args[:path]), release_label: label)
       rows = result[:rows]
       rejects = result[:rejects]

@@ -51,15 +51,17 @@ Feature: Case Management
     Then the case should have 3 referrals
 
   # =============================================================================
-  # PATIENT DATA CACHING
+  # PATIENT DISPLAY NAME — RESOLVED, NEVER STORED
   # =============================================================================
+  # The "cache patient data for offline display" scenario is gone with the
+  # columns it covered. A cached name is PHI at rest (ADR 0003), and the engine
+  # no longer has anywhere to put one.
 
-  Scenario: Cache patient data for offline display
+  Scenario: Display name resolves through the adapter, not from storage
     Given a patient exists with DFN "12345" and name "John Smith"
     And a case exists for patient DFN "12345"
-    When I cache the patient data
     Then the case display name should be "John Smith"
 
-  Scenario: Display name falls back gracefully
-    Given a case exists without cached patient data
+  Scenario: Display name degrades to a placeholder when the patient cannot be resolved
+    Given a case exists for an unresolvable patient
     Then the case display name should be "Unknown Patient"

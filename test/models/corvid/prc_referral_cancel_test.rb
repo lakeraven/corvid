@@ -104,12 +104,14 @@ module Corvid
       r.approve_management!
       return r if target == :alternate_resource_review
 
+      exhaust_alternate_resources!(r)
       r.verify_alternate_resources!
       return r if target == :priority_assignment
 
       case target
       when :committee_review
         r.update!(medical_priority: 3) # priority >= 3 routes to committee
+        exhaust_alternate_resources!(r)
         r.complete_priority_assignment!
         assert_equal "committee_review", r.status
         r
@@ -119,6 +121,7 @@ module Corvid
         r.update!(status: "exception_review")
         r
       when :authorized
+        exhaust_alternate_resources!(r)
         r.complete_priority_assignment! # low cost → authorized directly
         r
       when :denied
