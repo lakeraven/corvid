@@ -42,6 +42,24 @@ Given("an alternate resource check for {string} exists with status {string}") do
   )
 end
 
+Given("the adapter has eligible coverage for patient {string} for resource type {string}") do |patient_id, resource_type|
+  Corvid.adapter.add_coverage(patient_id,
+                              coverage_type: resource_type,
+                              payer_name: "MOCK #{resource_type.upcase.tr('_', ' ')} PAYER",
+                              plan_name: "Mock Plan",
+                              eligible: true)
+end
+
+Given("the adapter has eligible coverage for all alternate resource types for patient {string}") do |patient_id|
+  Corvid::AlternateResourceCheck::RESOURCE_TYPES.each do |type|
+    Corvid.adapter.add_coverage(patient_id,
+                                coverage_type: type,
+                                payer_name: "MOCK #{type.to_s.upcase.tr('_', ' ')} PAYER",
+                                plan_name: "Mock Plan",
+                                eligible: true)
+  end
+end
+
 Given("an alternate resource check exists with status {string}") do |status|
   @check = Corvid::AlternateResourceCheck.create!(
     prc_referral: @referral,
