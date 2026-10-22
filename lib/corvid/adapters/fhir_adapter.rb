@@ -30,6 +30,12 @@ module Corvid
       # base_url, caught at construction.
       class InsecureTransportError < ArgumentError; end
 
+      # Raised when a credentialed request targets a URL outside base_url's
+      # origin and path. The bearer token is scoped to the configured FHIR
+      # base; server-supplied URLs (search next links) must never carry it
+      # anywhere else.
+      class CredentialScopeError < InsecureTransportError; end
+
       attr_reader :base_url
 
       EXTENSION_BASE_URL = "https://lakeraven.com/fhir/StructureDefinition"
@@ -902,6 +908,9 @@ module Corvid
         when :put  then Net::HTTP::Put.new(uri).tap { |r| r.body = body }
         end
         @default_headers.each { |k, v| request[k] = v }
+        # Checked before the token source is consulted, so an out-of-scope
+        # URL neither spends a grant nor receives a credential.
+        require_credential_scope!(url) if credentialed?
         token = resolve_bearer_token
         request["Authorization"] = "Bearer #{token}" unless token.nil? || token.strip.empty?
 
@@ -913,6 +922,26 @@ module Corvid
         require_secure_transport!(url) if request["Authorization"]
 
         build_http(uri).request(request)
+      end
+
+      def credentialed?
+        !@token_source.nil? || !@bearer_token.nil? || preset_authorization_header?
+      end
+
+      # The bearer token belongs to base_url alone: same scheme, host and
+      # port, a path at or under the base path, no userinfo, and no dot
+      # segment or encoded separator a gateway could normalize out of the
+      # base. The message names neither the URL nor its host — both are
+      # server-supplied for a next link, and a path carries record ids.
+      def require_credential_scope!(url)
+        uri = URI.parse(url.to_s)
+        return if uri.userinfo.nil? && same_origin_url?(url.to_s) && !dot_segment_path?(url.to_s)
+
+        raise CredentialScopeError,
+              "FhirAdapter refuses to send credentials to a URL outside the " \
+              "configured base_url origin and path"
+      rescue URI::InvalidURIError
+        raise CredentialScopeError, "FhirAdapter refuses to send credentials to an unparseable URL"
       end
 
       # Reject any URL that would carry an Authorization header over a
