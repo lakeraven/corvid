@@ -8,6 +8,7 @@ class HardenCorvidFmapCore < ActiveRecord::Migration[8.1]
   AUTHORITY_TYPES = %w[ihs_direct contract_638 compact_638 uio fqhc other].freeze
   RECEIVED_THROUGH_BASES = %w[facility_authority cca].freeze
   COVERAGE_GROUPS = %w[expansion_adult waiver_adult other].freeze
+  REASONS = %w[no_rules_in_force no_matching_rule unevidenced_100_percent].freeze
 
   def up
     # The determination records the authority and authority type it was
@@ -41,9 +42,19 @@ class HardenCorvidFmapCore < ActiveRecord::Migration[8.1]
     add_check_constraint :corvid_fmap_determinations,
                          "authority_type IS NULL OR authority_type IN (#{quoted(AUTHORITY_TYPES)})",
                          name: "corvid_fmap_determinations_authority_type_check"
+    # A determination may also record "unknown", which matches no group rule.
+    add_check_constraint :corvid_fmap_determinations,
+                         "coverage_group IS NULL OR coverage_group IN (#{quoted(COVERAGE_GROUPS + %w[unknown])})",
+                         name: "corvid_fmap_determinations_coverage_group_check"
+    add_check_constraint :corvid_fmap_determinations,
+                         "determination_reason IS NULL OR determination_reason IN (#{quoted(REASONS)})",
+                         name: "corvid_fmap_determinations_reason_check"
   end
 
   def down
+    remove_check_constraint :corvid_fmap_determinations, name: "corvid_fmap_determinations_reason_check", if_exists: true
+    remove_check_constraint :corvid_fmap_determinations, name: "corvid_fmap_determinations_coverage_group_check",
+                                                         if_exists: true
     remove_check_constraint :corvid_fmap_determinations, name: "corvid_fmap_determinations_authority_type_check"
     remove_check_constraint :corvid_fmap_determinations, name: "corvid_fmap_determinations_basis_check"
     remove_check_constraint :corvid_fmap_determinations, name: "corvid_fmap_determinations_best_category_check"

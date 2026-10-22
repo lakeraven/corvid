@@ -18,6 +18,7 @@ module Corvid
     NO_RULES_IN_FORCE = "no_rules_in_force"
     NO_MATCHING_RULE = "no_matching_rule"
     UNEVIDENCED_100 = "unevidenced_100_percent"
+    REASONS = [ NO_RULES_IN_FORCE, NO_MATCHING_RULE, UNEVIDENCED_100 ].freeze
 
     # Accepted coverage groups: main's eligibility-group vocabulary, plus
     # "unknown", which matches no group-scoped rule.

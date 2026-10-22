@@ -53,6 +53,8 @@ module Corvid
     validates :category, presence: true, inclusion: { in: CATEGORIES }
     validates :received_through_basis, inclusion: { in: FmapRule::RECEIVED_THROUGH_BASES }, allow_nil: true
     validates :authority_type, inclusion: { in: FacilityAuthority::AUTHORITY_TYPES }, allow_nil: true
+    validates :coverage_group, inclusion: { in: FmapClassificationService::COVERAGE_GROUPS }, allow_nil: true
+    validates :determination_reason, inclusion: { in: FmapClassificationService::REASONS }, allow_nil: true
     validate :immutable_once_claimed
     validate :supersession_is_final
     # Checked when the decided fields are written, not when only the
@@ -185,6 +187,7 @@ module Corvid
       authority = facility_authority
       return nil if authority.nil? || !authority.in_force_on?(date_of_service)
       return nil unless authority_type == authority.authority_type
+      return nil unless authority.facility_identifier == facility_identifier
       authority
     end
 
