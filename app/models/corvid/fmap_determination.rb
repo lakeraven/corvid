@@ -144,6 +144,7 @@ module Corvid
         errors.add(:rule_key, "must be blank when undetermined") if rule_key.present?
         errors.add(:rule_citations, "must be empty when undetermined") if rule_citations.present?
         errors.add(:fmap_percent, "must be blank when undetermined") unless fmap_percent.nil?
+        errors.add(:determination_reason, "must say why the row is undetermined") if determination_reason.blank?
         return
       end
 
@@ -156,6 +157,11 @@ module Corvid
       errors.add(:category, "must be the category of rule #{rule_key}") unless rule.category == category
       errors.add(:fmap_percent, "must be the percent of rule #{rule_key}") unless rule.fmap_percent == fmap_percent
       errors.add(:rule_citations, "must cite rule #{rule_key}") unless rule_citations == [ rule.statutory_citation ]
+      # A group-scoped rule (the 90 percent expansion tier) applies only to
+      # its group, however the row was written.
+      if rule.coverage_group.present? && rule.coverage_group != coverage_group
+        errors.add(:coverage_group, "must be #{rule.coverage_group} for rule #{rule_key}")
+      end
       in_force = date_of_service && jurisdiction &&
                  FmapRule.in_force_on(date_of_service).for_jurisdiction(jurisdiction).exists?(rule.id)
       errors.add(:rule_key, "must be in force for the jurisdiction on the date of service") unless in_force

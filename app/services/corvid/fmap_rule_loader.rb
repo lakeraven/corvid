@@ -10,9 +10,14 @@ module Corvid
     DATA_PATH = Corvid::Engine.root.join("lib", "corvid", "data", "fmap_rules.yml")
 
     def self.load_defaults!(path: DATA_PATH)
-      YAML.safe_load_file(path, permitted_classes: [ Date ]).each do |row|
-        rule = FmapRule.find_or_initialize_by(rule_key: row.fetch("rule_key"))
-        rule.update!(row)
+      rows = YAML.safe_load_file(path, permitted_classes: [ Date ])
+      # All or nothing: a partial rule set would classify against an
+      # incomplete statute set.
+      FmapRule.transaction(requires_new: true) do
+        rows.each do |row|
+          rule = FmapRule.find_or_initialize_by(rule_key: row.fetch("rule_key"))
+          rule.update!(row)
+        end
       end
       FmapRule.count
     end

@@ -49,9 +49,16 @@ class HardenCorvidFmapCore < ActiveRecord::Migration[8.1]
     add_check_constraint :corvid_fmap_determinations,
                          "determination_reason IS NULL OR determination_reason IN (#{quoted(REASONS)})",
                          name: "corvid_fmap_determinations_reason_check"
+    # An undetermined row applies no rule and no percent, and says why.
+    add_check_constraint :corvid_fmap_determinations,
+                         "category <> 'undetermined' OR (rule_key IS NULL AND fmap_percent IS NULL " \
+                         "AND determination_reason IS NOT NULL)",
+                         name: "corvid_fmap_determinations_undetermined_check"
   end
 
   def down
+    remove_check_constraint :corvid_fmap_determinations, name: "corvid_fmap_determinations_undetermined_check",
+                                                         if_exists: true
     remove_check_constraint :corvid_fmap_determinations, name: "corvid_fmap_determinations_reason_check", if_exists: true
     remove_check_constraint :corvid_fmap_determinations, name: "corvid_fmap_determinations_coverage_group_check",
                                                          if_exists: true
