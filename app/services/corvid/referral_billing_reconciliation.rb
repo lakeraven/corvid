@@ -19,18 +19,25 @@ module Corvid
     # referral passed alongside it.
     class AssociationMismatch < StandardError; end
 
+    # Remittance line fields summed toward settlement, keyed by total name.
+    TOTAL_FIELDS = {
+      paid: :paid_amount, adjustment: :adjustment_amount,
+      patient_responsibility: :patient_responsibility, denied: :denied_amount
+    }.freeze
+    private_constant :TOTAL_FIELDS
+
     class << self
       def reconcile!(referral:, claim:)
         ensure_claim_matches_referral!(referral, claim)
 
-        apply_remittance!(claim) unless claim.paid? || claim.rejected?
+        apply_remittances!(claim) unless claim.rejected?
         claim.reload
 
         fulfilment_verified = Corvid::ReferralFulfilment.billable_for_delivered_care?(referral)
 
         Result.new(
           referral_identifier: referral.referral_identifier,
-          status: (claim.paid? && fulfilment_verified) ? "reconciled" : "pending",
+          status: (settled?(claim) && fulfilment_verified) ? "reconciled" : "pending",
           fulfilment_verified: fulfilment_verified,
           claim: claim
         )
@@ -46,59 +53,100 @@ module Corvid
           "referral #{referral.referral_identifier} (id=#{referral.id}); refusing to reconcile"
       end
 
-      def apply_remittance!(claim)
+      # A stored paid status is not proof on its own: #mark_paid! and
+      # #check_status! both set it without looking at the amounts. The claim
+      # is settled only when it is paid and its stored amounts leave nothing
+      # owed on what was billed.
+      def settled?(claim)
+        claim.paid? && claim.billed_amount_cents.to_i.positive? && !claim.balance_due.positive?
+      end
+
+      # The claim's amounts are recomputed from every remittance line for it
+      # on each call, so reading the same remittances again never counts them
+      # twice. A nil read is unknown, not "no remittances", and records nothing.
+      def apply_remittances!(claim)
         return if claim.claim_identifier.blank?
 
-        line_item = find_line_item(claim)
-        return unless line_item
+        remittances = Corvid.adapter.fetch_remittances
+        return if remittances.nil?
 
-        attrs = { paid_date: line_item[:payment_date] }
-        attrs[:paid_amount] = line_item[:paid_amount] if line_item[:paid_amount]
-        attrs[:adjustment_amount] = line_item[:adjustment_amount] if line_item[:adjustment_amount]
-        attrs[:patient_responsibility] = line_item[:patient_responsibility] if line_item[:patient_responsibility]
-        attrs[:status] = resolved_status(claim, line_item)
+        lines = matching_lines(claim, remittances)
+        return if lines.empty?
+
+        totals = totals_in_cents(lines, claim.currency_iso)
+        attrs = { paid_date: lines.last[:payment_date], status: resolved_status(claim, lines.last, totals) }
+        attrs[:paid_amount_cents] = totals[:paid] if stated?(lines, :paid_amount)
+        attrs[:patient_responsibility_cents] = totals[:patient_responsibility] if stated?(lines, :patient_responsibility)
+        # A denied amount is an adjustment in 835 terms (a CAS segment), so it
+        # is stored with the adjustments and #balance_due does not report the
+        # denied portion as still owed.
+        if stated?(lines, :adjustment_amount) || stated?(lines, :denied_amount)
+          attrs[:adjustment_amount_cents] = totals[:adjustment] + totals[:denied]
+        end
 
         claim.update!(attrs)
       end
 
-      def find_line_item(claim)
-        Corvid.adapter.fetch_remittances.each do |remittance|
-          item = (remittance[:line_items] || []).find { |li| li[:claim_identifier] == claim.claim_identifier }
-          return item.merge(payment_date: remittance[:payment_date]) if item
+      # Every line for the claim across all remittances, oldest payment first.
+      # A remittance returned twice (same remittance_identifier) counts once.
+      # Reversals carry negative amounts, so a reversed payment and its
+      # corrected replacement sum to the corrected figures.
+      def matching_lines(claim, remittances)
+        seen = Set.new
+        lines = remittances.each_with_object([]) do |remittance, out|
+          identifier = remittance[:remittance_identifier]
+          next if identifier.present? && !seen.add?(identifier)
+
+          Array(remittance[:line_items]).each do |line|
+            next unless line[:claim_identifier] == claim.claim_identifier
+
+            out << line.merge(payment_date: remittance[:payment_date])
+          end
         end
-        nil
+        lines.sort_by.with_index { |line, i| [ line[:payment_date].to_s, i ] }
+      end
+
+      # Summed in integer subunits (ADR 0004): binary floats read
+      # $100.05 + $0.10 as a cent short of $100.15.
+      def totals_in_cents(lines, currency_iso)
+        TOTAL_FIELDS.transform_values do |field|
+          lines.sum { |line| cents(line[field], currency_iso) }
+        end
+      end
+
+      def cents(value, currency_iso)
+        return 0 if value.nil?
+
+        Money.from_amount(BigDecimal(value.to_s), currency_iso).cents
+      end
+
+      def stated?(lines, field)
+        lines.any? { |line| !line[field].nil? }
       end
 
       # A denial is an answer and is recorded as one: without this a denied
       # claim sits in its prior status indefinitely, indistinguishable from one
-      # the payer has not responded to.
+      # the payer has not responded to. The most recent line decides, so a
+      # payment on appeal after a denial can still settle the claim.
       #
-      # Otherwise the claim is settled only when the remittance accounts for
-      # what was billed. Any positive payment used to close it, so a $100
-      # remittance against a $425 claim read as fully paid and the $325 balance
-      # quietly stopped being owed.
-      def resolved_status(claim, line_item)
-        return "denied" if line_item[:status].to_s == "denied"
-        return "paid" if claim_settled?(claim, line_item)
+      # Otherwise the claim is settled only when the remittances account for
+      # what was billed: payment, contractual adjustments, patient
+      # responsibility and denied amounts together. Any positive payment used
+      # to close it, so a $100 remittance against a $425 claim read as fully
+      # paid and the $325 balance quietly stopped being owed. STATUSES carries
+      # no partially-paid state, so anything short leaves the prior status.
+      def resolved_status(claim, latest_line, totals)
+        return "denied" if latest_line[:status].to_s == "denied"
 
-        claim.status
-      end
+        billed = claim.billed_amount_cents.to_i
+        return claim.status unless billed.positive?
 
-      # An 835 accounts for a billed amount across payment, contractual
-      # adjustments, patient responsibility and denied lines. STATUSES carries
-      # no partially-paid state, so anything short leaves the claim in its
-      # prior status — outstanding — rather than recorded as settled.
-      def claim_settled?(claim, line_item)
-        billed = claim.billed_amount.to_f
-        return false unless billed > 0
-        return false unless line_item[:paid_amount].to_f > 0
+        answered = totals[:paid] + totals[:adjustment] + totals[:patient_responsibility]
+        return claim.status if answered + totals[:denied] < billed
+        # Accounted for only by denial: nothing was paid or owed by anyone.
+        return "denied" unless answered.positive?
 
-        accounted = line_item[:paid_amount].to_f +
-          line_item[:adjustment_amount].to_f +
-          line_item[:patient_responsibility].to_f +
-          line_item[:denied_amount].to_f
-
-        accounted >= billed
+        "paid"
       end
     end
   end
