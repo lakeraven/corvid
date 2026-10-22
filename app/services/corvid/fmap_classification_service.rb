@@ -19,10 +19,15 @@ module Corvid
     NO_MATCHING_RULE = "no_matching_rule"
     UNEVIDENCED_100 = "unevidenced_100_percent"
 
+    # Accepted coverage groups: main's eligibility-group vocabulary, plus
+    # "unknown", which matches no group-scoped rule.
+    COVERAGE_GROUPS = (StateMedicaidRules::GROUPS + %w[unknown]).freeze
+
     Result = Struct.new(
       :category, :fmap_percent, :rule_key, :rule_citations,
       :best_available_category, :best_available_rule_key, :missing_evidence,
       :state_share_delta_cents, :determination_reason,
+      :received_through_basis, :facility_authority, :evidence_refs,
       keyword_init: true
     ) do
       def misclassification_gap?
@@ -39,8 +44,14 @@ module Corvid
                    aian_verified: false, received_through_basis: nil,
                    coverage_group: nil, billed_amount_cents: nil,
                    evidence_refs: [])
-        authority_type = authority_type_in_force(facility_authority, date_of_service)
+        check_coverage_group!(coverage_group)
+        authority = stored_authority(facility_authority)
+        authority = nil unless authority&.in_force_on?(date_of_service)
+        authority_type = authority&.authority_type
         basis = received_through_basis.presence || (authority_type ? "facility_authority" : nil)
+        evidence = caller_evidence(evidence_refs)
+        backed = authority.present? && basis == "facility_authority"
+        context = { authority: authority, basis: basis, evidence: evidence }
 
         rules = FmapRule.in_force_on(date_of_service).for_jurisdiction(jurisdiction).to_a
 
@@ -48,7 +59,7 @@ module Corvid
         # not a finding of "not Medicaid". Say so loudly and refuse.
         if rules.empty?
           warn_no_rules(date_of_service, jurisdiction)
-          return undetermined_result(NO_RULES_IN_FORCE)
+          return undetermined_result(NO_RULES_IN_FORCE, **context)
         end
 
         matched = best_match(rules, authority_type: authority_type, aian_verified: aian_verified,
@@ -57,18 +68,24 @@ module Corvid
                                  basis: basis, coverage_group: coverage_group)
 
         # The 100 percent tiers are the ones that move federal dollars,
-        # so they are the ones that must rest on a persisted evidence
-        # chain. Without one, fall back to the highest *evidenced* tier
-        # the same inputs support, or refuse — never grant.
+        # so each of their requirements must rest on its own evidence.
+        # Without it, fall back to the highest *evidenced* tier the same
+        # inputs support, or refuse — never grant.
         actual = matched
         reason = nil
-        if matched&.hundred_percent? && evidence_refs.blank?
+        if matched&.hundred_percent? &&
+           matched.unmet_evidence(received_through_basis: basis, evidence: evidence, authority_backed: backed).any?
           reason = UNEVIDENCED_100
           actual = best_match(rules.reject(&:hundred_percent?), authority_type: authority_type,
                               aian_verified: aian_verified, basis: basis, coverage_group: coverage_group)
         end
 
-        return undetermined_result(reason || NO_MATCHING_RULE, best: best) if actual.nil?
+        missing = missing_evidence(best, actual, aian_verified: aian_verified, basis: basis,
+                                                 evidence: evidence, backed: backed, reason: reason)
+
+        if actual.nil?
+          return undetermined_result(reason || NO_MATCHING_RULE, best: best, missing: missing, **context)
+        end
 
         Result.new(
           category: actual.category,
@@ -77,34 +94,45 @@ module Corvid
           rule_citations: [ actual.statutory_citation ],
           best_available_category: best&.category,
           best_available_rule_key: best&.rule_key,
-          missing_evidence: missing_evidence(best, actual, aian_verified: aian_verified,
-                                                           basis: basis, reason: reason),
+          missing_evidence: missing,
           state_share_delta_cents: delta_cents(actual, best, billed_amount_cents),
-          determination_reason: reason
+          determination_reason: reason,
+          received_through_basis: basis,
+          facility_authority: authority,
+          evidence_refs: evidence
         )
       end
 
       # Classify and persist the determination as the audit artifact.
       # The evidence refs are both the classification input (a 100
       # percent tier is unreachable without them) and the persisted
-      # chain the determination rests on.
+      # chain the determination rests on, together with the authority
+      # and basis classification used.
       def classify!(encounter_identifier:, person_identifier: nil, facility_identifier: nil,
                     evidence_refs: [], claim_reference: nil, **classify_opts)
+        authority = classify_opts[:facility_authority]
+        if authority && facility_identifier.present? && authority.facility_identifier != facility_identifier
+          raise ArgumentError, "facility authority belongs to a different facility than the encounter"
+        end
+
         result = classify(evidence_refs: evidence_refs, **classify_opts)
+        applied = result.facility_authority
 
         FmapDetermination.create!(
           encounter_identifier: encounter_identifier,
           person_identifier: person_identifier,
-          facility_identifier: facility_identifier,
+          facility_identifier: facility_identifier.presence || authority&.facility_identifier,
           date_of_service: classify_opts.fetch(:date_of_service),
           jurisdiction: classify_opts.fetch(:jurisdiction),
           category: result.category,
           fmap_percent: result.fmap_percent,
           rule_key: result.rule_key,
           rule_citations: result.rule_citations,
-          evidence_refs: evidence_refs,
+          evidence_refs: result.evidence_refs,
           aian_verified: classify_opts.fetch(:aian_verified, false),
-          received_through_basis: classify_opts[:received_through_basis],
+          received_through_basis: result.received_through_basis,
+          facility_authority_id: applied&.id,
+          authority_type: applied&.authority_type,
           coverage_group: classify_opts[:coverage_group],
           best_available_category: result.best_available_category,
           best_available_rule_key: result.best_available_rule_key,
@@ -121,7 +149,7 @@ module Corvid
       # A refusal, not a category: no percent, no rule, no citation. The
       # best-available lens still reports what full evidence would have
       # reached, so the gap is visible rather than silently absent.
-      def undetermined_result(reason, best: nil)
+      def undetermined_result(reason, best: nil, missing: [], authority: nil, basis: nil, evidence: [])
         Result.new(
           category: UNDETERMINED,
           fmap_percent: nil,
@@ -129,9 +157,12 @@ module Corvid
           rule_citations: [],
           best_available_category: best&.category,
           best_available_rule_key: best&.rule_key,
-          missing_evidence: reason == UNEVIDENCED_100 ? [ "evidence_refs" ] : [],
+          missing_evidence: missing,
           state_share_delta_cents: nil,
-          determination_reason: reason
+          determination_reason: reason,
+          received_through_basis: basis,
+          facility_authority: authority,
+          evidence_refs: evidence
         )
       end
 
@@ -140,13 +171,39 @@ module Corvid
         Rails.logger.error(
           "[Corvid::FmapClassificationService] no FMAP rules in force for " \
           "jurisdiction=#{jurisdiction} date_of_service=#{date_of_service}; " \
-          "classification refused (load rules via Corvid::FmapRuleLoader.load_defaults!)"
+          "classification refused (load rules with rake corvid:fmap:load_rules)"
         )
       end
 
-      def authority_type_in_force(facility_authority, date)
-        return nil unless facility_authority&.in_force_on?(date)
-        facility_authority.authority_type
+      def check_coverage_group!(coverage_group)
+        return if coverage_group.nil? || COVERAGE_GROUPS.include?(coverage_group.to_s)
+        raise ArgumentError, "coverage_group is not recognized"
+      end
+
+      # The authority as stored for the current tenant. An unsaved record,
+      # one from another tenant, or an in-memory edit never confers a basis.
+      def stored_authority(facility_authority)
+        return nil if facility_authority.nil?
+        raise ArgumentError, "facility authority must be persisted" unless facility_authority.persisted?
+
+        stored = FacilityAuthority.find_by(id: facility_authority.id)
+        raise ArgumentError, "facility authority is not in the current tenant" if stored.nil?
+        stored
+      end
+
+      # Callers supply only the kinds in FmapRule::CALLER_EVIDENCE_KINDS,
+      # as typed entries; received-through rests on the stored authority.
+      def caller_evidence(evidence_refs)
+        entries = Array(evidence_refs)
+        unless entries.all?(Hash)
+          raise ArgumentError, "evidence_refs entries must be { supports:, ref: } hashes"
+        end
+
+        evidence = FmapRule.normalize_evidence(entries)
+        if evidence.any? { |e| !FmapRule::CALLER_EVIDENCE_KINDS.include?(e["supports"]) }
+          raise ArgumentError, "evidence_refs may only support #{FmapRule::CALLER_EVIDENCE_KINDS.join(', ')}"
+        end
+        evidence
       end
 
       def best_match(rules, authority_type:, aian_verified:, basis:, coverage_group:)
@@ -162,14 +219,18 @@ module Corvid
           .max_by(&:specificity)
       end
 
-      def missing_evidence(best, actual, aian_verified:, basis:, reason: nil)
+      # Every gap between the applied tier and the best-available one:
+      # the asserted inputs that are absent and the evidence each of the
+      # best rule's requirements still lacks.
+      def missing_evidence(best, actual, aian_verified:, basis:, evidence:, backed:, reason:)
         missing = []
         missing << "evidence_refs" if reason == UNEVIDENCED_100
         return missing if best.nil? || best == actual
 
         missing << "aian_attestation" if best.requires_aian && !aian_verified
         missing << "received_through_basis" if best.requires_received_through && basis.blank?
-        missing
+        missing.concat(best.unmet_evidence(received_through_basis: basis, evidence: evidence, authority_backed: backed))
+        missing.uniq
       end
 
       # Quantifiable state-share gap, computable only when both the actual

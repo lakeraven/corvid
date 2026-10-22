@@ -21,7 +21,17 @@ module Corvid
     validates :rule_key, presence: true, uniqueness: true
     validates :jurisdiction, presence: true
     validates :category, presence: true, inclusion: { in: CATEGORIES }
+    RECEIVED_THROUGH_BASES = %w[facility_authority cca].freeze
+
+    # Evidence a caller may supply, as { "supports" => kind, "ref" => token }.
+    # Received-through evidence is never caller-supplied: it is the stored
+    # facility authority, which the determination records by id.
+    CALLER_EVIDENCE_KINDS = %w[aian_status].freeze
+
     validates :statutory_citation, presence: true
+    # Same vocabulary as the eligibility group StateMedicaidRules and
+    # AlternateResourceCheck record, so a stated group matches its rule.
+    validates :coverage_group, inclusion: { in: StateMedicaidRules::GROUPS }, allow_nil: true
     validate :expires_after_effective
 
     scope :in_force_on, ->(date) {
@@ -56,6 +66,40 @@ module Corvid
     # any remaining tie so two runs can never disagree.
     def specificity
       [ fmap_percent || -1, facility_authority_types.length, rule_key ]
+    end
+
+    # The evidence this rule's requirements still lack. Each requirement
+    # needs its own: an AI/AN attestation entry for the AI/AN status, and
+    # a stored facility authority (authority_backed) for a facility basis.
+    # A CCA basis is never satisfied yet: no CareCoordinationAgreement
+    # record exists to show an agreement covers the service and date.
+    # (Whether the AI/AN status is verified is a match criterion, checked
+    # by #matches?; this checks only that evidence for it exists.)
+    def unmet_evidence(received_through_basis:, evidence:, authority_backed:)
+      unmet = []
+      if requires_aian && evidence.none? { |e| e["supports"] == "aian_status" }
+        unmet << "aian_status_evidence"
+      end
+      if requires_received_through
+        if received_through_basis.to_s == "cca"
+          unmet << "care_coordination_agreement"
+        elsif !authority_backed
+          unmet << "received_through_evidence"
+        end
+      end
+      unmet
+    end
+
+    # Evidence entries as string-keyed { "supports", "ref" } hashes with a
+    # non-blank ref. Anything else is not evidence and is dropped, so it
+    # can never satisfy a requirement.
+    def self.normalize_evidence(entries)
+      Array(entries).filter_map do |entry|
+        next unless entry.is_a?(Hash)
+        supports = (entry["supports"] || entry[:supports]).to_s
+        ref = (entry["ref"] || entry[:ref]).to_s
+        { "supports" => supports, "ref" => ref } if supports.present? && ref.present?
+      end
     end
 
     private

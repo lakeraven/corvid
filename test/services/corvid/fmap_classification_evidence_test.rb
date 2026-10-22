@@ -162,9 +162,7 @@ module Corvid
       assert_equal "facility_authority", determination.received_through_basis
       assert_equal "contract_638", determination.authority_type
       assert_equal @contract_638.id, determination.facility_authority_id
-      assert_includes determination.evidence_refs,
-                      { "supports" => "received_through", "ref" => "facility_authority:#{@contract_638.id}" }
-      assert_includes determination.evidence_refs, AIAN_EVIDENCE
+      assert_equal [ AIAN_EVIDENCE ], determination.evidence_refs
     end
 
     test "an expansion-adult encounter, in main's eligibility-group vocabulary, is 90 percent" do

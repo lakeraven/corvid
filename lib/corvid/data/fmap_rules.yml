@@ -41,6 +41,9 @@
   statutory_citation: "ARPA sec. 9815 (Pub. L. 117-2)"
   facility_authority_types: [uio]
   received_through_bases: [facility_authority]
+  # Same received-through sentence as the 638 rule, extended to UIOs:
+  # it matches services to AI/AN beneficiaries only.
+  requires_aian: true
   requires_received_through: true
   effective_on: 2021-04-01
   expires_on: 2023-03-31
@@ -56,6 +59,7 @@
   statutory_citation: "Urban Indian Health Parity Act (proposed; effective on enactment)"
   facility_authority_types: [uio]
   received_through_bases: [facility_authority]
+  requires_aian: true
   requires_received_through: true
   notes: >
     Dormant Parity Act readiness rule: activation is setting effective_on
@@ -66,7 +70,8 @@
   category: fmap_90_expansion
   fmap_percent: 90.0
   statutory_citation: "SSA 1905(y)(1)"
-  coverage_group: expansion
+  # Corvid::StateMedicaidRules::GROUPS vocabulary.
+  coverage_group: expansion_adult
   effective_on: 2020-01-01
   notes: >
     Steady-state 90 percent match for the ACA expansion group. The
