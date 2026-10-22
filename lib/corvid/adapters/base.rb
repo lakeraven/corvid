@@ -157,15 +157,19 @@ module Corvid
       end
 
       # ----------------------------------------------------------------------
-      # Clinical reads (optional — adapters may return empty arrays)
+      # Clinical reads.
+      # Elements are ConditionReference / MedicationReference.
+      # nil means unknown (the source did not answer). Adapters that cannot
+      # read these return nil. [] means the source answered "none".
+      # In memory only — never persist or log (ADR 0003).
       # ----------------------------------------------------------------------
 
       def get_conditions(patient_identifier)
-        []
+        nil
       end
 
       def get_medications(patient_identifier)
-        []
+        nil
       end
 
       def get_coverages(patient_identifier)
@@ -185,7 +189,14 @@ module Corvid
       # ----------------------------------------------------------------------
 
       # Verify enrollment for a patient against a coverage type.
-      # Returns a hash of eligibility info or nil.
+      #
+      # Returns a Hash with symbol key :eligible set to exactly true or
+      # false when the payer answered. Returns nil, or a Hash without a
+      # boolean :eligible, when the answer could not be determined.
+      # The result may carry coverage_start, coverage_end, and
+      # renewal_date as Date or nil. Any other type makes the answer
+      # unreadable. Callers treat anything else as undetermined, never
+      # as no coverage (42 CFR 136.61).
       def verify_eligibility(patient_identifier, resource_type)
         raise NotImplementedError, "#{self.class}#verify_eligibility not implemented"
       end

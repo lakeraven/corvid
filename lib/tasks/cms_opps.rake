@@ -10,7 +10,7 @@ namespace :cms do
       abort "File not found: #{args[:path]}" unless File.exist?(args[:path])
 
       year = args[:year].to_i
-      label = args[:label] || "manual"
+      label = args[:label].presence || "manual"
       rows = Corvid::CmsOppsParser.parse_apc_weights(
         File.read(args[:path]), calendar_year: year, release_label: label
       )
@@ -29,7 +29,7 @@ namespace :cms do
       abort "File not found: #{args[:path]}" unless File.exist?(args[:path])
 
       year = args[:year].to_i
-      label = args[:label] || "manual"
+      label = args[:label].presence || "manual"
       rows = Corvid::CmsOppsParser.parse_conversion_factors(
         File.read(args[:path]), calendar_year: year, release_label: label
       )
@@ -86,7 +86,7 @@ namespace :cms do
       abort "Usage: rake cms:opps:normalize_addendum_a[year,input.csv,output.csv,release_label]" unless args[:year] && args[:input] && args[:output]
       abort "Input not found: #{args[:input]}" unless File.exist?(args[:input])
 
-      label = args[:label] || "cms_opps_cy#{args[:year]}_final_rule"
+      label = args[:label].presence || "cms_opps_cy#{args[:year]}_final_rule"
       rows = Corvid::CmsOppsAddendumANormalizer.normalize(args[:input])
       csv = Corvid::CmsOppsAddendumANormalizer.render(rows, release_label: label)
       File.write(args[:output], csv)

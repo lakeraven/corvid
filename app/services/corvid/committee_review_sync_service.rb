@@ -17,6 +17,9 @@ module Corvid
       return { success: false, error: "Cannot sync pending decision" } if committee_review.pending?
       return { success: false, error: "Missing referral IEN" } if missing_referral_identifier?(committee_review)
 
+      blocked = blocked_authorization_result(committee_review)
+      return blocked if blocked
+
       prc_referral = committee_review.prc_referral
       identifier = prc_referral.referral_identifier
       params = build_update_params(committee_review)
@@ -38,24 +41,23 @@ module Corvid
     # apply half is NOT routed through the injected `@adapter` — the
     # `sync_decision` half is. Per-tenant adapter routing for the
     # combined flow isn't safe yet; see ADR 0005 §"Known limitation".
+    #
+    # Apply locally first. Sync the decision to the EHR only once the
+    # referral has reached that state, so APPROVED is never written
+    # while the referral stays put. AuthorizationBlockedError returns
+    # blocked with backend_synced false and does not call sync_decision.
+    # Denied and deferred are not authorizations, so a refused
+    # transition still syncs. A failed EHR sync after a successful
+    # apply stays sync_pending.
     def sync_and_apply!(committee_review)
-      sync_result = sync_decision(committee_review)
-      backend_synced = sync_result[:success]
-
-      referral_updated = false
-      begin
-        committee_review.apply_to_referral!
-        referral_updated = true
-      rescue => e
-        Rails.logger.warn("CommitteeReviewSyncService: apply_to_referral! failed: #{Corvid.sanitize_phi(e.message)}")
+      referral_updated = apply_referral!(committee_review)
+      backend_synced = false
+      if referral_updated || !committee_review.approved_or_modified?
+        backend_synced = sync_decision(committee_review)[:success]
       end
-
-      {
-        success: backend_synced && referral_updated,
-        backend_synced: backend_synced,
-        referral_updated: referral_updated,
-        sync_pending: !backend_synced
-      }
+      apply_result(backend_synced, referral_updated)
+    rescue AuthorizationBlockedError => e
+      apply_blocked(e.blockers, backend_synced: false)
     end
 
     # Class-method shims for backward compatibility. Existing callers
@@ -72,6 +74,59 @@ module Corvid
     end
 
     private
+
+    # Denied and deferred are not authorizations, so they still sync.
+    # Approved and modified share PrcReferral#committee_approval_blockers
+    # with apply, so the two paths cannot disagree (ADR 0003).
+    def blocked_authorization_result(committee_review)
+      return unless committee_review.approved_or_modified?
+
+      blockers = committee_review.prc_referral.committee_approval_blockers
+      return if blockers.empty?
+
+      { success: false, blocked: true, blockers: blockers }
+    end
+
+    def apply_blocked(blockers, backend_synced: false)
+      {
+        success: false,
+        backend_synced: backend_synced,
+        referral_updated: false,
+        blocked: true,
+        blockers: blockers
+      }
+    end
+
+    def apply_result(backend_synced, referral_updated)
+      {
+        success: backend_synced && referral_updated,
+        backend_synced: backend_synced,
+        referral_updated: referral_updated,
+        sync_pending: !backend_synced
+      }
+    end
+
+    # Updated only when the referral actually reached the decision's
+    # state. A guard that returns false must not look like success.
+    def apply_referral!(committee_review)
+      committee_review.apply_to_referral!
+      referral_reached_decision?(committee_review)
+    rescue AuthorizationBlockedError
+      raise
+    rescue => e
+      Rails.logger.warn("CommitteeReviewSyncService: apply_to_referral! failed: #{Corvid.sanitize_phi(e.message)}")
+      false
+    end
+
+    def referral_reached_decision?(committee_review)
+      referral = committee_review.prc_referral
+      case committee_review.decision
+      when "approved", "modified" then referral.authorized?
+      when "denied" then referral.denied?
+      when "deferred" then referral.deferred?
+      else false
+      end
+    end
 
     def missing_referral_identifier?(committee_review)
       committee_review.prc_referral&.referral_identifier.blank?
