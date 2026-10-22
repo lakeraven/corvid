@@ -5,7 +5,7 @@ Feature: CMS-0057-F Prior Authorization API (Da Vinci PAS)
 
   Background:
     Given a tenant "tnt_test" with facility "fac_test"
-    And a patient "pt_pa_001" with a PRC case
+    And a patient "pt-pa-001" with a PRC case
 
   # =============================================================================
   # PA SUBMISSION (Claim/$submit)
@@ -18,9 +18,9 @@ Feature: CMS-0057-F Prior Authorization API (Da Vinci PAS)
     And the ClaimResponse should reference the new PrcReferral
 
   Scenario: PA submission records provenance
-    When a provider "pr_npi_1234567890" submits a FHIR PA request for service "MRI"
+    When a provider "pr-npi-1234567890" submits a FHIR PA request for service "MRI"
     Then a PrcReferral should be created
-    And the PrcReferral should record the requesting provider as "pr_npi_1234567890"
+    And the PrcReferral should record the requesting provider as "pr-npi-1234567890"
 
   Scenario: PA submission rejects Claim with empty patient reference
     When a provider submits a FHIR PA request with patient reference "Patient/"
@@ -33,14 +33,14 @@ Feature: CMS-0057-F Prior Authorization API (Da Vinci PAS)
     And no PrcReferral should be created for patient "Patient"
 
   Scenario: PA submission rejects Claim when patient reference is a practitioner
-    When a provider submits a FHIR PA request with patient reference "Practitioner/pr_pa_feat_001"
+    When a provider submits a FHIR PA request with patient reference "Practitioner/pr-pa-feat-001"
     Then the PA submission should be rejected with a patient reference error
-    And no PrcReferral should be created for patient "pr_pa_feat_001"
+    And no PrcReferral should be created for patient "pr-pa-feat-001"
 
   Scenario: PA submission accepts versioned patient reference
-    When a provider submits a FHIR PA request with patient reference "Patient/pt_pa_feat_hist/_history/3"
+    When a provider submits a FHIR PA request with patient reference "Patient/pt-pa-feat-hist/_history/3"
     Then a PrcReferral should be created in "submitted" status
-    And the created PrcReferral case patient should be "pt_pa_feat_hist"
+    And the created PrcReferral case patient should be "pt-pa-feat-hist"
 
   Scenario: PA submission stores nil requesting provider for contained provider reference
     When a provider submits a FHIR PA request with provider reference "#contained1"
@@ -75,12 +75,12 @@ Feature: CMS-0057-F Prior Authorization API (Da Vinci PAS)
   # =============================================================================
 
   Scenario: List all ClaimResponses for a patient
-    Given the following PRC referrals exist for patient "pt_pa_001":
+    Given the following PRC referrals exist for patient "pt-pa-001":
       | identifier   | status     |
       | rf_pa_bundle_1 | authorized |
       | rf_pa_bundle_2 | denied     |
       | rf_pa_bundle_3 | submitted  |
-    When I request all ClaimResponses for patient "pt_pa_001"
+    When I request all ClaimResponses for patient "pt-pa-001"
     Then the Bundle should contain 3 ClaimResponse entries
 
   # =============================================================================

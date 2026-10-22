@@ -32,27 +32,27 @@ class Corvid::Adapters::FhirAdapterTest < Minitest::Test
 
   def test_find_patient_maps_to_patient_reference
     resource = {
-      "id" => "pt_001",
+      "id" => "pt-001",
       "birthDate" => "1980-01-01",
       "gender" => "female",
       "name" => [ { "family" => "TEST", "given" => [ "PATIENT" ] } ]
     }
     @adapter.stub(:fhir_read, resource) do
-      result = @adapter.find_patient("pt_001")
+      result = @adapter.find_patient("pt-001")
       assert_instance_of Corvid::PatientReference, result
-      assert_equal "pt_001", result.identifier
+      assert_equal "pt-001", result.identifier
       assert_equal "TEST, PATIENT", result.display_name
     end
   end
 
   def test_find_practitioner_includes_specialty
     resource = {
-      "id" => "pr_001",
+      "id" => "pr-001",
       "name" => [ { "family" => "TEST", "given" => [ "PROVIDER" ] } ],
       "qualification" => [ { "code" => { "coding" => [ { "display" => "Test Specialty" } ] } } ]
     }
     @adapter.stub(:fhir_read, resource) do
-      result = @adapter.find_practitioner("pr_001")
+      result = @adapter.find_practitioner("pr-001")
       assert_instance_of Corvid::PractitionerReference, result
       assert_equal "Test Specialty", result.specialty
     end
@@ -63,13 +63,13 @@ class Corvid::Adapters::FhirAdapterTest < Minitest::Test
       "id" => "rf_001",
       "status" => "active",
       "priority" => "urgent",
-      "subject" => { "reference" => "Patient/pt_001" }
+      "subject" => { "reference" => "Patient/pt-001" }
     }
     @adapter.stub(:fhir_read, resource) do
       result = @adapter.find_referral("rf_001")
       assert_instance_of Corvid::ReferralReference, result
       assert_equal "rf_001", result.identifier
-      assert_equal "pt_001", result.patient_identifier
+      assert_equal "pt-001", result.patient_identifier
       assert result.urgent?
       refute result.emergent?
     end
@@ -79,7 +79,7 @@ class Corvid::Adapters::FhirAdapterTest < Minitest::Test
     resource = {
       "id" => "rf_blank_text",
       "status" => "active",
-      "subject" => { "reference" => "Patient/pt_001" },
+      "subject" => { "reference" => "Patient/pt-001" },
       "code" => {
         "text" => "",
         "coding" => [ { "display" => "TEST,SERVICE 001" } ]
@@ -97,10 +97,10 @@ class Corvid::Adapters::FhirAdapterTest < Minitest::Test
       "entry" => [ { "resource" => {
         "resourceType" => "Claim",
         "id" => "clm_pr_blank_id",
-        "patient" => { "reference" => "Patient/pt_pr" },
+        "patient" => { "reference" => "Patient/pt-pr" },
         "provider" => {
           "identifier" => { "value" => "" },
-          "reference" => "Practitioner/pr_001"
+          "reference" => "Practitioner/pr-001"
         },
         "item" => [ {
           "sequence" => 1,
@@ -110,8 +110,8 @@ class Corvid::Adapters::FhirAdapterTest < Minitest::Test
       } } ]
     }
     @adapter.stub(:fhir_search, bundle) do
-      line = @adapter.list_claims("pt_pr").first
-      assert_equal "pr_001", line.provider_identifier
+      line = @adapter.list_claims("pt-pr").first
+      assert_equal "pr-001", line.provider_identifier
     end
   end
 
@@ -121,7 +121,7 @@ class Corvid::Adapters::FhirAdapterTest < Minitest::Test
       "entry" => [ { "resource" => {
         "resourceType" => "Claim",
         "id" => "clm_pr_blank_ref",
-        "patient" => { "reference" => "Patient/pt_pr2" },
+        "patient" => { "reference" => "Patient/pt-pr2" },
         "provider" => {
           "identifier" => { "value" => "" },
           "reference" => "",
@@ -135,7 +135,7 @@ class Corvid::Adapters::FhirAdapterTest < Minitest::Test
       } } ]
     }
     @adapter.stub(:fhir_search, bundle) do
-      line = @adapter.list_claims("pt_pr2").first
+      line = @adapter.list_claims("pt-pr2").first
       assert_equal "TEST PROVIDER DISPLAY", line.provider_identifier
     end
   end
@@ -173,7 +173,7 @@ class Corvid::Adapters::FhirAdapterTest < Minitest::Test
       "entry" => [ { "resource" => {
         "resourceType" => "Claim",
         "id" => "clm_all_blank_disp",
-        "patient" => { "reference" => "Patient/pt_blank_disp" },
+        "patient" => { "reference" => "Patient/pt-blank-disp" },
         "item" => [ {
           "sequence" => 1,
           "productOrService" => {
@@ -185,16 +185,16 @@ class Corvid::Adapters::FhirAdapterTest < Minitest::Test
       } } ]
     }
     @adapter.stub(:fhir_search, bundle) do
-      line = @adapter.list_claims("pt_blank_disp").first
+      line = @adapter.list_claims("pt-blank-disp").first
       assert_nil line.procedure_display
     end
   end
 
   def test_find_referral_requesting_provider_identifier_from_normal_requester_reference
-    resource = service_request_with_requester("Practitioner/pr_test_001")
+    resource = service_request_with_requester("Practitioner/pr-test-001")
     @adapter.stub(:fhir_read, resource) do
       result = @adapter.find_referral("rf_req_pr_normal")
-      assert_equal "pr_test_001", result.requesting_provider_identifier
+      assert_equal "pr-test-001", result.requesting_provider_identifier
     end
   end
 
@@ -282,11 +282,11 @@ class Corvid::Adapters::FhirAdapterTest < Minitest::Test
     resource = {
       "id" => "rf_pt_hist_subj",
       "status" => "active",
-      "subject" => { "reference" => "Patient/pt_hist_subj_001/_history/3" }
+      "subject" => { "reference" => "Patient/pt-hist-subj-001/_history/3" }
     }
     @adapter.stub(:fhir_read, resource) do
       result = @adapter.find_referral("rf_pt_hist_subj")
-      assert_equal "pt_hist_subj_001", result.patient_identifier
+      assert_equal "pt-hist-subj-001", result.patient_identifier
     end
   end
 
@@ -296,7 +296,7 @@ class Corvid::Adapters::FhirAdapterTest < Minitest::Test
       "entry" => [ { "resource" => {
         "resourceType" => "Claim",
         "id" => "clm_pt_base_url",
-        "patient" => { "reference" => "#{@adapter.base_url}/Patient/pt_base_claim" },
+        "patient" => { "reference" => "#{@adapter.base_url}/Patient/pt-base-claim" },
         "item" => [ {
           "sequence" => 1,
           "productOrService" => { "coding" => [ { "system" => "http://www.ama-assn.org/go/cpt", "code" => "99213" } ] },
@@ -305,8 +305,8 @@ class Corvid::Adapters::FhirAdapterTest < Minitest::Test
       } } ]
     }
     @adapter.stub(:fhir_search, bundle) do
-      line = @adapter.list_claims("pt_base_claim").first
-      assert_equal "pt_base_claim", line.patient_identifier
+      line = @adapter.list_claims("pt-base-claim").first
+      assert_equal "pt-base-claim", line.patient_identifier
     end
   end
 
@@ -316,7 +316,7 @@ class Corvid::Adapters::FhirAdapterTest < Minitest::Test
       "entry" => [ { "resource" => {
         "resourceType" => "Claim",
         "id" => "clm_pt_foreign",
-        "patient" => { "reference" => "https://other.example/fhir/Patient/pt_foreign_claim" },
+        "patient" => { "reference" => "https://other.example/fhir/Patient/pt-foreign-claim" },
         "item" => [ {
           "sequence" => 1,
           "productOrService" => { "coding" => [ { "system" => "http://www.ama-assn.org/go/cpt", "code" => "99213" } ] },
@@ -325,28 +325,28 @@ class Corvid::Adapters::FhirAdapterTest < Minitest::Test
       } } ]
     }
     @adapter.stub(:fhir_search, bundle) do
-      line = @adapter.list_claims("pt_foreign_claim").first
+      line = @adapter.list_claims("pt-foreign-claim").first
       assert_nil line.patient_identifier
     end
   end
 
   def test_list_claims_provider_identifier_nil_when_provider_reference_is_patient
     line = list_claim_with_provider(
-      { "reference" => "Patient/pt_not_provider" }
+      { "reference" => "Patient/pt-not-provider" }
     )
     assert_nil line.provider_identifier
   end
 
   def test_find_referral_requesting_provider_identifier_from_practitioner_role_requester
-    resource = service_request_with_requester("PractitionerRole/rol_req_001")
+    resource = service_request_with_requester("PractitionerRole/rol-req-001")
     @adapter.stub(:fhir_read, resource) do
       result = @adapter.find_referral("rf_req_pr_role")
-      assert_equal "rol_req_001", result.requesting_provider_identifier
+      assert_equal "rol-req-001", result.requesting_provider_identifier
     end
   end
 
   def test_find_referral_requesting_provider_identifier_nil_when_requester_is_patient
-    resource = service_request_with_requester("Patient/pt_not_requester")
+    resource = service_request_with_requester("Patient/pt-not-requester")
     @adapter.stub(:fhir_read, resource) do
       result = @adapter.find_referral("rf_req_patient")
       assert_nil result.requesting_provider_identifier
@@ -357,21 +357,21 @@ class Corvid::Adapters::FhirAdapterTest < Minitest::Test
     resource = {
       "id" => "rf_pt_base_subj",
       "status" => "active",
-      "subject" => { "reference" => "#{@adapter.base_url}/Patient/pt_base_sr" }
+      "subject" => { "reference" => "#{@adapter.base_url}/Patient/pt-base-sr" }
     }
     @adapter.stub(:fhir_read, resource) do
       result = @adapter.find_referral("rf_pt_base_subj")
-      assert_equal "pt_base_sr", result.patient_identifier
+      assert_equal "pt-base-sr", result.patient_identifier
     end
   end
 
   def test_get_care_team_practitioner_identifier_from_normal_member_reference
     bundle = care_team_search_bundle(
-      [ { "member" => { "reference" => "Practitioner/pr_ct_001" }, "role" => [ { "coding" => [ { "code" => "doctor" } ] } ] } ]
+      [ { "member" => { "reference" => "Practitioner/pr-ct-001" }, "role" => [ { "coding" => [ { "code" => "doctor" } ] } ] } ]
     )
     @adapter.stub(:fhir_search, bundle) do
       member = @adapter.get_care_team("pt_ct_001").first
-      assert_equal "pr_ct_001", member.practitioner_identifier
+      assert_equal "pr-ct-001", member.practitioner_identifier
     end
   end
 
@@ -399,7 +399,7 @@ class Corvid::Adapters::FhirAdapterTest < Minitest::Test
     resource = {
       "id" => "rf_req_pr_missing",
       "status" => "active",
-      "subject" => { "reference" => "Patient/pt_test_001" }
+      "subject" => { "reference" => "Patient/pt-test-001" }
     }
     @adapter.stub(:fhir_read, resource) do
       result = @adapter.find_referral("rf_req_pr_missing")
@@ -411,7 +411,7 @@ class Corvid::Adapters::FhirAdapterTest < Minitest::Test
     resource = {
       "id" => "rf_all_blank_svc",
       "status" => "active",
-      "subject" => { "reference" => "Patient/pt_001" },
+      "subject" => { "reference" => "Patient/pt-001" },
       "code" => {
         "text" => "",
         "coding" => [ { "display" => "   ", "code" => "" } ]
@@ -429,7 +429,7 @@ class Corvid::Adapters::FhirAdapterTest < Minitest::Test
       "entry" => [ { "resource" => {
         "resourceType" => "Claim",
         "id" => "clm_blank_disp",
-        "patient" => { "reference" => "Patient/pt_disp" },
+        "patient" => { "reference" => "Patient/pt-disp" },
         "item" => [ {
           "sequence" => 1,
           "productOrService" => {
@@ -443,13 +443,13 @@ class Corvid::Adapters::FhirAdapterTest < Minitest::Test
       } } ]
     }
     @adapter.stub(:fhir_search, bundle) do
-      line = @adapter.list_claims("pt_disp").first
+      line = @adapter.list_claims("pt-disp").first
       assert_equal "TEST,CLAIM LINE 001", line.procedure_display
     end
   end
 
   def test_update_referral_whitelists_safe_fields
-    existing = { "resourceType" => "ServiceRequest", "id" => "rf_001", "status" => "draft", "subject" => { "reference" => "Patient/pt_001" } }
+    existing = { "resourceType" => "ServiceRequest", "id" => "rf_001", "status" => "draft", "subject" => { "reference" => "Patient/pt-001" } }
     captured = nil
     @adapter.stub(:fhir_read, existing) do
       @adapter.stub(:fhir_update, ->(_t, _id, body) { captured = body; true }) do
@@ -458,12 +458,12 @@ class Corvid::Adapters::FhirAdapterTest < Minitest::Test
     end
     # subject and resourceType must NOT be merged
     assert_equal "active", captured["status"]
-    assert_equal({ "reference" => "Patient/pt_001" }, captured["subject"])
+    assert_equal({ "reference" => "Patient/pt-001" }, captured["subject"])
     assert_equal "ServiceRequest", captured["resourceType"]
   end
 
   def test_update_referral_stores_committee_fields_as_extensions
-    existing = { "resourceType" => "ServiceRequest", "id" => "rf_001", "status" => "active", "subject" => { "reference" => "Patient/pt_001" } }
+    existing = { "resourceType" => "ServiceRequest", "id" => "rf_001", "status" => "active", "subject" => { "reference" => "Patient/pt-001" } }
     captured = nil
     @adapter.stub(:fhir_read, existing) do
       @adapter.stub(:fhir_update, ->(_t, _id, body) { captured = body; true }) do
@@ -485,7 +485,7 @@ class Corvid::Adapters::FhirAdapterTest < Minitest::Test
       "entry" => [ { "resource" => {
         "resourceType" => "Claim",
         "id" => "clm_1",
-        "patient" => { "reference" => "Patient/pt_1" },
+        "patient" => { "reference" => "Patient/pt-1" },
         "item" => [ {
           "sequence" => 1,
           "productOrService" => { "coding" => [
@@ -497,7 +497,7 @@ class Corvid::Adapters::FhirAdapterTest < Minitest::Test
       } } ]
     }
     @adapter.stub(:fhir_search, bundle) do
-      lines = @adapter.list_claims("pt_1")
+      lines = @adapter.list_claims("pt-1")
       assert_equal 1, lines.size
       assert_equal "99213", lines.first.procedure_code, "must select the CPT coding, not the SNOMED at index 0"
     end
@@ -509,7 +509,7 @@ class Corvid::Adapters::FhirAdapterTest < Minitest::Test
       "entry" => [ { "resource" => {
         "resourceType" => "Claim",
         "id" => "clm_2",
-        "patient" => { "reference" => "Patient/pt_2" },
+        "patient" => { "reference" => "Patient/pt-2" },
         "item" => [ {
           "sequence" => 1,
           "productOrService" => { "coding" => [
@@ -521,7 +521,7 @@ class Corvid::Adapters::FhirAdapterTest < Minitest::Test
       } } ]
     }
     @adapter.stub(:fhir_search, bundle) do
-      assert_equal "J1885", @adapter.list_claims("pt_2").first.procedure_code
+      assert_equal "J1885", @adapter.list_claims("pt-2").first.procedure_code
     end
   end
 
@@ -531,7 +531,7 @@ class Corvid::Adapters::FhirAdapterTest < Minitest::Test
       "entry" => [ { "resource" => {
         "resourceType" => "Claim",
         "id" => "clm_3",
-        "patient" => { "reference" => "Patient/pt_3" },
+        "patient" => { "reference" => "Patient/pt-3" },
         "item" => [ {
           "sequence" => 1,
           "productOrService" => { "coding" => [ { "system" => "http://snomed.info/sct", "code" => "999" } ] },
@@ -540,7 +540,7 @@ class Corvid::Adapters::FhirAdapterTest < Minitest::Test
       } } ]
     }
     @adapter.stub(:fhir_search, bundle) do
-      assert_equal "999", @adapter.list_claims("pt_3").first.procedure_code
+      assert_equal "999", @adapter.list_claims("pt-3").first.procedure_code
     end
   end
 
@@ -550,7 +550,7 @@ class Corvid::Adapters::FhirAdapterTest < Minitest::Test
       "entry" => [ { "resource" => {
         "resourceType" => "Claim",
         "id" => "clm_4",
-        "patient" => { "reference" => "Patient/pt_4" },
+        "patient" => { "reference" => "Patient/pt-4" },
         "item" => [ {
           "sequence" => 1,
           "productOrService" => { "coding" => [ { "system" => "http://www.ama-assn.org/go/cpt", "code" => "99213" } ] },
@@ -559,7 +559,7 @@ class Corvid::Adapters::FhirAdapterTest < Minitest::Test
       } } ]
     }
     @adapter.stub(:fhir_search, bundle) do
-      line = @adapter.list_claims("pt_4").first
+      line = @adapter.list_claims("pt-4").first
       assert_nil line.billed_amount, "unparseable amount does not become a bogus number"
       refute_nil line.amount_error, "present-but-unparseable amount is surfaced, not silently swallowed"
       # amount_error reaches reporting output, so the server-supplied value
@@ -575,7 +575,7 @@ class Corvid::Adapters::FhirAdapterTest < Minitest::Test
       "entry" => [ { "resource" => {
         "resourceType" => "Claim",
         "id" => "clm_5",
-        "patient" => { "reference" => "Patient/pt_5" },
+        "patient" => { "reference" => "Patient/pt-5" },
         "item" => [ {
           "sequence" => 1,
           "productOrService" => { "coding" => [ { "system" => "http://www.ama-assn.org/go/cpt", "code" => "99213" } ] }
@@ -583,7 +583,7 @@ class Corvid::Adapters::FhirAdapterTest < Minitest::Test
       } } ]
     }
     @adapter.stub(:fhir_search, bundle) do
-      line = @adapter.list_claims("pt_5").first
+      line = @adapter.list_claims("pt-5").first
       assert_nil line.billed_amount
       assert_nil line.amount_error, "absent amount is a legit nil, not an error"
     end
@@ -595,7 +595,7 @@ class Corvid::Adapters::FhirAdapterTest < Minitest::Test
       "entry" => [ { "resource" => {
         "resourceType" => "Claim",
         "id" => "clm_blank_serviced_date",
-        "patient" => { "reference" => "Patient/pt_serviced" },
+        "patient" => { "reference" => "Patient/pt-serviced" },
         "item" => [ {
           "sequence" => 1,
           "servicedDate" => "",
@@ -605,7 +605,7 @@ class Corvid::Adapters::FhirAdapterTest < Minitest::Test
       } } ]
     }
     @adapter.stub(:fhir_search, bundle) do
-      line = @adapter.list_claims("pt_serviced").first
+      line = @adapter.list_claims("pt-serviced").first
       assert_equal Date.new(2026, 1, 5), line.serviced_date
     end
   end
@@ -644,7 +644,7 @@ class Corvid::Adapters::FhirAdapterTest < Minitest::Test
 
   def test_verify_tribal_enrollment_reads_extension
     resource = {
-      "id" => "pt_001",
+      "id" => "pt-001",
       "extension" => [ {
         "url" => "https://lakeraven.com/fhir/StructureDefinition/tribal-enrollment",
         "extension" => [
@@ -657,7 +657,7 @@ class Corvid::Adapters::FhirAdapterTest < Minitest::Test
       } ]
     }
     @adapter.stub(:fhir_read, resource) do
-      result = @adapter.verify_tribal_enrollment("pt_001")
+      result = @adapter.verify_tribal_enrollment("pt-001")
       assert_equal true, result[:enrolled]
       assert_equal "TGN-100254", result[:membership_number]
       assert_equal "TGN", result[:tribe_code]
@@ -705,8 +705,8 @@ class Corvid::Adapters::FhirAdapterTest < Minitest::Test
 
   def test_verify_tribal_enrollment_falls_back_when_extension_absent
     # Issue #662 round 4: missing extension is unknown enrollment, not a firm false.
-    @adapter.stub(:fhir_read, { "id" => "pt_001" }) do
-      result = @adapter.verify_tribal_enrollment("pt_001")
+    @adapter.stub(:fhir_read, { "id" => "pt-001" }) do
+      result = @adapter.verify_tribal_enrollment("pt-001")
       assert_nil result[:enrolled]
       assert_equal :unavailable, result[:confidence]
     end
@@ -843,12 +843,12 @@ class Corvid::Adapters::FhirAdapterTest < Minitest::Test
 
   def test_verify_identity_documents_derives_from_patient_resource
     resource = {
-      "id" => "pt_001",
+      "id" => "pt-001",
       "birthDate" => "1978-11-02",
       "identifier" => [ { "system" => "http://hl7.org/fhir/sid/us-ssn", "value" => "555-01-0054" } ]
     }
     @adapter.stub(:fhir_read, resource) do
-      result = @adapter.verify_identity_documents("pt_001")
+      result = @adapter.verify_identity_documents("pt-001")
       assert_equal true, result[:ssn_present]
       assert_equal true, result[:dob_present]
       assert_equal false, result[:birthplace_present]
@@ -857,7 +857,7 @@ class Corvid::Adapters::FhirAdapterTest < Minitest::Test
 
   def test_verify_residency_reads_extension_and_address
     resource = {
-      "id" => "pt_001",
+      "id" => "pt-001",
       "address" => [ { "line" => [ "100 Main St" ], "city" => "Broken Rock", "state" => "WA" } ],
       "extension" => [ {
         "url" => "https://lakeraven.com/fhir/StructureDefinition/residency",
@@ -868,7 +868,7 @@ class Corvid::Adapters::FhirAdapterTest < Minitest::Test
       } ]
     }
     @adapter.stub(:fhir_read, resource) do
-      result = @adapter.verify_residency("pt_001")
+      result = @adapter.verify_residency("pt-001")
       assert_equal true, result[:on_reservation]
       assert_equal "100 Main St, Broken Rock, WA", result[:address]
       assert_equal "Broken Rock Health Center", result[:service_area]
@@ -893,7 +893,7 @@ class Corvid::Adapters::FhirAdapterTest < Minitest::Test
 
     define_method("test_verify_tribal_enrollment_#{slug}_is_unavailable") do
       with_transport_failure(error_class) do
-        result = @adapter.verify_tribal_enrollment("pt_test_001")
+        result = @adapter.verify_tribal_enrollment("pt-test-001")
         assert_nil result[:enrolled]
         assert_equal :unavailable, result[:confidence]
         assert_nil result[:tribe_code]
@@ -903,7 +903,7 @@ class Corvid::Adapters::FhirAdapterTest < Minitest::Test
 
     define_method("test_verify_identity_documents_#{slug}_reports_nothing_present") do
       with_transport_failure(error_class) do
-        result = @adapter.verify_identity_documents("pt_test_001")
+        result = @adapter.verify_identity_documents("pt-test-001")
         assert_equal false, result[:ssn_present]
         assert_equal false, result[:dob_present]
         assert_equal false, result[:birthplace_present]
@@ -912,7 +912,7 @@ class Corvid::Adapters::FhirAdapterTest < Minitest::Test
 
     define_method("test_verify_residency_#{slug}_is_not_on_reservation") do
       with_transport_failure(error_class) do
-        result = @adapter.verify_residency("pt_test_001")
+        result = @adapter.verify_residency("pt-test-001")
         assert_equal false, result[:on_reservation]
         assert_nil result[:address]
         assert_nil result[:service_area]
@@ -946,10 +946,10 @@ class Corvid::Adapters::FhirAdapterTest < Minitest::Test
   def test_get_conditions_requests_condition_search_with_patient_query
     bundle = conditions_bundle([])
     url_seen = nil
-    expected = "#{@adapter.base_url}/Condition?#{URI.encode_www_form(patient: "pt_001")}"
+    expected = "#{@adapter.base_url}/Condition?#{URI.encode_www_form(patient: "pt-001")}"
 
     @adapter.stub(:http_get, ->(url) { url_seen = url; consumed_http_response(bundle) }) do
-      @adapter.get_conditions("pt_001")
+      @adapter.get_conditions("pt-001")
     end
 
     assert_equal expected, url_seen
@@ -1031,8 +1031,8 @@ class Corvid::Adapters::FhirAdapterTest < Minitest::Test
   end
 
   def test_get_conditions_returns_nil_when_subject_reference_mismatches_patient
-    condition = build_condition_resource(subject: { "reference" => "Patient/pt_other" })
-    result = get_conditions_with_bundle(conditions_bundle([ condition ]), patient_id: "pt_001")
+    condition = build_condition_resource(subject: { "reference" => "Patient/pt-other" })
+    result = get_conditions_with_bundle(conditions_bundle([ condition ]), patient_id: "pt-001")
 
     assert_nil result
   end
@@ -1047,10 +1047,10 @@ class Corvid::Adapters::FhirAdapterTest < Minitest::Test
   def test_get_conditions_returns_empty_array_for_successful_bundle_with_no_entries
     url_seen = nil
     bundle = conditions_bundle([])
-    expected = "#{@adapter.base_url}/Condition?#{URI.encode_www_form(patient: "pt_001")}"
+    expected = "#{@adapter.base_url}/Condition?#{URI.encode_www_form(patient: "pt-001")}"
 
     results = @adapter.stub(:http_get, ->(url) { url_seen = url; consumed_http_response(bundle) }) do
-      @adapter.get_conditions("pt_001")
+      @adapter.get_conditions("pt-001")
     end
 
     assert_equal expected, url_seen
@@ -1070,7 +1070,7 @@ class Corvid::Adapters::FhirAdapterTest < Minitest::Test
   end
 
   def test_get_conditions_returns_nil_when_response_is_not_a_bundle
-    result = get_conditions_with_http_response(consumed_http_response({ "resourceType" => "Patient", "id" => "pt_001" }))
+    result = get_conditions_with_http_response(consumed_http_response({ "resourceType" => "Patient", "id" => "pt-001" }))
 
     assert_nil result
   end
@@ -1098,10 +1098,10 @@ class Corvid::Adapters::FhirAdapterTest < Minitest::Test
   def test_get_medications_requests_medication_request_search_with_patient_query
     bundle = medications_bundle([])
     url_seen = nil
-    expected = "#{@adapter.base_url}/MedicationRequest?#{URI.encode_www_form(patient: "pt_001")}"
+    expected = "#{@adapter.base_url}/MedicationRequest?#{URI.encode_www_form(patient: "pt-001")}"
 
     @adapter.stub(:http_get, ->(url) { url_seen = url; consumed_http_response(bundle) }) do
-      @adapter.get_medications("pt_001")
+      @adapter.get_medications("pt-001")
     end
 
     assert_equal expected, url_seen
@@ -1180,8 +1180,8 @@ class Corvid::Adapters::FhirAdapterTest < Minitest::Test
   end
 
   def test_get_medications_returns_nil_when_subject_reference_mismatches_patient
-    request = build_medication_request_resource(subject: { "reference" => "Patient/pt_other" })
-    result = get_medications_with_bundle(medications_bundle([ request ]), patient_id: "pt_001")
+    request = build_medication_request_resource(subject: { "reference" => "Patient/pt-other" })
+    result = get_medications_with_bundle(medications_bundle([ request ]), patient_id: "pt-001")
 
     assert_nil result
   end
@@ -1196,10 +1196,10 @@ class Corvid::Adapters::FhirAdapterTest < Minitest::Test
   def test_get_medications_returns_empty_array_for_successful_bundle_with_no_entries
     url_seen = nil
     bundle = medications_bundle([])
-    expected = "#{@adapter.base_url}/MedicationRequest?#{URI.encode_www_form(patient: "pt_001")}"
+    expected = "#{@adapter.base_url}/MedicationRequest?#{URI.encode_www_form(patient: "pt-001")}"
 
     results = @adapter.stub(:http_get, ->(url) { url_seen = url; consumed_http_response(bundle) }) do
-      @adapter.get_medications("pt_001")
+      @adapter.get_medications("pt-001")
     end
 
     assert_equal expected, url_seen
@@ -1364,19 +1364,19 @@ class Corvid::Adapters::FhirAdapterTest < Minitest::Test
 
   def test_get_conditions_returns_nil_when_subject_is_absolute_patient_on_other_host
     condition = build_condition_resource(
-      subject: { "reference" => "https://other-ehr.example/fhir/Patient/pt_001" }
+      subject: { "reference" => "https://other-ehr.example/fhir/Patient/pt-001" }
     )
     assert_nil get_conditions_with_bundle(conditions_bundle([ condition ]))
   end
 
   def test_get_conditions_returns_nil_when_subject_reference_is_group_patient_path
-    condition = build_condition_resource(subject: { "reference" => "Group/Patient/pt_001" })
+    condition = build_condition_resource(subject: { "reference" => "Group/Patient/pt-001" })
     assert_nil get_conditions_with_bundle(conditions_bundle([ condition ]))
   end
 
   def test_get_conditions_accepts_subject_reference_under_base_url
     condition = build_condition_resource(
-      subject: { "reference" => "#{@adapter.base_url}/Patient/pt_001" }
+      subject: { "reference" => "#{@adapter.base_url}/Patient/pt-001" }
     )
     results = get_conditions_with_bundle(conditions_bundle([ condition ]))
 
@@ -1384,7 +1384,7 @@ class Corvid::Adapters::FhirAdapterTest < Minitest::Test
   end
 
   def test_get_medications_matches_versioned_patient_subject_reference_via_shared_reader
-    patient_id = "pt_x"
+    patient_id = "pt-x"
     relative = build_medication_request_resource(
       subject: { "reference" => "Patient/#{patient_id}/_history/7" }
     )
@@ -1401,9 +1401,9 @@ class Corvid::Adapters::FhirAdapterTest < Minitest::Test
   end
 
   def test_get_medications_rejects_non_matching_versioned_and_invalid_patient_subject_references
-    patient_id = "pt_x"
+    patient_id = "pt-x"
     other_patient = build_medication_request_resource(
-      subject: { "reference" => "Patient/pt_other/_history/7" }
+      subject: { "reference" => "Patient/pt-other/_history/7" }
     )
     assert_nil get_medications_with_bundle(medications_bundle([ other_patient ]), patient_id: patient_id)
 
@@ -1498,7 +1498,7 @@ class Corvid::Adapters::FhirAdapterTest < Minitest::Test
 
   def test_get_conditions_skips_bundle_include_entries_that_are_not_conditions
     condition = build_condition_resource
-    patient = { "resourceType" => "Patient", "id" => "pt_001" }
+    patient = { "resourceType" => "Patient", "id" => "pt-001" }
     bundle = conditions_bundle([ condition ], includes: [ patient ])
     results = get_conditions_with_bundle(bundle)
 
@@ -1519,7 +1519,7 @@ class Corvid::Adapters::FhirAdapterTest < Minitest::Test
 
   def test_get_medications_skips_bundle_include_entries_that_are_not_medication_resources
     request = build_medication_request_resource
-    patient = { "resourceType" => "Patient", "id" => "pt_001" }
+    patient = { "resourceType" => "Patient", "id" => "pt-001" }
     results = get_medications_with_bundle(medications_bundle([ request ], includes: [ patient ]))
 
     assert_equal 1, results.size
@@ -2070,45 +2070,45 @@ class Corvid::Adapters::FhirAdapterTest < Minitest::Test
 
   def test_get_medications_returns_nil_when_other_patient_request_has_do_not_perform_true
     request = build_medication_request_resource(
-      subject: { "reference" => "Patient/pt_other" },
+      subject: { "reference" => "Patient/pt-other" },
       doNotPerform: true
     )
-    assert_nil get_medications_with_bundle(medications_bundle([ request ]), patient_id: "pt_001")
+    assert_nil get_medications_with_bundle(medications_bundle([ request ]), patient_id: "pt-001")
   end
 
   def test_get_medications_returns_nil_when_other_patient_request_has_entered_in_error_status
     request = build_medication_request_resource(
-      subject: { "reference" => "Patient/pt_other" },
+      subject: { "reference" => "Patient/pt-other" },
       status: "entered-in-error"
     )
-    assert_nil get_medications_with_bundle(medications_bundle([ request ]), patient_id: "pt_001")
+    assert_nil get_medications_with_bundle(medications_bundle([ request ]), patient_id: "pt-001")
   end
 
   def test_get_conditions_returns_nil_when_other_patient_condition_would_be_excluded_as_refuted
     condition = build_condition_resource(
-      subject: { "reference" => "Patient/pt_other" },
+      subject: { "reference" => "Patient/pt-other" },
       verification_status: "refuted"
     )
-    assert_nil get_conditions_with_bundle(conditions_bundle([ condition ]), patient_id: "pt_001")
+    assert_nil get_conditions_with_bundle(conditions_bundle([ condition ]), patient_id: "pt-001")
   end
 
   def test_get_conditions_returns_nil_when_other_patient_condition_would_be_excluded_as_entered_in_error
     condition = build_condition_resource(
-      subject: { "reference" => "Patient/pt_other" },
+      subject: { "reference" => "Patient/pt-other" },
       verification_status: "entered-in-error"
     )
-    assert_nil get_conditions_with_bundle(conditions_bundle([ condition ]), patient_id: "pt_001")
+    assert_nil get_conditions_with_bundle(conditions_bundle([ condition ]), patient_id: "pt-001")
   end
 
   def test_get_conditions_returns_nil_when_other_patient_condition_would_be_excluded_by_out_of_scope_category
     condition = build_condition_resource(
       "id" => "cond_other_patient_oos",
-      subject: { "reference" => "Patient/pt_other" },
+      subject: { "reference" => "Patient/pt-other" },
       category: [ {
         "coding" => [ { "system" => US_CORE_CONDITION_CATEGORY_SYSTEM, "code" => "health-concern" } ]
       } ]
     )
-    assert_nil get_conditions_with_bundle(conditions_bundle([ condition ]), patient_id: "pt_001")
+    assert_nil get_conditions_with_bundle(conditions_bundle([ condition ]), patient_id: "pt-001")
   end
 
   # Coverage period partial dates (#640) -------------------------------------
@@ -2128,7 +2128,7 @@ class Corvid::Adapters::FhirAdapterTest < Minitest::Test
 
   def eligibility_for_period(period)
     @adapter.stub(:fhir_search, coverage_bundle(period)) do
-      @adapter.verify_eligibility("pt_test_001", "medicaid")
+      @adapter.verify_eligibility("pt-test-001", "medicaid")
     end
   end
 
@@ -2163,10 +2163,49 @@ class Corvid::Adapters::FhirAdapterTest < Minitest::Test
   end
 
   def test_partial_birth_date_still_parses_to_nil
-    resource = { "id" => "pt_test_001", "birthDate" => "1980", "name" => [ { "family" => "TEST", "given" => [ "PATIENT" ] } ] }
+    resource = { "id" => "pt-test-001", "birthDate" => "1980", "name" => [ { "family" => "TEST", "given" => [ "PATIENT" ] } ] }
     @adapter.stub(:fhir_read, resource) do
-      assert_nil @adapter.find_patient("pt_test_001").dob
+      assert_nil @adapter.find_patient("pt-test-001").dob
     end
+  end
+
+  def test_get_conditions_does_not_match_when_patient_identifier_is_integer
+    condition = build_condition_resource(subject: { "reference" => "Patient/42" })
+    results = get_conditions_with_bundle(conditions_bundle([ condition ]), patient_id: 42)
+    assert_nil results
+  end
+
+  def test_get_conditions_matches_string_patient_identifier_for_numeric_fhir_id
+    condition = build_condition_resource(subject: { "reference" => "Patient/42" })
+    results = get_conditions_with_bundle(conditions_bundle([ condition ]), patient_id: "42")
+    refute_nil results
+    assert_equal 1, results.size
+  end
+
+  def test_get_conditions_rejects_patient_subject_reference_with_underscore_id
+    condition = build_condition_resource(subject: { "reference" => "Patient/pt_x" })
+    results = get_conditions_with_bundle(conditions_bundle([ condition ]), patient_id: "pt_x")
+    assert_nil results
+  end
+
+  def test_get_medications_rejects_invalid_history_version_segment_via_shared_reader
+    patient_id = "pt-1"
+    invalid = build_medication_request_resource(
+      subject: { "reference" => "Patient/#{patient_id}/_history/a b?c" }
+    )
+    assert_nil get_medications_with_bundle(medications_bundle([ invalid ]), patient_id: patient_id)
+
+    empty_version = build_medication_request_resource(
+      subject: { "reference" => "Patient/#{patient_id}/_history/" }
+    )
+    assert_nil get_medications_with_bundle(medications_bundle([ empty_version ]), patient_id: patient_id)
+
+    valid = build_medication_request_resource(
+      subject: { "reference" => "Patient/#{patient_id}/_history/3" }
+    )
+    results = get_medications_with_bundle(medications_bundle([ valid ]), patient_id: patient_id)
+    refute_nil results
+    assert_equal 1, results.size
   end
 
   private
@@ -2194,7 +2233,7 @@ class Corvid::Adapters::FhirAdapterTest < Minitest::Test
     response
   end
 
-  def get_medications_with_bundle_without_extra_http(bundle, patient_id: "pt_001")
+  def get_medications_with_bundle_without_extra_http(bundle, patient_id: "pt-001")
     http_calls = 0
     response = consumed_http_response(bundle)
     @adapter.stub(:http_get, ->(url) {
@@ -2209,7 +2248,7 @@ class Corvid::Adapters::FhirAdapterTest < Minitest::Test
   end
 
   def clinical_read_with_http_fault(method, fault)
-    @adapter.stub(:http_get, ->(_url) { raise fault }) { @adapter.public_send(method, "pt_001") }
+    @adapter.stub(:http_get, ->(_url) { raise fault }) { @adapter.public_send(method, "pt-001") }
   end
 
   # Raises from Net::HTTP#request so execute_http, http_get, and fhir_read all run.
@@ -2349,7 +2388,7 @@ class Corvid::Adapters::FhirAdapterTest < Minitest::Test
     resource = {
       "resourceType" => "Condition",
       "id" => "cond_001",
-      "subject" => { "reference" => "Patient/pt_001" },
+      "subject" => { "reference" => "Patient/pt-001" },
       "category" => [ {
         "coding" => [ { "system" => CONDITION_CATEGORY_SYSTEM, "code" => category_code } ]
       } ],
@@ -2376,7 +2415,7 @@ class Corvid::Adapters::FhirAdapterTest < Minitest::Test
       "resourceType" => "MedicationRequest",
       "id" => "mr_001",
       "status" => "active",
-      "subject" => { "reference" => "Patient/pt_001" },
+      "subject" => { "reference" => "Patient/pt-001" },
       "authoredOn" => "2024-06-01",
       "medicationCodeableConcept" => {
         "coding" => [ { "system" => "http://example.test/rxnorm", "code" => "M001", "display" => "TEST MEDICATION 001" } ]
@@ -2388,23 +2427,23 @@ class Corvid::Adapters::FhirAdapterTest < Minitest::Test
     merged
   end
 
-  def get_conditions_with_bundle(bundle, patient_id: "pt_001")
+  def get_conditions_with_bundle(bundle, patient_id: "pt-001")
     get_conditions_with_http_response(consumed_http_response(bundle), patient_id: patient_id)
   end
 
-  def get_conditions_with_http_response(response, patient_id: "pt_001")
+  def get_conditions_with_http_response(response, patient_id: "pt-001")
     @adapter.stub(:http_get, response) { @adapter.get_conditions(patient_id) }
   end
 
   def get_conditions_with_http_error(error)
-    @adapter.stub(:http_get, ->(_url) { raise error }) { @adapter.get_conditions("pt_001") }
+    @adapter.stub(:http_get, ->(_url) { raise error }) { @adapter.get_conditions("pt-001") }
   end
 
-  def get_medications_with_bundle(bundle, patient_id: "pt_001")
+  def get_medications_with_bundle(bundle, patient_id: "pt-001")
     get_medications_with_http_response(consumed_http_response(bundle), patient_id: patient_id)
   end
 
-  def get_medications_with_http_response(response, patient_id: "pt_001")
+  def get_medications_with_http_response(response, patient_id: "pt-001")
     @adapter.stub(:http_get, response) { @adapter.get_medications(patient_id) }
   end
 
@@ -2412,7 +2451,7 @@ class Corvid::Adapters::FhirAdapterTest < Minitest::Test
     {
       "id" => "rf_req_helper",
       "status" => "active",
-      "subject" => { "reference" => "Patient/pt_test_001" },
+      "subject" => { "reference" => "Patient/pt-test-001" },
       "requester" => { "reference" => requester_reference }
     }
   end
@@ -2438,7 +2477,7 @@ class Corvid::Adapters::FhirAdapterTest < Minitest::Test
       "entry" => [ { "resource" => {
         "resourceType" => "Claim",
         "id" => "clm_pr_helper",
-        "patient" => { "reference" => "Patient/pt_pr3" },
+        "patient" => { "reference" => "Patient/pt-pr3" },
         "provider" => provider,
         "item" => [ {
           "sequence" => 1,
@@ -2447,6 +2486,6 @@ class Corvid::Adapters::FhirAdapterTest < Minitest::Test
         } ]
       } } ]
     }
-    @adapter.stub(:fhir_search, bundle) { @adapter.list_claims("pt_pr3").first }
+    @adapter.stub(:fhir_search, bundle) { @adapter.list_claims("pt-pr3").first }
   end
 end
