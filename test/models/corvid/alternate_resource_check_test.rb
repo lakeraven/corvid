@@ -1791,6 +1791,64 @@ class Corvid::AlternateResourceCheckTest < ActiveSupport::TestCase
     end
   end
 
+  # ---- Issue #639 gate round 4 (failing until implemented) ------------------
+
+  test "verify! on denied medicaid with application_date does not reopen to pending_enrollment when ineligible" do
+    with_tenant("tnt_test") do
+      travel_to Date.new(2027, 4, 1) do
+        check = Corvid::AlternateResourceCheck.create!(
+          prc_referral: create_referral,
+          resource_type: "medicaid",
+          status: "denied",
+          application_date: Date.new(2027, 3, 15),
+          application_date_source: "staff_entry",
+          medicaid_state_code: "XA",
+          eligibility_group: "expansion_adult",
+          eligibility_group_source: "staff_entry",
+          eligibility_group_set_at: Time.current
+        )
+
+        Corvid.adapter.define_singleton_method(:verify_eligibility) do |_pid, _type|
+          { eligible: false }
+        end
+
+        assert check.verify!
+        check.reload
+        assert check.denied?
+        refute check.pending_enrollment?
+      end
+    end
+  end
+
+  %w[enrolled coordinated exhausted].each do |initial_status|
+    define_method("test_verify!_on_#{initial_status}_medicaid_with_application_date_moves_to_not_enrolled_when_ineligible") do
+      with_tenant("tnt_test") do
+        travel_to Date.new(2027, 4, 1) do
+          check = Corvid::AlternateResourceCheck.create!(
+            prc_referral: create_referral,
+            resource_type: "medicaid",
+            status: initial_status,
+            application_date: Date.new(2027, 3, 15),
+            application_date_source: "staff_entry",
+            medicaid_state_code: "XA",
+            eligibility_group: "expansion_adult",
+            eligibility_group_source: "staff_entry",
+            eligibility_group_set_at: Time.current
+          )
+
+          Corvid.adapter.define_singleton_method(:verify_eligibility) do |_pid, _type|
+            { eligible: false }
+          end
+
+          assert check.verify!
+          check.reload
+          assert check.not_enrolled?
+          refute check.pending_enrollment?
+        end
+      end
+    end
+  end
+
   private
 
   def create_case

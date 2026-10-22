@@ -287,3 +287,10 @@ Feature: Alternate resource tracking (payer of last resort)
     When I record medicaid application filed on "2026-06-15" from "staff_entry" in state "XA"
     And the medicaid check is verified ineligible
     Then the check status should be "pending_enrollment"
+
+  # Issue #639 gate round 4
+  Scenario: Ineligible verify on denied Medicaid application does not reopen enrollment
+    Given an alternate resource check for "medicaid" exists with status "denied"
+    When I record medicaid application filed on "2026-06-15" from "staff_entry" in state "XA"
+    And the medicaid check is verified ineligible
+    Then the check status should be "denied"

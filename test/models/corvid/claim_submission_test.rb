@@ -224,6 +224,34 @@ class Corvid::ClaimSubmissionTest < ActiveSupport::TestCase
     end
   end
 
+  # ---- Issue #639 gate round 4 (failing until implemented) ------------------
+
+  test "never-submitted claim cannot reach accepted or paid through plain save" do
+    with_tenant("tnt_test") do
+      claim = Corvid::ClaimSubmission.create!(
+        patient_identifier: "pt_cs_never_submitted",
+        claim_type: "professional",
+        service_date: Date.current,
+        billed_amount: 100.0,
+        status: "draft"
+      )
+      assert_nil claim.submitted_at
+
+      assert claim.update(status: "error")
+
+      refute claim.update(status: "accepted")
+      assert claim.errors[:status].present? || claim.errors[:base].present?
+      claim.reload
+      assert_nil claim.submitted_at
+      assert_equal "error", claim.status
+
+      refute claim.update(status: "paid", paid_amount: 50.0)
+      assert claim.errors[:status].present? || claim.errors[:base].present?
+      claim.reload
+      assert_nil claim.submitted_at
+    end
+  end
+
   test "mark_paid! updates status and paid amount" do
     with_tenant(TENANT) do
       claim = create_claim(status: "accepted", billed_amount: 150.0)

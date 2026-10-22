@@ -889,6 +889,333 @@ class Corvid::ClaimSubmissionMedicaidHoldTest < ActiveSupport::TestCase
     end
   end
 
+  # ---- Issue #639 gate round 4 (failing until implemented) ------------------
+
+  test "submit! refuses unsaved patient_identifier change after medicaid hold override" do
+    with_tenant(TENANT) do
+      claim, = authorized_claim_with_pending_medicaid!(
+        application_date: Date.new(2027, 3, 15),
+        application_date_source: "staff_entry",
+        medicaid_state_code: "XA",
+        eligibility_group: "expansion_adult",
+        service_date: Date.new(2027, 2, 1)
+      )
+      other_patient = "pt-mca-hold-unsaved-#{SecureRandom.hex(2)}"
+      seed_patient_pending_medicaid_on_referral!(
+        patient_id: other_patient,
+        referral_id: "REF-UNSAVED-#{SecureRandom.hex(2)}",
+        application_date: Date.new(2027, 3, 15),
+        application_date_source: "staff_entry",
+        medicaid_state_code: "XA",
+        eligibility_group: "expansion_adult"
+      )
+      claim.override_medicaid_hold!(
+        reason_token: "rt_medicaid_hold_override",
+        by_identifier: "usr_billing_spec"
+      )
+      persisted_patient = claim.reload.patient_identifier
+      override_token = claim.medicaid_hold_override_reason_token
+      submit_calls = stub_submit_claim!
+      claim.patient_identifier = other_patient
+
+      error = assert_raises(Corvid::ClaimSubmission::HeldForPendingMedicaid) { claim.submit! }
+
+      assert_equal "window_undetermined", error.reason
+      assert_empty submit_calls
+      claim.reload
+      assert_equal "draft", claim.status
+      assert_nil claim.submitted_at
+      assert_equal persisted_patient, claim.patient_identifier
+      assert_equal override_token, claim.medicaid_hold_override_reason_token
+    end
+  end
+
+  test "mark_submitted! refuses unsaved service_date change after medicaid hold override" do
+    with_tenant(TENANT) do
+      claim, = authorized_claim_with_pending_medicaid!(
+        application_date: Date.new(2027, 3, 15),
+        application_date_source: "staff_entry",
+        medicaid_state_code: "XA",
+        eligibility_group: "expansion_adult",
+        service_date: Date.new(2027, 2, 1)
+      )
+      claim.override_medicaid_hold!(
+        reason_token: "rt_medicaid_hold_override",
+        by_identifier: "usr_billing_spec"
+      )
+      persisted_service_date = claim.reload.service_date
+      override_token = claim.medicaid_hold_override_reason_token
+      claim.service_date = Date.new(2027, 2, 15)
+
+      error = assert_raises(Corvid::ClaimSubmission::HeldForPendingMedicaid) do
+        claim.mark_submitted!(claim_identifier: "CLM-UNSAVED-DOS")
+      end
+
+      assert_equal "window_undetermined", error.reason
+      claim.reload
+      assert_equal "draft", claim.status
+      assert_nil claim.claim_identifier
+      assert_equal persisted_service_date, claim.service_date
+      assert_equal override_token, claim.medicaid_hold_override_reason_token
+    end
+  end
+
+  test "submit! refuses unsaved referral_identifier change after medicaid hold override" do
+    with_tenant(TENANT) do
+      claim, referral, = authorized_claim_with_pending_medicaid!(
+        application_date: Date.new(2027, 3, 15),
+        application_date_source: "staff_entry",
+        medicaid_state_code: "XA",
+        eligibility_group: "expansion_adult",
+        service_date: Date.new(2027, 2, 1)
+      )
+      claim.override_medicaid_hold!(
+        reason_token: "rt_medicaid_hold_override",
+        by_identifier: "usr_billing_spec"
+      )
+      other = authorized_referral_for_patient!(
+        patient_id: referral.case.patient_identifier,
+        referral_id: "REF-UNSAVED-LINK-#{SecureRandom.hex(2)}"
+      )
+      persisted_referral = claim.reload.referral_identifier
+      override_token = claim.medicaid_hold_override_reason_token
+      submit_calls = stub_submit_claim!
+      claim.referral_identifier = other.referral_identifier
+      claim.facility_identifier = other.facility_identifier
+
+      error = assert_raises(Corvid::ClaimSubmission::HeldForPendingMedicaid) { claim.submit! }
+
+      assert_equal "window_undetermined", error.reason
+      assert_empty submit_calls
+      claim.reload
+      assert_equal persisted_referral, claim.referral_identifier
+      assert_equal override_token, claim.medicaid_hold_override_reason_token
+    end
+  end
+
+  test "submit! refuses unsaved prc_referral_id change after medicaid hold override" do
+    with_tenant(TENANT) do
+      claim, referral, = authorized_claim_with_pending_medicaid!(
+        application_date: Date.new(2027, 3, 15),
+        application_date_source: "staff_entry",
+        medicaid_state_code: "XA",
+        eligibility_group: "expansion_adult",
+        service_date: Date.new(2027, 2, 1)
+      )
+      claim.override_medicaid_hold!(
+        reason_token: "rt_medicaid_hold_override",
+        by_identifier: "usr_billing_spec"
+      )
+      other = authorized_referral_for_patient!(
+        patient_id: referral.case.patient_identifier,
+        referral_id: "REF-UNSAVED-PRC-#{SecureRandom.hex(2)}"
+      )
+      persisted_prc_referral_id = claim.reload.prc_referral_id
+      override_token = claim.medicaid_hold_override_reason_token
+      submit_calls = stub_submit_claim!
+      claim.prc_referral_id = other.id
+
+      error = assert_raises(Corvid::ClaimSubmission::HeldForPendingMedicaid) { claim.submit! }
+
+      assert_equal "window_undetermined", error.reason
+      assert_empty submit_calls
+      claim.reload
+      assert_equal persisted_prc_referral_id, claim.prc_referral_id
+      assert_equal override_token, claim.medicaid_hold_override_reason_token
+    end
+  end
+
+  test "nested submit! during adapter call allows only one clearinghouse submission" do
+    with_tenant(TENANT) do
+      claim, = authorized_claim_with_pending_medicaid!(
+        application_date: Date.new(2027, 3, 15),
+        application_date_source: "staff_entry",
+        medicaid_state_code: "XA",
+        eligibility_group: "expansion_adult",
+        service_date: Date.new(2027, 2, 1)
+      )
+      claim.override_medicaid_hold!(
+        reason_token: "rt_medicaid_hold_override",
+        by_identifier: "usr_billing_spec"
+      )
+      copy_a = Corvid::ClaimSubmission.find(claim.id)
+      copy_b = Corvid::ClaimSubmission.find(claim.id)
+      submit_calls = []
+      nested_error = nil
+      Corvid.adapter.define_singleton_method(:submit_claim) do |data|
+        submit_calls << data
+        if submit_calls.size == 1
+          begin
+            copy_b.submit!
+          rescue Corvid::ClaimSubmission::HeldForPendingMedicaid => error
+            nested_error = error
+          end
+        end
+        { claim_identifier: "CLM-CONCURRENT-1", status: "accepted" }
+      end
+
+      copy_a.submit!
+
+      assert_instance_of Corvid::ClaimSubmission::HeldForPendingMedicaid, nested_error
+
+      assert_equal 1, submit_calls.size
+      assert_equal "submitted", claim.reload.status
+    end
+  end
+
+  test "stale in-memory copy cannot submit! after override was consumed" do
+    with_tenant(TENANT) do
+      claim, = authorized_claim_with_pending_medicaid!(
+        application_date: Date.new(2027, 3, 15),
+        application_date_source: "staff_entry",
+        medicaid_state_code: "XA",
+        eligibility_group: "expansion_adult",
+        service_date: Date.new(2027, 2, 1)
+      )
+      claim.override_medicaid_hold!(
+        reason_token: "rt_medicaid_hold_override",
+        by_identifier: "usr_billing_spec"
+      )
+      fresh = Corvid::ClaimSubmission.find(claim.id)
+      stale = Corvid::ClaimSubmission.find(claim.id)
+      submit_calls = stub_submit_claim!
+
+      fresh.submit!
+
+      assert_equal 1, submit_calls.size
+      submit_calls.clear
+      stub_submit_claim!
+
+      assert_raises(Corvid::ClaimSubmission::HeldForPendingMedicaid) { stale.submit! }
+      assert_empty submit_calls
+      assert_equal "submitted", fresh.reload.status
+    end
+  end
+
+  test "never-submitted held draft cannot reach submitted through error intermediate status" do
+    with_tenant(TENANT) do
+      claim, = authorized_claim_with_pending_medicaid!(
+        application_date: Date.new(2027, 3, 15),
+        application_date_source: "staff_entry",
+        medicaid_state_code: "XA",
+        eligibility_group: "expansion_adult",
+        service_date: Date.new(2027, 2, 1)
+      )
+
+      assert claim.update(status: "error")
+      assert_equal "error", claim.reload.status
+
+      refute claim.update(
+        status: "submitted",
+        submitted_at: Time.current,
+        claim_identifier: "CLM-BYPASS-639"
+      )
+      assert(
+        claim.errors[:status].present? ||
+          claim.errors[:base].present?
+      )
+      claim.reload
+      assert_nil claim.submitted_at
+      assert_nil claim.claim_identifier
+      assert_equal "error", claim.status
+    end
+  end
+
+  test "submit! held again when referral is re-linked onto patient case after override" do
+    with_tenant(TENANT) do
+      claim, referral, = authorized_claim_with_pending_medicaid!(
+        application_date: Date.new(2027, 3, 15),
+        application_date_source: "staff_entry",
+        medicaid_state_code: "XA",
+        eligibility_group: "expansion_adult",
+        service_date: Date.new(2027, 2, 1)
+      )
+      other_case = Corvid::Case.create!(
+        patient_identifier: "pt-mca-hold-orphan-#{SecureRandom.hex(2)}",
+        facility_identifier: "fac_a"
+      )
+      other_referral = Corvid::PrcReferral.create!(
+        case: other_case,
+        referral_identifier: "REF-RELINK-#{SecureRandom.hex(2)}",
+        facility_identifier: "fac_a"
+      )
+      other_medicaid = other_referral.alternate_resource_checks.find_or_create_by!(resource_type: "medicaid") do |check|
+        check.status = "not_checked"
+      end
+      other_medicaid.update!(
+        status: "pending_enrollment",
+        application_date: Date.new(2027, 3, 10),
+        application_date_source: "staff_entry",
+        medicaid_state_code: "XA",
+        eligibility_group: "expansion_adult",
+        eligibility_group_source: "staff_entry",
+        eligibility_group_set_at: Time.current
+      )
+      claim.override_medicaid_hold!(
+        reason_token: "rt_medicaid_hold_override",
+        by_identifier: "usr_billing_spec"
+      )
+      overridden_at = claim.medicaid_hold_overridden_at
+
+      travel_to overridden_at + 2.seconds do
+        other_referral.update!(case_id: referral.case_id)
+        submit_calls = stub_submit_claim!
+
+        assert_raises(Corvid::ClaimSubmission::HeldForPendingMedicaid) { claim.submit! }
+
+        assert_empty submit_calls
+      end
+    end
+  end
+
+  test "submit! held again when case patient_identifier is corrected to claim patient after override" do
+    with_tenant(TENANT) do
+      claim, referral, = authorized_claim_with_pending_medicaid!(
+        application_date: Date.new(2027, 3, 15),
+        application_date_source: "staff_entry",
+        medicaid_state_code: "XA",
+        eligibility_group: "expansion_adult",
+        service_date: Date.new(2027, 2, 1)
+      )
+      patient_id = referral.case.patient_identifier
+      wrong_case = Corvid::Case.create!(
+        patient_identifier: "pt-mca-hold-wrong-#{SecureRandom.hex(2)}",
+        facility_identifier: "fac_a"
+      )
+      orphan_referral = Corvid::PrcReferral.create!(
+        case: wrong_case,
+        referral_identifier: "REF-CASE-FIX-#{SecureRandom.hex(2)}",
+        facility_identifier: "fac_a"
+      )
+      orphan_medicaid = orphan_referral.alternate_resource_checks.find_or_create_by!(resource_type: "medicaid") do |check|
+        check.status = "not_checked"
+      end
+      orphan_medicaid.update!(
+        status: "pending_enrollment",
+        application_date: Date.new(2027, 3, 10),
+        application_date_source: "staff_entry",
+        medicaid_state_code: "XA",
+        eligibility_group: "expansion_adult",
+        eligibility_group_source: "staff_entry",
+        eligibility_group_set_at: Time.current
+      )
+      claim.override_medicaid_hold!(
+        reason_token: "rt_medicaid_hold_override",
+        by_identifier: "usr_billing_spec"
+      )
+      overridden_at = claim.medicaid_hold_overridden_at
+
+      travel_to overridden_at + 2.seconds do
+        wrong_case.update!(patient_identifier: patient_id)
+        submit_calls = stub_submit_claim!
+
+        assert_raises(Corvid::ClaimSubmission::HeldForPendingMedicaid) { claim.submit! }
+
+        assert_empty submit_calls
+      end
+    end
+  end
+
   private
 
   def authorized_claim_with_pending_medicaid!(medicaid_status: "pending_enrollment", service_date:, **medicaid_attrs)
