@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "minitest/autorun"
+require "pp"
 require "openssl"
 require "base64"
 require "json"
@@ -257,6 +258,21 @@ class Corvid::Auth::BackendServicesClientTest < Minitest::Test
 
   def test_negative_refresh_skew_is_rejected
     assert_raises(ArgumentError) { new_client(private_key: @rsa, refresh_skew: -30) }
+  end
+
+  # --- inspect -----------------------------------------------------------------
+
+  # Default #inspect renders every ivar: the cached access token would land
+  # in any log line, error report or console that prints the client.
+  def test_inspect_does_not_render_the_cached_token_or_key
+    client = stub_client(private_key: @rsa,
+                         response: { "access_token" => "synthetic-cached-tok", "expires_in" => 300 })
+    client.access_token
+    [ client.inspect, client.pretty_inspect ].each do |rendered|
+      refute_match(/synthetic-cached-tok/, rendered)
+      refute_match(/PRIVATE KEY|BEGIN/, rendered)
+    end
+    assert_match(/corvid-app-123/, client.inspect)
   end
 
   # --- cache deadline ----------------------------------------------------------

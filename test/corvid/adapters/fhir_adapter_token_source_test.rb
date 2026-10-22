@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "minitest/autorun"
+require "pp"
 require "corvid/adapters/fhir_adapter"
 
 # The FhirAdapter authenticates with a static bearer_token OR a dynamic
@@ -395,6 +396,34 @@ class Corvid::Adapters::FhirAdapterTokenSourceTest < Minitest::Test
       assert url.start_with?("#{BASE}/"), url
       assert_equal "Bearer tok", auth
     end
+  end
+
+  # --- inspect -----------------------------------------------------------------
+  #
+  # Default #inspect renders every ivar, so an adapter in a log line, an error
+  # tracker or a console would print the bearer token, or the token cached by
+  # its token_source.
+
+  def test_inspect_does_not_render_a_static_bearer_token
+    adapter = Corvid::Adapters::FhirAdapter.new(base_url: BASE, bearer_token: "synthetic-static-tok")
+    refute_match(/synthetic-static-tok/, adapter.inspect)
+    refute_match(/synthetic-static-tok/, adapter.pretty_inspect)
+  end
+
+  def test_inspect_does_not_render_a_preset_authorization_header
+    adapter = Corvid::Adapters::FhirAdapter.new(
+      base_url: BASE, headers: { "Authorization" => "Bearer synthetic-preset-tok" }
+    )
+    refute_match(/synthetic-preset-tok/, adapter.inspect)
+  end
+
+  def test_inspect_does_not_render_the_token_source
+    source = Object.new
+    source.define_singleton_method(:call) { "tok" }
+    source.define_singleton_method(:inspect) { "#<Source cached=\"synthetic-cached-tok\">" }
+    adapter = Corvid::Adapters::FhirAdapter.new(base_url: BASE, token_source: source)
+    refute_match(/synthetic-cached-tok/, adapter.inspect)
+    assert_match(%r{fhir\.example\.com/r4}, adapter.inspect)
   end
 
   def test_request_carries_resolved_token_as_bearer_header
