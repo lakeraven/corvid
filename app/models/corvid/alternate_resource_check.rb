@@ -54,10 +54,9 @@ module Corvid
     validates :medicaid_state_code, format: { with: /\A[A-Z]{2}\z/ }, allow_nil: true
     validate :application_fields_only_on_medicaid
     validate :application_date_paired_with_source
-    # A new row cannot record an application date after Date.current.
-    # An update can, so a filing dated after H.R. 1 can be stored while
-    # the calendar is still in 2026.
-    validate :application_date_not_in_future, on: :create
+    # Runs on every save. A date after today is rejected. That limit
+    # depends on today's date, so it is not a CHECK.
+    validate :application_date_not_in_future
 
     RESOURCE_NAMES = {
       "medicare_a" => "Medicare Part A", "medicare_b" => "Medicare Part B",
@@ -216,6 +215,15 @@ module Corvid
         renewal_current?(date_of_service, as_of)
     end
 
+    # True when this date cannot be used as a filing. A date after today
+    # is rejected on every save. A stored one is an undetermined window
+    # for the hold.
+    def future_application_date?
+      return false if application_date.nil?
+
+      application_date > Date.current
+    end
+
     private
 
     # checked_at is when eligibility was answered. Only a persisted row
@@ -319,13 +327,27 @@ module Corvid
 
     # Coordinated sticks only when the adapter's policy token is present
     # and matches the stored token. Any other eligible result is enrolled
-    # (verify! stores the new token). Ineligible is not_enrolled. nil
-    # leaves the row unchanged — silence is not a determination.
+    # (verify! stores the new token). Ineligible is not_enrolled, except
+    # a pending Medicaid application: an inactive answer is expected until
+    # denial or enrollment. nil leaves the row unchanged — silence is not
+    # a determination.
     def status_for_eligibility(result)
       case result[:eligible]
       when true then eligible_status(result)
-      when false then :not_enrolled
+      when false then ineligible_status
       end
+    end
+
+    def ineligible_status
+      return :pending_enrollment if pending_medicaid_application?
+
+      :not_enrolled
+    end
+
+    # An application_date means the pending row is an application, not a
+    # finished "not enrolled" answer. Without one, ineligible ends it.
+    def pending_medicaid_application?
+      resource_type == "medicaid" && pending_enrollment? && application_date.present?
     end
 
     def eligible_status(result)
@@ -379,7 +401,7 @@ module Corvid
     end
 
     def application_date_not_in_future
-      return if application_date.nil? || application_date <= Date.current
+      return unless future_application_date?
 
       errors.add(:application_date, "cannot be in the future")
     end

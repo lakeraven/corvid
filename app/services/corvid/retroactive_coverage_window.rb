@@ -11,6 +11,9 @@ module Corvid
   # rule set has a configured window. An unconfigured state, an unknown
   # eligibility group, or an invalid window stays undetermined.
   #
+  # filing_deadline is the latest filing date that still covers a date
+  # of service under that same split. An undetermined window has none.
+  #
   # Read-only. AlternateResourceCheck records the application date and
   # ClaimSubmission holds the bill. The worklist is still a follow-up
   # on #639.
@@ -44,11 +47,32 @@ module Corvid
         months = non_negative_window_months(rule_set)
         return if months.nil?
 
-        deadline = (date_of_service >> months).end_of_month.gregorian
-        deadline unless deadline < HR1_EFFECTIVE_DATE
+        latest_filing_date(date_of_service, months)
       end
 
       private
+
+      # Before 2027-01-01 the federal three-month window applies, not the
+      # state's. A state deadline on or after that date is already the
+      # latest filing date. Otherwise cap a later federal deadline at the
+      # last pre-H.R. 1 day.
+      def latest_filing_date(date_of_service, months)
+        state_deadline = end_of_month_after(date_of_service, months)
+        return state_deadline if state_deadline >= HR1_EFFECTIVE_DATE
+
+        pre_hr1_filing_deadline(date_of_service)
+      end
+
+      def pre_hr1_filing_deadline(date_of_service)
+        deadline = end_of_month_after(date_of_service, StateMedicaidRules::PRE_HR1_RETRO_COVERAGE_MONTHS)
+        return HR1_EFFECTIVE_DATE - 1 if deadline >= HR1_EFFECTIVE_DATE
+
+        deadline
+      end
+
+      def end_of_month_after(date, months)
+        (date >> months).end_of_month.gregorian
+      end
 
       def not_applied(rule_set)
         months = non_negative_window_months(rule_set)

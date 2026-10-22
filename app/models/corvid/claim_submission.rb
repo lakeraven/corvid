@@ -25,10 +25,22 @@ module Corvid
     # unauthorized referral bills care the programme never agreed to buy.
     class ReferralNotAuthorized < StandardError; end
 
-    # Raised by #submit! when a pending Medicaid application may still
-    # cover the service. The message names that rule and carries no
+    # Raised by #submit! and #mark_submitted! when a pending Medicaid
+    # application may still cover the service, or that window cannot be
+    # determined. #reason is inside_retroactive_window or
+    # window_undetermined. The message names the reason and carries no
     # patient data (ADR 0003).
-    class HeldForPendingMedicaid < StandardError; end
+    class HeldForPendingMedicaid < StandardError
+      INSIDE_RETROACTIVE_WINDOW = "inside_retroactive_window"
+      WINDOW_UNDETERMINED = "window_undetermined"
+
+      attr_reader :reason
+
+      def initialize(reason)
+        @reason = reason
+        super("pending Medicaid application holds this claim: #{reason}")
+      end
+    end
 
     # The referral this claim bills, where there is one. Optional: claims
     # billed outside the referral workflow, and legacy rows the backfill could
@@ -38,6 +50,17 @@ module Corvid
     validates :patient_identifier, presence: true
     validates :status, inclusion: { in: STATUSES }
     validates :claim_type, inclusion: { in: CLAIM_TYPES }
+    validate :medicaid_hold_override_not_assigned_directly
+    validate :medicaid_hold_override_all_or_none
+
+    # Written only by override_medicaid_hold!, and cleared together when
+    # the hold's basis changes. A direct write is invalid.
+    MEDICAID_HOLD_OVERRIDE_COLUMNS = %i[
+      medicaid_hold_override_reason_token
+      medicaid_hold_override_by_identifier
+      medicaid_hold_overridden_at
+    ].freeze
+    private_constant :MEDICAID_HOLD_OVERRIDE_COLUMNS
 
     # The link is derived from referral_identifier + facility_identifier +
     # patient_identifier, so it is recomputed whenever any of those change.
@@ -51,6 +74,9 @@ module Corvid
     # helpers, remittance processing) records when it first happened, so the
     # KPIs above still count the claim after its status moves on.
     before_save :stamp_rejection_and_denial_times, if: :will_save_change_to_status?
+    # After validation, so this clear is not a direct write of the
+    # override columns. A caller who assigns those columns still fails.
+    before_save :clear_medicaid_hold_override_when_basis_changes
 
     scope :by_status, ->(status) { where(status: status) }
     scope :pending, -> { where(status: %w[submitted accepted]) }
@@ -166,6 +192,7 @@ module Corvid
     end
 
     def mark_submitted!(claim_identifier:)
+      enforce_pending_medicaid_hold!
       update!(
         claim_identifier: claim_identifier,
         status: "submitted",
@@ -197,15 +224,16 @@ module Corvid
 
     # Records the staff override that releases a pending-Medicaid hold.
     # reason_token is a vault token for the reason, never free text.
+    # overridden_at is Time.current, never a caller-supplied time.
+    # Each call appends a staff_review Determination and keeps the prior ones.
     def override_medicaid_hold!(reason_token:, by_identifier:)
-      raise ArgumentError, "reason_token is blank" if reason_token.blank?
-      raise ArgumentError, "by_identifier is blank" if by_identifier.blank?
-
-      update!(
-        medicaid_hold_override_reason_token: reason_token,
-        medicaid_hold_override_by_identifier: by_identifier,
-        medicaid_hold_overridden_at: Time.current
-      )
+      require_medicaid_hold_override_args!(reason_token, by_identifier)
+      transaction do
+        write_medicaid_hold_override!(reason_token, by_identifier)
+        record_medicaid_hold_override!(reason_token, by_identifier)
+      end
+    ensure
+      @writing_medicaid_hold_override = false
     end
 
     def submit!
@@ -363,18 +391,87 @@ module Corvid
         .limit(1).exists?
     end
 
-    # PRC is payer of last resort. Hold while a pending Medicaid
-    # application covers the service date, or while that window cannot
-    # be determined. The check does not record an Indian exemption, so
+    def require_medicaid_hold_override_args!(reason_token, by_identifier)
+      raise ArgumentError, "reason_token is blank" if reason_token.blank?
+      raise ArgumentError, "by_identifier is blank" if by_identifier.blank?
+    end
+
+    def write_medicaid_hold_override!(reason_token, by_identifier)
+      @writing_medicaid_hold_override = true
+      update!(
+        medicaid_hold_override_reason_token: reason_token,
+        medicaid_hold_override_by_identifier: by_identifier,
+        medicaid_hold_overridden_at: Time.current
+      )
+    end
+
+    def record_medicaid_hold_override!(reason_token, by_identifier)
+      Determination.create!(
+        determinable: self,
+        tenant_identifier: tenant_identifier,
+        facility_identifier: facility_identifier,
+        decision_method: "staff_review",
+        outcome: "approved",
+        reasons_token: reason_token,
+        determined_by_identifier: by_identifier
+      )
+    end
+
+    def medicaid_hold_override_not_assigned_directly
+      return if @writing_medicaid_hold_override
+      return unless medicaid_hold_override_changed?
+
+      errors.add(:medicaid_hold_override_reason_token, "can only be changed through override_medicaid_hold!")
+    end
+
+    def medicaid_hold_override_all_or_none
+      values = MEDICAID_HOLD_OVERRIDE_COLUMNS.map { |name| public_send(name) }
+      return if values.all?(&:nil?) || values.all?(&:present?)
+
+      errors.add(:medicaid_hold_override_reason_token, "must be recorded with the staff identifier and time")
+    end
+
+    def medicaid_hold_override_changed?
+      MEDICAID_HOLD_OVERRIDE_COLUMNS.any? { |name| will_save_change_to_attribute?(name) }
+    end
+
+    # A service date, patient, or referral link change makes the recorded
+    # override describe a different bill. Drop it so the next submit! is
+    # held again. Skipped while override_medicaid_hold! is writing.
+    def clear_medicaid_hold_override_when_basis_changes
+      return if @writing_medicaid_hold_override
+      return unless persisted? && hold_basis_changed? && medicaid_hold_override_recorded?
+
+      assign_attributes(
+        medicaid_hold_override_reason_token: nil,
+        medicaid_hold_override_by_identifier: nil,
+        medicaid_hold_overridden_at: nil
+      )
+    end
+
+    def hold_basis_changed?
+      will_save_change_to_service_date? ||
+        will_save_change_to_patient_identifier? ||
+        will_save_change_to_referral_identifier? ||
+        will_save_change_to_prc_referral_id?
+    end
+
+    def medicaid_hold_override_recorded?
+      MEDICAID_HOLD_OVERRIDE_COLUMNS.any? { |name| public_send(name).present? }
+    end
+
+    # PRC is payer of last resort. Hold while any pending Medicaid
+    # application for this patient, in this tenant, covers the service
+    # date or that window cannot be determined. The claim's own referral
+    # is not special. The check does not record an Indian exemption, so
     # resolution passes "unknown". A recorded override releases the hold.
     def enforce_pending_medicaid_hold!
       return if medicaid_hold_overridden?
 
-      check = pending_medicaid_check
-      return unless check
-      return unless medicaid_window_blocks?(check)
+      reason = pending_medicaid_hold_reason
+      return if reason.nil?
 
-      raise HeldForPendingMedicaid, "pending Medicaid retroactive coverage"
+      raise HeldForPendingMedicaid, reason
     end
 
     def medicaid_hold_overridden?
@@ -383,39 +480,85 @@ module Corvid
         medicaid_hold_overridden_at.present?
     end
 
-    def pending_medicaid_check
-      return if prc_referral.blank?
+    def pending_medicaid_hold_reason
+      reasons = pending_medicaid_checks.filter_map { |check| medicaid_hold_reason(check) }
+      return if reasons.empty?
+      return HeldForPendingMedicaid::INSIDE_RETROACTIVE_WINDOW if reasons.include?(inside_window_reason)
 
-      prc_referral.alternate_resource_checks.find_by(
+      HeldForPendingMedicaid::WINDOW_UNDETERMINED
+    end
+
+    def inside_window_reason
+      HeldForPendingMedicaid::INSIDE_RETROACTIVE_WINDOW
+    end
+
+    # Pending Medicaid rows for this patient on any referral in the
+    # current tenant. Case and PrcReferral are tenant-scoped (ADR 0002).
+    def pending_medicaid_checks
+      return AlternateResourceCheck.none if patient_identifier.blank?
+
+      AlternateResourceCheck.where(
+        prc_referral_id: patient_referral_ids,
         resource_type: "medicaid",
         status: "pending_enrollment"
       )
     end
 
-    # Missing service date, an unresolvable group, or a window that is
-    # not a determined non-cover all fail closed.
-    def medicaid_window_blocks?(check)
-      return true if service_date.nil?
+    def patient_referral_ids
+      PrcReferral.where(case_id: patient_case_ids).select(:id)
+    end
+
+    def patient_case_ids
+      Case.where(patient_identifier: patient_identifier).select(:id)
+    end
+
+    # A future application date is not a window. Missing service date,
+    # an unresolvable group, or a window that is not a determined
+    # non-cover all fail closed.
+    def medicaid_hold_reason(check)
+      return undetermined_window_reason if service_date.nil? || future_application_date?(check)
 
       rule_set = medicaid_rule_set_for(check)
-      return true unless rule_set
+      return undetermined_window_reason unless rule_set
 
-      RetroactiveCoverageWindow.covers?(
+      coverage_hold_reason(check, rule_set)
+    end
+
+    def undetermined_window_reason
+      HeldForPendingMedicaid::WINDOW_UNDETERMINED
+    end
+
+    def future_application_date?(check)
+      check.future_application_date?
+    end
+
+    def coverage_hold_reason(check, rule_set)
+      case RetroactiveCoverageWindow.covers?(
         date_of_service: service_date,
         application_date: check.application_date,
         rule_set:
-      ) != false
+      )
+      when true then inside_window_reason
+      when nil then undetermined_window_reason
+      end
     end
 
     def medicaid_rule_set_for(check)
-      group = check.eligibility_group
-      return unless AlternateResourceCheck::ELIGIBILITY_GROUPS.include?(group)
+      return unless medicaid_inputs_resolvable?(check)
 
       MedicaidRuleSetResolver.resolve(
-        eligibility_group: group,
+        eligibility_group: check.eligibility_group,
         state: check.medicaid_state_code,
         indian_exemption: "unknown"
       )
+    end
+
+    def medicaid_inputs_resolvable?(check)
+      group = check.eligibility_group
+      state = check.medicaid_state_code
+      AlternateResourceCheck::ELIGIBILITY_GROUPS.include?(group) &&
+        state.is_a?(String) &&
+        state.match?(/\A[A-Z]{2}\z/)
     end
 
     def to_claim_data
