@@ -4,6 +4,8 @@ require "test_helper"
 
 module Corvid
   class FmapClassificationServiceTest < ActiveSupport::TestCase
+    AIAN_EVIDENCE = { "supports" => "aian_status", "ref" => "attestation:tok_example_aian" }.freeze
+
     setup do
       Corvid::TenantContext.current_tenant_identifier = "tnt_example"
       FmapRuleLoader.load_defaults!
@@ -29,7 +31,7 @@ module Corvid
         jurisdiction: "AZ",
         facility_authority: @uio,
         aian_verified: true,
-        evidence_refs: [ "attestation:tok_example_aian" ]
+        evidence_refs: [ AIAN_EVIDENCE ]
       )
       assert_equal "fmap_100_uio", inside.category
       assert_equal "us-arpa-9815-uio-100", inside.rule_key
@@ -50,7 +52,7 @@ module Corvid
         jurisdiction: "MT",
         facility_authority: @contract_638,
         aian_verified: true,
-        evidence_refs: [ "attestation:tok_example_aian" ]
+        evidence_refs: [ AIAN_EVIDENCE ]
       )
       assert_equal "fmap_100_ihs_638", result.category
       assert result.rule_citations.first.include?("1905(b)")
@@ -77,7 +79,7 @@ module Corvid
         jurisdiction: "MT",
         facility_authority: @contract_638,
         aian_verified: false,
-        coverage_group: "expansion",
+        coverage_group: "expansion_adult",
         billed_amount_cents: 10_000
       )
       assert_equal "fmap_90_expansion", gap.category
@@ -95,15 +97,19 @@ module Corvid
       assert_nil unknown.state_share_delta_cents
     end
 
-    test "CCA basis reaches 100 percent without an IHS/638 billing facility" do
+    # Changed in the #547 refresh: no CareCoordinationAgreement record
+    # exists yet to verify an agreement's scope, so a CCA basis is the
+    # best-available tier with the agreement named as missing, not granted.
+    test "CCA basis without an IHS/638 billing facility is reported, not granted" do
       result = FmapClassificationService.classify(
         date_of_service: Date.new(2026, 3, 1),
-        jurisdiction: "WA",
+        jurisdiction: "XB",
         aian_verified: true,
         received_through_basis: "cca",
-        evidence_refs: [ "cca_agreement:doc_example_1" ]
+        evidence_refs: [ AIAN_EVIDENCE ]
       )
-      assert_equal "fmap_100_cca", result.category
+      assert_equal "fmap_100_cca", result.best_available_category
+      assert_includes result.missing_evidence, "care_coordination_agreement"
     end
 
     test "an expired facility authority does not confer a basis" do
@@ -127,7 +133,7 @@ module Corvid
         encounter_identifier: "enc_example_1",
         person_identifier: "per_example_1",
         facility_identifier: "fac_uio_example",
-        evidence_refs: [ "attestation:tok_example_aian" ],
+        evidence_refs: [ AIAN_EVIDENCE ],
         date_of_service: Date.new(2022, 6, 1),
         jurisdiction: "AZ",
         facility_authority: @uio,
@@ -136,7 +142,7 @@ module Corvid
       assert determination.persisted?
       assert_equal "fmap_100_uio", determination.category
       assert_equal [ "ARPA sec. 9815 (Pub. L. 117-2)" ], determination.rule_citations
-      assert_equal [ "attestation:tok_example_aian" ], determination.evidence_refs
+      assert_includes determination.evidence_refs, AIAN_EVIDENCE
     end
 
     test "a claimed determination is immutable and corrections append" do
@@ -146,7 +152,7 @@ module Corvid
         jurisdiction: "AZ",
         facility_authority: @uio,
         aian_verified: true,
-        evidence_refs: [ "attestation:tok_example_aian" ],
+        evidence_refs: [ AIAN_EVIDENCE ],
         claim_reference: "clm_example_1"
       )
 
@@ -154,7 +160,7 @@ module Corvid
       assert_raises(ActiveRecord::RecordInvalid) { determination.save! }
       determination.reload
 
-      correction = determination.supersede_with!(category: "fmap_regular", fmap_percent: nil, rule_key: nil)
+      correction = determination.supersede_with!(rule_key: "us-regular")
       assert_equal correction.id, determination.reload.superseded_by_id
       assert_equal "fmap_100_uio", determination.category
       assert_equal "fmap_regular", correction.category
@@ -218,7 +224,7 @@ module Corvid
         jurisdiction: "MT",
         facility_authority: @contract_638,
         aian_verified: true,
-        evidence_refs: [ "attestation:tok_example_aian" ]
+        evidence_refs: [ AIAN_EVIDENCE ]
       )
 
       assert_equal "undetermined", result.category
@@ -256,7 +262,7 @@ module Corvid
         jurisdiction: "MT",
         facility_authority: @contract_638,
         aian_verified: true,
-        evidence_refs: [ "attestation:tok_example_aian" ]
+        evidence_refs: [ AIAN_EVIDENCE ]
       )
 
       assert_equal "fmap_regular", result.category

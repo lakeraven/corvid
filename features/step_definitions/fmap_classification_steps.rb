@@ -24,7 +24,7 @@ When("an encounter at {string} with date of service {string} is classified for F
     jurisdiction: "AZ",
     facility_authority: @facility_authorities.fetch(facility),
     aian_verified: true,
-    evidence_refs: [ "attestation:tok_example_aian" ]
+    evidence_refs: [ { "supports" => "aian_status", "ref" => "attestation:tok_example_aian" } ]
   )
 end
 
@@ -59,7 +59,7 @@ When("an encounter at {string} with date of service {string} is classified and r
     jurisdiction: "AZ",
     facility_authority: @facility_authorities.fetch(facility),
     aian_verified: true,
-    evidence_refs: [ "attestation:tok_example_aian" ],
+    evidence_refs: [ { "supports" => "aian_status", "ref" => "attestation:tok_example_aian" } ],
     claim_reference: claim
   )
 end
@@ -88,7 +88,7 @@ Then("editing the determination is rejected as immutable") do
 end
 
 Then("superseding it appends a correction linked from the original") do
-  correction = @determination.supersede_with!(category: "fmap_regular", fmap_percent: nil, rule_key: nil)
+  correction = @determination.supersede_with!(rule_key: "us-regular")
   assert correction.persisted?
   assert_equal correction.id, @determination.reload.superseded_by_id
   assert_equal "fmap_100_uio", @determination.category
