@@ -27,6 +27,8 @@ module Corvid
       best_available_category best_available_rule_key missing_evidence
       state_share_delta_cents determination_reason
     ].freeze
+    # Whose determination it is: a correction never changes these.
+    IDENTITY_FIELDS = %w[tenant_identifier encounter_identifier person_identifier].freeze
     # The applied rule's outcome: not carried when a correction changes the rule.
     APPLIED_RULE_FIELDS = %w[
       category fmap_percent rule_key rule_citations state_share_delta_cents determination_reason
@@ -86,6 +88,12 @@ module Corvid
     # superseded once; correct the current row, not an old one.
     def supersede_with!(**attrs)
       attrs = attrs.stringify_keys
+      if (attrs.keys & IDENTITY_FIELDS).any?
+        raise ArgumentError, "a correction cannot change #{(attrs.keys & IDENTITY_FIELDS).join(', ')}"
+      end
+      if tenant_identifier != Corvid::TenantContext.current_tenant_identifier
+        raise ArgumentError, "a correction must be appended in the determination's own tenant"
+      end
       replacement = nil
       transaction do
         lock!
@@ -135,6 +143,7 @@ module Corvid
       if category == FmapClassificationService::UNDETERMINED
         errors.add(:rule_key, "must be blank when undetermined") if rule_key.present?
         errors.add(:rule_citations, "must be empty when undetermined") if rule_citations.present?
+        errors.add(:fmap_percent, "must be blank when undetermined") unless fmap_percent.nil?
         return
       end
 
