@@ -499,6 +499,14 @@ class Corvid::Adapters::FhirAdapterTest < Minitest::Test
 
   FIXED_COVERAGE_TODAY = Date.new(2026, 6, 15)
 
+  def test_get_coverages_returns_nil_for_non_http_base_url_without_raising
+    adapter = Corvid::Adapters::FhirAdapter.new(base_url: "memory://x")
+
+    result = adapter.get_coverages("pt_x")
+
+    assert_nil result
+  end
+
   def test_get_coverages_maps_only_active_coverages_on_single_page
     bundle = coverage_bundle(
       entries: [
@@ -1544,6 +1552,14 @@ class Corvid::Adapters::FhirAdapterTest < Minitest::Test
     "Timeout"
   ].freeze
 
+  UNICODE_COVERAGE_UNTRUSTED_OUTCOME_CODES = [
+    "incomplete\u00A0",
+    "\u2003timeout",
+    "throttled\u200B",
+    "too-long\u3000",
+    "\uFEFFsuppressed"
+  ].freeze
+
   def test_get_coverages_returns_nil_when_operation_outcome_has_untrusted_code_at_warning_or_information_severity
     coverage = coverage_fhir_resource(
       id: "cov_untrusted_oo",
@@ -1603,6 +1619,38 @@ class Corvid::Adapters::FhirAdapterTest < Minitest::Test
         with_stubbed_coverage_http({ coverage_search_url("pt_oo_inexact") => http_ok_json(bundle) }) do
           assert_nil @adapter.get_coverages("pt_oo_inexact"),
                      "expected nil for inexact untrusted OperationOutcome #{severity}/#{code.inspect}"
+        end
+      end
+    end
+  end
+
+  def test_get_coverages_returns_nil_when_operation_outcome_has_unicode_whitespace_untrusted_code_at_any_severity
+    coverage = coverage_fhir_resource(
+      id: "cov_unicode_oo",
+      for_patient: "pt_oo_unicode",
+      status: "active",
+      payer_display: "TEST PAYER UNICODE OO",
+      type_code: "MCDSC",
+      subscriber_id: "POL_UOO",
+      period_start: Date.new(2026, 1, 1),
+      period_end: Date.new(2026, 12, 31)
+    )
+    UNICODE_COVERAGE_UNTRUSTED_OUTCOME_CODES.each do |code|
+      COVERAGE_UNTRUSTED_OUTCOME_SEVERITIES.each do |severity|
+        bundle = coverage_bundle(
+          entries: [
+            {
+              "resource" => {
+                "resourceType" => "OperationOutcome",
+                "issue" => [ { "severity" => severity, "code" => code } ]
+              }
+            },
+            coverage
+          ]
+        )
+        with_stubbed_coverage_http({ coverage_search_url("pt_oo_unicode") => http_ok_json(bundle) }) do
+          assert_nil @adapter.get_coverages("pt_oo_unicode"),
+                     "expected nil for unicode-padded OperationOutcome #{severity}/#{code.inspect}"
         end
       end
     end
@@ -3062,7 +3110,7 @@ class Corvid::Adapters::FhirAdapterTest < Minitest::Test
   end
 
   def test_get_coverages_returns_nil_when_operation_outcome_issue_code_is_not_a_string
-    non_string_codes = [ [ "incomplete" ], 5 ]
+    non_string_codes = [ 5, [ "incomplete" ], { "value" => "incomplete" } ]
     non_string_codes.each do |code|
       bundle = coverage_bundle(
         entries: [
@@ -3271,6 +3319,64 @@ class Corvid::Adapters::FhirAdapterTest < Minitest::Test
       refute_nil bundle, "fhir_search should follow exact relative next"
       assert_equal 2, bundle["entry"].size
       assert_equal [ page1_url, page2_url ], @requested_urls
+    end
+  end
+
+  UNICODE_TRUST_DEFEATING_OUTCOME_CODES = [
+    "incomplete\u00A0",
+    "\u2003timeout",
+    "throttled\u200B",
+    "too-long\u3000",
+    "\uFEFFsuppressed"
+  ].freeze
+
+  CLINICAL_OPERATION_OUTCOME_NON_STRING_CODES = [
+    5,
+    [ "incomplete" ],
+    { "code" => "incomplete" }
+  ].freeze
+
+  def test_get_conditions_returns_nil_when_operation_outcome_issue_code_is_not_a_string
+    condition = build_condition_resource
+    CLINICAL_OPERATION_OUTCOME_NON_STRING_CODES.each do |code|
+      OUTCOME_SEVERITIES.each do |severity|
+        bundle = conditions_bundle_with_operation_outcome([ condition ], issue_code: code, severity: severity)
+        assert_nil get_conditions_with_bundle(bundle),
+                   "expected nil when Condition OperationOutcome issue code is #{code.inspect} at #{severity}"
+      end
+    end
+  end
+
+  def test_get_medications_returns_nil_when_operation_outcome_issue_code_is_not_a_string
+    request = build_medication_request_resource
+    CLINICAL_OPERATION_OUTCOME_NON_STRING_CODES.each do |code|
+      OUTCOME_SEVERITIES.each do |severity|
+        bundle = medications_bundle_with_operation_outcome([ request ], issue_code: code, severity: severity)
+        assert_nil get_medications_with_bundle(bundle),
+                   "expected nil when MedicationRequest OperationOutcome issue code is #{code.inspect} at #{severity}"
+      end
+    end
+  end
+
+  def test_get_conditions_returns_nil_when_operation_outcome_has_unicode_whitespace_untrusted_code_at_any_severity
+    condition = build_condition_resource
+    UNICODE_TRUST_DEFEATING_OUTCOME_CODES.each do |code|
+      OUTCOME_SEVERITIES.each do |severity|
+        bundle = conditions_bundle_with_operation_outcome([ condition ], issue_code: code, severity: severity)
+        assert_nil get_conditions_with_bundle(bundle),
+                   "expected nil for unicode-padded OperationOutcome #{severity}/#{code.inspect} on Condition search"
+      end
+    end
+  end
+
+  def test_get_medications_returns_nil_when_operation_outcome_has_unicode_whitespace_untrusted_code_at_any_severity
+    request = build_medication_request_resource
+    UNICODE_TRUST_DEFEATING_OUTCOME_CODES.each do |code|
+      OUTCOME_SEVERITIES.each do |severity|
+        bundle = medications_bundle_with_operation_outcome([ request ], issue_code: code, severity: severity)
+        assert_nil get_medications_with_bundle(bundle),
+                   "expected nil for unicode-padded OperationOutcome #{severity}/#{code.inspect} on MedicationRequest search"
+      end
     end
   end
 
