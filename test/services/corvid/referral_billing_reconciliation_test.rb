@@ -225,7 +225,65 @@ class Corvid::ReferralBillingReconciliationTest < ActiveSupport::TestCase
     end
   end
 
+  test "a payment on appeal settles a claim an earlier call recorded as denied" do
+    with_tenant(TENANT) do
+      claim = accepted_claim("RC-APPEAL2", billed: 300.0)
+      denial = remittance("REM-DENY2", claim, paid: 0.0, line_status: "denied", date: 10.days.ago.to_date)
+      reconcile_against(claim, [ denial ])
+      assert_equal "denied", claim.reload.status
+
+      reconcile_against(claim, [ denial, remittance("REM-APPEAL2", claim, paid: 300.0) ])
+
+      assert_equal "paid", claim.reload.status
+    end
+  end
+
+  test "the adapter passed in is the one read" do
+    with_tenant(TENANT) do
+      claim = accepted_claim("RC-INJECT", billed: 100.0)
+      injected = Object.new
+      rem = remittance("REM-INJECT", claim, paid: 100.0)
+      injected.define_singleton_method(:fetch_remittances) { |**| [ rem ] }
+
+      Corvid.adapter.stub(:fetch_remittances, ->(**) { flunk "the global adapter was read" }) do
+        Corvid::ReferralBillingReconciliation.reconcile!(
+          referral: claim.prc_referral, claim: claim, adapter: injected
+        )
+      end
+
+      assert_equal "paid", claim.reload.status
+    end
+  end
+
   # --- what "reconciled" means ---------------------------------------------
+
+  test "a claim stored as paid in full does not reconcile when remittances cannot be read" do
+    with_tenant(TENANT) do
+      referral = referral_for("RC-PAIDNIL")
+      claim = accepted_claim("RC-PAIDNIL", billed: 100.0, referral: referral)
+      claim.mark_paid!(paid_amount: 100.0)
+      deliver!(referral)
+
+      result = reconcile_against(claim, nil)
+
+      assert_equal "pending", result.status,
+        "an unknown remittance read cannot confirm what the payer last said"
+    end
+  end
+
+  test "a claim stored as paid in full does not reconcile without a remittance for it" do
+    with_tenant(TENANT) do
+      referral = referral_for("RC-PAIDNONE")
+      claim = accepted_claim("RC-PAIDNONE", billed: 100.0, referral: referral)
+      claim.mark_paid!(paid_amount: 100.0)
+      deliver!(referral)
+
+      result = reconcile_against(claim, [])
+
+      assert_equal "pending", result.status,
+        "reconciling against the remittance needs a remittance"
+    end
+  end
 
   test "a claim already marked paid short of the bill does not reconcile" do
     with_tenant(TENANT) do
