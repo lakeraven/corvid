@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "minitest/autorun"
+require "minitest/mock"
 require "json"
 require "net/http"
 require "net/protocol"
@@ -1869,6 +1870,44 @@ class Corvid::Adapters::FhirAdapterTest < Minitest::Test
         "period" => period
       } } ]
     }
+  end
+
+  def multi_type_coverage_bundle
+    {
+      "resourceType" => "Bundle",
+      "entry" => [
+        {
+          "resource" => {
+            "resourceType" => "Coverage",
+            "id" => "cov_test_medicare",
+            "status" => "active",
+            "type" => { "coding" => [ { "code" => "MCRSC" } ] },
+            "payor" => [ { "display" => "TEST MEDICARE PAYER" } ]
+          }
+        },
+        {
+          "resource" => {
+            "resourceType" => "Coverage",
+            "id" => "cov_test_medicaid",
+            "status" => "active",
+            "type" => { "coding" => [ { "code" => "MCDSC" } ] },
+            "payor" => [ { "display" => "TEST MEDICAID PAYER" } ]
+          }
+        }
+      ]
+    }
+  end
+
+  def test_verify_eligibility_with_a_blank_resource_type_is_undetermined
+    @adapter.stub(:fhir_search, multi_type_coverage_bundle) do
+      [ nil, "", "   ", "\t \n", :"" ].each do |resource_type|
+        assert_nil @adapter.verify_eligibility("pt_test_001", resource_type),
+                   "resource_type #{resource_type.inspect} must not answer from arbitrary coverage"
+      end
+
+      assert_equal true, @adapter.verify_eligibility("pt_test_001", "medicaid")[:eligible]
+      assert_equal true, @adapter.verify_eligibility("pt_test_001", "medicare_a")[:eligible]
+    end
   end
 
   def eligibility_for_period(period)
