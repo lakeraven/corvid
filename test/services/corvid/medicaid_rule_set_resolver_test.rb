@@ -386,11 +386,16 @@ class Corvid::MedicaidRuleSetResolverTest < ActiveSupport::TestCase
   def assert_rule_set(result, renewal_cycle_months:, retroactive_window_months:, work_requirement:,
                       exemption_needs_confirmation:, reasons:)
     assert_instance_of Corvid::MedicaidRuleSet, result
-    assert_equal renewal_cycle_months, result.renewal_cycle_months
-    assert_equal retroactive_window_months, result.retroactive_window_months
+    assert_equal_or_nil renewal_cycle_months, result.renewal_cycle_months
+    assert_equal_or_nil retroactive_window_months, result.retroactive_window_months
     assert_equal work_requirement, result.work_requirement
     assert_equal exemption_needs_confirmation, result.exemption_needs_confirmation
     assert_equal reasons, result.reasons
+  end
+
+  # Minitest 6 rejects assert_equal(nil, ...); expected nil must be stated explicitly.
+  def assert_equal_or_nil(expected, actual)
+    expected.nil? ? assert_nil(actual) : assert_equal(expected, actual)
   end
 
   def register_synthetic_xc!

@@ -2096,11 +2096,16 @@ class Corvid::MedicaidEligibilityGroupServiceTest < ActiveSupport::TestCase
     refute_nil check.eligibility_group_set_at unless group.nil?
   end
 
+  # Minitest 6 rejects assert_equal(nil, ...); expected nil must be stated explicitly.
+  def assert_equal_or_nil(expected, actual)
+    expected.nil? ? assert_nil(actual) : assert_equal(expected, actual)
+  end
+
   def assert_group_fields_under_tenant(check, tenant, group, source)
     with_tenant(tenant) do
       reloaded = Corvid::AlternateResourceCheck.find(check.id)
-      assert_equal group, reloaded.eligibility_group
-      assert_equal source, reloaded.eligibility_group_source
+      assert_equal_or_nil group, reloaded.eligibility_group
+      assert_equal_or_nil source, reloaded.eligibility_group_source
       if group.nil?
         assert_nil reloaded.eligibility_group_set_at
       else
