@@ -60,6 +60,28 @@ module Corvid
       assert_raises(ActiveRecord::StatementInvalid) { row.update_columns(determination_reason: "bogus") }
     end
 
+    test "any row naming an authority must name its own facility's, in its own tenant" do
+      regular = FmapRule.find_by!(rule_key: "us-regular")
+      attrs = {
+        encounter_identifier: "enc_example_22", facility_identifier: "fac_plain_example",
+        date_of_service: Date.new(2026, 3, 1), jurisdiction: "XA",
+        category: regular.category, rule_key: regular.rule_key,
+        rule_citations: [ regular.statutory_citation ], determined_at: Time.current
+      }
+      refute FmapDetermination.new(attrs.merge(facility_authority_id: @contract_638.id)).valid?
+
+      Corvid::TenantContext.current_tenant_identifier = "tnt_other_example"
+      other = FacilityAuthority.create!(facility_identifier: "fac_plain_example", authority_type: "fqhc",
+                                        effective_on: Date.new(2020, 1, 1))
+      Corvid::TenantContext.current_tenant_identifier = "tnt_example"
+      refute FmapDetermination.new(attrs.merge(facility_authority_id: other.id)).valid?
+    end
+
+    test "moving a 100 percent row to another facility re-runs the authority check" do
+      row = FmapDetermination.create!(hundred_percent_attrs(facility_identifier: "fac_638_example"))
+      refute row.update(facility_identifier: "fac_plain_example")
+    end
+
     test "a correction cannot move a row onto another facility's authority" do
       original = FmapClassificationService.classify!(
         encounter_identifier: "enc_example_21",

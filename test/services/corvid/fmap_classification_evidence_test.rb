@@ -190,6 +190,23 @@ module Corvid
       assert_equal "fmap_90_expansion", result.category
     end
 
+    test "a blank jurisdiction is rejected, not classified under federal rules alone" do
+      assert_raises(ArgumentError) { classify_638(jurisdiction: nil) }
+      assert_raises(ArgumentError) { classify_638(jurisdiction: " ") }
+    end
+
+    test "an encounter with a current determination is corrected, not classified again" do
+      opts = {
+        encounter_identifier: "enc_example_14", facility_identifier: "fac_638_example",
+        date_of_service: Date.new(2026, 3, 1), jurisdiction: "XA", facility_authority: @contract_638
+      }
+      first = FmapClassificationService.classify!(**opts)
+      assert_raises(FmapClassificationService::AlreadyDeterminedError) do
+        FmapClassificationService.classify!(**opts, aian_verified: true, evidence_refs: [ AIAN_EVIDENCE ])
+      end
+      assert_equal [ first.id ], FmapDetermination.current.for_encounter("enc_example_14").pluck(:id)
+    end
+
     test "an unrecognised coverage group is rejected, not read as no group" do
       assert_raises(ArgumentError) { classify_638(coverage_group: "expansion") }
     end
