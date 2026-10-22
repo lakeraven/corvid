@@ -84,6 +84,81 @@ class Corvid::ClaimReferralLinkTest < ActiveSupport::TestCase
     end
   end
 
+  test "linked draft claim cannot reach submitted without submit! or mark_submitted!" do
+    with_tenant(TENANT) do
+      referral = referral_at("fac_a", "REF-BYPASS-1")
+      patient = referral.case.patient_identifier
+      authorize!(referral)
+      claim = build_claim(facility: "fac_a", referral_identifier: "REF-BYPASS-1", patient: patient)
+      claim.save!
+
+      assert_nil claim.submitted_at
+      refute claim.update(status: "submitted")
+      assert_predicate claim.errors[:status], :present?
+      assert_equal "draft", claim.reload.status
+      assert_nil claim.submitted_at
+    end
+  end
+
+  test "linked draft claim cannot reach accepted or paid without submission gate" do
+    with_tenant(TENANT) do
+      referral = referral_at("fac_a", "REF-BYPASS-2")
+      patient = referral.case.patient_identifier
+      authorize!(referral)
+      claim = build_claim(facility: "fac_a", referral_identifier: "REF-BYPASS-2", patient: patient)
+      claim.save!
+
+      %w[accepted paid].each do |target_status|
+        claim.status = target_status
+        refute claim.save
+        assert_predicate claim.errors[:status], :present?
+        assert_equal "draft", claim.reload.status
+        assert_nil claim.submitted_at
+      end
+    end
+  end
+
+  test "creating a linked claim already submitted remains allowed" do
+    with_tenant(TENANT) do
+      referral = referral_at("fac_a", "REF-BYPASS-3")
+      patient = referral.case.patient_identifier
+      authorize!(referral)
+
+      claim = Corvid::ClaimSubmission.create!(
+        tenant_identifier: TENANT,
+        facility_identifier: "fac_a",
+        patient_identifier: patient,
+        referral_identifier: "REF-BYPASS-3",
+        claim_type: "professional",
+        service_date: Date.current,
+        billed_amount: 100.0,
+        status: "submitted",
+        submitted_at: 1.hour.ago
+      )
+
+      assert claim.persisted?
+      assert_equal referral.id, claim.prc_referral_id
+      assert_equal "submitted", claim.status
+    end
+  end
+
+  test "status updates on claims already submitted keep working" do
+    with_tenant(TENANT) do
+      referral = referral_at("fac_a", "REF-BYPASS-4")
+      patient = referral.case.patient_identifier
+      authorize!(referral)
+      claim = build_claim(facility: "fac_a", referral_identifier: "REF-BYPASS-4", patient: patient)
+      claim.save!
+      claim.mark_submitted!(claim_identifier: "CLM-BYPASS-4")
+
+      claim.update!(status: "accepted")
+      assert_equal "accepted", claim.reload.status
+
+      claim.mark_paid!(paid_amount: 80.0)
+      assert_equal "paid", claim.reload.status
+    end
+  end
+
   # referral_identifier is a loose external reference — a payer's or
   # provider's referral number with no PrcReferral behind it is ordinary
   # billing, not PRC billing (features/billing/claims_submission.feature bills
