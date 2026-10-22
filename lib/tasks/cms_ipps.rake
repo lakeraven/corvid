@@ -12,7 +12,7 @@ namespace :cms do
       year = args[:year].to_i
       label = args[:label].presence || "manual"
       rows = Corvid::CmsIppsParser.parse_drg_weights(
-        File.read(args[:path]), fiscal_year: year, release_label: label
+        strip_comments(File.read(args[:path])), fiscal_year: year, release_label: label
       )
 
       ActiveRecord::Base.transaction do
@@ -31,7 +31,7 @@ namespace :cms do
       year = args[:year].to_i
       label = args[:label].presence || "manual"
       rows = Corvid::CmsIppsParser.parse_hospital_rates(
-        File.read(args[:path]), fiscal_year: year, release_label: label
+        strip_comments(File.read(args[:path])), fiscal_year: year, release_label: label
       )
 
       ActiveRecord::Base.transaction do
