@@ -129,6 +129,31 @@ module Corvid
       assert_includes result.missing_evidence, "care_coordination_agreement"
     end
 
+    test "a refused CCA tier with AIAN evidence given does not ask for evidence refs" do
+      result = FmapClassificationService.classify(
+        date_of_service: Date.new(2026, 3, 1),
+        jurisdiction: "XA",
+        aian_verified: true,
+        received_through_basis: "cca",
+        evidence_refs: [ AIAN_EVIDENCE ]
+      )
+      assert_equal [ "care_coordination_agreement" ], result.missing_evidence
+    end
+
+    test "an undetermined result persists as an undetermined row" do
+      FmapRule.delete_all
+      determination = FmapClassificationService.classify!(
+        encounter_identifier: "enc_example_15",
+        facility_identifier: "fac_638_example",
+        date_of_service: Date.new(2026, 3, 1),
+        jurisdiction: "XA",
+        facility_authority: @contract_638
+      )
+      assert_equal FmapClassificationService::UNDETERMINED, determination.category
+      assert_equal FmapClassificationService::NO_RULES_IN_FORCE, determination.determination_reason
+      assert_empty determination.rule_citations
+    end
+
     test "evidence that does not support the AIAN status cannot buy 100 percent" do
       result = classify_638(
         evidence_refs: [ { "supports" => "aian_status", "ref" => "" } ]

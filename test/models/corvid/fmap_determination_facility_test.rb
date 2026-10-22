@@ -77,6 +77,19 @@ module Corvid
       refute FmapDetermination.new(attrs.merge(facility_authority_id: other.id)).valid?
     end
 
+    test "a row naming an authority records that authority's type" do
+      regular = FmapRule.find_by!(rule_key: "us-regular")
+      determination = FmapDetermination.new(
+        encounter_identifier: "enc_example_23", facility_identifier: "fac_638_example",
+        date_of_service: Date.new(2026, 3, 1), jurisdiction: "XA",
+        category: regular.category, rule_key: regular.rule_key,
+        rule_citations: [ regular.statutory_citation ], determined_at: Time.current,
+        facility_authority_id: @contract_638.id, authority_type: "fqhc"
+      )
+      refute determination.valid?
+      assert determination.errors[:authority_type].any?
+    end
+
     test "moving a 100 percent row to another facility re-runs the authority check" do
       row = FmapDetermination.create!(hundred_percent_attrs(facility_identifier: "fac_638_example"))
       refute row.update(facility_identifier: "fac_plain_example")
