@@ -328,9 +328,8 @@ module Corvid
     # Coordinated sticks only when the adapter's policy token is present
     # and matches the stored token. Any other eligible result is enrolled
     # (verify! stores the new token). Ineligible is not_enrolled, except
-    # a pending Medicaid application: an inactive answer is expected until
-    # denial or enrollment. nil leaves the row unchanged — silence is not
-    # a determination.
+    # an open Medicaid application. nil leaves the row unchanged —
+    # silence is not a determination.
     def status_for_eligibility(result)
       case result[:eligible]
       when true then eligible_status(result)
@@ -339,15 +338,18 @@ module Corvid
     end
 
     def ineligible_status
-      return :pending_enrollment if pending_medicaid_application?
+      return :pending_enrollment if open_medicaid_application?
 
       :not_enrolled
     end
 
-    # An application_date means the pending row is an application, not a
-    # finished "not enrolled" answer. Without one, ineligible ends it.
-    def pending_medicaid_application?
-      resource_type == "medicaid" && pending_enrollment? && application_date.present?
+    # An application_date on Medicaid means an application is on file.
+    # An ineligible answer does not finish it, from not_checked, checking,
+    # pending_enrollment, or not_enrolled: the row moves to
+    # pending_enrollment until denial, enrollment, coordination, or
+    # exhaustion. Without an application_date, ineligible is not_enrolled.
+    def open_medicaid_application?
+      resource_type == "medicaid" && application_date.present?
     end
 
     def eligible_status(result)

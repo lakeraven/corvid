@@ -50,17 +50,30 @@ module Corvid
     validates :patient_identifier, presence: true
     validates :status, inclusion: { in: STATUSES }
     validates :claim_type, inclusion: { in: CLAIM_TYPES }
+    validate :draft_leaves_only_through_submission
     validate :medicaid_hold_override_not_assigned_directly
     validate :medicaid_hold_override_all_or_none
 
-    # Written only by override_medicaid_hold!, and cleared together when
-    # the hold's basis changes. A direct write is invalid.
+    # Written only by override_medicaid_hold!. Cleared when the hold's
+    # basis changes, and consumed by the submit! or mark_submitted! that
+    # the override released. A direct write is invalid.
     MEDICAID_HOLD_OVERRIDE_COLUMNS = %i[
       medicaid_hold_override_reason_token
       medicaid_hold_override_by_identifier
       medicaid_hold_overridden_at
     ].freeze
     private_constant :MEDICAID_HOLD_OVERRIDE_COLUMNS
+
+    # Statuses that close a Medicaid application. pending_enrollment
+    # still holds with no application_date. Any other status holds only
+    # when an application_date is recorded.
+    MEDICAID_APPLICATION_ENDED_STATUSES = %w[denied enrolled coordinated exhausted].freeze
+    private_constant :MEDICAID_APPLICATION_ENDED_STATUSES
+
+    # A plain save cannot move a draft into the submission lifecycle.
+    # Creating a row that is already submitted stays allowed.
+    DRAFT_SUBMISSION_STATUSES = %w[submitted accepted paid].freeze
+    private_constant :DRAFT_SUBMISSION_STATUSES
 
     # The link is derived from referral_identifier + facility_identifier +
     # patient_identifier, so it is recomputed whenever any of those change.
@@ -193,11 +206,7 @@ module Corvid
 
     def mark_submitted!(claim_identifier:)
       enforce_pending_medicaid_hold!
-      update!(
-        claim_identifier: claim_identifier,
-        status: "submitted",
-        submitted_at: Time.current
-      )
+      record_claim_submission!(claim_identifier:, status: "submitted")
     end
 
     def mark_paid!(paid_amount:)
@@ -226,24 +235,21 @@ module Corvid
     # reason_token is a vault token for the reason, never free text.
     # overridden_at is Time.current, never a caller-supplied time.
     # Each call appends a staff_review Determination and keeps the prior ones.
+    # Raises when this claim is not currently held, and records nothing.
+    # A rolled-back write reloads this object so the hold stays in force.
     def override_medicaid_hold!(reason_token:, by_identifier:)
       require_medicaid_hold_override_args!(reason_token, by_identifier)
-      transaction do
-        write_medicaid_hold_override!(reason_token, by_identifier)
-        record_medicaid_hold_override!(reason_token, by_identifier)
-      end
-    ensure
-      @writing_medicaid_hold_override = false
+      require_pending_medicaid_hold!
+      persist_medicaid_hold_override!(reason_token, by_identifier)
     end
 
     def submit!
       enforce_referral_authorization_gate!
       enforce_pending_medicaid_hold!
       result = Corvid.adapter.submit_claim(to_claim_data)
-      update!(
+      record_claim_submission!(
         claim_identifier: result[:claim_identifier],
-        status: result[:status] == "accepted" ? "submitted" : result[:status],
-        submitted_at: Time.current
+        status: clearinghouse_submission_status(result[:status])
       )
       result
     end
@@ -396,6 +402,27 @@ module Corvid
       raise ArgumentError, "by_identifier is blank" if by_identifier.blank?
     end
 
+    def require_pending_medicaid_hold!
+      return if pending_medicaid_hold_reason
+
+      raise ArgumentError, "no pending Medicaid hold applies"
+    end
+
+    # The Determination and the three columns commit together. If the
+    # audit row raises, reload so this object does not keep a rolled-back
+    # override that would release the next submit!.
+    def persist_medicaid_hold_override!(reason_token, by_identifier)
+      committed = false
+      transaction do
+        write_medicaid_hold_override!(reason_token, by_identifier)
+        record_medicaid_hold_override!(reason_token, by_identifier)
+        committed = true
+      end
+    ensure
+      @writing_medicaid_hold_override = false
+      reload if persisted? && !committed
+    end
+
     def write_medicaid_hold_override!(reason_token, by_identifier)
       @writing_medicaid_hold_override = true
       update!(
@@ -415,6 +442,19 @@ module Corvid
         reasons_token: reason_token,
         determined_by_identifier: by_identifier
       )
+    end
+
+    def draft_leaves_only_through_submission
+      return if @recording_claim_submission
+      return unless persisted_draft_entering_submission?
+
+      errors.add(:status, "can only leave draft through submit! or mark_submitted!")
+    end
+
+    def persisted_draft_entering_submission?
+      persisted? &&
+        status_in_database == "draft" &&
+        DRAFT_SUBMISSION_STATUSES.include?(status)
     end
 
     def medicaid_hold_override_not_assigned_directly
@@ -437,16 +477,12 @@ module Corvid
 
     # A service date, patient, or referral link change makes the recorded
     # override describe a different bill. Drop it so the next submit! is
-    # held again. Skipped while override_medicaid_hold! is writing.
+    # held again. Skipped while an internal writer is changing the columns.
     def clear_medicaid_hold_override_when_basis_changes
       return if @writing_medicaid_hold_override
       return unless persisted? && hold_basis_changed? && medicaid_hold_override_recorded?
 
-      assign_attributes(
-        medicaid_hold_override_reason_token: nil,
-        medicaid_hold_override_by_identifier: nil,
-        medicaid_hold_overridden_at: nil
-      )
+      assign_attributes(cleared_medicaid_hold_override_attributes)
     end
 
     def hold_basis_changed?
@@ -464,20 +500,86 @@ module Corvid
     # application for this patient, in this tenant, covers the service
     # date or that window cannot be determined. The claim's own referral
     # is not special. The check does not record an Indian exemption, so
-    # resolution passes "unknown". A recorded override releases the hold.
+    # resolution passes "unknown".
+    #
+    # An override releases the hold only from the persisted columns.
+    # Unsaved assignments are ignored, and any of them refuses this call
+    # before the clearinghouse adapter runs. A Medicaid check created or
+    # updated after medicaid_hold_overridden_at ends the release.
     def enforce_pending_medicaid_hold!
-      return if medicaid_hold_overridden?
+      refuse_unsaved_medicaid_hold_override!
+      return if active_persisted_medicaid_hold_override?
 
+      raise_for_pending_medicaid_hold!
+    end
+
+    def refuse_unsaved_medicaid_hold_override!
+      return unless medicaid_hold_override_changed?
+
+      raise_for_pending_medicaid_hold!
+      raise ArgumentError, "medicaid hold override has unsaved changes"
+    end
+
+    def raise_for_pending_medicaid_hold!
       reason = pending_medicaid_hold_reason
       return if reason.nil?
 
       raise HeldForPendingMedicaid, reason
     end
 
-    def medicaid_hold_overridden?
-      medicaid_hold_override_reason_token.present? &&
-        medicaid_hold_override_by_identifier.present? &&
-        medicaid_hold_overridden_at.present?
+    # Fresh read, not the in-memory attributes. A rolled-back
+    # override_medicaid_hold! can leave those looking saved.
+    def active_persisted_medicaid_hold_override?
+      token, actor, overridden_at = persisted_medicaid_hold_override
+      return false unless token.present? && actor.present? && overridden_at.present?
+      return false if medicaid_checks_changed_since?(overridden_at)
+
+      true
+    end
+
+    def persisted_medicaid_hold_override
+      return unless persisted?
+
+      self.class.where(id: id).pick(*MEDICAID_HOLD_OVERRIDE_COLUMNS)
+    end
+
+    def medicaid_checks_changed_since?(overridden_at)
+      patient_medicaid_checks.where(
+        "updated_at > :overridden_at OR created_at > :overridden_at",
+        overridden_at: overridden_at
+      ).exists?
+    end
+
+    def clearinghouse_submission_status(status)
+      status == "accepted" ? "submitted" : status
+    end
+
+    # Clears the override through the internal writer so the direct-write
+    # validation does not reject the submission that consumed it. The
+    # Determination audit row is left in place.
+    def record_claim_submission!(claim_identifier:, status:)
+      @recording_claim_submission = true
+      @writing_medicaid_hold_override = true
+      update!(submission_attributes(claim_identifier, status))
+    ensure
+      @recording_claim_submission = false
+      @writing_medicaid_hold_override = false
+    end
+
+    def submission_attributes(claim_identifier, status)
+      {
+        claim_identifier: claim_identifier,
+        status: status,
+        submitted_at: Time.current
+      }.merge(cleared_medicaid_hold_override_attributes)
+    end
+
+    def cleared_medicaid_hold_override_attributes
+      {
+        medicaid_hold_override_reason_token: nil,
+        medicaid_hold_override_by_identifier: nil,
+        medicaid_hold_overridden_at: nil
+      }
     end
 
     def pending_medicaid_hold_reason
@@ -492,15 +594,24 @@ module Corvid
       HeldForPendingMedicaid::INSIDE_RETROACTIVE_WINDOW
     end
 
-    # Pending Medicaid rows for this patient on any referral in the
-    # current tenant. Case and PrcReferral are tenant-scoped (ADR 0002).
+    # Medicaid rows for this patient that can still cover the service.
+    # Case and PrcReferral are tenant-scoped (ADR 0002), so another
+    # tenant's application is invisible here.
     def pending_medicaid_checks
+      patient_medicaid_checks
+        .where.not(status: MEDICAID_APPLICATION_ENDED_STATUSES)
+        .where(
+          "status = ? OR application_date IS NOT NULL",
+          "pending_enrollment"
+        )
+    end
+
+    def patient_medicaid_checks
       return AlternateResourceCheck.none if patient_identifier.blank?
 
       AlternateResourceCheck.where(
         prc_referral_id: patient_referral_ids,
-        resource_type: "medicaid",
-        status: "pending_enrollment"
+        resource_type: "medicaid"
       )
     end
 
