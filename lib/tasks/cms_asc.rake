@@ -10,7 +10,7 @@ namespace :cms do
       abort "File not found: #{args[:path]}" unless File.exist?(args[:path])
 
       year = args[:year].to_i
-      label = args[:label] || "manual"
+      label = args[:label].presence || "manual"
       rows = Corvid::CmsAscParser.parse_conversion_factors(
         File.read(args[:path]), calendar_year: year, release_label: label
       )
@@ -29,7 +29,7 @@ namespace :cms do
       abort "Usage: rake cms:asc:normalize_addendum_aa[year,input.csv,output.csv,release_label]" unless args[:year] && args[:input] && args[:output]
       abort "Input not found: #{args[:input]}" unless File.exist?(args[:input])
 
-      label = args[:label] || "cms_asc_cy#{args[:year]}_final_rule"
+      label = args[:label].presence || "cms_asc_cy#{args[:year]}_final_rule"
       rows = Corvid::CmsAscAddendumAaNormalizer.normalize(args[:input])
       csv = Corvid::CmsAscAddendumAaNormalizer.render(rows, release_label: label)
       File.write(args[:output], csv)
@@ -42,7 +42,7 @@ namespace :cms do
       abort "File not found: #{args[:path]}" unless File.exist?(args[:path])
 
       year = args[:year].to_i
-      label = args[:label] || "manual"
+      label = args[:label].presence || "manual"
       rows = Corvid::CmsAscParser.parse_hcpcs_rates(
         File.read(args[:path]), calendar_year: year, release_label: label
       )
@@ -63,7 +63,7 @@ namespace :cms do
       abort "Usage: rake cms:asc:normalize_pos[input.csv,output.csv,release_label]" unless args[:input] && args[:output]
       abort "Input not found: #{args[:input]}" unless File.exist?(args[:input])
 
-      label = args[:label] || "cms_iqies_manual"
+      label = args[:label].presence || "cms_iqies_manual"
       result = Corvid::CmsPosAscNormalizer.normalize(args[:input])
       rows = result[:rows]
       rejects = result[:rejects]
@@ -90,7 +90,7 @@ namespace :cms do
       abort "Usage: rake cms:asc:import_facilities[/path/to/asc.csv,release_label]" unless args[:path]
       abort "File not found: #{args[:path]}" unless File.exist?(args[:path])
 
-      label = args[:label] || "manual"
+      label = args[:label].presence || "manual"
       result = Corvid::CmsFacilityListParser.parse(File.read(args[:path]), release_label: label)
       rows = result[:rows]
       rejects = result[:rejects]

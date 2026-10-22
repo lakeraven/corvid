@@ -6,6 +6,7 @@ ENV["RAILS_ENV"] = "test"
 # expects config/environment at project root.
 require_relative "../../test/dummy/config/environment"
 require "minitest/assertions"
+require_relative "alternate_resource_exhaustion_helper"
 
 World(Minitest::Assertions)
 
@@ -38,6 +39,7 @@ def clean_corvid_tables!
   Corvid::PrcEligibilityDecision.unscoped.delete_all
   Corvid::AlternateResourceCheck.unscoped.delete_all
   Corvid::CommitteeReview.unscoped.delete_all
+  Corvid::ReferralFulfilmentReport.unscoped.delete_all
   Corvid::PrcOverpaymentAnalysis.unscoped.delete_all
   Corvid::PrcPayment.unscoped.delete_all
   Corvid::PrcObligation.unscoped.delete_all

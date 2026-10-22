@@ -14,6 +14,7 @@ Feature: Tribal eligibility decision matrix (TribalEligibilityService)
     And the reason codes should not include any hard-fail reason
 
   Scenario: True negative — not enrolled
+    Given person "pt_tn" is recorded as not enrolled with verified confidence
     When I decide eligibility for person "pt_tn" at facility "fac_demo"
     Then the decision should be ineligible
     And the reason codes should include "not_enrolled"

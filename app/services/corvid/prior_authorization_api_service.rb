@@ -242,12 +242,12 @@ module Corvid
       def normalize_codeable_concept(value)
         case value
         when String
-          value
+          value.presence
         when Hash
-          v = value.transform_keys(&:to_sym)
-          v[:text] ||
-            v.dig(:coding, 0, :display) ||
-            v.dig(:coding, 0, :code)
+          v = value.deep_symbolize_keys
+          v[:text].presence ||
+            v.dig(:coding, 0, :display).presence ||
+            v.dig(:coding, 0, :code).presence
         end
       end
 
@@ -262,9 +262,9 @@ module Corvid
       # deferrals and denials). A follow-up should move denial text onto the
       # Determination's reasons_token so the two cases are separable.
       def denial_reason(referral, determination)
-        return "Denial reason not recorded" unless referral.deferred_reason_token
+        return "Denial reason not recorded" if referral.deferred_reason_token.blank?
 
-        Corvid.adapter.fetch_text(referral.deferred_reason_token) ||
+        Corvid.adapter.fetch_text(referral.deferred_reason_token).presence ||
           "Denied per #{determination.decision_method}"
       end
 

@@ -26,6 +26,17 @@ module Corvid
     has_many :tasks, as: :taskable, dependent: :destroy, class_name: "Corvid::Task"
     has_many :alternate_resource_checks, dependent: :destroy, class_name: "Corvid::AlternateResourceCheck"
     has_many :committee_reviews, dependent: :destroy, class_name: "Corvid::CommitteeReview"
+    # Fulfilment is a lifecycle distinct from authorization (see
+    # Corvid::ReferralFulfilment) — no shared states with the `status` AASM
+    # above, just its own append-only report trail hung off this referral.
+    #
+    # restrict, not destroy: the trail is the evidence that care was delivered.
+    # Cascading a destroy through it would let deleting a referral rewrite the
+    # record of what happened.
+    has_many :fulfilment_reports, dependent: :restrict_with_error, class_name: "Corvid::ReferralFulfilmentReport"
+    # nullify, not destroy: a claim outlives the referral that occasioned it —
+    # it has its own lifecycle with the payer and its own financial record.
+    has_many :claim_submissions, dependent: :nullify, class_name: "Corvid::ClaimSubmission"
 
     validates :referral_identifier, presence: true
     validates :referral_identifier, uniqueness: { scope: [ :tenant_identifier, :facility_identifier ] }
@@ -79,16 +90,18 @@ module Corvid
       end
 
       event :verify_alternate_resources do
-        transitions from: :alternate_resource_review, to: :priority_assignment
+        transitions from: :alternate_resource_review, to: :priority_assignment,
+                    guard: :alternate_resources_exhausted?
       end
 
       event :complete_priority_assignment do
         transitions from: :priority_assignment, to: :committee_review, guard: :requires_committee?
-        transitions from: :priority_assignment, to: :authorized
+        transitions from: :priority_assignment, to: :authorized, guard: :alternate_resources_exhausted?
       end
 
       event :authorize, after: :sync_status_to_ehr do
-        transitions from: [ :priority_assignment, :committee_review ], to: :authorized
+        transitions from: [ :priority_assignment, :committee_review ], to: :authorized,
+                    guard: :alternate_resources_exhausted?
       end
 
       event :mark_denied, after: :sync_status_to_ehr do
@@ -114,6 +127,35 @@ module Corvid
 
     def service_request
       @service_request ||= Corvid.adapter.find_referral(referral_identifier) if referral_identifier.present?
+    end
+
+    # 42 CFR 136.61 — PRC pays last. True only when every alternate resource
+    # has a determination: unavailable, or coverage with coordination complete.
+    def alternate_resources_exhausted?
+      AlternateResourceCheck.all_exhausted?(self)
+    end
+
+    # Sorted reasons authorization is refused. Resource type and status only;
+    # patient, payer, and policy data never appear here (ADR 0003).
+    def authorization_blockers
+      by_type = alternate_resource_checks.reload.index_by(&:resource_type)
+      AlternateResourceCheck::RESOURCE_TYPES.filter_map do |type|
+        blocker_for(type, by_type[type])
+      end.sort
+    end
+
+    # Why a committee approval must not authorize. An authorized
+    # referral is already consistent with the approval, so a retried
+    # sync may proceed. While any alternate resource is open this is
+    # authorization_blockers, same strings and order. Once they are
+    # determined, a workflow state that cannot authorize is named
+    # alone, including draft (ADR 0003).
+    def committee_approval_blockers
+      return [] if authorized?
+      return authorization_blockers unless alternate_resources_exhausted?
+      return [] if may_authorize?
+
+      [ "referral: #{status}" ]
     end
 
     def requires_committee?
@@ -326,6 +368,15 @@ module Corvid
     end
 
     private
+
+    def blocker_for(resource_type, check)
+      return "#{resource_type}: not checked" if check.nil?
+      return if check.exhausted_or_unavailable?
+
+      detail = check.status.to_s.tr("_", " ")
+      detail = "#{detail} (coordination of benefits not complete)" if check.enrolled?
+      "#{resource_type}: #{detail}"
+    end
 
     # Get authorization number from RCIS (source of truth).
     # Falls back to local cache if RCIS unavailable.

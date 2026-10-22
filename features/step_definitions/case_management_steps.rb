@@ -38,9 +38,11 @@ Given("the case has {int} referrals") do |count|
   end
 end
 
-Given("a case exists without cached patient data") do
+Given("a case exists for an unresolvable patient") do
+  # No patient added to the adapter, so the lookup returns nil. There is no
+  # cached name to fall back to any more, which is the point.
   @case = Corvid::Case.create!(
-    patient_identifier: "pt_uncached",
+    patient_identifier: "pt_not_in_adapter",
     facility_identifier: @facility
   )
 end
@@ -76,10 +78,6 @@ When("I create a PRC referral for the case") do
     referral_identifier: "rf_#{@case.id}_main",
     facility_identifier: @facility
   )
-end
-
-When("I cache the patient data") do
-  @case.cache_patient_data!
 end
 
 Then("a case should exist for patient {string}") do |dfn|
