@@ -7,9 +7,11 @@ module Corvid
   # only — no patient, payer, or policy data (ADR 0003).
   class AlternateResourceReverification
     class << self
-      def reverify_stale!(prc_referral, date_of_service:, as_of: Time.current)
+      # adapter defaults to Corvid.adapter for model callers. A service
+      # that holds an injected adapter passes it (ADR 0005).
+      def reverify_stale!(prc_referral, date_of_service:, as_of: Time.current, adapter: Corvid.adapter)
         stale_checks(prc_referral, date_of_service, as_of).map { |check|
-          confirm_check(check, date_of_service, as_of)
+          confirm_check(check, date_of_service, as_of, adapter: adapter)
         }.all?
       end
 
@@ -34,8 +36,8 @@ module Corvid
         !check.current_for?(date_of_service, as_of: as_of)
       end
 
-      def confirm_check(check, date_of_service, as_of)
-        return false unless check.verify!
+      def confirm_check(check, date_of_service, as_of, adapter:)
+        return false unless check.verify!(adapter: adapter)
 
         check.reload
         check.current_for?(date_of_service, as_of: as_of_after_verify(check, as_of))

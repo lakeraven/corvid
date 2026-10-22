@@ -19,8 +19,9 @@ module Corvid
 
     STATUSES = %w[draft submitted accepted rejected paid denied appealed error].freeze
     CLAIM_TYPES = %w[professional institutional dental].freeze
-    # Statuses that mean the claim has been sent. A PRC-linked draft reaches
-    # them only through submit! / mark_submitted!, which run the gate.
+    # Statuses that mean the claim has been sent. A PRC-linked claim whose
+    # submitted_at is still nil reaches them only through submit! /
+    # mark_submitted!, which run the gates.
     SUBMISSION_GATE_STATUSES = %w[submitted accepted paid].freeze
 
     # Raised by #submit! when this claim bills a PRC referral that has not been
@@ -58,6 +59,13 @@ module Corvid
     # helpers, remittance processing) records when it first happened, so the
     # KPIs above still count the claim after its status moves on.
     before_save :stamp_rejection_and_denial_times, if: :will_save_change_to_status?
+
+    # A row inserted already submitted, accepted, or paid is a historical
+    # import. Stamp submitted_at when the import omitted it so later
+    # payment, denial, and appeal updates are the lifecycle a submitted
+    # claim keeps. A draft that never went through submit! is not stamped,
+    # and still cannot reach those statuses by a plain save.
+    before_create :stamp_imported_submission_time
 
     validate :submission_status_requires_gate, on: :update
 
@@ -175,6 +183,9 @@ module Corvid
     end
 
     def mark_submitted!(claim_identifier:)
+      # Same order as submit!: an unauthorized referral is refused before
+      # any payer re-verification.
+      enforce_referral_authorization_gate!
       enforce_alternate_resources_current!
       save_through_submission_gate!(
         claim_identifier: claim_identifier,
@@ -259,24 +270,32 @@ module Corvid
       self.denied_at ||= Time.current if status == "denied"
     end
 
-    # A PRC-linked draft that has never been submitted (submitted_at still
-    # nil in the database) cannot be saved straight into submitted, accepted,
-    # or paid. submit! and mark_submitted! set the gate flag after the
-    # alternate-resource check. Creating a row that is already submitted, and
-    # later status changes on a claim that has left draft, stay allowed.
+    # A PRC-linked claim that has never been submitted (submitted_at is nil
+    # in the database) cannot be saved into submitted, accepted, or paid,
+    # whatever its stored status. submit! and mark_submitted! set the gate
+    # flag after the gates run. Creating a row that is already submitted,
+    # and later lifecycle updates on a claim that has a submitted_at, stay
+    # allowed.
     def submission_status_requires_gate
       return if @submission_through_gate
-      return unless draft_prc_claim_entering_submission?
+      return unless unsubmitted_prc_claim_entering_submission?
 
       errors.add(:status, "must be submitted with submit! or mark_submitted!")
     end
 
-    def draft_prc_claim_entering_submission?
+    def unsubmitted_prc_claim_entering_submission?
       prc_referral_id.present? &&
-        status_in_database == "draft" &&
         submitted_at_in_database.nil? &&
         will_save_change_to_status? &&
         SUBMISSION_GATE_STATUSES.include?(status)
+    end
+
+    def stamp_imported_submission_time
+      return if submitted_at.present?
+      return if prc_referral_id.blank?
+      return unless SUBMISSION_GATE_STATUSES.include?(status)
+
+      self.submitted_at = Time.current
     end
 
     def save_through_submission_gate!(attributes)

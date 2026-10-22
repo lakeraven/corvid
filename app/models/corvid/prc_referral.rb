@@ -142,13 +142,18 @@ module Corvid
       AlternateResourceCheck.all_exhausted?(self, date_of_service: Date.current, as_of: Time.current)
     end
 
-    # Refresh checks that are not current for the authorization date.
-    # Direct callers (committee apply and sync) always refresh. Event
-    # callbacks go through reverify_for_event so a refused event from a
-    # state it cannot leave does not call the payer. Returns true so an
-    # AASM before-callback does not abort; the guard decides.
-    def reverify_alternate_resources_for_decision
-      refresh_stale_alternate_resources
+    # Refresh checks that are not current for the authorization date when
+    # authorize can leave this state (priority_assignment or
+    # committee_review). Cancelled, denied, draft, and any other state are
+    # refused without a payer call. Event callbacks use reverify_for_event
+    # for the same from-state rule. Returns true so an AASM before-callback
+    # does not abort; the guard decides.
+    #
+    # Per ADR 0005, services inject adapter:. This model method still
+    # defaults to Corvid.adapter (#264). CommitteeReviewSyncService passes
+    # its injected adapter so re-verification does not use the global.
+    def reverify_alternate_resources_for_decision(adapter: Corvid.adapter)
+      refresh_stale_alternate_resources(adapter: adapter) if event_can_leave_state?(:authorize)
       true
     end
 
@@ -163,12 +168,14 @@ module Corvid
 
     # Why a committee approval must not authorize. An authorized
     # referral is already consistent with the approval, so a retried
-    # sync may proceed. While any alternate resource is open this is
-    # authorization_blockers, same strings and order. Once they are
-    # determined, a workflow state that cannot authorize is named
-    # alone, including draft (ADR 0003).
+    # sync may proceed. A state authorize cannot leave is named alone,
+    # including draft, cancelled, and denied, even when checks are
+    # stale — apply and sync refuse those without a payer call. From
+    # priority_assignment or committee_review, open alternate resources
+    # are authorization_blockers, same strings and order (ADR 0003).
     def committee_approval_blockers
       return [] if authorized?
+      return [ "referral: #{status}" ] unless event_can_leave_state?(:authorize)
       return authorization_blockers unless alternate_resources_exhausted?
       return [] if may_authorize?
 
@@ -420,9 +427,9 @@ module Corvid
       true
     end
 
-    def refresh_stale_alternate_resources
+    def refresh_stale_alternate_resources(adapter: Corvid.adapter)
       AlternateResourceReverification.reverify_stale!(
-        self, date_of_service: Date.current, as_of: Time.current
+        self, date_of_service: Date.current, as_of: Time.current, adapter: adapter
       )
     end
 

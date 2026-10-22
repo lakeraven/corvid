@@ -90,12 +90,13 @@ module Corvid
     end
 
     # An authorized referral is already decided; refreshing it would change
-    # the answers a completed authorization relied on. Open approvals re-verify
-    # first, then fail closed when a check cannot be confirmed current.
+    # the answers a completed authorization relied on. Re-verification uses
+    # the injected adapter (ADR 0005). The model skips states authorize
+    # cannot leave, so cancelled, denied, and draft make no payer call.
     def refresh_alternate_resources(referral)
       return if referral.authorized?
 
-      referral.reverify_alternate_resources_for_decision
+      referral.reverify_alternate_resources_for_decision(adapter: @adapter)
     end
 
     def blockers_after_refresh(referral)

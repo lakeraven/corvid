@@ -147,11 +147,14 @@ module Corvid
       end
     end
 
-    def verify!
+    # Per ADR 0005, services inject adapter: and pass it through. Model
+    # callers still default to Corvid.adapter; decoupling those paths
+    # from the global is #264.
+    def verify!(adapter: Corvid.adapter)
       patient_identifier = prc_referral.case&.patient_identifier
       return false unless patient_identifier
 
-      result = Corvid.adapter.verify_eligibility(patient_identifier, resource_type)
+      result = adapter.verify_eligibility(patient_identifier, resource_type)
       # An unreadable answer is not a determination (42 CFR 136.61).
       # coverage_start, coverage_end, and renewal_date must be an exact
       # Date or nil. Any other type updates nothing. Absent keys store nil.
