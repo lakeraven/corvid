@@ -207,16 +207,22 @@ module Corvid
 
       # Returns { enrolled: bool, membership_number: str|nil,
       #           tribe_name: str|nil, tribe_code: str|nil,
-      #           member_status: str|nil, blood_quantum: hash|nil,
+      #           member_status: str|nil,
+      #           blood_quantum: { display: String, decimal: Float|nil }|nil,
       #           confidence: :verified|:stale|:unavailable,
       #           verified_at: datetime }
+      #
+      # `blood_quantum` is nil when the source has none. `display` is the
+      # source text (for example "1/4" or "0.25"). `decimal` is that value
+      # as a Float when it parses as a Rational, and nil when it does not.
       #
       # `tribe_code` lets eligibility services compare the enrollee's tribe
       # against a facility's contracted tribe (preventing wrong-tribe false
       # positives). `confidence` reflects how fresh the underlying data is —
       # `:verified` is canonical; `:stale` means the source returned data
       # but flagged it as out-of-date; `:unavailable` means the source could
-      # not be reached.
+      # not be reached. A missing or unrecognized confidence is
+      # `:unavailable`, not `:verified`.
       def verify_tribal_enrollment(patient_identifier)
         raise NotImplementedError, "#{self.class}#verify_tribal_enrollment not implemented"
       end
@@ -271,6 +277,60 @@ module Corvid
       # Refund a payment. Returns { refund_identifier: str, status: str }
       def refund_payment(payment_identifier)
         raise NotImplementedError, "#{self.class}#refund_payment not implemented"
+      end
+
+      # Missing or unrecognized confidence is not :verified.
+      TRIBAL_CONFIDENCE_VALUES = %i[verified stale unavailable].freeze
+
+      private
+
+      # Canonical blood-quantum hash. nil stays nil. Strings keep their
+      # display text; numerics display via their usual decimal spelling.
+      def normalize_blood_quantum(value)
+        scalar = unwrap_blood_quantum(value)
+        return nil if scalar.nil?
+
+        case scalar
+        when Numeric
+          { display: blood_quantum_numeric_display(scalar), decimal: scalar.to_f }
+        when String
+          blood_quantum_from_string(scalar)
+        end
+      end
+
+      def normalize_tribal_confidence(value)
+        symbol = value.to_s.strip.downcase.to_sym
+        TRIBAL_CONFIDENCE_VALUES.include?(symbol) ? symbol : :unavailable
+      end
+
+      def unwrap_blood_quantum(value)
+        return value unless value.is_a?(Hash)
+
+        %i[display fraction value blood_quantum decimal].each do |key|
+          raw = value.key?(key) ? value[key] : value[key.to_s]
+          return raw unless raw.nil?
+        end
+
+        nil
+      end
+
+      def blood_quantum_from_string(text)
+        display = text.strip
+        return nil if display.empty?
+
+        { display: display, decimal: parse_blood_quantum_decimal(display) }
+      end
+
+      def parse_blood_quantum_decimal(display)
+        Rational(display).to_f
+      rescue ArgumentError, ZeroDivisionError
+        nil
+      end
+
+      def blood_quantum_numeric_display(number)
+        return number.to_s if number.is_a?(Integer) || number.is_a?(Float)
+
+        number.to_f.to_s
       end
     end
   end
