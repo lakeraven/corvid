@@ -280,3 +280,10 @@ Feature: Alternate resource tracking (payer of last resort)
     When I record medicaid application filed on "2026-06-15" from "staff_entry" in state "XA"
     Then the medicaid check should have application date "2026-06-15"
     And the medicaid check medicaid state code should be "XA"
+
+  # Issue #639 gate round 3
+  Scenario: Ineligible verify on not_checked Medicaid application moves to pending enrollment
+    Given an alternate resource check for "medicaid" exists with status "not_checked"
+    When I record medicaid application filed on "2026-06-15" from "staff_entry" in state "XA"
+    And the medicaid check is verified ineligible
+    Then the check status should be "pending_enrollment"

@@ -608,6 +608,287 @@ class Corvid::ClaimSubmissionMedicaidHoldTest < ActiveSupport::TestCase
     end
   end
 
+  # ---- Issue #639 gate round 3 (failing until implemented) ------------------
+
+  test "submit! ignores medicaid hold override set in memory without persisting" do
+    with_tenant(TENANT) do
+      claim, = authorized_claim_with_pending_medicaid!(
+        application_date: Date.new(2027, 3, 15),
+        application_date_source: "staff_entry",
+        medicaid_state_code: "XA",
+        eligibility_group: "expansion_adult",
+        service_date: Date.new(2027, 2, 1)
+      )
+      submit_calls = stub_submit_claim!
+      claim.assign_attributes(
+        medicaid_hold_override_reason_token: "rt_in_memory_only",
+        medicaid_hold_override_by_identifier: "usr_in_memory",
+        medicaid_hold_overridden_at: Time.current
+      )
+
+      error = assert_raises(StandardError) { claim.submit! }
+
+      assert_empty submit_calls
+      assert_instance_of Corvid::ClaimSubmission::HeldForPendingMedicaid, error
+      claim.reload
+      assert_equal "draft", claim.status
+      assert_nil claim.submitted_at
+      assert_nil claim.medicaid_hold_override_reason_token
+    end
+  end
+
+  test "mark_submitted! ignores medicaid hold override set in memory without persisting" do
+    with_tenant(TENANT) do
+      claim, = authorized_claim_with_pending_medicaid!(
+        application_date: Date.new(2027, 3, 15),
+        application_date_source: "staff_entry",
+        medicaid_state_code: "XA",
+        eligibility_group: "expansion_adult",
+        service_date: Date.new(2027, 2, 1)
+      )
+      claim.assign_attributes(
+        medicaid_hold_override_reason_token: "rt_in_memory_only",
+        medicaid_hold_override_by_identifier: "usr_in_memory",
+        medicaid_hold_overridden_at: Time.current
+      )
+
+      error = assert_raises(StandardError) do
+        claim.mark_submitted!(claim_identifier: "CLM-IN-MEM-OVERRIDE")
+      end
+      assert_instance_of Corvid::ClaimSubmission::HeldForPendingMedicaid, error
+
+      claim.reload
+      assert_equal "draft", claim.status
+      assert_nil claim.claim_identifier
+      assert_nil claim.medicaid_hold_override_reason_token
+    end
+  end
+
+  test "failed override_medicaid_hold! does not release hold on the same claim object" do
+    with_tenant(TENANT) do
+      claim, = authorized_claim_with_pending_medicaid!(
+        application_date: Date.new(2027, 3, 15),
+        application_date_source: "staff_entry",
+        medicaid_state_code: "XA",
+        eligibility_group: "expansion_adult",
+        service_date: Date.new(2027, 2, 1)
+      )
+      submit_calls = stub_submit_claim!
+      determinations_before = Corvid::Determination.count
+      singleton = Corvid::Determination.singleton_class
+      original_create = singleton.instance_method(:create!)
+      singleton.define_method(:create!) do |*_args, **_kwargs|
+        raise ActiveRecord::RecordInvalid, Corvid::Determination.new
+      end
+      begin
+        assert_raises(ActiveRecord::RecordInvalid) do
+          claim.override_medicaid_hold!(
+            reason_token: "rt_medicaid_hold_override",
+            by_identifier: "usr_billing_spec"
+          )
+        end
+      ensure
+        singleton.define_method(:create!, original_create)
+      end
+
+      assert_equal determinations_before, Corvid::Determination.count
+      assert_raises(Corvid::ClaimSubmission::HeldForPendingMedicaid) { claim.submit! }
+      assert_empty submit_calls
+      claim.reload
+      assert_nil claim.medicaid_hold_override_reason_token
+    end
+  end
+
+  test "override_medicaid_hold! raises when no pending medicaid hold applies" do
+    with_tenant(TENANT) do
+      referral = referral_at("fac_a", "REF-NO-MCA-HOLD-#{SecureRandom.hex(3)}")
+      authorize!(referral)
+      referral.alternate_resource_checks.find_by!(resource_type: "medicaid").update!(status: "not_enrolled")
+      claim = build_claim_for(referral, service_date: Date.new(2027, 2, 1))
+      claim.save!
+      determinations_before = Corvid::Determination.count
+
+      error = assert_raises(StandardError) do
+        claim.override_medicaid_hold!(
+          reason_token: "rt_medicaid_hold_override",
+          by_identifier: "usr_billing_spec"
+        )
+      end
+      assert(
+        error.is_a?(ArgumentError) ||
+          error.class.name.match?(/MedicaidHold/i)
+      )
+      assert_equal determinations_before, Corvid::Determination.count
+      claim.reload
+      assert_nil claim.medicaid_hold_override_reason_token
+    end
+  end
+
+  test "submit! held again after patient medicaid check changes following override" do
+    with_tenant(TENANT) do
+      claim, _, medicaid = authorized_claim_with_pending_medicaid!(
+        application_date: Date.new(2027, 3, 15),
+        application_date_source: "staff_entry",
+        medicaid_state_code: "XA",
+        eligibility_group: "expansion_adult",
+        service_date: Date.new(2027, 2, 1)
+      )
+      claim.override_medicaid_hold!(
+        reason_token: "rt_medicaid_hold_override",
+        by_identifier: "usr_billing_spec"
+      )
+      overridden_at = claim.medicaid_hold_overridden_at
+
+      travel_to overridden_at + 2.seconds do
+        medicaid.update!(application_date: Date.new(2027, 3, 16))
+      end
+
+      submit_calls = stub_submit_claim!
+      assert_raises(Corvid::ClaimSubmission::HeldForPendingMedicaid) { claim.submit! }
+      assert_empty submit_calls
+    end
+  end
+
+  test "medicaid hold override columns clear after successful submit!" do
+    with_tenant(TENANT) do
+      claim, = authorized_claim_with_pending_medicaid!(
+        application_date: Date.new(2027, 3, 15),
+        application_date_source: "staff_entry",
+        medicaid_state_code: "XA",
+        eligibility_group: "expansion_adult",
+        service_date: Date.new(2027, 2, 1)
+      )
+      claim.override_medicaid_hold!(
+        reason_token: "rt_medicaid_hold_override",
+        by_identifier: "usr_billing_spec"
+      )
+      determination_count = Corvid::Determination.where(
+        determinable_type: claim.class.name,
+        determinable_id: claim.id
+      ).count
+      submit_calls = stub_submit_claim!
+
+      claim.submit!
+
+      assert_equal 1, submit_calls.size
+      claim.reload
+      assert_nil claim.medicaid_hold_override_reason_token
+      assert_nil claim.medicaid_hold_override_by_identifier
+      assert_nil claim.medicaid_hold_overridden_at
+      assert_equal determination_count, Corvid::Determination.where(
+        determinable_type: claim.class.name,
+        determinable_id: claim.id
+      ).count
+    end
+  end
+
+  test "medicaid hold override columns clear after mark_submitted!" do
+    with_tenant(TENANT) do
+      claim, = authorized_claim_with_pending_medicaid!(
+        application_date: Date.new(2027, 3, 15),
+        application_date_source: "staff_entry",
+        medicaid_state_code: "XA",
+        eligibility_group: "expansion_adult",
+        service_date: Date.new(2027, 2, 1)
+      )
+      claim.override_medicaid_hold!(
+        reason_token: "rt_medicaid_hold_override",
+        by_identifier: "usr_billing_spec"
+      )
+
+      claim.mark_submitted!(claim_identifier: "CLM-MARK-CLEAR-OVERRIDE")
+
+      claim.reload
+      assert_equal "submitted", claim.status
+      assert_nil claim.medicaid_hold_override_reason_token
+      assert_nil claim.medicaid_hold_override_by_identifier
+      assert_nil claim.medicaid_hold_overridden_at
+    end
+  end
+
+  test "resubmit after rejection re-evaluates medicaid hold without a fresh override" do
+    with_tenant(TENANT) do
+      claim, = authorized_claim_with_pending_medicaid!(
+        application_date: Date.new(2027, 3, 15),
+        application_date_source: "staff_entry",
+        medicaid_state_code: "XA",
+        eligibility_group: "expansion_adult",
+        service_date: Date.new(2027, 2, 1)
+      )
+      claim.override_medicaid_hold!(
+        reason_token: "rt_medicaid_hold_override",
+        by_identifier: "usr_billing_spec"
+      )
+      stub_submit_claim!
+      claim.submit!
+      claim.mark_rejected!(reason_token: "rt_front_door")
+      submit_calls = stub_submit_claim!
+
+      assert_raises(Corvid::ClaimSubmission::HeldForPendingMedicaid) { claim.submit! }
+
+      assert_empty submit_calls
+      assert_equal "rejected", claim.reload.status
+    end
+  end
+
+  %w[not_checked checking not_enrolled].each do |medicaid_status|
+    define_method("test_submit!_holds_when_medicaid_is_#{medicaid_status}_with_application_date_in_window") do
+      with_tenant(TENANT) do
+        claim, = authorized_claim_with_pending_medicaid!(
+          medicaid_status: medicaid_status,
+          application_date: Date.new(2027, 3, 15),
+          application_date_source: "staff_entry",
+          medicaid_state_code: "XA",
+          eligibility_group: "expansion_adult",
+          service_date: Date.new(2027, 2, 1)
+        )
+        submit_calls = stub_submit_claim!
+
+        assert_raises(Corvid::ClaimSubmission::HeldForPendingMedicaid) { claim.submit! }
+
+        assert_empty submit_calls
+      end
+    end
+  end
+
+  test "submit! proceeds when medicaid application ended with denied status" do
+    with_tenant(TENANT) do
+      claim, = authorized_claim_with_pending_medicaid!(
+        medicaid_status: "denied",
+        application_date: Date.new(2027, 3, 15),
+        application_date_source: "staff_entry",
+        medicaid_state_code: "XA",
+        eligibility_group: "expansion_adult",
+        service_date: Date.new(2027, 2, 1)
+      )
+      submit_calls = stub_submit_claim!
+
+      claim.submit!
+
+      assert_equal 1, submit_calls.size
+    end
+  end
+
+  test "draft claim cannot become submitted through update while medicaid hold applies" do
+    with_tenant(TENANT) do
+      claim, = authorized_claim_with_pending_medicaid!(
+        application_date: Date.new(2027, 3, 15),
+        application_date_source: "staff_entry",
+        medicaid_state_code: "XA",
+        eligibility_group: "expansion_adult",
+        service_date: Date.new(2027, 2, 1)
+      )
+
+      refute claim.update(status: "submitted")
+      assert(
+        claim.errors[:status].present? ||
+          claim.errors[:base].present?
+      )
+      assert_equal "draft", claim.reload.status
+      assert_nil claim.submitted_at
+    end
+  end
+
   private
 
   def authorized_claim_with_pending_medicaid!(medicaid_status: "pending_enrollment", service_date:, **medicaid_attrs)

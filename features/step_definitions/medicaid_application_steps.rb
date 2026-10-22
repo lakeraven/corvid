@@ -19,3 +19,12 @@ Then("the medicaid check medicaid state code should be {string}") do |state|
   check = @check || @referral.alternate_resource_checks.find_by!(resource_type: "medicaid")
   assert_equal state, check.medicaid_state_code
 end
+
+When("the medicaid check is verified ineligible") do
+  check = @check || @referral.alternate_resource_checks.find_by!(resource_type: "medicaid")
+  Corvid.adapter.define_singleton_method(:verify_eligibility) do |_patient_identifier, _resource_type|
+    { eligible: false }
+  end
+  check.verify!
+  @check = check.reload
+end
