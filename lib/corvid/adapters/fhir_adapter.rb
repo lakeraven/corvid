@@ -1264,10 +1264,11 @@ module Corvid
         nil
       end
 
-      # Blank resource_type keeps the first coverage. A requested type that
-      # matches nothing is unknown — never another type's coverage.
+      # A nil, empty, or whitespace-only resource_type is undetermined:
+      # nil, never the first coverage. A requested type that matches
+      # nothing is unknown — never another type's coverage.
       def coverage_for_resource_type(coverages, resource_type)
-        return coverages.first if resource_type.to_s.empty?
+        return nil if resource_type.to_s.strip.empty?
 
         coverages.find { |coverage| coverage_type_matches?(coverage, resource_type) }
       end

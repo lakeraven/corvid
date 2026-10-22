@@ -366,10 +366,15 @@ module Corvid
         claim = @claims[claim_identifier]
         return nil unless claim
 
+        # The four base keys are always present (the adapter contract checks
+        # for them); the optional rejection/denial keys only when seeded.
         { status: claim[:status] || "accepted",
           paid_amount: claim[:paid_amount],
           adjustment_amount: claim[:adjustment_amount],
-          paid_date: claim[:paid_date] }
+          paid_date: claim[:paid_date] }.merge(
+          { rejection_reason_token: claim[:rejection_reason_token],
+            denial_reason_codes: claim[:denial_reason_codes] }.compact
+        )
       end
 
       def fetch_remittances(date_range: nil)
@@ -535,14 +540,16 @@ module Corvid
       # (coverage_type, or resource_type when coverage_type is absent) for a
       # type, payer_identifier for a payer. A payer or plan name that
       # happens to spell the requested word is not a match, and a request
-      # that matches nothing is unknown. Never substitute a different
-      # coverage. The most recently recorded match wins.
+      # that matches nothing is unknown. A nil, empty, or whitespace-only
+      # request is unknown and does not fall back to the first coverage.
+      # Never substitute a different coverage. The most recently recorded
+      # match wins.
       def coverage_for(patient_identifier, requested, field)
         coverages = @coverages[patient_identifier.to_s]
         return nil if coverages.nil? || coverages.empty?
 
         needle = requested.to_s.downcase
-        return coverages.first if needle.empty?
+        return nil if needle.strip.empty?
 
         coverages.reverse.find { |coverage| coverage_field(coverage, field).to_s.downcase == needle }
       end
