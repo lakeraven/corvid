@@ -216,6 +216,18 @@ module Corvid
         end
       end
 
+      # The default #inspect renders every ivar: the static bearer_token, a
+      # preset Authorization header, and the token_source (whose own inspect
+      # may hold a cached token). Only the base URL and the auth mode show.
+      def inspect
+        auth = if @token_source then "token_source"
+        elsif @bearer_token then "bearer_token"
+        elsif preset_authorization_header? then "authorization_header"
+        else "none"
+        end
+        "#<#{self.class.name} base_url=#{@base_url.inspect} auth=#{auth}>"
+      end
+
       # True when the caller wired an Authorization header in directly.
       # Matched case-insensitively: HTTP header names are case-insensitive
       # and Net::HTTP will send "authorization" just as happily.

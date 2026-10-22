@@ -197,6 +197,14 @@ module Corvid
         method(:call).to_proc
       end
 
+      # The default #inspect renders every ivar, including the cached access
+      # token. Only non-secret configuration is shown. #pretty_inspect uses
+      # this too.
+      def inspect
+        "#<#{self.class.name} token_endpoint=#{@token_endpoint.inspect} " \
+          "client_id=#{@client_id.inspect} kid=#{@kid.inspect} signing_alg=#{@signing_alg}>"
+      end
+
       private
 
       def now
