@@ -287,9 +287,12 @@ module Corvid
         )
       end
 
+      # nil when the search did not answer; [] when it answered with no matches.
       def search_patients(query)
-        bundle = fhir_search("Patient", name: query)
-        extract_entries(bundle)
+        resources = entries_from_search(fhir_search("Patient", name: query))
+        return nil if resources.nil?
+
+        resources
           .select { |resource| resource["resourceType"] == "Patient" }
           .map { |resource| build_patient_reference(resource) }
       end
@@ -305,9 +308,12 @@ module Corvid
         build_practitioner_reference(resource)
       end
 
+      # nil when the search did not answer; [] when it answered with no matches.
       def search_practitioners(query)
-        bundle = fhir_search("Practitioner", name: query)
-        extract_entries(bundle).map { |r| build_practitioner_reference(r) }
+        resources = entries_from_search(fhir_search("Practitioner", name: query))
+        return nil if resources.nil?
+
+        resources.map { |r| build_practitioner_reference(r) }
       end
 
       # ----------------------------------------------------------------------
@@ -356,9 +362,15 @@ module Corvid
         fhir_update("ServiceRequest", referral_identifier, existing)
       end
 
+      # nil when the patient identifier is blank or the search did not
+      # answer; [] when the search answered with no matches.
       def list_referrals(patient_identifier)
-        bundle = fhir_search("ServiceRequest", patient: patient_identifier)
-        extract_entries(bundle).map { |r| build_referral_reference(r) }
+        return nil if blank_patient_identifier?(patient_identifier)
+
+        resources = entries_from_search(fhir_search("ServiceRequest", patient: patient_identifier))
+        return nil if resources.nil?
+
+        resources.map { |r| build_referral_reference(r) }
       end
 
       # ----------------------------------------------------------------------
@@ -369,12 +381,18 @@ module Corvid
       # only standard R4 elements — patient, provider, item.productOrService
       # (CPT/HCPCS coding), item.servicedDate/servicedPeriod, item.net — so
       # any conformant FHIR server (regardless of source EHR) maps the same
-      # way. No vendor-specific extensions.
+      # way. No vendor-specific extensions. nil when the patient identifier
+      # is blank or the search did not answer; [] when it answered with no
+      # matches. In memory only — never persist or log (ADR 0003).
       # ----------------------------------------------------------------------
 
       def list_claims(patient_identifier)
-        bundle = fhir_search("Claim", patient: patient_identifier)
-        extract_entries(bundle).flat_map { |claim| build_claim_line_references(claim) }
+        return nil if blank_patient_identifier?(patient_identifier)
+
+        claims = entries_from_search(fhir_search("Claim", patient: patient_identifier))
+        return nil if claims.nil?
+
+        claims.flat_map { |claim| build_claim_line_references(claim) }
       end
 
       # One Condition search page only. A Bundle.link relation "next" is
@@ -462,9 +480,15 @@ module Corvid
       # Care team
       # ----------------------------------------------------------------------
 
+      # nil when the patient identifier is blank or the search did not
+      # answer; [] when the search answered with no matches.
       def get_care_team(patient_identifier)
-        bundle = fhir_search("CareTeam", patient: patient_identifier)
-        extract_entries(bundle).flat_map do |resource|
+        return nil if blank_patient_identifier?(patient_identifier)
+
+        resources = entries_from_search(fhir_search("CareTeam", patient: patient_identifier))
+        return nil if resources.nil?
+
+        resources.flat_map do |resource|
           (resource["participant"] || []).map do |p|
             Corvid::CareTeamMemberReference.new(
               practitioner_identifier: p.dig("member", "reference")&.sub("Practitioner/", ""),
@@ -1195,10 +1219,22 @@ module Corvid
         end
       end
 
+      # A nil search is unknown. An answered bundle yields its resources,
+      # which is [] when the server reported no entries.
+      def entries_from_search(bundle)
+        return nil if bundle.nil?
+
+        extract_entries(bundle)
+      end
+
       def extract_entries(bundle)
         return [] unless bundle.is_a?(Hash) && bundle["entry"].is_a?(Array)
 
         bundle["entry"].filter_map { |e| e["resource"] }
+      end
+
+      def blank_patient_identifier?(patient_identifier)
+        patient_identifier.nil? || patient_identifier.to_s.strip.empty?
       end
 
       def format_human_name(name_hash)

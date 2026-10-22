@@ -50,8 +50,12 @@ module Corvid
             patient_identifiers: patient_identifiers(clinic),
             adapter: adapter
           )
-          eligibility = run_eligibility_sample(clinic, adapter)
-          summary = FhirOverlayIngest.analyze(facility: clinic.facility)
+          # Unknown claims are not zero claims. Skip eligibility writes and
+          # the dollar total so a failed read cannot look like an undercount.
+          unless claims_unknown?(counts)
+            eligibility = run_eligibility_sample(clinic, adapter)
+            summary = FhirOverlayIngest.analyze(facility: clinic.facility)
+          end
         end
 
         print_clinic(clinic, counts, eligibility, summary)
@@ -118,12 +122,22 @@ module Corvid
         clinic.resources.select { |r| r["resourceType"] == "Patient" }.map { |r| r["id"] }
       end
 
+      # nil list_claims is unknown, not an empty panel with a zero total.
+      def claims_unknown?(counts)
+        Array(counts[:patients_claims_unknown]).any?
+      end
+
       # --- output ---------------------------------------------------------
 
       def print_clinic(clinic, counts, eligibility, summary)
         banner("#{clinic.name}  (#{clinic.tenant})")
         line "Source EHR:  #{clinic.source_ehr_label}"
         line "Ingest:      stock FHIR R4 via Corvid::Adapters::FhirAdapter (generic, no vendor code)"
+        if claims_unknown?(counts)
+          line "Claims unknown for #{counts[:patients_claims_unknown].size} patient(s); " \
+               "nothing written for them and no dollar total reported."
+          return
+        end
         line "Created:     #{counts[:cases_created]} Case(s), #{counts[:obligations_created]} PrcObligation(s)"
         print_skipped(counts)
         if eligibility
@@ -162,6 +176,12 @@ module Corvid
       end
 
       def print_consortium(per_clinic)
+        if per_clinic.any? { |c| claims_unknown?(c[:counts]) }
+          banner("CONSORTIUM TOTAL (#{per_clinic.size} clinics)")
+          line "  Consortium total withheld: claims could not be read for at least one clinic."
+          return
+        end
+
         summaries = per_clinic.map { |c| c[:summary] }
         claims_analyzed = summaries.sum(&:obligations_analyzed)
 

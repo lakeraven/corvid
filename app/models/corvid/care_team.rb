@@ -50,12 +50,16 @@ module Corvid
 
     # Adapter-sourced care team for an external patient identifier.
     # NOT an AR scope — this resolves the EHR-owned care team via
-    # Corvid.adapter.get_care_team, which returns
-    # a plain data structure (array of CareTeamMemberReference), not
+    # Corvid.adapter.get_care_team. nil means the source did not answer
+    # and is returned as nil, never coerced to []. [] means the source
+    # answered "none". An Array is CareTeamMemberReference values, not
     # CareTeam AR rows. Engine-owned care teams are accessed through
     # the usual .where / instance methods.
     def self.for_patient(patient_identifier)
-      Corvid.adapter.get_care_team(patient_identifier)
+      members = Corvid.adapter.get_care_team(patient_identifier)
+      return nil if members.nil?
+
+      members
     end
 
     # Lightweight FHIR R4 CareTeam projection for host apps that want a

@@ -12,22 +12,34 @@ module Corvid
     # identifiers are the PRC panel/roster to ingest (in production this
     # roster comes from the program's referral list; here from the synthetic
     # dataset). Each FHIR Claim line becomes one PrcObligation, priced later
-    # by the unchanged PrcOverpaymentAnalyzer.
+    # by the unchanged PrcOverpaymentAnalyzer. A nil list_claims is unknown:
+    # that patient is not written and is listed in patients_claims_unknown,
+    # not ingested as zero claims.
     module FhirOverlayIngest
       module_function
 
-      # Returns { cases_created:, obligations_created:, skipped:, skipped_reasons: }.
+      # Returns { cases_created:, obligations_created:, skipped:,
+      # skipped_reasons:, patients_claims_unknown: }.
       # skipped_reasons is an Array of { claim:, code:, reason: } for lines that
       # could not be priced (missing code / missing or unparseable amount) —
-      # surfaced, not silently dropped.
+      # surfaced, not silently dropped. patients_claims_unknown lists roster
+      # ids whose claims could not be read. Those patients get no Case and
+      # no obligations.
       def ingest(facility:, patient_identifiers:, adapter: Corvid.adapter, imported_at: Time.current)
         cases = 0
         obligations = 0
         skipped = []
+        claims_unknown = []
 
         patient_identifiers.each do |patient_id|
           patient = adapter.find_patient(patient_id)
           next unless patient # roster entry the FHIR server doesn't know: skip
+
+          lines = adapter.list_claims(patient_id)
+          if lines.nil?
+            claims_unknown << patient_id
+            next
+          end
 
           kase = Corvid::Case.find_or_create_by!(
             patient_identifier: patient.identifier,
@@ -35,7 +47,7 @@ module Corvid
           )
           cases += 1
 
-          adapter.list_claims(patient_id).each do |line|
+          lines.each do |line|
             if (reason = skip_reason(line))
               skipped << { claim: line.claim_identifier, code: line.procedure_code, reason: reason }
               next
@@ -71,7 +83,8 @@ module Corvid
         end
 
         { cases_created: cases, obligations_created: obligations,
-          skipped: skipped.size, skipped_reasons: skipped }
+          skipped: skipped.size, skipped_reasons: skipped,
+          patients_claims_unknown: claims_unknown }
       end
 
       # Why a claim line can't be priced, or nil if it's fine. A present-but-
