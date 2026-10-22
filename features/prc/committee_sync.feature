@@ -22,6 +22,7 @@ Feature: Committee review sync and eligibility via adapter
     And the adapter should not receive a committee approval update
 
   Scenario: All 12 alternate resource types verify via adapter
+    Given the adapter has eligible coverage for all alternate resource types for patient "pt_001"
     When alternate resource checks are created for all resource types
     And all checks are verified via the adapter
     Then each check should have a status of enrolled or not_enrolled

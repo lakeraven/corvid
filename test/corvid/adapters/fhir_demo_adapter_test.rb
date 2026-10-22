@@ -52,7 +52,61 @@ class Corvid::Adapters::FhirDemoAdapterTest < Minitest::Test
     assert_equal "C-DEMO-001", results.first.code
   end
 
+  # The overlay demo installs this adapter as Corvid.adapter, so referral
+  # writes must work in memory instead of reaching for HTTP.
+  def test_create_referral_stores_a_service_request_that_reads_find_and_list
+    token = @adapter.create_referral("pt_demo_001", { reason: "TEST REASON" })
+
+    assert_instance_of String, token
+    refute_empty token
+    ref = @adapter.find_referral(token)
+    assert_instance_of Corvid::ReferralReference, ref
+    assert_equal token, ref.identifier
+    assert_equal "pt_demo_001", ref.patient_identifier
+    assert_equal "draft", ref.status
+    assert_includes @adapter.list_referrals("pt_demo_001").map(&:identifier), token
+    assert_empty @adapter.list_referrals("pt_demo_other")
+  end
+
+  def test_create_referral_gives_each_referral_its_own_identifier
+    first = @adapter.create_referral("pt_demo_001", {})
+    second = @adapter.create_referral("pt_demo_001", {})
+
+    refute_equal first, second
+    assert_equal [ first, second ].sort, @adapter.list_referrals("pt_demo_001").map(&:identifier).sort
+  end
+
+  def test_update_referral_changes_the_stored_service_request
+    token = @adapter.create_referral("pt_demo_001", {})
+
+    assert_equal true, @adapter.update_referral(token, { status: "active", chs_approval_status: "A" })
+    assert_equal "active", @adapter.find_referral(token).status
+    assert_equal [ "active" ], @adapter.list_referrals("pt_demo_001").map(&:status)
+  end
+
+  def test_update_referral_on_unknown_referral_returns_false_and_stores_nothing
+    refute @adapter.update_referral("rf_demo_unknown", { status: "active" })
+    assert_nil @adapter.find_referral("rf_demo_unknown")
+  end
+
+  def test_update_referral_on_a_seeded_service_request_is_visible_to_reads
+    adapter = Corvid::Adapters::FhirDemoAdapter.new(resources: [ synthetic_service_request ])
+
+    assert_equal true, adapter.update_referral("rf_demo_001", { status: "on-hold" })
+    assert_equal "on-hold", adapter.find_referral("rf_demo_001").status
+  end
+
   private
+
+  def synthetic_service_request
+    {
+      "resourceType" => "ServiceRequest",
+      "id" => "rf_demo_001",
+      "status" => "active",
+      "intent" => "order",
+      "subject" => { "reference" => "Patient/pt_demo_001" }
+    }
+  end
 
   def synthetic_condition
     {
