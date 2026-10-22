@@ -74,9 +74,12 @@ module Corvid
         active on-hold cancelled completed entered-in-error stopped draft unknown
       ].freeze
       BLOCKING_OUTCOME_SEVERITIES = %w[error fatal].freeze
-      # These issue codes make the page unknown at any severity. Other codes
-      # still follow BLOCKING_OUTCOME_SEVERITIES.
-      UNTRUSTED_OUTCOME_CODES = %w[suppressed incomplete too-costly].freeze
+      # These issue codes make the page unknown at any severity, including
+      # when the code differs only by case or surrounding ASCII whitespace.
+      # Other codes still follow BLOCKING_OUTCOME_SEVERITIES.
+      UNTRUSTED_OUTCOME_CODES = %w[
+        suppressed incomplete too-costly timeout throttled too-long exception
+      ].freeze
       # FHIR R4 dateTime grammar (anchored). Year and year-month are valid
       # partials and carry no day. Do not use Date.parse — it accepts prose.
       FHIR_YEAR = "(?:[0-9](?:[0-9](?:[0-9][1-9]|[1-9]0)|[1-9]00)|[1-9]000)"
@@ -132,12 +135,16 @@ module Corvid
 
       DEFAULT_OPEN_TIMEOUT = 10
       DEFAULT_READ_TIMEOUT = 30
-      # get_coverages follows at most this many Bundle pages, then fails closed.
+      # A Coverage search that reads this many Bundle pages is unknown,
+      # including when the last page has no next link. A shorter chain
+      # that ends is kept. Other searches use MAX_SEARCH_PAGES and may
+      # use every page when the chain ends.
       MAX_COVERAGE_PAGES = 50
-      # Only the exact Bundle.link relation "next" is followed. A relation
-      # that equals "next" after removing [[:space:]] or case-folding, but
-      # is not exactly "next", fails the search and is not requested.
-      COVERAGE_NEXT_RELATIONS = %w[next].freeze
+      # Coverage.kind. Absent and exact "insurance" stay on the allowlist.
+      # Exact "self-pay" and "other" are not insurance, so the row is
+      # dropped. Any other present value is unknown.
+      COVERAGE_INSURANCE_KIND = "insurance"
+      COVERAGE_EXCLUDED_KINDS = %w[self-pay other].freeze
 
       # Strict Coverage.period grammar. Anchored, and applied before any
       # Date or Time parse. Date.parse is never used on these bounds.
@@ -452,18 +459,13 @@ module Corvid
       #
       # GET Coverage?beneficiary=Patient/<id>. A nil, empty, or
       # whitespace-only patient identifier is nil and makes no request.
-      # Bundle.type must equal "searchset" or the search is nil. Follow
-      # Bundle.link relation "next" for up to MAX_COVERAGE_PAGES pages.
-      # Only that exact relation is followed. When link is present it
-      # must be an Array of Hashes, each with a String relation. An
-      # exactly-"next" link must have a String url. A relation that
-      # equals "next" after removing Unicode whitespace ([[:space:]])
-      # or case-folding, but is not exactly "next", is nil and is not
-      # requested. A non-String relation, or more than one "next" link,
-      # is nil. A relative next URL is resolved with
-      # URI.join against the URL of the page that contained it. That
-      # absolute URL is fetched only when it stays on this origin and
-      # under the base path.
+      # Bundle.type must equal "searchset" or the search is nil. Pages
+      # come from #collect_search_pages: one next-link walker, the same
+      # origin and path checks, and the same repeat detection as
+      # #fhir_search. The Coverage cap is MAX_COVERAGE_PAGES. A chain
+      # that long is unknown. A relation containing a Unicode format
+      # character (general category Cf, such as U+200B or U+FEFF) is
+      # unknown and is not requested.
       #
       # Every Coverage must name this patient. beneficiary.reference is
       # accepted only as "Patient/<id>" or exactly
@@ -488,9 +490,11 @@ module Corvid
       # insurance; any such coding excludes the Coverage even when another
       # coding is an insurer code. Codes in other systems keep the prior
       # rules. type.text, downcased with whitespace and hyphens removed,
-      # equal to "selfpay" is self-pay when there is no coding. When kind
-      # is present it must be "insurance". Coverages excluded by this
-      # allowlist still count toward the total check.
+      # equal to "selfpay" is self-pay when there is no coding. kind
+      # absent or exactly "insurance" continues the allowlist. Exact
+      # "self-pay" or "other" excludes the row. Any other present kind
+      # is nil. Coverages excluded by this allowlist still count toward
+      # the total check.
       #
       # The array is active coverages whose period covers now. A missing
       # start or end is an open bound. A present bound must match strict
@@ -508,7 +512,7 @@ module Corvid
       # with "period" present but not an object is nil. A malformed shape
       # (type, payor, beneficiary, class, or coding that is not the Hash,
       # Array, or String that element requires) is nil and does not raise.
-      # payor[0].display, subscriberId, and type.coding[0].code, when
+      # payor[0].display, subscriberId, and any type.coding code, when
       # present but not a String, make the search nil. Integer 9 on the
       # X12 claim-filing-indicator system remains self-pay.
       # Every Coverage resource is counted across all pages before the
@@ -519,12 +523,12 @@ module Corvid
       # is missing, not an Array, empty, contains a non-Hash, or has a
       # severity other than exactly "fatal", "error", "warning", or
       # "information". An issue code present but not a String is nil.
-      # Codes suppressed, incomplete, and too-costly
-      # (UNTRUSTED_OUTCOME_CODES) are nil at any severity. "error" and
-      # "fatal" still block. A well-formed warning or information issue
-      # with another String code is ignored. A resourceType equal to
-      # "OperationOutcome" case-insensitively or after stripping, but
-      # not exactly, is nil. A page with no entry and total nil
+      # UNTRUSTED_OUTCOME_CODES are nil at any severity. A String code
+      # that matches one of them after strip and downcase is the same.
+      # "error" and "fatal" still block. A well-formed warning or
+      # information issue with another String code is ignored. A
+      # resourceType equal to "OperationOutcome" case-insensitively or
+      # after stripping, but not exactly, is nil. A page with no entry and total nil
       # or 0 is empty. A first page with no entry, a
       # positive total, and no next link is nil via the count check. A
       # string anywhere in the bundle that fails valid_encoding? is nil
@@ -550,9 +554,10 @@ module Corvid
       # untrusted or inexact OperationOutcome, an empty issue array, a
       # non-String issue code, an unexpected resource without
       # search.mode "include", a blank patient identifier, a non-String
-      # payor display, subscriberId, or type code, an off-origin /
-      # cyclic / over-limit next link, or a next relation that matches
-      # only after removing [[:space:]] or case-folding,
+      # payor display, subscriberId, or type code, a malformed kind,
+      # an off-origin / cyclic / over-limit next link, a next relation
+      # that matches only after removing [[:space:]] or case-folding,
+      # or a relation that contains a format character,
       # or a transport error
       # (Timeout::Error, including Net::ReadTimeout and Net::OpenTimeout,
       # SocketError, SystemCallError, OpenSSL::SSL::SSLError, IOError,
@@ -565,7 +570,8 @@ module Corvid
         return nil if patient_identifier.blank?
 
         query = URI.encode_www_form(beneficiary: "Patient/#{patient_identifier}")
-        collect_coverage_pages("#{@base_url}/Coverage?#{query}", patient_identifier)
+        pages = collect_search_pages("#{@base_url}/Coverage?#{query}", **page_cap_for("Coverage"))
+        coverage_rows_from_pages(pages, patient_identifier) if pages
       rescue Timeout::Error, SocketError, SystemCallError,
              OpenSSL::SSL::SSLError, IOError, Net::ProtocolError,
              Net::HTTPBadResponse, Net::HTTPHeaderSyntaxError, Zlib::Error
@@ -735,28 +741,40 @@ module Corvid
       # empty or nil body, a String body that is not valid_encoding?, or not
       # a Bundle Hash; when `entry` is present and not an Array (absent or
       # null is an empty page); when `link` is present and not an Array;
-      # when a link relation or url String is not valid_encoding?; when a
-      # Hash link's relation is a String equal to "next" only after strip
-      # and case-insensitive compare (that URL is not requested); when more
-      # than one exactly-"next" link is present (neither URL is requested);
-      # when parsing, joining, or checking a next URL raises URI::Error;
-      # when a next URL's scheme or port differs from @base_url, or its host
-      # differs case-insensitively; when its path does not start with
-      # @base_url's path at a segment boundary; when that path contains ";",
-      # a backslash, or an encoded %2f/%5c/%3b/%25 (any case) before or
-      # after percent-decoding, or a path segment is "." or ".." after
-      # %2e/%2E are decoded (that URL is not requested); when a present
+      # when a link row is not a Hash, or its relation is not a String
+      # (an Array relation included); when a relation or url String is not
+      # valid_encoding?; when a relation contains a Unicode format
+      # character (category Cf); when a relation equals "next" only after
+      # removing [[:space:]] or case-folding (that URL is not requested);
+      # when more than one exactly-"next" link is present (neither URL is
+      # requested); when parsing, joining, or checking a next URL raises
+      # URI::Error; when a next URL's scheme or port differs from
+      # @base_url, or its host differs case-insensitively; when its path
+      # does not start with @base_url's path at a segment boundary after
+      # repeated percent-decoding and segment collapse; when that path
+      # contains ";", a backslash, a control character, or an encoded
+      # %2f/%5c/%3b/%25 (any case) before or after decoding, or a path
+      # segment is "." or ".." (that URL is not requested); when a present
       # `total` is not a non-negative Integer, or differs from the count of
       # merged entries whose search.mode is "match" or absent (an equal
       # total is kept, an absent total stays absent, and outcome and include
       # entries are not counted); when the same resourceType and id appear
       # twice among those match or no-mode entries (repeated include entries
       # are allowed); when a next URL was already visited; or when the chain
-      # is longer than MAX_SEARCH_PAGES.
+      # exceeds the page cap. Coverage uses MAX_COVERAGE_PAGES and is
+      # unknown when that many pages were read. Other types use
+      # MAX_SEARCH_PAGES and keep a chain that ends on the last page.
       def fhir_search(resource_type, params = {})
         query = URI.encode_www_form(params)
-        pages = collect_search_pages("#{@base_url}/#{resource_type}?#{query}")
+        url = "#{@base_url}/#{resource_type}?#{query}"
+        pages = collect_search_pages(url, **page_cap_for(resource_type))
         merge_search_pages(pages) if pages
+      end
+
+      def page_cap_for(resource_type)
+        return { page_limit: MAX_SEARCH_PAGES } unless resource_type == "Coverage"
+
+        { page_limit: MAX_COVERAGE_PAGES, at_limit: :unknown }
       end
 
       # 204 and an empty body are not a resource. Parsing nil raises, and
@@ -768,11 +786,13 @@ module Corvid
         JSON.parse(response.body)
       end
 
-      def collect_search_pages(url)
+      # at_limit :unknown discards a chain that filled page_limit, even
+      # when the last Bundle has no next link. :allow keeps that chain.
+      def collect_search_pages(url, page_limit: MAX_SEARCH_PAGES, at_limit: :allow)
         pages = []
         seen = {}
 
-        while url && pages.size < MAX_SEARCH_PAGES && !seen[url]
+        while url && pages.size < page_limit && !seen[url]
           page = fetch_bundle_page(url)
           return unless page && acceptable_entries?(page)
 
@@ -782,9 +802,16 @@ module Corvid
           return if url == SEARCH_REJECTED
         end
 
-        # A nil url means the chain ended. A leftover url is a page cap or a
-        # repeated next link, so pages already read are discarded.
-        pages if url.nil?
+        search_pages_result(pages, url, page_limit, at_limit)
+      end
+
+      # A nil url means the chain ended. A leftover url is a page cap or a
+      # repeated next link, so pages already read are discarded.
+      def search_pages_result(pages, url, page_limit, at_limit)
+        return if url
+        return if at_limit == :unknown && pages.size >= page_limit
+
+        pages
       end
 
       def fetch_bundle_page(url)
@@ -799,7 +826,7 @@ module Corvid
 
         bundle = JSON.parse(body)
         bundle if bundle.is_a?(Hash) && bundle["resourceType"] == "Bundle"
-      rescue JSON::ParserError, TypeError
+      rescue JSON::ParserError, TypeError, ArgumentError, EncodingError
         nil
       end
 
@@ -815,15 +842,21 @@ module Corvid
       def next_link_href(bundle)
         links = bundle_links(bundle)
         return SEARCH_REJECTED if links == SEARCH_REJECTED
-        return SEARCH_REJECTED if links.any? { |link| invalid_link_encoding?(link) }
-        return SEARCH_REJECTED if links.any? { |link| inexact_next_relation?(link) }
+        return SEARCH_REJECTED unless links.all? { |link| sound_link?(link) }
 
         next_links = links.select { |link| next_relation?(link) }
         return SEARCH_REJECTED if next_links.size > 1
         return if next_links.empty?
 
-        href = next_links.first["url"]
-        href.is_a?(String) && href.valid_encoding? && !href.empty? ? href : SEARCH_REJECTED
+        strict_href(next_links.first["url"])
+      end
+
+      def sound_link?(link)
+        return false unless link.is_a?(Hash)
+        return false if invalid_link_encoding?(link)
+
+        relation = link["relation"]
+        relation.is_a?(String) && !format_relation?(relation) && !near_miss_next_relation?(relation)
       end
 
       def invalid_link_encoding?(link)
@@ -832,13 +865,19 @@ module Corvid
         [ link["relation"], link["url"] ].any? { |value| value.is_a?(String) && !value.valid_encoding? }
       end
 
-      def inexact_next_relation?(link)
-        return false unless link.is_a?(Hash)
+      # Format characters are invisible. They must not be stripped into "next".
+      def format_relation?(relation)
+        relation.match?(/\p{Cf}/)
+      end
 
-        relation = link["relation"]
-        return false unless relation.is_a?(String) && relation != "next"
+      # Equals "next" once every [[:space:]] character is removed and case
+      # is folded, but is not the exact relation that is followed.
+      def near_miss_next_relation?(relation)
+        relation != "next" && relation.gsub(/[[:space:]]/, "").casecmp?("next")
+      end
 
-        relation.strip.casecmp?("next")
+      def strict_href(href)
+        href.is_a?(String) && href.valid_encoding? && !href.empty? ? href : SEARCH_REJECTED
       end
 
       def next_relation?(link)
@@ -873,27 +912,75 @@ module Corvid
       end
 
       def path_under_base?(base_path, other_path)
-        base = base_path.to_s.chomp("/")
-        base = "/" if base.empty?
-        other = other_path.to_s
-        other = "/" if other.empty?
-        base == "/" || other == base || other.start_with?("#{base}/")
+        root = collapsed_search_path(base_path.to_s)
+        child = collapsed_search_path(other_path.to_s)
+        return false unless root && child
+
+        child == root || child.start_with?(root == "/" ? "/" : "#{root}/")
       end
 
-      # "." and ".." segments, including %2e/%2E, are rejected before fetch.
-      # ";", a backslash, encoded separators %2f/%5c, an encoded ";" (%3b)
-      # and any double-encoded escape (%25), all in any case, are rejected
-      # on the path both before and after that percent-decoding. A gateway
-      # that decodes, strips path parameters and normalizes dot segments
-      # could otherwise route the request outside the base path.
+      # Repeated decoding, then "." / ".." collapse. nil when the path is
+      # not absolute after decoding, contains a control character or
+      # backslash, or ".." would climb above the root. An empty path is
+      # the host root.
+      def collapsed_search_path(path)
+        decoded = repeated_decode(path)
+        return nil unless decoded.is_a?(String)
+        return nil if decoded.match?(/[[:cntrl:]\\]/)
+        return nil unless decoded.empty? || decoded.start_with?("/")
+
+        collapse_search_segments(decoded)
+      end
+
+      def collapse_search_segments(decoded)
+        segments = []
+        decoded.split("/").each do |segment|
+          next if segment.empty? || segment == "."
+          return nil if segment == ".." && segments.empty?
+
+          segment == ".." ? segments.pop : segments << segment
+        end
+        "/#{segments.join("/")}"
+      end
+
+      def repeated_decode(path)
+        decoded = path
+        5.times do
+          nxt = URI.decode_uri_component(decoded)
+          return nxt if nxt == decoded
+
+          decoded = nxt
+        end
+        nil
+      rescue ArgumentError
+        nil
+      end
+
+      # "." and ".." segments are rejected before fetch, including those
+      # that appear only after repeated percent-decoding. ";", a
+      # backslash, a control character, encoded separators %2f/%5c, an
+      # encoded ";" (%3b) and any double-encoded escape (%25), all in
+      # any case, are rejected on the raw path and on the decoded path.
+      # A gateway that decodes, strips path parameters and normalizes
+      # dot segments could otherwise route the request outside the base.
       def dot_segment_path?(href)
         raw = URI.parse(href).path.to_s
-        decoded = raw.gsub(/%2e/i, ".")
-        return true if forbidden_next_path?(raw) || forbidden_next_path?(decoded)
+        return true if forbidden_next_path?(raw)
 
-        decoded.split("/").any? { |segment| segment == "." || segment == ".." }
+        unsafe_decoded_path?(repeated_decode(raw))
       rescue URI::Error
         false
+      end
+
+      def unsafe_decoded_path?(decoded)
+        return true unless decoded.is_a?(String)
+        return true if forbidden_next_path?(decoded) || decoded.match?(/[[:cntrl:]\\]/)
+
+        dot_segment?(decoded)
+      end
+
+      def dot_segment?(path)
+        path.split("/").any? { |segment| segment == "." || segment == ".." }
       end
 
       def forbidden_next_path?(path)
@@ -1216,24 +1303,34 @@ module Corvid
 
       # Coverage search -----------------------------------------------------
 
-      def collect_coverage_pages(url, patient_identifier)
-        found, seen, seen_ids = [], {}, {}
-        received = 0
-        stated_total = nil
-
-        MAX_COVERAGE_PAGES.times do |index|
-          page = read_coverage_page(url, seen, seen_ids, patient_identifier)
-          return nil unless page
-
-          stated_total = page[:stated_total] if index.zero?
-          return nil unless coverage_page_total_ok?(page[:stated_total], stated_total)
-
-          received += page[:coverage_count]
-          found.concat(page[:coverages])
-          url = page[:next_url]
-          return coverage_search_result(found, received, stated_total) if url.nil?
+      def coverage_rows_from_pages(pages, patient_identifier)
+        acc = { found: [], seen_ids: {}, received: 0, stated_total: nil, saw_total: false }
+        pages.each do |bundle|
+          return nil unless append_coverage_page(bundle, patient_identifier, acc)
         end
-        nil
+        coverage_search_result(acc[:found], acc[:received], acc[:stated_total])
+      end
+
+      def append_coverage_page(bundle, patient_identifier, acc)
+        return false unless accept_coverage_page(bundle, acc)
+
+        page = active_coverage_rows(bundle, patient_identifier, acc[:seen_ids])
+        return false unless page
+
+        acc[:received] += page[:coverage_count]
+        acc[:found].concat(page[:coverages])
+        true
+      end
+
+      def accept_coverage_page(bundle, acc)
+        return false unless coverage_bundle_shape?(bundle)
+
+        total = bundle["total"]
+        stated = acc[:saw_total] ? acc[:stated_total] : total
+        return false unless coverage_page_total_ok?(total, stated)
+
+        acc[:stated_total] = total unless acc[:saw_total]
+        acc[:saw_total] = true
       end
 
       def coverage_search_result(found, received, stated_total)
@@ -1262,62 +1359,8 @@ module Corvid
         total.is_a?(Integer) && total >= 0
       end
 
-      def read_coverage_page(url, seen, seen_ids, patient_identifier)
-        absolute = absolute_coverage_url(url)
-        return nil if absolute.nil? || seen[absolute] || !same_origin_coverage_url?(absolute)
-
-        seen[absolute] = true
-        fetch_coverage_bundle(absolute, patient_identifier, seen_ids)
-      end
-
-      # Absolute references pass through. Relative next links are resolved
-      # against the page that contained them before they reach this method.
-      def absolute_coverage_url(url)
-        return nil unless url.is_a?(String) && !url.empty?
-
-        URI.join(@base_url, url).to_s
-      rescue URI::InvalidURIError, URI::InvalidComponentError, URI::BadURIError
-        nil
-      end
-
-      def fetch_coverage_bundle(url, patient_identifier, seen_ids)
-        response = http_get(url)
-        return nil unless response.is_a?(Net::HTTPSuccess)
-
-        bundle = parse_coverage_bundle(response.body)
-        return nil unless bundle
-
-        page = active_coverage_rows(bundle, patient_identifier, seen_ids)
-        return nil unless page
-
-        next_url = coverage_next_url(url, bundle)
-        return nil if next_url == :invalid_coverage_next
-
-        page.merge(next_url: next_url, stated_total: bundle["total"])
-      end
-
-      # URI.join against the page URL, then the next read applies the
-      # same-origin and base-path checks before fetching.
-      def coverage_next_url(page_url, bundle)
-        link = bundle_next_url(bundle)
-        return link if link.nil? || link == :invalid_coverage_next
-
-        URI.join(page_url, link).to_s
-      rescue URI::InvalidURIError, URI::InvalidComponentError, URI::BadURIError
-        :invalid_coverage_next
-      end
-
-      def parse_coverage_bundle(body)
-        return nil unless body.is_a?(String) && body.valid_encoding?
-
-        parsed = JSON.parse(body)
-        return nil unless parsed.is_a?(Hash) && parsed["resourceType"] == "Bundle"
-        return nil unless parsed["type"] == "searchset"
-        return nil unless coverage_strings_encoded?(parsed)
-
-        parsed
-      rescue JSON::ParserError, ArgumentError, EncodingError
-        nil
+      def coverage_bundle_shape?(bundle)
+        bundle.is_a?(Hash) && bundle["type"] == "searchset" && coverage_strings_encoded?(bundle)
       end
 
       # Keys and values. One invalid string fails the whole search.
@@ -1496,28 +1539,29 @@ module Corvid
       def trusted_coverage_strings?(resource)
         coverage_string_or_nil?(coverage_payor_display(resource)) &&
           coverage_string_or_nil?(resource["subscriberId"]) &&
-          trusted_primary_type_code?(resource)
+          trusted_type_codes?(resource)
       end
 
       def coverage_string_or_nil?(value)
         value.nil? || value.is_a?(String)
       end
 
-      # nil and String are copied onto the row. Integer 9 on the X12
-      # claim-filing system is the self-pay code. Any other value is unknown.
-      def trusted_primary_type_code?(resource)
-        code = coverage_primary_type_code(resource)
-        return true if coverage_string_or_nil?(code)
+      # Every type.coding code is nil or a String, or Integer 9 on the X12
+      # claim-filing system (self-pay). Any other non-String code is unknown.
+      def trusted_type_codes?(resource)
+        codings = coverage_type_codings(resource)
+        return false if codings == :unknown_coverage
 
-        coding = coverage_primary_coding(resource)
-        coding.is_a?(Hash) && x12_self_pay?(code, coding["system"])
+        codings.all? { |coding| trusted_coding_code?(coding) }
       end
 
-      def coverage_primary_coding(resource)
-        codings = coverage_type_codings(resource)
-        return nil unless codings.is_a?(Array)
+      def trusted_coding_code?(coding)
+        return false unless coding.is_a?(Hash)
 
-        codings.first
+        code = coding["code"]
+        return true if coverage_string_or_nil?(code)
+
+        x12_self_pay?(code, coding["system"])
       end
 
       def known_coverage_status?(status)
@@ -1535,15 +1579,23 @@ module Corvid
       end
 
       def insurance_allowlisted?(resource, codings, payors)
-        return false unless coverage_kind_allows?(resource)
+        kind = coverage_kind_state(resource)
+        return kind if kind == :unknown_coverage
+        return false if kind == :exclude
         return false unless organization_payors?(payors)
         return false if self_pay_type_text?(resource, codings)
 
         codings.all? { |coding| insurance_type_coding?(coding) }
       end
 
-      def coverage_kind_allows?(resource)
-        !resource.key?("kind") || resource["kind"] == "insurance"
+      def coverage_kind_state(resource)
+        return :allow unless resource.key?("kind")
+
+        kind = resource["kind"]
+        return :allow if kind == COVERAGE_INSURANCE_KIND
+        return :exclude if COVERAGE_EXCLUDED_KINDS.include?(kind)
+
+        :unknown_coverage
       end
 
       def coverage_type_codings(resource)
@@ -1769,8 +1821,14 @@ module Corvid
       end
 
       def untrusted_outcome?(issue)
-        code = issue["code"]
-        code.is_a?(String) && UNTRUSTED_OUTCOME_CODES.include?(code)
+        code = normalized_outcome_code(issue["code"])
+        !code.nil? && UNTRUSTED_OUTCOME_CODES.include?(code)
+      end
+
+      def normalized_outcome_code(code)
+        return unless code.is_a?(String) && code.valid_encoding?
+
+        code.strip.downcase
       end
 
       def blocking_severity?(issue)
@@ -1976,121 +2034,6 @@ module Corvid
         return nil if rows.empty?
 
         rows.first["code"]
-      end
-
-      def bundle_next_url(bundle)
-        links = bundle["link"]
-        return nil if links.nil?
-        return :invalid_coverage_next unless links.is_a?(Array)
-
-        single_coverage_next_url(links)
-      end
-
-      def single_coverage_next_url(links)
-        chosen = nil
-        links.each do |link|
-          url = coverage_link_url(link)
-          return :invalid_coverage_next if url == :invalid
-          next if url.nil?
-          return :invalid_coverage_next if chosen
-
-          chosen = url
-        end
-        chosen
-      end
-
-      def coverage_link_url(link)
-        relation = coverage_link_relation(link)
-        return relation if relation.nil? || relation == :invalid
-
-        strict_next_url(link["url"])
-      end
-
-      # :invalid fails the search. nil is a link that is not the next page.
-      def coverage_link_relation(link)
-        return :invalid unless link.is_a?(Hash)
-
-        relation = link["relation"]
-        return :invalid unless relation.is_a?(String)
-        return :invalid if rejected_next_relation?(relation)
-
-        relation if followed_next_relation?(relation)
-      end
-
-      def rejected_next_relation?(relation)
-        folded_next_relation?(relation) && !followed_next_relation?(relation)
-      end
-
-      # Equals "next" once [[:space:]] is removed and case is folded.
-      def folded_next_relation?(relation)
-        relation.gsub(/[[:space:]]/, "").casecmp?("next")
-      end
-
-      def followed_next_relation?(relation)
-        COVERAGE_NEXT_RELATIONS.include?(relation)
-      end
-
-      def strict_next_url(url)
-        return :invalid unless url.is_a?(String) && !url.empty?
-
-        url
-      end
-
-      def same_origin_coverage_url?(url)
-        return false unless url.is_a?(String) && !url.empty?
-
-        candidate = URI.parse(url)
-        base = URI.parse(@base_url)
-        return false unless candidate.is_a?(URI::HTTP) && base.is_a?(URI::HTTP)
-        return false unless candidate.scheme == base.scheme && candidate.port == base.port
-        return false unless candidate.host.to_s.casecmp?(base.host.to_s)
-
-        coverage_path_under_base?(candidate.path, base.path)
-      rescue URI::InvalidURIError, URI::InvalidComponentError
-        false
-      end
-
-      def coverage_path_under_base?(candidate_path, base_path)
-        child = normalized_coverage_path(candidate_path)
-        root = normalized_coverage_path(base_path)
-        return false unless child && root
-
-        child == root || child.start_with?(root == "/" ? "/" : "#{root}/")
-      end
-
-      def normalized_coverage_path(path)
-        return nil unless path.is_a?(String)
-
-        decoded = repeated_decode(path)
-        return nil unless decoded.is_a?(String)
-        return nil if decoded.match?(/[[:cntrl:]\\]/)
-        return nil unless decoded.empty? || decoded.start_with?("/")
-
-        collapse_coverage_segments(decoded)
-      end
-
-      def repeated_decode(path)
-        decoded = path
-        5.times do
-          nxt = URI.decode_uri_component(decoded)
-          return nxt if nxt == decoded
-
-          decoded = nxt
-        end
-        nil
-      rescue ArgumentError
-        nil
-      end
-
-      def collapse_coverage_segments(decoded)
-        segments = []
-        decoded.split("/").each do |segment|
-          next if segment.empty? || segment == "."
-          return nil if segment == ".." && segments.empty?
-
-          segment == ".." ? segments.pop : segments << segment
-        end
-        "/#{segments.join("/")}"
       end
 
       # Conditions ------------------------------------------------------------
