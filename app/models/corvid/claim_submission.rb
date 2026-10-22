@@ -179,11 +179,13 @@ module Corvid
     end
 
     # Adjudicated denial (835). reason_codes are CARC/RARC codes such as
-    # "CO-97"; reason_token is an optional vault token for remark text.
+    # "CO-97"; reason_token is an optional vault token for remark text. With no
+    # codes given, the codes already recorded are kept.
     def mark_denied!(reason_codes: [], reason_token: nil)
+      codes = Array(reason_codes).map(&:to_s).reject(&:blank?)
       update!(
         status: "denied",
-        denial_reason_codes: Array(reason_codes).map(&:to_s),
+        denial_reason_codes: codes.presence || denial_reason_codes,
         denial_reason_token: reason_token || denial_reason_token
       )
     end
