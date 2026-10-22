@@ -81,4 +81,31 @@ class CmsIppsRakeTest < ActiveSupport::TestCase
 
     assert_match(/^NATIONAL,6752\.61,1\.0000$/, File.read(out))
   end
+
+  test "import_hospital_rates loads the unmodified normalize_wage_index output" do
+    out = File.join(@tmpdir, "hosp.csv")
+    assert_output(/Wrote/) do
+      Rake::Task["cms:ipps:normalize_wage_index"].invoke("2026", WAGE_INDEX_FIXTURE, out, "6752.61", "test")
+    end
+    assert_match(/\A# release_label: test$/, File.read(out))
+
+    assert_output(/Imported/) do
+      Rake::Task["cms:ipps:import_hospital_rates"].invoke("2026", out, "test")
+    end
+
+    national = Corvid::IppsHospitalRate.find_by(fiscal_year: 2026, locality: "NATIONAL")
+    assert_equal BigDecimal("6752.61"), national.base_rate
+    assert_operator Corvid::IppsHospitalRate.where(fiscal_year: 2026).count, :>, 1
+  end
+
+  test "import_drg_weights skips release-style comment lines" do
+    path = File.join(@tmpdir, "drg.csv")
+    File.write(path, "# release_label: test\ndrg_code,relative_weight\n470,2.07\n")
+    assert_output(/Imported 1 DRG/) do
+      Rake::Task["cms:ipps:import_drg_weights"].invoke("2026", path, "test")
+    end
+
+    assert_equal BigDecimal("2.07"),
+                 Corvid::IppsDrgWeight.find_by(fiscal_year: 2026, drg_code: "470").relative_weight
+  end
 end
