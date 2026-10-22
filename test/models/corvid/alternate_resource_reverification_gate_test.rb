@@ -58,7 +58,7 @@ module Corvid
           assert referral.verify_alternate_resources!
           referral.update!(medical_priority: 2, flagged_for_review: false, estimated_cost: 5_000)
 
-          referral.alternate_resource_checks.find_by!(resource_type: "medicare_a").update!(checked_at: 31.days.ago)
+          referral.alternate_resource_checks.find_by!(resource_type: "medicare_a").update!(checked_at: 91.days.ago)
           @verify_calls.clear
 
           assert referral.complete_priority_assignment!
@@ -78,7 +78,7 @@ module Corvid
           assert referral.complete_priority_assignment!
           referral.update_column(:status, "priority_assignment")
 
-          referral.alternate_resource_checks.find_by!(resource_type: "private_insurance").update!(checked_at: 31.days.ago)
+          referral.alternate_resource_checks.find_by!(resource_type: "private_insurance").update!(checked_at: 91.days.ago)
           Corvid.adapter.define_singleton_method(:verify_eligibility) { |_pid, _type| { error: "unreadable" } }
 
           refute referral.authorize!
