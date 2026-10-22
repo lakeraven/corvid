@@ -155,6 +155,28 @@ class Corvid::Adapters::MockAdapterTest < Minitest::Test
     assert_equal true, @adapter.check_eligibility_detailed("pt_001", "MOCK_PAYER")[:eligible]
   end
 
+  # A type-less eligibility check is undetermined; it never answers from
+  # whichever coverage happens to be first.
+  def test_verify_eligibility_with_a_blank_resource_type_is_undetermined
+    @adapter.add_patient("pt_001", display_name: "TEST,PATIENT", dob: Date.new(1980, 1, 1), sex: "F", ssn_last4: "0000")
+    @adapter.add_coverage("pt_001",
+                          coverage_type: "medicare_a",
+                          payer_name: "MOCK MEDICARE PAYER",
+                          eligible: true)
+    @adapter.add_coverage("pt_001",
+                          coverage_type: "medicaid",
+                          payer_name: "MOCK MEDICAID PAYER",
+                          eligible: true)
+
+    [ nil, "", "   ", "\t \n", :"" ].each do |resource_type|
+      assert_nil @adapter.verify_eligibility("pt_001", resource_type),
+                 "resource_type #{resource_type.inspect} must not answer from arbitrary coverage"
+    end
+
+    assert_equal true, @adapter.verify_eligibility("pt_001", "medicaid")[:eligible]
+    assert_equal true, @adapter.verify_eligibility("pt_001", "medicare_a")[:eligible]
+  end
+
   # A detailed check that names no payer is undetermined; it never answers
   # from whichever coverage happens to be first.
   def test_check_eligibility_detailed_with_a_blank_payer_is_not_eligible
@@ -246,14 +268,27 @@ class Corvid::Adapters::MockAdapterTest < Minitest::Test
     assert result[:enrolled]
   end
 
-  def test_verify_tribal_enrollment_returns_seeded_confidence
-    @adapter.add_enrollment("pt_e2", enrolled: true, tribe_name: "T", tribe_code: "T", confidence: :verified)
+  def test_verify_tribal_enrollment_without_confidence_returns_unavailable
+    @adapter.add_enrollment("pt_e2", enrolled: true, tribe_name: "T", tribe_code: "T")
     result = @adapter.verify_tribal_enrollment("pt_e2")
+    assert_equal :unavailable, result[:confidence]
+  end
+
+  def test_verify_tribal_enrollment_propagates_explicit_confidence_verified
+    @adapter.add_enrollment("pt_e2v", enrolled: true, tribe_name: "T", tribe_code: "T", confidence: :verified)
+    result = @adapter.verify_tribal_enrollment("pt_e2v")
     assert_equal :verified, result[:confidence]
 
     @adapter.add_enrollment("pt_e2b", enrolled: true, tribe_name: "T", tribe_code: "T")
     result_without_confidence = @adapter.verify_tribal_enrollment("pt_e2b")
     refute_equal :verified, result_without_confidence[:confidence]
+  end
+
+  def test_verify_tribal_enrollment_confidence_outside_allow_list_is_unavailable
+    [ :VERIFIED, :unverified, "Verified", " verified", "", nil, true, 1 ].each_with_index do |raw, index|
+      @adapter.add_enrollment("pt_conf_#{index}", enrolled: true, tribe_name: "T", tribe_code: "T", confidence: raw)
+      assert_equal :unavailable, @adapter.verify_tribal_enrollment("pt_conf_#{index}")[:confidence], raw.inspect
+    end
   end
 
   def test_verify_tribal_enrollment_propagates_explicit_confidence_stale
@@ -262,9 +297,9 @@ class Corvid::Adapters::MockAdapterTest < Minitest::Test
     assert_equal :stale, result[:confidence]
   end
 
-  def test_verify_tribal_enrollment_unknown_patient_returns_not_enrolled_with_unavailable_confidence
+  def test_verify_tribal_enrollment_unknown_patient_returns_nil_enrolled_with_unavailable_confidence
     result = @adapter.verify_tribal_enrollment("pt_unknown")
-    refute result[:enrolled]
+    assert_nil result[:enrolled]
     assert_nil result[:tribe_code]
     assert_equal :unavailable, result[:confidence]
   end

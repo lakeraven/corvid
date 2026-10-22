@@ -54,6 +54,16 @@ module AdapterContractTests
 
   REFUND_SUCCESS_STATUSES = %w[refunded succeeded].freeze
 
+  # verify_eligibility must not answer from an arbitrary coverage when the
+  # requested resource type is missing or blank (ADR 0005).
+  BLANK_VERIFY_ELIGIBILITY_RESOURCE_TYPES = [
+    nil,
+    "",
+    "   ",
+    "\t \n",
+    :""
+  ].freeze
+
   NO_IDENTIFIER_METHODS = %i[
     fetch_remittances
     get_budget_summary
@@ -100,7 +110,7 @@ module AdapterContractTests
     verify_eligibility: "unknown patient must not return eligible: true",
     verify_identity_documents: "unknown patient reports all identity fields absent",
     verify_residency: "unknown patient reports not on reservation",
-    verify_tribal_enrollment: "unknown patient is not enrolled with :verified confidence"
+    verify_tribal_enrollment: "unknown patient is enrolled nil (undetermined), never :verified confidence"
   }.freeze
 
   CONTRACT_CALLS = {
@@ -577,6 +587,14 @@ module AdapterContractTests
 
     def assert_coverage_resource_type_guards(seed)
       adapter = contract_adapter
+
+      AdapterContractTests::BLANK_VERIFY_ELIGIBILITY_RESOURCE_TYPES.each do |blank_type|
+        result = adapter.verify_eligibility(seed[:patient_identifier], blank_type)
+        assert_nil result,
+                   "verify_eligibility(#{blank_type.inspect}) must be nil (undetermined), " \
+                   "never a coverage answer, got #{result.inspect}"
+      end
+
       match = adapter.verify_eligibility(seed[:patient_identifier], seed[:coverage_resource_type])
       assert_instance_of Hash, match
       assert_equal true, match[:eligible],
@@ -725,7 +743,7 @@ module AdapterContractTests
 
     def assert_tribal_enrollment_unknown(result)
       assert_instance_of Hash, result
-      refute result[:enrolled], "verify_tribal_enrollment(unknown) must have enrolled: false"
+      assert_nil result[:enrolled], "verify_tribal_enrollment(unknown) must have enrolled: nil (unknown is not a denial)"
       refute_equal :verified, result[:confidence],
                    "verify_tribal_enrollment(unknown) must not have confidence :verified"
     end
@@ -874,7 +892,8 @@ module AdapterContractTests
                     enrolled membership_number tribe_name tribe_code member_status blood_quantum
                     confidence verified_at
                   ])
-      assert_includes [ true, false ], value[:enrolled]
+      # nil: the source could not answer (unreachable or unknown record).
+      assert_includes [ true, false, nil ], value[:enrolled]
       assert_optional_string(value[:membership_number])
       assert_optional_string(value[:tribe_name])
       assert_optional_string(value[:tribe_code])

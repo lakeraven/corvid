@@ -197,6 +197,11 @@ module Corvid
       # renewal_date as Date or nil. Any other type makes the answer
       # unreadable. Callers treat anything else as undetermined, never
       # as no coverage (42 CFR 136.61).
+      #
+      # A nil, empty, or whitespace-only resource_type returns nil
+      # (undetermined) and never selects a coverage. A real resource
+      # type returns its matching coverage. Absence never verifies
+      # (42 CFR 136.61).
       def verify_eligibility(patient_identifier, resource_type)
         raise NotImplementedError, "#{self.class}#verify_eligibility not implemented"
       end
@@ -205,12 +210,15 @@ module Corvid
       # Enrollment verification (for PRC eligibility checklist)
       # ----------------------------------------------------------------------
 
-      # Returns { enrolled: bool, membership_number: str|nil,
+      # Returns { enrolled: true|false|nil, membership_number: str|nil,
       #           tribe_name: str|nil, tribe_code: str|nil,
       #           member_status: str|nil,
       #           blood_quantum: { display: String, decimal: Float|nil }|nil,
       #           confidence: :verified|:stale|:unavailable,
       #           verified_at: datetime }
+      #
+      # `enrolled` is nil when the source is unreachable or the record is
+      # unknown. true and false are answers from the source.
       #
       # `blood_quantum` is nil when the source has none. `display` is the
       # source text (for example "1/4" or "0.25"). `decimal` is that value
@@ -221,8 +229,9 @@ module Corvid
       # positives). `confidence` reflects how fresh the underlying data is —
       # `:verified` is canonical; `:stale` means the source returned data
       # but flagged it as out-of-date; `:unavailable` means the source could
-      # not be reached. A missing or unrecognized confidence is
-      # `:unavailable`, not `:verified`.
+      # not be reached. A missing or unrecognized confidence is also
+      # `:unavailable`, not `:verified`. Consumers must treat anything other
+      # than :verified/:stale as not verified.
       def verify_tribal_enrollment(patient_identifier)
         raise NotImplementedError, "#{self.class}#verify_tribal_enrollment not implemented"
       end
@@ -250,11 +259,19 @@ module Corvid
 
       # Check claim status (276/277). Returns { status: str, paid_amount: decimal,
       #   adjustment_amount: decimal, paid_date: date }
+      # Optional keys: rejection_reason_token (vault token for a front-end
+      # rejection reason) and denial_reason_codes (array of CARC/RARC codes,
+      # e.g. ["CO-97"]).
       def check_claim_status(claim_identifier)
         raise NotImplementedError, "#{self.class}#check_claim_status not implemented"
       end
 
-      # Fetch remittances (835 ERA). Returns array of remittance hashes.
+      # Fetch remittances (835 ERA). Returns array of remittance hashes:
+      #   { remittance_identifier:, payer_name:, payment_date:, total_paid:,
+      #     line_items: [ { claim_identifier:, paid_amount:, adjustment_amount:,
+      #                     patient_responsibility:, status:, adjustment_codes: } ] }
+      # A line item with status "denied" is an adjudicated denial; its
+      # adjustment_codes are CARC/RARC codes. Apply with Corvid::RemittanceProcessor.
       def fetch_remittances(date_range: nil)
         raise NotImplementedError, "#{self.class}#fetch_remittances not implemented"
       end
@@ -298,8 +315,13 @@ module Corvid
         end
       end
 
+      # Allow-list: an exact documented Symbol, or its exact String spelling
+      # (FHIR sends valueString). Anything else, including blank, other case
+      # or padding, is :unavailable. Never raises.
       def normalize_tribal_confidence(value)
-        symbol = value.to_s.strip.downcase.to_sym
+        return :unavailable unless value.is_a?(Symbol) || value.is_a?(String)
+
+        symbol = value.to_sym
         TRIBAL_CONFIDENCE_VALUES.include?(symbol) ? symbol : :unavailable
       end
 

@@ -12,6 +12,7 @@ Feature: Enrollment demo adapter for eligibility verification
     Then the enrollment result should show enrolled as true
     And the enrollment result should include a membership number
     And the enrollment result should include a tribe name
+    And the enrollment result should have confidence verified
 
   Scenario: Enrolled member's identity documents are present
     When I verify identity documents for the demo patient

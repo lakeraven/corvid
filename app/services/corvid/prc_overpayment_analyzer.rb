@@ -184,7 +184,7 @@ module Corvid
         # mark :clear / :real.
         lookup = Corvid::IppsRateProvider.lookup_for(
           drg_code: proc_info.drg,
-          locality: facility.locality,
+          locality: wage_area(facility),
           date: obligation.service_date
         )
 
@@ -259,7 +259,7 @@ module Corvid
         )
         asc_lookup = is_asc ? Corvid::AscRateProvider.lookup_for(
           hcpcs_code: proc_info.hcpcs,
-          locality: facility.locality,
+          locality: wage_area(facility),
           date: obligation.service_date
         ) : nil
 
@@ -284,7 +284,7 @@ module Corvid
 
         lookup = Corvid::OppsRateProvider.lookup_for(
           apc_code: proc_info.apc,
-          locality: facility.locality,
+          locality: wage_area(facility),
           date: obligation.service_date
         )
 
@@ -372,6 +372,17 @@ module Corvid
           notes: "Obligation has no parseable service_date (upstream date malformed); " \
                  "cannot select a fee schedule. Clean the obligation row, then re-import."
         )
+      end
+
+      # The IPPS/OPPS/ASC providers key their wage index by CMS wage
+      # area (5-digit CBSA or 2-digit rural-state code), not by the PFS
+      # locality the facility dictionary carries, and the two code
+      # systems overlap (PFS "02" Seattle vs. wage area "02" rural
+      # Alaska). Until a facility resolves to a real CBSA (#372), price
+      # institutional claims at the NATIONAL wage row (nil normalizes to
+      # NATIONAL) rather than at a wage area that merely shares digits.
+      def wage_area(_facility)
+        nil
       end
 
       def base_fields(obligation, proc_info, facility)
