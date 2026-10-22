@@ -83,6 +83,10 @@ class Corvid::Adapters::AdapterContractSuiteTest < Minitest::Test
     assert_contract_fails(StringRenewalDateAdapter, :verify_eligibility)
   end
 
+  def test_suite_rejects_verify_eligibility_that_answers_on_blank_resource_type
+    assert_contract_fails(Corvid::Adapters::MockAdapter, :verify_eligibility)
+  end
+
   def test_suite_accepts_verify_eligibility_without_detailed_eligibility
     probe = probe_for(NoDetailedEligibilityAdapter)
     probe.define_singleton_method(:contract_unsupported) do
