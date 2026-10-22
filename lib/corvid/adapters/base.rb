@@ -197,6 +197,11 @@ module Corvid
       # renewal_date as Date or nil. Any other type makes the answer
       # unreadable. Callers treat anything else as undetermined, never
       # as no coverage (42 CFR 136.61).
+      #
+      # A nil, empty, or whitespace-only resource_type returns nil
+      # (undetermined) and never selects a coverage. A real resource
+      # type returns its matching coverage. Absence never verifies
+      # (42 CFR 136.61).
       def verify_eligibility(patient_identifier, resource_type)
         raise NotImplementedError, "#{self.class}#verify_eligibility not implemented"
       end
