@@ -88,14 +88,15 @@ module Corvid
       end
 
       # Every line for the claim across all remittances, oldest payment first.
-      # A remittance returned twice (same remittance_identifier) counts once.
+      # A remittance returned twice counts once: by remittance_identifier, or
+      # by its whole content when it has none, since counting a duplicate
+      # twice could settle a claim that is only partly paid.
       # Reversals carry negative amounts, so a reversed payment and its
       # corrected replacement sum to the corrected figures.
       def matching_lines(claim, remittances)
         seen = Set.new
         lines = remittances.each_with_object([]) do |remittance, out|
-          identifier = remittance[:remittance_identifier]
-          next if identifier.present? && !seen.add?(identifier)
+          next unless seen.add?(remittance[:remittance_identifier].presence || remittance)
 
           Array(remittance[:line_items]).each do |line|
             next unless line[:claim_identifier] == claim.claim_identifier
@@ -124,29 +125,38 @@ module Corvid
         lines.any? { |line| !line[field].nil? }
       end
 
+      # The claim is settled only when the remittances account for what was
+      # billed: payment, contractual adjustments, patient responsibility and
+      # denied amounts together. Any positive payment used to close it, so a
+      # $100 remittance against a $425 claim read as fully paid and the $325
+      # balance quietly stopped being owed.
+      #
       # A denial is an answer and is recorded as one: without this a denied
       # claim sits in its prior status indefinitely, indistinguishable from one
-      # the payer has not responded to. The most recent line decides, so a
-      # payment on appeal after a denial can still settle the claim.
+      # the payer has not responded to. A bill accounted for with nothing paid
+      # by the payer or owed by the patient is a denial when the payer says so
+      # or when only denied amounts cover it. Otherwise the most recent line
+      # decides, so a payment on appeal after a denial can still settle the
+      # claim, and a denied line beside a payment is a partial denial.
       #
-      # Otherwise the claim is settled only when the remittances account for
-      # what was billed: payment, contractual adjustments, patient
-      # responsibility and denied amounts together. Any positive payment used
-      # to close it, so a $100 remittance against a $425 claim read as fully
-      # paid and the $325 balance quietly stopped being owed. STATUSES carries
-      # no partially-paid state, so anything short leaves the prior status.
+      # STATUSES carries no partially-paid state, so a claim short of the bill
+      # keeps its prior status, except that one recorded as paid is owed again
+      # (a reversal took the money back) and returns to accepted.
       def resolved_status(claim, latest_line, totals)
-        return "denied" if latest_line[:status].to_s == "denied"
-
+        denied_line = latest_line[:status].to_s == "denied"
         billed = claim.billed_amount_cents.to_i
-        return claim.status unless billed.positive?
+        collected = totals[:paid] + totals[:patient_responsibility]
+        accounted = collected + totals[:adjustment] + totals[:denied]
 
-        answered = totals[:paid] + totals[:adjustment] + totals[:patient_responsibility]
-        return claim.status if answered + totals[:denied] < billed
-        # Accounted for only by denial: nothing was paid or owed by anyone.
-        return "denied" unless answered.positive?
+        if billed.positive? && accounted >= billed
+          return "denied" unless (collected + totals[:adjustment]).positive?
+          return "denied" if denied_line && !collected.positive?
 
-        "paid"
+          return "paid"
+        end
+        return "denied" if denied_line
+
+        claim.paid? ? "accepted" : claim.status
       end
     end
   end
