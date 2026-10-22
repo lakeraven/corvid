@@ -51,6 +51,26 @@ module Corvid
       assert_equal 0, FmapDetermination.count
     end
 
+    test "an in-memory edit of the authority's facility does not pass the facility check" do
+      @contract_638.facility_identifier = "fac_plain_example"
+      assert_raises(ArgumentError) do
+        FmapClassificationService.classify!(
+          encounter_identifier: "enc_example_13",
+          facility_identifier: "fac_plain_example",
+          date_of_service: Date.new(2026, 3, 1),
+          jurisdiction: "XA",
+          facility_authority: @contract_638,
+          aian_verified: true,
+          evidence_refs: [ AIAN_EVIDENCE ]
+        )
+      end
+      assert_equal 0, FmapDetermination.count
+    end
+
+    test "an unrecognised received-through basis is rejected" do
+      assert_raises(ArgumentError) { classify_638(received_through_basis: "bogus") }
+    end
+
     test "the determination records the authority's facility when none is given" do
       determination = FmapClassificationService.classify!(
         encounter_identifier: "enc_example_11",

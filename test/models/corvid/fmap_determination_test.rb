@@ -103,6 +103,15 @@ module Corvid
       refute original.valid?
     end
 
+    test "an unknown received-through basis or authority type is a validation error" do
+      determination = FmapDetermination.new(
+        **base_attrs, category: "undetermined", received_through_basis: "bogus", authority_type: "bogus"
+      )
+      refute determination.valid?
+      assert determination.errors[:received_through_basis].any?
+      assert determination.errors[:authority_type].any?
+    end
+
     test "the database rejects an unknown category" do
       original = arpa_determination
       assert_raises(ActiveRecord::StatementInvalid) { original.update_columns(category: "bogus") }
