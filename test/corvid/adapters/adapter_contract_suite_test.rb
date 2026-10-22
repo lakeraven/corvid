@@ -32,6 +32,19 @@ class Corvid::Adapters::AdapterContractSuiteTest < Minitest::Test
     end
   end
 
+  # base.rb: coverage_start, coverage_end and renewal_date are Date or nil.
+  class StringCoverageDateAdapter < Corvid::Adapters::MockAdapter
+    def verify_eligibility(patient_identifier, resource_type)
+      super&.merge(coverage_start: "2026-01-01")
+    end
+  end
+
+  class StringRenewalDateAdapter < Corvid::Adapters::MockAdapter
+    def verify_eligibility(patient_identifier, resource_type)
+      super&.merge(renewal_date: "2026-12-31")
+    end
+  end
+
   # Implements coverage-type eligibility but has no 270/271 exchange.
   class NoDetailedEligibilityAdapter < Corvid::Adapters::MockAdapter
     def check_eligibility_detailed(_patient_identifier, _payer_identifier)
@@ -60,6 +73,14 @@ class Corvid::Adapters::AdapterContractSuiteTest < Minitest::Test
 
   def test_suite_rejects_a_blank_submit_claim_status
     assert_contract_fails(BlankClaimStatusAdapter, :submit_claim)
+  end
+
+  def test_suite_rejects_a_string_coverage_date
+    assert_contract_fails(StringCoverageDateAdapter, :verify_eligibility)
+  end
+
+  def test_suite_rejects_a_string_renewal_date
+    assert_contract_fails(StringRenewalDateAdapter, :verify_eligibility)
   end
 
   def test_suite_accepts_verify_eligibility_without_detailed_eligibility
