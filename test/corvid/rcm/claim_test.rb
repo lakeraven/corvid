@@ -89,6 +89,15 @@ class Corvid::Rcm::ClaimTest < Minitest::Test
     assert_equal BigDecimal("0.30"), claim.total_billed
   end
 
+  # Panel round 1: an unusable line amount makes the total unknown, not
+  # smaller. A total that quietly counts it as zero understates the charge.
+  def test_a_claim_total_is_unknown_when_any_line_amount_is_unusable
+    claim = Factory.claim(items: [ Factory.line(billed_amount: BigDecimal("200.00")),
+                                   Factory.line(sequence: 2, billed_amount: nil) ])
+
+    assert_nil claim.total_billed
+  end
+
   # Regression: the bridge dropped `amount_error`, so a present-but-unparseable
   # FHIR amount became indistinguishable from an absent one.
   def test_the_bridge_keeps_an_unparseable_amount_visible
@@ -101,7 +110,8 @@ class Corvid::Rcm::ClaimTest < Minitest::Test
     line = Corvid::Rcm::ClaimLine.from_claim_line_reference(
       reference, place_of_service: "11", encounter_modality: :in_person, documented_minutes: 55
     )
-    result = Corvid::Rcm::Scrubber.new.scrub(Factory.claim(items: [ line ]), as_of: Factory::TODAY)
+    result = Corvid::Rcm::Scrubber.new.scrub(Factory.claim(items: [ line ]), as_of: Factory::TODAY,
+                                             history: Factory.history)
 
     assert_equal "unparseable billed amount", line.amount_error
     assert_equal [ :service_line_complete ], result.blocked_by

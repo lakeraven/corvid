@@ -18,7 +18,7 @@ class Corvid::Rcm::PipelineTest < Minitest::Test
   def test_a_blocked_claim_never_reaches_the_clearinghouse
     claim = Factory.claim_with_line(encounter_modality: :telehealth_patient_home,
                                     place_of_service: "11", modifiers: [])
-    result = @scrubber.scrub(claim, as_of: Factory::TODAY)
+    result = @scrubber.scrub(claim, as_of: Factory::TODAY, history: Factory.history)
 
     refute result.submittable?
     @clearinghouse.submit_claim(claim) if result.submittable?
@@ -28,7 +28,7 @@ class Corvid::Rcm::PipelineTest < Minitest::Test
 
   def test_a_clean_claim_goes_out_and_comes_back_acknowledged
     claim = Factory.claim
-    result = @scrubber.scrub(claim, as_of: Factory::TODAY)
+    result = @scrubber.scrub(claim, as_of: Factory::TODAY, history: Factory.history)
     assert result.submittable?
 
     ack = @clearinghouse.submit_claim(claim)
@@ -40,7 +40,7 @@ class Corvid::Rcm::PipelineTest < Minitest::Test
   def test_a_warned_claim_still_goes_out
     coverage = Factory.coverage(timely_filing_days: 90)
     claim = Factory.claim(coverage: coverage)
-    result = @scrubber.scrub(claim, as_of: Date.new(2026, 10, 15))
+    result = @scrubber.scrub(claim, as_of: Date.new(2026, 10, 15), history: Factory.history)
 
     refute result.clean?
     assert result.submittable?

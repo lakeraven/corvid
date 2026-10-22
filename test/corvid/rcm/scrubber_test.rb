@@ -15,7 +15,7 @@ class Corvid::Rcm::ScrubberTest < Minitest::Test
     @scrubber = Corvid::Rcm::Scrubber.new
   end
 
-  def scrub(claim, as_of: TODAY, history: nil, **options)
+  def scrub(claim, as_of: TODAY, history: Factory.history, **options)
     @scrubber.scrub(claim, as_of: as_of, history: history, **options)
   end
 
@@ -450,8 +450,19 @@ class Corvid::Rcm::ScrubberTest < Minitest::Test
     assert scrub(Factory.claim, history: history).clean?
   end
 
-  def test_no_history_means_no_duplicate_findings
+  def test_an_empty_history_means_no_duplicate_findings
     assert_empty findings_for(scrub(Factory.claim), :duplicate_service_already_submitted)
+  end
+
+  # Panel round 1: nil history is UNKNOWN, not "none" (the same nil/[] rule
+  # main applies to adapter reads). Without it nobody can say the claim was
+  # not already sent, so the duplicate rule blocks rather than passing.
+  def test_no_history_at_all_blocks_the_duplicate_rule
+    result = scrub(Factory.claim, history: nil)
+
+    assert_only_rule(:duplicate_service_already_submitted, result)
+    refute result.submittable?
+    assert_match(/no claim history/i, result.findings.first.message)
   end
 
   # Regression: duplicate detection used to consult history only, so the
@@ -515,7 +526,7 @@ class Corvid::Rcm::ScrubberTest < Minitest::Test
 
   def test_an_empty_claim_reports_every_structural_problem_rather_than_raising
     bare = Corvid::Rcm::Claim.new(identifier: "CLM-EMPTY", patient_identifier: "pt_0002")
-    result = @scrubber.scrub(bare, as_of: TODAY)
+    result = @scrubber.scrub(bare, as_of: TODAY, history: Factory.history)
 
     refute result.submittable?
     assert_includes result.blocked_by, :rendering_provider_npi_present
@@ -556,7 +567,7 @@ class Corvid::Rcm::ScrubberTest < Minitest::Test
     )
 
     error = assert_raises(Corvid::Rcm::Scrubber::UnknownCheck) do
-      Corvid::Rcm::Scrubber.new(ruleset: ruleset).scrub(Factory.claim, as_of: TODAY)
+      Corvid::Rcm::Scrubber.new(ruleset: ruleset).scrub(Factory.claim, as_of: TODAY, history: Factory.history)
     end
     assert_match(/no_such_check/, error.message)
   end
