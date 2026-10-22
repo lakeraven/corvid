@@ -131,6 +131,14 @@ module Corvid
       DEFAULT_OPEN_TIMEOUT = 10
       DEFAULT_READ_TIMEOUT = 30
 
+      # One search that still has a next page after this many Bundles is
+      # undetermined. Callers never see a partial result.
+      MAX_SEARCH_PAGES = 100
+
+      # Next URL that aborts the search and is never requested.
+      SEARCH_REJECTED = :rejected
+      private_constant :SEARCH_REJECTED
+
       def initialize(base_url:, bearer_token: nil, headers: {},
                      open_timeout: DEFAULT_OPEN_TIMEOUT,
                      read_timeout: DEFAULT_READ_TIMEOUT,
@@ -188,7 +196,9 @@ module Corvid
 
       def search_patients(query)
         bundle = fhir_search("Patient", name: query)
-        extract_entries(bundle).map { |r| build_patient_reference(r) }
+        extract_entries(bundle)
+          .select { |resource| resource["resourceType"] == "Patient" }
+          .map { |resource| build_patient_reference(resource) }
       end
 
       # ----------------------------------------------------------------------
@@ -386,8 +396,8 @@ module Corvid
           eligible: coverage["status"] == "active",
           payer_name: coverage.dig("payor", 0, "display"),
           policy_number: coverage["subscriberId"],
-          coverage_start: parse_date(coverage.dig("period", "start")),
-          coverage_end: parse_date(coverage.dig("period", "end"))
+          coverage_start: parse_period_date(coverage.dig("period", "start"), :start),
+          coverage_end: parse_period_date(coverage.dig("period", "end"), :end)
         }
       end
 
@@ -526,10 +536,35 @@ module Corvid
         parse_success_json(response)
       end
 
+      # Returns one Bundle whose `entry` array is every page, in order.
+      # Follows `link` entries with relation exactly "next", resolving each
+      # URL with URI.join against the current page. Fail closed: returns nil
+      # (never a partial Bundle) when any page is non-2xx, invalid JSON, an
+      # empty or nil body, a String body that is not valid_encoding?, or not
+      # a Bundle Hash; when `entry` is present and not an Array (absent or
+      # null is an empty page); when `link` is present and not an Array;
+      # when a link relation or url String is not valid_encoding?; when a
+      # Hash link's relation is a String equal to "next" only after strip
+      # and case-insensitive compare (that URL is not requested); when more
+      # than one exactly-"next" link is present (neither URL is requested);
+      # when parsing, joining, or checking a next URL raises URI::Error;
+      # when a next URL's scheme or port differs from @base_url, or its host
+      # differs case-insensitively; when its path does not start with
+      # @base_url's path at a segment boundary; when that path contains ";",
+      # a backslash, or an encoded %2f/%5c/%3b/%25 (any case) before or
+      # after percent-decoding, or a path segment is "." or ".." after
+      # %2e/%2E are decoded (that URL is not requested); when a present
+      # `total` is not a non-negative Integer, or differs from the count of
+      # merged entries whose search.mode is "match" or absent (an equal
+      # total is kept, an absent total stays absent, and outcome and include
+      # entries are not counted); when the same resourceType and id appear
+      # twice among those match or no-mode entries (repeated include entries
+      # are allowed); when a next URL was already visited; or when the chain
+      # is longer than MAX_SEARCH_PAGES.
       def fhir_search(resource_type, params = {})
-        query_string = URI.encode_www_form(params)
-        response = http_get("#{@base_url}/#{resource_type}?#{query_string}")
-        parse_success_json(response)
+        query = URI.encode_www_form(params)
+        pages = collect_search_pages("#{@base_url}/#{resource_type}?#{query}")
+        merge_search_pages(pages) if pages
       end
 
       # 204 and an empty body are not a resource. Parsing nil raises, and
@@ -539,6 +574,204 @@ module Corvid
         return nil if empty_response?(response)
 
         JSON.parse(response.body)
+      end
+
+      def collect_search_pages(url)
+        pages = []
+        seen = {}
+
+        while url && pages.size < MAX_SEARCH_PAGES && !seen[url]
+          page = fetch_bundle_page(url)
+          return unless page && acceptable_entries?(page)
+
+          seen[url] = true
+          pages << page
+          url = next_search_url(page, url)
+          return if url == SEARCH_REJECTED
+        end
+
+        # A nil url means the chain ended. A leftover url is a page cap or a
+        # repeated next link, so pages already read are discarded.
+        pages if url.nil?
+      end
+
+      def fetch_bundle_page(url)
+        response = http_get(url)
+        return unless response.is_a?(Net::HTTPSuccess)
+
+        parse_search_bundle(response.body)
+      end
+
+      def parse_search_bundle(body)
+        return if !body.is_a?(String) || body.empty? || !body.valid_encoding?
+
+        bundle = JSON.parse(body)
+        bundle if bundle.is_a?(Hash) && bundle["resourceType"] == "Bundle"
+      rescue JSON::ParserError, TypeError
+        nil
+      end
+
+      def next_search_url(page, current_url)
+        href = next_link_href(page)
+        return href if href.nil? || href == SEARCH_REJECTED
+        return SEARCH_REJECTED if dot_segment_path?(href)
+
+        resolved = resolve_search_url(current_url, href)
+        same_origin_url?(resolved) ? resolved : SEARCH_REJECTED
+      end
+
+      def next_link_href(bundle)
+        links = bundle_links(bundle)
+        return SEARCH_REJECTED if links == SEARCH_REJECTED
+        return SEARCH_REJECTED if links.any? { |link| invalid_link_encoding?(link) }
+        return SEARCH_REJECTED if links.any? { |link| inexact_next_relation?(link) }
+
+        next_links = links.select { |link| next_relation?(link) }
+        return SEARCH_REJECTED if next_links.size > 1
+        return if next_links.empty?
+
+        href = next_links.first["url"]
+        href.is_a?(String) && href.valid_encoding? && !href.empty? ? href : SEARCH_REJECTED
+      end
+
+      def invalid_link_encoding?(link)
+        return false unless link.is_a?(Hash)
+
+        [ link["relation"], link["url"] ].any? { |value| value.is_a?(String) && !value.valid_encoding? }
+      end
+
+      def inexact_next_relation?(link)
+        return false unless link.is_a?(Hash)
+
+        relation = link["relation"]
+        return false unless relation.is_a?(String) && relation != "next"
+
+        relation.strip.casecmp?("next")
+      end
+
+      def next_relation?(link)
+        link.is_a?(Hash) && link["relation"] == "next"
+      end
+
+      def bundle_links(bundle)
+        links = bundle["link"]
+        return links if links.is_a?(Array)
+        return [] if links.nil?
+
+        SEARCH_REJECTED
+      end
+
+      def resolve_search_url(current_url, href)
+        URI.join(current_url, href).to_s
+      rescue URI::Error
+        nil
+      end
+
+      def same_origin_url?(url)
+        return false if url.nil?
+
+        origin = URI.parse(@base_url)
+        other = URI.parse(url)
+        return false unless origin.scheme == other.scheme && origin.port == other.port
+        return false unless origin.host.is_a?(String) && origin.host.casecmp?(other.host)
+
+        path_under_base?(origin.path, other.path)
+      rescue URI::Error
+        false
+      end
+
+      def path_under_base?(base_path, other_path)
+        base = base_path.to_s.chomp("/")
+        base = "/" if base.empty?
+        other = other_path.to_s
+        other = "/" if other.empty?
+        base == "/" || other == base || other.start_with?("#{base}/")
+      end
+
+      # "." and ".." segments, including %2e/%2E, are rejected before fetch.
+      # ";", a backslash, encoded separators %2f/%5c, an encoded ";" (%3b)
+      # and any double-encoded escape (%25), all in any case, are rejected
+      # on the path both before and after that percent-decoding. A gateway
+      # that decodes, strips path parameters and normalizes dot segments
+      # could otherwise route the request outside the base path.
+      def dot_segment_path?(href)
+        raw = URI.parse(href).path.to_s
+        decoded = raw.gsub(/%2e/i, ".")
+        return true if forbidden_next_path?(raw) || forbidden_next_path?(decoded)
+
+        decoded.split("/").any? { |segment| segment == "." || segment == ".." }
+      rescue URI::Error
+        false
+      end
+
+      def forbidden_next_path?(path)
+        path.match?(/[;\\]|%2f|%5c|%3b|%25/i)
+      end
+
+      def merge_search_pages(pages)
+        entries = pages.flat_map { |page| bundle_entries(page) }
+        return if total_mismatch?(pages.first, entries)
+        return if duplicate_match_entries?(entries)
+
+        merged = pages.first.dup
+        merged["entry"] = entries
+        strip_next_links(merged)
+        merged
+      end
+
+      def total_mismatch?(page, entries)
+        return false unless page.key?("total")
+
+        total = page["total"]
+        return true unless total.is_a?(Integer) && total >= 0
+
+        total != entries.count { |entry| search_match_entry?(entry) }
+      end
+
+      def duplicate_match_entries?(entries)
+        keys = entries.filter_map { |entry| match_resource_key(entry) }
+        keys.size != keys.uniq.size
+      end
+
+      def search_match_entry?(entry)
+        return true unless entry.is_a?(Hash)
+
+        search = entry["search"]
+        return true unless search.is_a?(Hash)
+
+        mode = search["mode"]
+        mode.nil? || mode == "match"
+      end
+
+      def match_resource_key(entry)
+        return unless search_match_entry?(entry)
+        return unless entry.is_a?(Hash)
+
+        resource = entry["resource"]
+        return unless resource.is_a?(Hash)
+
+        type = resource["resourceType"]
+        id = resource["id"]
+        [ type, id ] unless type.nil? || id.nil?
+      end
+
+      def acceptable_entries?(page)
+        return true unless page.key?("entry")
+
+        entry = page["entry"]
+        entry.nil? || entry.is_a?(Array)
+      end
+
+      def bundle_entries(page)
+        entries = page["entry"]
+        entries.is_a?(Array) ? entries : []
+      end
+
+      def strip_next_links(bundle)
+        links = bundle["link"]
+        return unless links.is_a?(Array)
+
+        bundle["link"] = links.reject { |link| next_relation?(link) }
       end
 
       def empty_response?(response)
@@ -823,6 +1056,29 @@ module Corvid
         Date.parse(value.to_s)
       rescue ArgumentError
         nil
+      end
+
+      # Coverage period bounds only. A partial FHIR date ("2026" or
+      # "2026-03") means its whole range: a start is the first day and an
+      # end is the last day. Full dates parse as parse_date; malformed is nil.
+      def parse_period_date(value, bound)
+        range = partial_date_range(value.to_s)
+        return parse_date(value) unless range
+
+        bound == :start ? range.first : range.last
+      rescue ArgumentError
+        nil
+      end
+
+      def partial_date_range(text)
+        case text
+        when /\A(\d{4})\z/
+          year = Regexp.last_match(1).to_i
+          Date.new(year, 1, 1)..Date.new(year, 12, 31)
+        when /\A(\d{4})-(\d{2})\z/
+          first = Date.new(Regexp.last_match(1).to_i, Regexp.last_match(2).to_i, 1)
+          first..first.next_month.prev_day
+        end
       end
 
       # Clinical search -------------------------------------------------------

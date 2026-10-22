@@ -324,31 +324,31 @@ module Corvid
           blood_quantum: normalize_blood_quantum(enrollment[:blood_quantum]),
           member_status: enrollment[:member_status],
           confidence: normalize_tribal_confidence(enrollment[:confidence]),
-          verified_at: Time.current
+          verified_at: verification_timestamp
         }
       end
 
       def verify_identity_documents(patient_identifier)
         patient = @patients[patient_identifier.to_s]
-        return { ssn_present: false, dob_present: false, birthplace_present: false, verified_at: Time.current } unless patient
+        return { ssn_present: false, dob_present: false, birthplace_present: false, verified_at: verification_timestamp } unless patient
 
         {
           ssn_present: patient[:ssn_last4].present?,
           dob_present: patient[:dob].present?,
           birthplace_present: patient[:birthplace].present?,
-          verified_at: Time.current
+          verified_at: verification_timestamp
         }
       end
 
       def verify_residency(patient_identifier)
         residency = @residencies[patient_identifier.to_s]
-        return { on_reservation: false, address: nil, service_area: nil, verified_at: Time.current } unless residency
+        return { on_reservation: false, address: nil, service_area: nil, verified_at: verification_timestamp } unless residency
 
         {
           on_reservation: residency[:on_reservation],
           address: residency[:address],
           service_area: residency[:service_area],
-          verified_at: Time.current
+          verified_at: verification_timestamp
         }
       end
 
@@ -448,9 +448,10 @@ module Corvid
         @remittances[reference] = attrs
       end
 
-      def add_coverage(patient_identifier, attrs)
+      def add_coverage(patient_identifier, attrs = {}, **extra)
+        row = attrs.is_a?(Hash) ? attrs.merge(extra) : extra
         @coverages[patient_identifier.to_s] ||= []
-        @coverages[patient_identifier.to_s] << attrs
+        @coverages[patient_identifier.to_s] << row
       end
 
       def get_coverages(patient_identifier)
@@ -525,15 +526,16 @@ module Corvid
           member_status: nil,
           blood_quantum: nil,
           confidence: :unavailable,
-          verified_at: Time.current
+          verified_at: verification_timestamp
         }
       end
 
-      # Matches the request against one field of the coverage itself:
-      # coverage_type for a type, payer_identifier for a payer. A payer or
-      # plan name that happens to spell the requested word is not a match,
-      # and a request that matches nothing is unknown. Never substitute a
-      # different coverage.
+      # Matches the request against the coverage's own fields: its type
+      # (coverage_type, or resource_type when coverage_type is absent) for a
+      # type, payer_identifier for a payer. A payer or plan name that
+      # happens to spell the requested word is not a match, and a request
+      # that matches nothing is unknown. Never substitute a different
+      # coverage. The most recently recorded match wins.
       def coverage_for(patient_identifier, requested, field)
         coverages = @coverages[patient_identifier.to_s]
         return nil if coverages.nil? || coverages.empty?
@@ -541,7 +543,22 @@ module Corvid
         needle = requested.to_s.downcase
         return coverages.first if needle.empty?
 
-        coverages.find { |coverage| coverage[field].to_s.downcase == needle }
+        coverages.reverse.find { |coverage| coverage_field(coverage, field).to_s.downcase == needle }
+      end
+
+      def coverage_field(coverage, field)
+        return coverage[field] unless field == :coverage_type
+
+        coverage.key?(:coverage_type) ? coverage[:coverage_type] : coverage[:resource_type]
+      end
+
+      # A recorded period or renewal key, even an explicit nil (an unknown
+      # or open bound), replaces the default; an omitted key keeps it.
+      def apply_recorded_dates(result, coverage)
+        %i[coverage_start coverage_end renewal_date].each do |key|
+          result[key] = coverage[key] if coverage.key?(key)
+        end
+        result
       end
 
       # Only an explicit eligible: true verifies; a coverage that does not
@@ -550,13 +567,14 @@ module Corvid
         eligible = coverage[:eligible]
         return nil if coverage.key?(:eligible) && eligible != true && eligible != false
 
-        {
+        result = {
           eligible: eligible == true,
           payer_name: coverage[:payer_name] || "MOCK #{resource_type.to_s.upcase} PAYER",
           policy_token: coverage[:policy_token] || policy_token_for(patient_identifier, resource_type),
-          coverage_start: coverage[:coverage_start] || year_start,
-          coverage_end: coverage[:coverage_end] || year_end
+          coverage_start: year_start,
+          coverage_end: year_end
         }
+        apply_recorded_dates(result, coverage)
       end
 
       def detailed_eligibility_from_coverage(payer_identifier, coverage)
@@ -593,6 +611,12 @@ module Corvid
 
       def year_end
         Date.new(Date.current.year, 12, 31)
+      end
+
+      # Whole-second clock so a repeated check in the same second reports
+      # the same verified_at.
+      def verification_timestamp
+        Time.current.change(usec: 0)
       end
 
       def blank_patient_identifier?(patient_identifier)

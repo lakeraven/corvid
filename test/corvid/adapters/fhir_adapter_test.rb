@@ -555,7 +555,7 @@ class Corvid::Adapters::FhirAdapterTest < Minitest::Test
 
   def test_get_conditions_skips_non_us_core_category
     included = build_condition_resource
-    skipped = build_condition_resource(category_code: "health-concern")
+    skipped = build_condition_resource(id: "cond_skipped", category_code: "health-concern")
     results = get_conditions_with_bundle(conditions_bundle([ included, skipped ]))
 
     assert_equal 1, results.size
@@ -564,7 +564,7 @@ class Corvid::Adapters::FhirAdapterTest < Minitest::Test
 
   def test_get_conditions_skips_non_active_or_resolved_clinical_status
     included = build_condition_resource(clinical_status: "resolved")
-    skipped = build_condition_resource(clinical_status: "inactive")
+    skipped = build_condition_resource(id: "cond_skipped", clinical_status: "inactive")
     results = get_conditions_with_bundle(conditions_bundle([ included, skipped ]))
 
     assert_equal 1, results.size
@@ -1639,6 +1639,64 @@ class Corvid::Adapters::FhirAdapterTest < Minitest::Test
       } ]
     )
     assert_nil get_conditions_with_bundle(conditions_bundle([ condition ]), patient_id: "pt_001")
+  end
+
+  # Coverage period partial dates (#640) -------------------------------------
+
+  def coverage_bundle(period)
+    {
+      "resourceType" => "Bundle",
+      "entry" => [ { "resource" => {
+        "resourceType" => "Coverage",
+        "id" => "cov_test_001",
+        "status" => "cancelled",
+        "type" => { "coding" => [ { "code" => "MCDSC" } ] },
+        "period" => period
+      } } ]
+    }
+  end
+
+  def eligibility_for_period(period)
+    @adapter.stub(:fhir_search, coverage_bundle(period)) do
+      @adapter.verify_eligibility("pt_test_001", "medicaid")
+    end
+  end
+
+  def test_verify_eligibility_year_only_period_parses_to_year_range
+    result = eligibility_for_period("start" => "2026", "end" => "2026")
+    assert_equal Date.new(2026, 1, 1), result[:coverage_start]
+    assert_equal Date.new(2026, 12, 31), result[:coverage_end]
+  end
+
+  def test_verify_eligibility_year_month_period_parses_to_month_range
+    result = eligibility_for_period("start" => "2026-03", "end" => "2026-02")
+    assert_equal Date.new(2026, 3, 1), result[:coverage_start]
+    assert_equal Date.new(2026, 2, 28), result[:coverage_end]
+  end
+
+  def test_verify_eligibility_leap_february_period_end_is_last_day
+    result = eligibility_for_period("end" => "2028-02")
+    assert_nil result[:coverage_start]
+    assert_equal Date.new(2028, 2, 29), result[:coverage_end]
+  end
+
+  def test_verify_eligibility_full_date_period_unchanged
+    result = eligibility_for_period("start" => "2026-03-15", "end" => "2026-09-30T23:00:00Z")
+    assert_equal Date.new(2026, 3, 15), result[:coverage_start]
+    assert_equal Date.new(2026, 9, 30), result[:coverage_end]
+  end
+
+  def test_verify_eligibility_malformed_period_dates_stay_nil
+    result = eligibility_for_period("start" => "2026-13", "end" => "not-a-date")
+    assert_nil result[:coverage_start]
+    assert_nil result[:coverage_end]
+  end
+
+  def test_partial_birth_date_still_parses_to_nil
+    resource = { "id" => "pt_test_001", "birthDate" => "1980", "name" => [ { "family" => "TEST", "given" => [ "PATIENT" ] } ] }
+    @adapter.stub(:fhir_read, resource) do
+      assert_nil @adapter.find_patient("pt_test_001").dob
+    end
   end
 
   private
