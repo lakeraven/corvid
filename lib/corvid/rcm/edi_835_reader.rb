@@ -70,8 +70,12 @@ module Corvid
         current_service = nil
         envelope = { st_position: nil, se_position: nil, se_count: nil }
 
+        # With no ST at all, `assert_envelope!` refuses the file at the end.
+        first_st = segments.index { |elements| elements[0] == "ST" }
+
         segments.each_with_index do |elements, position|
-          if envelope[:se_position] && TRANSACTION_SEGMENTS.include?(elements[0])
+          outside = envelope[:se_position] || (first_st && position < first_st)
+          if outside && TRANSACTION_SEGMENTS.include?(elements[0])
             raise ParseError, "#{elements[0]} segment outside the ST/SE transaction"
           end
 
@@ -144,6 +148,8 @@ module Corvid
 
             current_claim[:services] << current_service if current_service
             code, *modifiers = elements[1].to_s.split(COMPOSITE_SEPARATOR)[1..] || []
+            raise ParseError, "SVC01 carries no procedure code (#{elements[1].inspect})" if code.to_s.strip.empty?
+
             current_service = {
               procedure_code: code,
               modifiers: modifiers.reject { |m| m.to_s.empty? },

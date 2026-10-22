@@ -116,6 +116,9 @@ module Corvid
         return [] if coverage.nil? # the payer-identifier rule reports this
 
         return fail_with({ problem: "not active (status #{coverage.status.to_s.inspect})" }) unless coverage.active?
+        # An open end is ongoing coverage (FHIR Period); an unknown start is
+        # not evidence the coverage had begun by the date of service.
+        return fail_with({ problem: "unverifiable, because no coverage start date is recorded," }) if coverage.period_start.nil?
 
         Array(claim.items).flat_map do |item|
           date = item.serviced_date
