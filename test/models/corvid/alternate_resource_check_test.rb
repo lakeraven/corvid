@@ -1621,6 +1621,88 @@ class Corvid::AlternateResourceCheckTest < ActiveSupport::TestCase
     end
   end
 
+  test "rejects future application_date on update not only on create" do
+    with_tenant("tnt_test") do
+      travel_to Date.new(2027, 6, 1) do
+        check = create_medicaid_check!
+        check.update!(
+          application_date: Date.new(2027, 5, 15),
+          application_date_source: "staff_entry",
+          medicaid_state_code: "XA"
+        )
+        check.application_date = Date.new(2027, 6, 2)
+        refute check.save
+        assert check.errors[:application_date].present?
+      end
+    end
+  end
+
+  test "verify! on pending_enrollment medicaid with application_date stays pending when adapter answers ineligible" do
+    with_tenant("tnt_test") do
+      travel_to Date.new(2027, 4, 1) do
+        referral = create_referral
+        check = Corvid::AlternateResourceCheck.create!(
+        prc_referral: referral,
+        resource_type: "medicaid",
+        status: "pending_enrollment",
+        application_date: Date.new(2027, 3, 15),
+        application_date_source: "staff_entry",
+        medicaid_state_code: "XA",
+        eligibility_group: "expansion_adult",
+        eligibility_group_source: "staff_entry",
+        eligibility_group_set_at: Time.current
+      )
+
+        Corvid.adapter.define_singleton_method(:verify_eligibility) do |_pid, _type|
+          { eligible: false }
+        end
+
+        check.verify!
+        check.reload
+        assert check.pending_enrollment?
+      end
+    end
+  end
+
+  test "verify! on pending_enrollment medicaid without application_date moves to not_enrolled when ineligible" do
+    with_tenant("tnt_test") do
+      referral = create_referral
+      check = Corvid::AlternateResourceCheck.create!(
+        prc_referral: referral,
+        resource_type: "medicaid",
+        status: "pending_enrollment"
+      )
+
+      Corvid.adapter.define_singleton_method(:verify_eligibility) do |_pid, _type|
+        { eligible: false }
+      end
+
+      assert check.verify!
+      check.reload
+      assert check.not_enrolled?
+    end
+  end
+
+  test "explicit denied status ends pending_enrollment medicaid application" do
+    with_tenant("tnt_test") do
+      travel_to Date.new(2027, 4, 1) do
+        check = Corvid::AlternateResourceCheck.create!(
+          prc_referral: create_referral,
+          resource_type: "medicaid",
+          status: "pending_enrollment",
+          application_date: Date.new(2027, 3, 15),
+          application_date_source: "staff_entry",
+          medicaid_state_code: "XA"
+        )
+
+        check.update!(status: "denied")
+
+        refute check.pending_enrollment?
+        assert check.denied?
+      end
+    end
+  end
+
   private
 
   def create_case

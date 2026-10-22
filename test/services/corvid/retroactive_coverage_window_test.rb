@@ -525,12 +525,12 @@ class Corvid::RetroactiveCoverageWindowTest < ActiveSupport::TestCase
     end
   end
 
-  test "filing_deadline with zero window months is nil when deadline precedes H.R. 1 effective date" do
+  test "filing_deadline with zero window months for pre-H.R. 1 date of service is end of month after federal window" do
     with_tenant(TENANT) do
       rule_set = zero_retroactive_window_rule_set
-      dos = Date.new(2026, 9, 15)
+      dos = Date.new(2026, 11, 20)
 
-      assert_nil filing_deadline(date_of_service: dos, rule_set:)
+      assert_equal Date.new(2026, 12, 31), filing_deadline(date_of_service: dos, rule_set:)
     end
   end
 
@@ -570,12 +570,30 @@ class Corvid::RetroactiveCoverageWindowTest < ActiveSupport::TestCase
     end
   end
 
-  test "filing_deadline is nil when computed deadline precedes H.R. 1 effective date" do
+  test "filing_deadline for pre-H.R. 1 date of service uses federal retro months on configured state" do
     with_tenant(TENANT) do
       rule_set = xa_expansion_adult_rule_set
       dos = Date.new(2026, 9, 1)
 
-      assert_nil filing_deadline(date_of_service: dos, rule_set:)
+      assert_equal Date.new(2026, 12, 31), filing_deadline(date_of_service: dos, rule_set:)
+    end
+  end
+
+  test "filing_deadline on XA other for October 2026 date of service" do
+    with_tenant(TENANT) do
+      rule_set = xa_other_rule_set
+      dos = Date.new(2026, 10, 5)
+
+      assert_equal Date.new(2026, 12, 31), filing_deadline(date_of_service: dos, rule_set:)
+    end
+  end
+
+  test "filing_deadline on XA other for December 2026 date of service crosses into 2027" do
+    with_tenant(TENANT) do
+      rule_set = xa_other_rule_set
+      dos = Date.new(2026, 12, 10)
+
+      assert_equal Date.new(2027, 1, 31), filing_deadline(date_of_service: dos, rule_set:)
     end
   end
 
