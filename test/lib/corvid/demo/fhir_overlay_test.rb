@@ -91,6 +91,16 @@ class Corvid::Demo::FhirOverlayTest < ActiveSupport::TestCase
     end
   end
 
+  test "demo treats patients_unknown like claims unknown for withholding totals" do
+    counts = {
+      patients_claims_unknown: [],
+      patients_unknown: [ patient_ids(Data.clinics.first).first ]
+    }
+
+    assert Corvid::Demo::FhirOverlayDemo.send(:claims_unknown?, counts),
+           "find_patient unknown must withhold clinic and consortium dollar totals"
+  end
+
   test "consortium total aggregates both clinics" do
     io = StringIO.new
     result = Corvid::Demo::FhirOverlayDemo.run(io: io)
