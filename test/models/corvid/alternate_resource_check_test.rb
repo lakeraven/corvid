@@ -1519,6 +1519,19 @@ class Corvid::AlternateResourceCheckTest < ActiveSupport::TestCase
     end
   end
 
+  test "rejects application_date on or after 2027-01-01 when calendar is still before that date" do
+    with_tenant("tnt_test") do
+      travel_to Time.zone.parse("2026-10-22 12:00:00 UTC") do
+        check = build_check(resource_type: "medicaid")
+        check.application_date = Date.new(2027, 3, 15)
+        check.application_date_source = "staff_entry"
+        check.medicaid_state_code = "XA"
+        refute check.valid?
+        assert_includes check.errors[:application_date], "cannot be in the future"
+      end
+    end
+  end
+
   test "database enforces application_date_source enum check constraint" do
     with_tenant("tnt_test") do
       assert check_constraint_exists?(APPLICATION_DATE_SOURCE_CHECK)

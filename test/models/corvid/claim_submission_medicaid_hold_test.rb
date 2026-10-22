@@ -5,7 +5,16 @@ require "test_helper"
 # Pins #submit! hold behaviour while a Medicaid alternate resource check is
 # pending enrollment inside the retroactive coverage window (issue #639).
 class Corvid::ClaimSubmissionMedicaidHoldTest < ActiveSupport::TestCase
+  include ActiveSupport::Testing::TimeHelpers
+
   TENANT = "tnt_test"
+  # Pending-Medicaid hold scenarios use 2027 application and service dates; freeze
+  # the clock so those dates are not rejected as future application_date values.
+  RETRO_SCENARIO_TIME = Time.zone.local(2027, 6, 1, 12, 0, 0)
+
+  setup { travel_to RETRO_SCENARIO_TIME }
+
+  teardown { travel_back }
 
   test "submit! raises HeldForPendingMedicaid when retro window covers service date" do
     with_tenant(TENANT) do
@@ -252,6 +261,29 @@ class Corvid::ClaimSubmissionMedicaidHoldTest < ActiveSupport::TestCase
 
       assert_equal "window_undetermined", error.reason
       assert_empty submit_calls
+    end
+  end
+
+  test "submit! hold reason is window_undetermined when stored application_date is on or after H.R. 1 effective date but still in the future" do
+    with_tenant(TENANT) do
+      travel_to Time.zone.parse("2026-10-22 12:00:00 UTC") do
+        claim, _, medicaid = authorized_claim_with_pending_medicaid!(
+          medicaid_state_code: "XA",
+          eligibility_group: "expansion_adult",
+          service_date: Date.new(2026, 10, 1)
+        )
+        medicaid.update_columns(
+          application_date: Date.new(2027, 3, 15),
+          application_date_source: "staff_entry",
+          medicaid_state_code: "XA"
+        )
+        submit_calls = stub_submit_claim!
+
+        error = assert_raises(Corvid::ClaimSubmission::HeldForPendingMedicaid) { claim.submit! }
+
+        assert_equal "window_undetermined", error.reason
+        assert_empty submit_calls
+      end
     end
   end
 
