@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "test_helper"
+require "corvid/adapters/enrollment_demo_adapter"
 
 class Corvid::PriorAuthorizationApiServiceTest < ActiveSupport::TestCase
   TENANT = "tnt_pa"
@@ -309,7 +310,7 @@ class Corvid::PriorAuthorizationApiServiceTest < ActiveSupport::TestCase
           build_fhir_claim(patient: { reference: "Patient/" })
         )
       end
-      assert_match(%r{relative Patient/<id> reference}i, error.message)
+      assert_patient_reference_error(error)
       assert_equal referral_count, Corvid::PrcReferral.count
       assert_equal case_count, Corvid::Case.count
       refute Corvid::Case.exists?(patient_identifier: "Patient")
@@ -328,7 +329,7 @@ class Corvid::PriorAuthorizationApiServiceTest < ActiveSupport::TestCase
           build_fhir_claim(patient: { reference: "Patient/ " })
         )
       end
-      assert_match(%r{relative Patient/<id> reference}i, error.message)
+      assert_patient_reference_error(error)
       assert_equal referral_count, Corvid::PrcReferral.count
       refute Corvid::Case.exists?(patient_identifier: "Patient")
       refute Corvid::Case.exists?(patient_identifier: " ")
@@ -346,7 +347,7 @@ class Corvid::PriorAuthorizationApiServiceTest < ActiveSupport::TestCase
       error = assert_raises(ArgumentError) do
         Corvid::PriorAuthorizationApiService.submit_from_claim(claim)
       end
-      assert_match(%r{relative Patient/<id> reference}i, error.message)
+      assert_patient_reference_error(error)
       assert_equal referral_count, Corvid::PrcReferral.count
     ensure
       Corvid::TenantContext.reset!
@@ -522,7 +523,7 @@ class Corvid::PriorAuthorizationApiServiceTest < ActiveSupport::TestCase
       error = assert_raises(ArgumentError) do
         Corvid::PriorAuthorizationApiService.submit_from_claim(claim)
       end
-      assert_match(%r{relative Patient/<id> reference}i, error.message)
+      assert_patient_reference_error(error)
       assert_equal referral_count, Corvid::PrcReferral.count
       assert_equal case_count, Corvid::Case.count
     ensure
@@ -564,6 +565,155 @@ class Corvid::PriorAuthorizationApiServiceTest < ActiveSupport::TestCase
     end
   end
 
+  test "submit_from_claim rejects Claim when patient reference id violates FHIR id syntax" do
+    assert_submit_rejects_invalid_patient(patient: { reference: "Patient/pt_pa_syntax" })
+  end
+
+  test "submit_from_claim creates Case and PrcReferral for MockAdapter seeded patient" do
+    with_tenant(TENANT) do
+      Corvid::TenantContext.current_facility_identifier = FACILITY
+      Corvid::PriorAuthorizationApiService.submit_from_claim(
+        build_fhir_claim(patient: { reference: "Patient/pt-seed-001" })
+      )
+      referral = Corvid::PrcReferral.order(created_at: :desc).first
+      assert_equal "submitted", referral.status
+      assert_equal "pt-seed-001", referral.case.patient_identifier
+    ensure
+      Corvid::TenantContext.reset!
+    end
+  end
+
+  test "submit_from_claim creates Case and PrcReferral for EnrollmentDemoAdapter demo enrolled patient" do
+    original_adapter = Corvid.adapter
+    Corvid.configure { |c| c.adapter = Corvid::Adapters::EnrollmentDemoAdapter.new }
+    with_tenant(TENANT) do
+      Corvid::TenantContext.current_facility_identifier = FACILITY
+      Corvid::PriorAuthorizationApiService.submit_from_claim(
+        build_fhir_claim(patient: { reference: "Patient/pt-demo-enrolled" })
+      )
+      referral = Corvid::PrcReferral.order(created_at: :desc).first
+      assert_equal "submitted", referral.status
+      assert_equal "pt-demo-enrolled", referral.case.patient_identifier
+    ensure
+      Corvid.configure { |c| c.adapter = original_adapter }
+      Corvid::TenantContext.reset!
+    end
+  end
+
+  test "submit_from_claim reads patient reference from raw ActionController::Parameters" do
+    with_tenant(TENANT) do
+      Corvid::TenantContext.current_facility_identifier = FACILITY
+      claim = ActionController::Parameters.new(
+        resourceType: "Claim",
+        status: "active",
+        use: "preauthorization",
+        patient: { reference: "Patient/pt-pa-params" },
+        provider: { reference: "Practitioner/pr-pa-unit-001" },
+        total: { value: 2500, currency: "USD" },
+        item: [ { productOrService: "MRI" } ]
+      )
+      Corvid::PriorAuthorizationApiService.submit_from_claim(claim)
+      referral = Corvid::PrcReferral.order(created_at: :desc).first
+      assert_equal "pt-pa-params", referral.case.patient_identifier
+    ensure
+      Corvid::TenantContext.reset!
+    end
+  end
+
+  test "submit_from_claim reads patient reference from permitted ActionController::Parameters" do
+    with_tenant(TENANT) do
+      Corvid::TenantContext.current_facility_identifier = FACILITY
+      claim = ActionController::Parameters.new(
+        resourceType: "Claim",
+        status: "active",
+        use: "preauthorization",
+        patient: { reference: "Patient/pt-pa-params-permit" },
+        provider: { reference: "Practitioner/pr-pa-unit-001" },
+        total: { value: 2500, currency: "USD" },
+        item: [ { productOrService: "MRI" } ]
+      ).permit!
+      Corvid::PriorAuthorizationApiService.submit_from_claim(claim)
+      referral = Corvid::PrcReferral.order(created_at: :desc).first
+      assert_equal "pt-pa-params-permit", referral.case.patient_identifier
+    ensure
+      Corvid::TenantContext.reset!
+    end
+  end
+
+  test "submit_from_claim rejects Claim when symbol and string patient references differ" do
+    with_tenant(TENANT) do
+      Corvid::TenantContext.current_facility_identifier = FACILITY
+      referral_count = Corvid::PrcReferral.count
+      case_count = Corvid::Case.count
+      claim = build_fhir_claim(
+        patient: { reference: "Patient/pt-pa-dup-a" }
+      ).merge("patient" => { "reference" => "Patient/pt-pa-dup-b" })
+
+      error = assert_raises(ArgumentError) do
+        Corvid::PriorAuthorizationApiService.submit_from_claim(claim)
+      end
+      assert_patient_reference_error(error)
+      assert_equal referral_count, Corvid::PrcReferral.count
+      assert_equal case_count, Corvid::Case.count
+      refute Corvid::Case.exists?(patient_identifier: "pt-pa-dup-a")
+      refute Corvid::Case.exists?(patient_identifier: "pt-pa-dup-b")
+    ensure
+      Corvid::TenantContext.reset!
+    end
+  end
+
+  test "submit_from_claim accepts Claim when symbol and string patient references match" do
+    with_tenant(TENANT) do
+      Corvid::TenantContext.current_facility_identifier = FACILITY
+      claim = build_fhir_claim(
+        patient: { reference: "Patient/pt-pa-dup-same" }
+      ).merge("patient" => { "reference" => "Patient/pt-pa-dup-same" })
+      Corvid::PriorAuthorizationApiService.submit_from_claim(claim)
+      referral = Corvid::PrcReferral.order(created_at: :desc).first
+      assert_equal "pt-pa-dup-same", referral.case.patient_identifier
+    ensure
+      Corvid::TenantContext.reset!
+    end
+  end
+
+  test "submit_from_claim stores nil provider when symbol and string provider references differ" do
+    with_tenant(TENANT) do
+      Corvid::TenantContext.current_facility_identifier = FACILITY
+      claim = build_fhir_claim(
+        patient: { reference: "Patient/pt-pa-prov-dup" },
+        provider: { reference: "Practitioner/pr-pa-dup-a" }
+      ).merge("provider" => { "reference" => "Practitioner/pr-pa-dup-b" })
+      Corvid::PriorAuthorizationApiService.submit_from_claim(claim)
+      referral = Corvid::PrcReferral.order(created_at: :desc).first
+      stored = Corvid.adapter.find_referral(referral.referral_identifier)
+      assert_equal "pt-pa-prov-dup", referral.case.patient_identifier
+      assert_nil stored.requesting_provider_identifier
+    ensure
+      Corvid::TenantContext.reset!
+    end
+  end
+
+  test "submit_from_claim stores provider when symbol and string provider references match" do
+    with_tenant(TENANT) do
+      Corvid::TenantContext.current_facility_identifier = FACILITY
+      claim = build_fhir_claim(
+        patient: { reference: "Patient/pt-pa-prov-same" },
+        provider: { reference: "Practitioner/pr-pa-dup-same" }
+      ).merge("provider" => { "reference" => "Practitioner/pr-pa-dup-same" })
+      Corvid::PriorAuthorizationApiService.submit_from_claim(claim)
+      referral = Corvid::PrcReferral.order(created_at: :desc).first
+      stored = Corvid.adapter.find_referral(referral.referral_identifier)
+      assert_equal "pr-pa-dup-same", stored.requesting_provider_identifier
+    ensure
+      Corvid::TenantContext.reset!
+    end
+  end
+
+  def assert_patient_reference_error(error)
+    assert_match(%r{relative Patient/<id> reference}i, error.message)
+    assert_match(/FHIR id/i, error.message)
+  end
+
   def assert_submit_rejects_invalid_patient(patient:)
     with_tenant(TENANT) do
       Corvid::TenantContext.current_facility_identifier = FACILITY
@@ -573,7 +723,7 @@ class Corvid::PriorAuthorizationApiServiceTest < ActiveSupport::TestCase
       error = assert_raises(ArgumentError) do
         Corvid::PriorAuthorizationApiService.submit_from_claim(build_fhir_claim(patient: patient))
       end
-      assert_match(%r{relative Patient/<id> reference}i, error.message)
+      assert_patient_reference_error(error)
       assert_equal referral_count, Corvid::PrcReferral.count
       assert_equal case_count, Corvid::Case.count
     ensure
