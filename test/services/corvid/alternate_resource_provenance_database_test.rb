@@ -201,5 +201,4 @@ class Corvid::AlternateResourceProvenanceDatabaseTest < ActiveSupport::TestCase
     referral.update_column(:status, "priority_assignment")
     referral.reload
   end
-
 end
