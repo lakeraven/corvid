@@ -122,6 +122,7 @@ module Corvid
     def authorize_exhausted_referral!
       return if prc_referral.authorized?
 
+      prc_referral.reverify_alternate_resources_for_decision
       blockers = prc_referral.committee_approval_blockers
       raise AuthorizationBlockedError.new(blockers) if blockers.any?
 

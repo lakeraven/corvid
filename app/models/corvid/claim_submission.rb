@@ -25,6 +25,15 @@ module Corvid
     # unauthorized referral bills care the programme never agreed to buy.
     class ReferralNotAuthorized < StandardError; end
 
+    # Raised when this claim bills a PRC referral whose alternate-resource
+    # checks are not current, exhausted determinations for service_date.
+    # A missing service date fails closed. No patient, payer, or policy data.
+    class AlternateResourcesNotCurrent < StandardError
+      def initialize(message = "Alternate resource checks are not current for the date of service")
+        super
+      end
+    end
+
     # The referral this claim bills, where there is one. Optional: claims
     # billed outside the referral workflow, and legacy rows the backfill could
     # not match unambiguously, carry no reference.
@@ -161,11 +170,13 @@ module Corvid
     end
 
     def mark_submitted!(claim_identifier:)
+      enforce_alternate_resources_current!
       update!(
         claim_identifier: claim_identifier,
         status: "submitted",
         submitted_at: Time.current
       )
+      record_submission_provenance
     end
 
     def mark_paid!(paid_amount:)
@@ -192,12 +203,14 @@ module Corvid
 
     def submit!
       enforce_referral_authorization_gate!
+      enforce_alternate_resources_current!
       result = Corvid.adapter.submit_claim(to_claim_data)
       update!(
         claim_identifier: result[:claim_identifier],
         status: result[:status] == "accepted" ? "submitted" : result[:status],
         submitted_at: Time.current
       )
+      record_submission_provenance
       result
     end
 
@@ -286,6 +299,46 @@ module Corvid
         if candidates.size == 1 && candidates.first.case&.patient_identifier == patient_identifier
           candidates.first
         end
+    end
+
+    # A linked referral is re-verified for service_date before the claim is
+    # sent. No linked PRC referral is ordinary billing and skips this gate.
+    # A nil service date fails closed.
+    def enforce_alternate_resources_current!
+      referral = referral_for_alternate_resource_gate
+      return if referral.nil?
+      return if alternate_resources_current?(referral)
+
+      raise AlternateResourcesNotCurrent
+    end
+
+    def referral_for_alternate_resource_gate
+      resolve_prc_referral_from_identifier if prc_referral.blank? && referral_identifier.present?
+      prc_referral
+    end
+
+    # The rows must already be a current exhausted set for the service date.
+    # Re-verification confirms that set; it does not create it at submission.
+    def alternate_resources_current?(referral)
+      return false if service_date.nil?
+
+      already_exhausted = exhausted_for_claim?(referral)
+      AlternateResourceReverification.reverify_stale!(referral, date_of_service: service_date, as_of: Time.current)
+      already_exhausted && exhausted_for_claim?(referral)
+    end
+
+    def exhausted_for_claim?(referral)
+      AlternateResourceCheck.all_exhausted?(referral, date_of_service: service_date, as_of: Time.current)
+    end
+
+    def record_submission_provenance
+      return if prc_referral.blank?
+
+      AlternateResourceReverification.record!(
+        self,
+        activity: "CREATE",
+        checks: prc_referral.alternate_resource_checks.reload
+      )
     end
 
     # A claim that bills a PRC referral may only be submitted once that

@@ -81,10 +81,28 @@ module Corvid
     def blocked_authorization_result(committee_review)
       return unless committee_review.approved_or_modified?
 
-      blockers = committee_review.prc_referral.committee_approval_blockers
+      referral = committee_review.prc_referral
+      refresh_alternate_resources(referral)
+      blockers = blockers_after_refresh(referral)
       return if blockers.empty?
 
       { success: false, blocked: true, blockers: blockers }
+    end
+
+    # An authorized referral is already decided; refreshing it would change
+    # the answers a completed authorization relied on. Open approvals re-verify
+    # first, then fail closed when a check cannot be confirmed current.
+    def refresh_alternate_resources(referral)
+      return if referral.authorized?
+
+      referral.reverify_alternate_resources_for_decision
+    end
+
+    def blockers_after_refresh(referral)
+      blockers = referral.committee_approval_blockers
+      return blockers if blockers.any? || referral.authorized? || referral.alternate_resources_exhausted?
+
+      [ "referral: #{referral.status}" ]
     end
 
     def apply_blocked(blockers, backend_synced: false)

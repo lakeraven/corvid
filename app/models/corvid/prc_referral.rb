@@ -89,17 +89,21 @@ module Corvid
                     to: :eligibility_review
       end
 
-      event :verify_alternate_resources do
+      # Re-verify in the event callback, not the guard. Guards are pure and
+      # may_? would otherwise hit the payer on every check.
+      event :verify_alternate_resources, before: :reverify_alternate_resources_for_decision do
         transitions from: :alternate_resource_review, to: :priority_assignment,
                     guard: :alternate_resources_exhausted?
       end
 
-      event :complete_priority_assignment do
+      event :complete_priority_assignment, before: :reverify_alternate_resources_for_decision,
+            after: :record_authorization_provenance do
         transitions from: :priority_assignment, to: :committee_review, guard: :requires_committee?
         transitions from: :priority_assignment, to: :authorized, guard: :alternate_resources_exhausted?
       end
 
-      event :authorize, after: :sync_status_to_ehr do
+      event :authorize, before: :reverify_alternate_resources_for_decision,
+            after: [ :sync_status_to_ehr, :record_authorization_provenance ] do
         transitions from: [ :priority_assignment, :committee_review ], to: :authorized,
                     guard: :alternate_resources_exhausted?
       end
@@ -130,9 +134,19 @@ module Corvid
     end
 
     # 42 CFR 136.61 — PRC pays last. True only when every alternate resource
-    # has a determination: unavailable, or coverage with coordination complete.
+    # is unavailable and current for today. A referral has no date of service;
+    # the authorization date is the decision date.
     def alternate_resources_exhausted?
-      AlternateResourceCheck.all_exhausted?(self)
+      AlternateResourceCheck.all_exhausted?(self, date_of_service: Date.current, as_of: Time.current)
+    end
+
+    # Refresh stale checks before an authorization decision. Returns true so
+    # the AASM before-callback does not abort; the guard decides.
+    def reverify_alternate_resources_for_decision
+      AlternateResourceReverification.reverify_stale!(
+        self, date_of_service: Date.current, as_of: Time.current
+      )
+      true
     end
 
     # Sorted reasons authorization is refused. Resource type and status only;
@@ -449,6 +463,16 @@ module Corvid
 
     def record_deferred_determination
       record_determination!(outcome: "deferred", decision_method: "automated")
+    end
+
+    def record_authorization_provenance
+      return unless authorized?
+
+      AlternateResourceReverification.record!(
+        self,
+        activity: "UPDATE",
+        checks: alternate_resource_checks.reload
+      )
     end
 
     def sync_status_to_ehr
