@@ -259,6 +259,49 @@ class Corvid::Auth::BackendServicesClientTest < Minitest::Test
     assert_raises(ArgumentError) { new_client(private_key: @rsa, refresh_skew: -30) }
   end
 
+  # --- cache deadline ----------------------------------------------------------
+
+  # A lifetime at or below refresh_skew must still be cached for part of it,
+  # or every FHIR request signs a fresh assertion and hits the token endpoint.
+  def test_short_lived_token_is_reused_within_its_lifetime
+    calls = 0
+    t = Time.at(1_700_000_000)
+    client = stub_client(private_key: @rsa, clock: -> { t }, refresh_skew: 30,
+                         response: ->(_f) { calls += 1; { "access_token" => "t#{calls}", "expires_in" => 30 } })
+    assert_equal "t1", client.access_token
+    assert_equal "t1", client.access_token
+    t += 10
+    assert_equal "t1", client.access_token
+    assert_equal 1, calls, "a 30s token should not be refetched on every call"
+  end
+
+  def test_short_lived_token_is_never_served_at_its_expiry
+    calls = 0
+    t = Time.at(1_700_000_000)
+    client = stub_client(private_key: @rsa, clock: -> { t }, refresh_skew: 30,
+                         response: ->(_f) { calls += 1; { "access_token" => "t#{calls}", "expires_in" => 30 } })
+    client.access_token
+    t += 30
+    assert_equal "t2", client.access_token
+  end
+
+  # expires_in counts from when the server issued the token, which is no
+  # earlier than when the grant started. Counting from the response arrival
+  # would keep a token cached after the server considers it expired.
+  def test_slow_grant_does_not_extend_the_cache_deadline
+    calls = 0
+    t = Time.at(1_700_000_000)
+    client = stub_client(private_key: @rsa, clock: -> { t }, refresh_skew: 0,
+                         response: ->(_f) {
+                           calls += 1
+                           t += 50 # the grant takes 50s to come back
+                           { "access_token" => "t#{calls}", "expires_in" => 60 }
+                         })
+    assert_equal "t1", client.access_token
+    t = Time.at(1_700_000_000 + 60)
+    assert_equal "t2", client.access_token, "token cached past grant start + expires_in"
+  end
+
   # --- expires_in robustness --------------------------------------------------
 
   def test_absent_expires_in_caches_with_conservative_default

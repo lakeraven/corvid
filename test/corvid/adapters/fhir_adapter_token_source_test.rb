@@ -290,12 +290,131 @@ class Corvid::Adapters::FhirAdapterTokenSourceTest < Minitest::Test
     refute_match(/PT-9911/, err.message)
   end
 
+  # --- credential scope ---------------------------------------------------------
+  #
+  # The bearer token is for the configured FHIR base only. Search pagination
+  # (#666) follows server-supplied next links, so the request layer itself
+  # refuses to put a credential on any URL outside base_url's origin and path.
+
+  def test_token_is_not_sent_to_a_foreign_origin
+    assert_credential_refused("https://elsewhere.example.net/r4/Patient?page=2")
+  end
+
+  def test_token_is_not_sent_to_another_port_on_the_base_host
+    assert_credential_refused("https://fhir.example.com:8443/r4/Patient?page=2")
+  end
+
+  def test_token_is_not_sent_outside_the_base_path
+    assert_credential_refused("https://fhir.example.com/admin/Patient?page=2")
+  end
+
+  def test_token_is_not_sent_to_a_sibling_path_sharing_the_base_prefix
+    assert_credential_refused("https://fhir.example.com/r4-internal/Patient")
+  end
+
+  def test_token_is_not_sent_to_a_dot_segment_path_escaping_the_base
+    assert_credential_refused("https://fhir.example.com/r4/../admin/Patient")
+  end
+
+  def test_token_is_not_sent_to_userinfo_smuggled_host
+    assert_credential_refused("https://fhir.example.com@elsewhere.example.net/r4/Patient")
+  end
+
+  def test_static_bearer_token_is_scoped_to_base_too
+    adapter = Corvid::Adapters::FhirAdapter.new(base_url: BASE, bearer_token: "static-tok")
+    refuse_network(adapter)
+    assert_raises(Corvid::Adapters::FhirAdapter::CredentialScopeError) do
+      adapter.send(:execute_http, :get, "https://elsewhere.example.net/r4/Patient")
+    end
+  end
+
+  def test_preset_authorization_header_is_scoped_to_base_too
+    adapter = Corvid::Adapters::FhirAdapter.new(
+      base_url: BASE, headers: { "Authorization" => "Bearer preset-tok" }
+    )
+    refuse_network(adapter)
+    assert_raises(Corvid::Adapters::FhirAdapter::CredentialScopeError) do
+      adapter.send(:execute_http, :get, "https://elsewhere.example.net/r4/Patient")
+    end
+  end
+
+  # Refused before the source is consulted, so no grant is spent on it.
+  def test_token_source_is_not_called_for_an_out_of_scope_url
+    called = false
+    adapter = Corvid::Adapters::FhirAdapter.new(base_url: BASE, token_source: -> { called = true; "tok" })
+    refuse_network(adapter)
+    assert_raises(Corvid::Adapters::FhirAdapter::CredentialScopeError) do
+      adapter.send(:execute_http, :get, "https://elsewhere.example.net/r4/Patient")
+    end
+    refute called
+  end
+
+  def test_credential_scope_error_omits_the_url
+    adapter = Corvid::Adapters::FhirAdapter.new(base_url: BASE, token_source: -> { "tok" })
+    refuse_network(adapter)
+    err = assert_raises(Corvid::Adapters::FhirAdapter::CredentialScopeError) do
+      adapter.send(:execute_http, :get, "https://elsewhere.example.net/r4/Patient/pt_test_001")
+    end
+    refute_match(/pt_test_001|elsewhere/, err.message)
+  end
+
+  def test_unauthenticated_adapter_is_not_scope_checked
+    adapter = Corvid::Adapters::FhirAdapter.new(base_url: BASE)
+    req = capture_request(adapter, "https://elsewhere.example.net/r4/Patient")
+    assert_nil req["Authorization"]
+  end
+
+  def test_in_scope_urls_still_carry_the_token
+    adapter = Corvid::Adapters::FhirAdapter.new(base_url: BASE, token_source: -> { "tok" })
+    [ "#{BASE}/Patient?page=2", "https://FHIR.example.com/r4/Patient/1", "https://fhir.example.com:443/r4/Coverage" ].each do |url|
+      assert_equal "Bearer tok", capture_request(adapter, url)["Authorization"], url
+    end
+  end
+
+  # A paged search whose second page sits on the base path: every request
+  # that goes out carries the token, and every one of them is under base.
+  def test_paged_search_sends_the_token_only_under_base
+    adapter = Corvid::Adapters::FhirAdapter.new(base_url: BASE, token_source: -> { "tok" })
+    page1 = { "resourceType" => "Bundle", "type" => "searchset",
+              "link" => [ { "relation" => "next", "url" => "#{BASE}/Patient?page=2" } ], "entry" => [] }
+    page2 = { "resourceType" => "Bundle", "type" => "searchset", "entry" => [] }
+    sent = []
+    fake_http = Object.new
+    fake_http.define_singleton_method(:request) do |req|
+      sent << [ req.uri.to_s, req["Authorization"] ]
+      Net::HTTPOK.new("1.1", "200", "OK").tap do |resp|
+        body = (sent.size == 1 ? page1 : page2).to_json
+        resp.define_singleton_method(:body) { body }
+      end
+    end
+    adapter.define_singleton_method(:build_http) { |_uri| fake_http }
+
+    refute_nil adapter.send(:fhir_search, "Patient", { "name" => "TEST" })
+    assert_equal 2, sent.size
+    sent.each do |url, auth|
+      assert url.start_with?("#{BASE}/"), url
+      assert_equal "Bearer tok", auth
+    end
+  end
+
   def test_request_carries_resolved_token_as_bearer_header
     adapter = Corvid::Adapters::FhirAdapter.new(base_url: BASE, token_source: -> { "resolved-xyz" })
     assert_equal "Bearer resolved-xyz", capture_request(adapter, "#{BASE}/Patient/1")["Authorization"]
   end
 
   private
+
+  def assert_credential_refused(url)
+    adapter = Corvid::Adapters::FhirAdapter.new(base_url: BASE, token_source: -> { "tok" })
+    refuse_network(adapter)
+    assert_raises(Corvid::Adapters::FhirAdapter::CredentialScopeError, url) do
+      adapter.send(:execute_http, :get, url)
+    end
+  end
+
+  def refuse_network(adapter)
+    adapter.define_singleton_method(:build_http) { |_uri| raise "must not reach the network" }
+  end
 
   # Intercept at the network boundary so no real call is made; return the
   # request that would have gone out.
