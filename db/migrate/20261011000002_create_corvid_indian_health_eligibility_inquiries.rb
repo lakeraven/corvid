@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-# Query log for Indian health eligibility inquiries (ADR 0008).
+# Query log for Indian health eligibility inquiries (ADR 0009).
 # One row per inquiry. asserted_at is datetime(6): the provider's time,
 # replayed as the same instant.
 class CreateCorvidIndianHealthEligibilityInquiries < ActiveRecord::Migration[8.1]

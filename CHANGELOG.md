@@ -15,7 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   records the answer the provider gave. A later inquiry replays an `eligible`
   or `not_eligible` answer and does not ask the provider again. The call
   fails closed unless an operator has set `indian_health_eligibility_ceiling`.
-  The response carries a FHIR R4 `VerificationResult`. See ADR 0008.
+  The response carries a FHIR R4 `VerificationResult`. See ADR 0009.
 - Adapter contract: `indian_health_service_eligibility`.
 
 ### Removed

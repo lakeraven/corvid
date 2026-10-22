@@ -4,7 +4,7 @@ module Corvid
   # Asks whether an Indian health provider has determined that a person is
   # eligible for services from an Indian health provider, and appends a query
   # log row. The engine does not decide, and it stores no determination of
-  # its own. See ADR 0008.
+  # its own. See ADR 0009.
   #
   # A later inquiry for the same tenant and person replays the first
   # eligible or not_eligible answer and does not call the adapter. unknown

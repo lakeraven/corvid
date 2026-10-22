@@ -187,7 +187,7 @@ Each `cms:import` writes a `Corvid::CmsFeeScheduleRelease` record capturing the 
 | [0001](docs/adr/0001-id-vs-identifier-naming.md) | Reserve `id`/`*_id` for Rails keys; use `identifier`/`*_identifier` for external references |
 | [0002](docs/adr/0002-architectural-foundations.md) | Tenancy, table prefixes, string enums, hooks, namespacing |
 | [0003](docs/adr/0003-phi-tokenization.md) | PHI tokenization (Stripe-style for HIPAA) |
-| [0008](docs/adr/0008-indian-health-eligibility-inquiry.md) | Inquiry for eligibility for services from an Indian health provider |
+| [0009](docs/adr/0009-indian-health-eligibility-inquiry.md) | Inquiry for eligibility for services from an Indian health provider |
 
 ## Demos
 

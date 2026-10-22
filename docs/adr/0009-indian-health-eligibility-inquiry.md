@@ -1,4 +1,4 @@
-# ADR 0008: Indian health eligibility inquiry
+# ADR 0009: Indian health eligibility inquiry
 
 **Status:** Proposed
 **Date:** 2026-10-11

@@ -2,7 +2,7 @@
 
 module Corvid
   # One row per IndianHealthEligibilityService inquiry. A query log of the
-  # answer the provider gave, not a determination the engine made. See ADR 0008.
+  # answer the provider gave, not a determination the engine made. See ADR 0009.
   #
   # asserted_at is datetime(6): the provider's time, replayed as the same instant.
   class IndianHealthEligibilityInquiry < ::ActiveRecord::Base
