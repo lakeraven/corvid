@@ -1531,9 +1531,18 @@ class Corvid::Adapters::FhirAdapterTest < Minitest::Test
     end
   end
 
-  COVERAGE_UNTRUSTED_OUTCOME_CODES = %w[suppressed incomplete too-costly].freeze
+  COVERAGE_UNTRUSTED_OUTCOME_CODES = %w[
+    suppressed incomplete too-costly timeout throttled too-long exception
+  ].freeze
 
-  COVERAGE_UNTRUSTED_OUTCOME_SEVERITIES = %w[warning information].freeze
+  COVERAGE_UNTRUSTED_OUTCOME_SEVERITIES = %w[fatal error warning information].freeze
+
+  INEXACT_COVERAGE_UNTRUSTED_OUTCOME_CODES = [
+    "Suppressed",
+    "incomplete ",
+    " TOO-COSTLY",
+    "Timeout"
+  ].freeze
 
   def test_get_coverages_returns_nil_when_operation_outcome_has_untrusted_code_at_warning_or_information_severity
     coverage = coverage_fhir_resource(
@@ -1562,6 +1571,38 @@ class Corvid::Adapters::FhirAdapterTest < Minitest::Test
         with_stubbed_coverage_http({ coverage_search_url("pt_oo_untrusted") => http_ok_json(bundle) }) do
           assert_nil @adapter.get_coverages("pt_oo_untrusted"),
                      "expected nil for OperationOutcome #{severity}/#{code} with active Coverage"
+        end
+      end
+    end
+  end
+
+  def test_get_coverages_returns_nil_when_operation_outcome_has_inexact_untrusted_code_at_any_severity
+    coverage = coverage_fhir_resource(
+      id: "cov_inexact_oo",
+      for_patient: "pt_oo_inexact",
+      status: "active",
+      payer_display: "TEST PAYER INEXACT OO",
+      type_code: "MCDSC",
+      subscriber_id: "POL_INEX",
+      period_start: Date.new(2026, 1, 1),
+      period_end: Date.new(2026, 12, 31)
+    )
+    INEXACT_COVERAGE_UNTRUSTED_OUTCOME_CODES.each do |code|
+      COVERAGE_UNTRUSTED_OUTCOME_SEVERITIES.each do |severity|
+        bundle = coverage_bundle(
+          entries: [
+            {
+              "resource" => {
+                "resourceType" => "OperationOutcome",
+                "issue" => [ { "severity" => severity, "code" => code } ]
+              }
+            },
+            coverage
+          ]
+        )
+        with_stubbed_coverage_http({ coverage_search_url("pt_oo_inexact") => http_ok_json(bundle) }) do
+          assert_nil @adapter.get_coverages("pt_oo_inexact"),
+                     "expected nil for inexact untrusted OperationOutcome #{severity}/#{code.inspect}"
         end
       end
     end
@@ -3083,6 +3124,156 @@ class Corvid::Adapters::FhirAdapterTest < Minitest::Test
     end
   end
 
+  FORMAT_CHARACTER_NEXT_LINK_RELATIONS = [
+    [ "zwsp_suffix", "next\u200B" ],
+    [ "bom_prefix", "\uFEFFnext" ],
+    [ "zwj_suffix", "next\u200D" ],
+    [ "soft_hyphen", "nex\u00ADt" ]
+  ].freeze
+
+  def test_get_coverages_returns_nil_when_next_link_relation_contains_format_characters
+    FORMAT_CHARACTER_NEXT_LINK_RELATIONS.each do |label, next_relation|
+      patient = "pt_link_fmt_#{label}"
+      page1_url = coverage_search_url(patient)
+      page2_url = "#{@adapter.base_url}/Coverage?#{URI.encode_www_form(page: "2", beneficiary: "Patient/#{patient}")}"
+      page1 = coverage_bundle(
+        entries: [ parity_coverage_resource(patient, "fmt") ],
+        next_url: page2_url,
+        next_relation: next_relation
+      )
+      page2_fetched = []
+      with_stubbed_coverage_http({
+        page1_url => http_ok_json(page1),
+        page2_url => lambda {
+          page2_fetched << true
+          http_ok_json(coverage_bundle(entries: []))
+        }
+      }) do
+        assert_nil @adapter.get_coverages(patient),
+                   "expected nil for next link relation with format chars (#{label})"
+        assert_equal [ page1_url ], @requested_urls
+        assert_empty page2_fetched
+      end
+    end
+  end
+
+  def test_get_coverages_returns_nil_when_next_link_relation_contains_format_characters_without_bundle_total
+    label, next_relation = FORMAT_CHARACTER_NEXT_LINK_RELATIONS.first
+    patient = "pt_link_fmt_nototal_#{label}"
+    page1_url = coverage_search_url(patient)
+    page2_url = "#{@adapter.base_url}/Coverage?#{URI.encode_www_form(page: "2", beneficiary: "Patient/#{patient}")}"
+    page1 = coverage_bundle(
+      entries: [ parity_coverage_resource(patient, "fmtnt") ],
+      next_url: page2_url,
+      next_relation: next_relation
+    )
+    page1.delete("total")
+    with_stubbed_coverage_http({ page1_url => http_ok_json(page1) }) do
+      result = @adapter.get_coverages(patient)
+      assert_nil result, "expected nil without total when relation has format characters"
+      assert_equal [ page1_url ], @requested_urls
+    end
+  end
+
+  MALFORMED_COVERAGE_KIND_VALUES = [
+    [ "miscased_insurance", "Insurance" ],
+    [ "explicit_json_null", nil ],
+    [ "integer_kind", 1 ],
+    [ "padded_insurance", "insurance " ]
+  ].freeze
+
+  def test_get_coverages_returns_nil_for_malformed_coverage_kind
+    MALFORMED_COVERAGE_KIND_VALUES.each do |label, kind_value|
+      patient = "pt_kind_#{label}"
+      resource = issue_607_organization_coverage(
+        id: "cov_kind_#{label}",
+        for_patient: patient,
+        type_code: "EHCPOL"
+      )
+      resource["kind"] = kind_value
+      bundle = coverage_bundle_total_one(resource)
+      with_stubbed_coverage_http({ coverage_search_url(patient) => http_ok_json(bundle) }) do
+        assert_nil @adapter.get_coverages(patient),
+                   "expected nil for malformed Coverage.kind #{label.inspect}, not empty allowlist miss"
+      end
+    end
+  end
+
+  def test_get_coverages_keeps_today_behaviour_for_absent_or_exact_insurance_kind
+    patient_absent = "pt_kind_absent"
+    resource_absent = issue_607_organization_coverage(
+      id: "cov_kind_absent",
+      for_patient: patient_absent,
+      type_code: "EHCPOL"
+    )
+    assert_single_included_issue_607_coverage(patient_absent, resource_absent, "absent kind")
+
+    patient_exact = "pt_kind_exact"
+    resource_exact = issue_607_organization_coverage(
+      id: "cov_kind_exact",
+      for_patient: patient_exact,
+      type_code: "EHCPOL"
+    )
+    resource_exact["kind"] = "insurance"
+    assert_single_included_issue_607_coverage(patient_exact, resource_exact, "exact insurance kind")
+  end
+
+  SECONDARY_NON_STRING_TYPE_CODES = [ 51, { "value" => "EHCPOL" } ].freeze
+
+  def test_get_coverages_returns_nil_when_secondary_type_coding_code_is_not_string
+    SECONDARY_NON_STRING_TYPE_CODES.each do |bad_code|
+      patient = "pt_type_sec_#{bad_code.hash.abs}"
+      resource = issue_607_organization_coverage(
+        id: "cov_type_sec",
+        for_patient: patient,
+        type_codings: [
+          { "code" => "EHCPOL" },
+          { "code" => bad_code }
+        ]
+      )
+      bundle = coverage_bundle_total_one(resource)
+      with_stubbed_coverage_http({ coverage_search_url(patient) => http_ok_json(bundle) }) do
+        result = @adapter.get_coverages(patient)
+        assert_nil result,
+                   "expected nil when secondary type.coding code is #{bad_code.inspect}, not []"
+      end
+    end
+  end
+
+  def test_get_coverages_and_fhir_search_coverage_parity_reject_unsafe_next_links
+    rejected_next_link_parity_cases.each do |case_name, build_case|
+      build_case.call(self, case_name)
+    end
+  end
+
+  def test_get_coverages_and_fhir_search_coverage_parity_follow_accepted_next_links
+    patient = "pt_parity_ok"
+    page1_url = coverage_search_url(patient)
+    page2_url = "#{@adapter.base_url}/Coverage?#{URI.encode_www_form(page: "2", beneficiary: "Patient/#{patient}")}"
+    page1 = coverage_bundle(
+      entries: [ parity_coverage_resource(patient, "p1") ],
+      total: 2,
+      next_url: "Coverage?#{URI.encode_www_form(page: "2", beneficiary: "Patient/#{patient}")}"
+    )
+    page2 = coverage_bundle(
+      entries: [ parity_coverage_resource(patient, "p2", type_code: "EHCPOL") ],
+      total: 2
+    )
+    responses = { page1_url => http_ok_json(page1), page2_url => http_ok_json(page2) }
+    with_stubbed_coverage_http(responses) do
+      coverages = @adapter.get_coverages(patient)
+      refute_nil coverages, "get_coverages should follow exact relative next"
+      assert_equal 2, coverages.size
+      assert_equal [ page1_url, page2_url ], @requested_urls
+    end
+    with_stubbed_coverage_http(responses) do
+      bundle = @adapter.send(:fhir_search, "Coverage", beneficiary: "Patient/#{patient}")
+      refute_nil bundle, "fhir_search should follow exact relative next"
+      assert_equal 2, bundle["entry"].size
+      assert_equal [ page1_url, page2_url ], @requested_urls
+    end
+  end
+
   private
 
   def invalid_utf8_byte_sequence
@@ -3253,6 +3444,350 @@ class Corvid::Adapters::FhirAdapterTest < Minitest::Test
       resp.instance_variable_set(:@read, true)
       resp.instance_variable_set(:@body, body)
     end
+  end
+
+  def parity_coverage_resource(patient, suffix, type_code: "MCDSC")
+    coverage_fhir_resource(
+      id: "cov_#{suffix}",
+      for_patient: patient,
+      status: "active",
+      payer_display: "TEST PAYER #{suffix.upcase}",
+      type_code: type_code,
+      subscriber_id: "POL_#{suffix.upcase}",
+      period_start: Date.new(2026, 1, 1),
+      period_end: Date.new(2026, 12, 31)
+    )
+  end
+
+  def assert_rejected_next_link_parity(case_name, responses_by_url, patient, forbidden_urls: [])
+    with_stubbed_coverage_http(responses_by_url) do
+      assert_nil @adapter.get_coverages(patient), "#{case_name}: get_coverages"
+      assert_nil @adapter.send(:fhir_search, "Coverage", beneficiary: "Patient/#{patient}"),
+                 "#{case_name}: fhir_search Coverage"
+      forbidden_urls.each do |url|
+        refute_includes @requested_urls, url, "#{case_name}: must not fetch #{url}"
+      end
+    end
+  end
+
+  def rejected_next_link_parity_cases
+    [
+      [ "cross_origin_host", method(:parity_case_cross_origin_host) ],
+      [ "cross_origin_scheme", method(:parity_case_cross_origin_scheme) ],
+      [ "cross_origin_port", method(:parity_case_cross_origin_port) ],
+      [ "relative_next_outside_base_path", method(:parity_case_relative_outside_base) ],
+      [ "relation_capitalized_next", method(:parity_case_relation_capitalized_next) ],
+      [ "relation_next_with_ascii_space", method(:parity_case_relation_next_with_space) ],
+      [ "relation_uppercase_next", method(:parity_case_relation_uppercase_next) ],
+      [ "relation_is_array", method(:parity_case_relation_is_array) ],
+      [ "two_next_links", method(:parity_case_two_next_links) ],
+      [ "bundle_link_not_array", method(:parity_case_bundle_link_not_array) ],
+      [ "link_entry_not_hash", method(:parity_case_link_entry_not_hash) ],
+      [ "next_url_not_string", method(:parity_case_next_url_not_string) ],
+      [ "unicode_whitespace_relation", method(:parity_case_unicode_whitespace_relation) ],
+      [ "format_character_relation", method(:parity_case_format_character_relation) ],
+      [ "next_url_raw_dot_dot", method(:parity_case_next_url_raw_dot_dot) ],
+      [ "next_url_percent_encoded_dot_dot", method(:parity_case_next_url_percent_encoded_dot_dot) ],
+      [ "next_url_encoded_path_separator", method(:parity_case_next_url_encoded_separator) ],
+      [ "next_url_encoded_semicolon", method(:parity_case_next_url_encoded_semicolon) ],
+      [ "next_url_double_encoding", method(:parity_case_next_url_double_encoding) ],
+      [ "repeated_next_url", method(:parity_case_repeated_next_url) ],
+      [ "page_cap_exceeded", method(:parity_case_page_cap_exceeded) ]
+    ]
+  end
+
+  def parity_case_cross_origin_host(_test, case_name)
+    patient = "pt_par_xhost"
+    page1_url = coverage_search_url(patient)
+    evil_next = "https://evil.example.com/r4/Coverage?#{URI.encode_www_form(page: "2")}"
+    page1 = coverage_bundle(entries: [ parity_coverage_resource(patient, "xh") ], next_url: evil_next)
+    assert_rejected_next_link_parity(
+      case_name,
+      { page1_url => http_ok_json(page1), evil_next => http_ok_json(coverage_bundle(entries: [])) },
+      patient,
+      forbidden_urls: [ evil_next ]
+    )
+  end
+
+  def parity_case_cross_origin_scheme(_test, case_name)
+    patient = "pt_par_xscheme"
+    page1_url = coverage_search_url(patient)
+    evil_next = "http://fhir.example.com/r4/Coverage?#{URI.encode_www_form(page: "2")}"
+    page1 = coverage_bundle(entries: [ parity_coverage_resource(patient, "xs") ], next_url: evil_next)
+    assert_rejected_next_link_parity(
+      case_name,
+      { page1_url => http_ok_json(page1), evil_next => http_ok_json(coverage_bundle(entries: [])) },
+      patient,
+      forbidden_urls: [ evil_next ]
+    )
+  end
+
+  def parity_case_cross_origin_port(_test, case_name)
+    patient = "pt_par_xport"
+    page1_url = coverage_search_url(patient)
+    evil_next = "https://fhir.example.com:8443/r4/Coverage?#{URI.encode_www_form(page: "2")}"
+    page1 = coverage_bundle(entries: [ parity_coverage_resource(patient, "xp") ], next_url: evil_next)
+    assert_rejected_next_link_parity(
+      case_name,
+      { page1_url => http_ok_json(page1), evil_next => http_ok_json(coverage_bundle(entries: [])) },
+      patient,
+      forbidden_urls: [ evil_next ]
+    )
+  end
+
+  def parity_case_relative_outside_base(_test, case_name)
+    patient = "pt_par_relpath"
+    page1_url = coverage_search_url(patient)
+    relative_evil = "/other/Coverage?page=2"
+    evil_absolute = "https://fhir.example.com#{relative_evil}"
+    page1 = coverage_bundle(entries: [ parity_coverage_resource(patient, "rp") ], next_url: relative_evil)
+    assert_rejected_next_link_parity(
+      case_name,
+      { page1_url => http_ok_json(page1), evil_absolute => http_ok_json(coverage_bundle(entries: [])) },
+      patient,
+      forbidden_urls: [ evil_absolute ]
+    )
+  end
+
+  def parity_case_relation_capitalized_next(_test, case_name)
+    patient = "pt_par_nextcap"
+    page1_url = coverage_search_url(patient)
+    page2_url = "#{@adapter.base_url}/Coverage?#{URI.encode_www_form(page: "2", beneficiary: "Patient/#{patient}")}"
+    page1 = coverage_bundle(
+      entries: [ parity_coverage_resource(patient, "nc") ],
+      next_url: page2_url,
+      next_relation: "Next"
+    )
+    assert_rejected_next_link_parity(
+      case_name,
+      { page1_url => http_ok_json(page1), page2_url => http_ok_json(coverage_bundle(entries: [])) },
+      patient,
+      forbidden_urls: [ page2_url ]
+    )
+  end
+
+  def parity_case_relation_next_with_space(_test, case_name)
+    patient = "pt_par_nextsp"
+    page1_url = coverage_search_url(patient)
+    page2_url = "#{@adapter.base_url}/Coverage?#{URI.encode_www_form(page: "2", beneficiary: "Patient/#{patient}")}"
+    page1 = coverage_bundle(
+      entries: [ parity_coverage_resource(patient, "ns") ],
+      next_url: page2_url,
+      next_relation: "next "
+    )
+    assert_rejected_next_link_parity(case_name, { page1_url => http_ok_json(page1) }, patient, forbidden_urls: [ page2_url ])
+  end
+
+  def parity_case_relation_uppercase_next(_test, case_name)
+    patient = "pt_par_nextup"
+    page1_url = coverage_search_url(patient)
+    page2_url = "#{@adapter.base_url}/Coverage?#{URI.encode_www_form(page: "2", beneficiary: "Patient/#{patient}")}"
+    page1 = coverage_bundle(
+      entries: [ parity_coverage_resource(patient, "nu") ],
+      total: 2,
+      next_url: page2_url,
+      next_relation: "NEXT"
+    )
+    page2 = coverage_bundle(entries: [ parity_coverage_resource(patient, "nu2", type_code: "EHCPOL") ], total: 2)
+    assert_rejected_next_link_parity(
+      case_name,
+      { page1_url => http_ok_json(page1), page2_url => http_ok_json(page2) },
+      patient,
+      forbidden_urls: [ page2_url ]
+    )
+  end
+
+  def parity_case_relation_is_array(_test, case_name)
+    patient = "pt_par_relarr"
+    page1_url = coverage_search_url(patient)
+    page2_url = "#{@adapter.base_url}/Coverage?#{URI.encode_www_form(page: "2", beneficiary: "Patient/#{patient}")}"
+    page1 = coverage_bundle(entries: [ parity_coverage_resource(patient, "ra") ])
+    page1["link"] = [ { "relation" => [ "next" ], "url" => page2_url } ]
+    assert_rejected_next_link_parity(case_name, { page1_url => http_ok_json(page1) }, patient, forbidden_urls: [ page2_url ])
+  end
+
+  def parity_case_two_next_links(_test, case_name)
+    patient = "pt_par_twonext"
+    page1_url = coverage_search_url(patient)
+    page2_url = "#{@adapter.base_url}/Coverage?#{URI.encode_www_form(page: "2", beneficiary: "Patient/#{patient}")}"
+    page1 = coverage_bundle(entries: [ parity_coverage_resource(patient, "t2") ])
+    page1["link"] = [
+      { "relation" => "next", "url" => page2_url },
+      { "relation" => "next", "url" => page2_url }
+    ]
+    assert_rejected_next_link_parity(
+      case_name,
+      { page1_url => http_ok_json(page1), page2_url => http_ok_json(coverage_bundle(entries: [])) },
+      patient,
+      forbidden_urls: [ page2_url ]
+    )
+  end
+
+  def parity_case_bundle_link_not_array(_test, case_name)
+    patient = "pt_par_linkhash"
+    page1_url = coverage_search_url(patient)
+    page1 = coverage_bundle_total_one(parity_coverage_resource(patient, "lh"))
+    page1["link"] = { "relation" => "self", "url" => page1_url }
+    assert_rejected_next_link_parity(case_name, { page1_url => http_ok_json(page1) }, patient)
+  end
+
+  def parity_case_link_entry_not_hash(_test, case_name)
+    patient = "pt_par_linkstr"
+    page1_url = coverage_search_url(patient)
+    page1 = coverage_bundle_total_one(parity_coverage_resource(patient, "ls"))
+    page1["link"] = [
+      { "relation" => "self", "url" => page1_url },
+      "not-a-link-hash"
+    ]
+    assert_rejected_next_link_parity(case_name, { page1_url => http_ok_json(page1) }, patient)
+  end
+
+  def parity_case_next_url_not_string(_test, case_name)
+    patient = "pt_par_urlint"
+    page1_url = coverage_search_url(patient)
+    page1 = coverage_bundle_total_one(parity_coverage_resource(patient, "ui"))
+    page1["link"] = [ { "relation" => "next", "url" => 42 } ]
+    assert_rejected_next_link_parity(case_name, { page1_url => http_ok_json(page1) }, patient)
+  end
+
+  def parity_case_unicode_whitespace_relation(_test, case_name)
+    UNICODE_NEXT_COVERAGE_LINK_RELATIONS.each do |next_relation|
+      patient = "pt_par_u8_#{next_relation.bytes.join("_")}"
+      page1_url = coverage_search_url(patient)
+      page2_url = "#{@adapter.base_url}/Coverage?#{URI.encode_www_form(page: "2", beneficiary: "Patient/#{patient}")}"
+      page1 = coverage_bundle(
+        entries: [ parity_coverage_resource(patient, "u8") ],
+        next_url: page2_url,
+        next_relation: next_relation
+      )
+      assert_rejected_next_link_parity(
+        "#{case_name}:#{next_relation.inspect}",
+        { page1_url => http_ok_json(page1), page2_url => http_ok_json(coverage_bundle(entries: [])) },
+        patient,
+        forbidden_urls: [ page2_url ]
+      )
+    end
+  end
+
+  def parity_case_format_character_relation(_test, case_name)
+    FORMAT_CHARACTER_NEXT_LINK_RELATIONS.each do |label, next_relation|
+      patient = "pt_par_fmt_#{label}"
+      page1_url = coverage_search_url(patient)
+      page2_url = "#{@adapter.base_url}/Coverage?#{URI.encode_www_form(page: "2", beneficiary: "Patient/#{patient}")}"
+      page1 = coverage_bundle(
+        entries: [ parity_coverage_resource(patient, "fm") ],
+        next_url: page2_url,
+        next_relation: next_relation
+      )
+      assert_rejected_next_link_parity(
+        "#{case_name}:#{label}",
+        { page1_url => http_ok_json(page1), page2_url => http_ok_json(coverage_bundle(entries: [])) },
+        patient,
+        forbidden_urls: [ page2_url ]
+      )
+    end
+  end
+
+  def parity_case_next_url_raw_dot_dot(_test, case_name)
+    patient = "pt_par_dotdot"
+    page1_url = coverage_search_url(patient)
+    evil_next = "#{@adapter.base_url}/../admin/Coverage?#{URI.encode_www_form(page: "2")}"
+    page1 = coverage_bundle(entries: [ parity_coverage_resource(patient, "dd") ], next_url: evil_next)
+    assert_rejected_next_link_parity(
+      case_name,
+      { page1_url => http_ok_json(page1), evil_next => http_ok_json(coverage_bundle(entries: [])) },
+      patient,
+      forbidden_urls: [ evil_next ]
+    )
+  end
+
+  def parity_case_next_url_percent_encoded_dot_dot(_test, case_name)
+    patient = "pt_par_dotenc"
+    page1_url = coverage_search_url(patient)
+    evil_next = "https://fhir.example.com/r4/%2e%2e/admin/Coverage?#{URI.encode_www_form(page: "2")}"
+    page1 = coverage_bundle(entries: [ parity_coverage_resource(patient, "de") ], next_url: evil_next)
+    assert_rejected_next_link_parity(
+      case_name,
+      { page1_url => http_ok_json(page1), evil_next => http_ok_json(coverage_bundle(entries: [])) },
+      patient,
+      forbidden_urls: [ evil_next ]
+    )
+  end
+
+  def parity_case_next_url_encoded_separator(_test, case_name)
+    patient = "pt_par_encsep"
+    page1_url = coverage_search_url(patient)
+    evil_next = "/r4/out%2fadmin/Coverage?#{URI.encode_www_form(page: "2")}"
+    resolved = "https://fhir.example.com#{evil_next}"
+    page1 = coverage_bundle(entries: [ parity_coverage_resource(patient, "es") ], next_url: evil_next)
+    assert_rejected_next_link_parity(
+      case_name,
+      { page1_url => http_ok_json(page1), resolved => http_ok_json(coverage_bundle(entries: [])) },
+      patient,
+      forbidden_urls: [ resolved ]
+    )
+  end
+
+  def parity_case_next_url_encoded_semicolon(_test, case_name)
+    patient = "pt_par_encsemi"
+    page1_url = coverage_search_url(patient)
+    evil_next = "/r4/..%3b/..%3b/other/r4/Coverage?#{URI.encode_www_form(page: "2")}"
+    resolved = "https://fhir.example.com#{evil_next}"
+    page1 = coverage_bundle(entries: [ parity_coverage_resource(patient, "sm") ], next_url: evil_next)
+    assert_rejected_next_link_parity(
+      case_name,
+      { page1_url => http_ok_json(page1), resolved => http_ok_json(coverage_bundle(entries: [])) },
+      patient,
+      forbidden_urls: [ resolved ]
+    )
+  end
+
+  def parity_case_next_url_double_encoding(_test, case_name)
+    patient = "pt_par_dblenc"
+    page1_url = coverage_search_url(patient)
+    evil_next = "/r4/out%252fadmin/Coverage?#{URI.encode_www_form(page: "2")}"
+    resolved = "https://fhir.example.com#{evil_next}"
+    page1 = coverage_bundle(entries: [ parity_coverage_resource(patient, "dbl") ], next_url: evil_next)
+    assert_rejected_next_link_parity(
+      case_name,
+      { page1_url => http_ok_json(page1), resolved => http_ok_json(coverage_bundle(entries: [])) },
+      patient,
+      forbidden_urls: [ resolved ]
+    )
+  end
+
+  def parity_case_repeated_next_url(_test, case_name)
+    patient = "pt_par_loop"
+    page1_url = coverage_search_url(patient)
+    page2_url = "#{@adapter.base_url}/Coverage?#{URI.encode_www_form(page: "2", beneficiary: "Patient/#{patient}")}"
+    page1 = coverage_bundle(entries: [ parity_coverage_resource(patient, "lp1") ], next_url: page2_url)
+    page2 = coverage_bundle(entries: [], next_url: page1_url)
+    assert_rejected_next_link_parity(
+      case_name,
+      { page1_url => http_ok_json(page1), page2_url => http_ok_json(page2) },
+      patient
+    )
+  end
+
+  def parity_case_page_cap_exceeded(_test, case_name)
+    patient = "pt_par_cap"
+    cap = Corvid::Adapters::FhirAdapter::MAX_COVERAGE_PAGES
+    urls = []
+    cap.times do |i|
+      urls << if i.zero?
+        coverage_search_url(patient)
+      else
+        "#{@adapter.base_url}/Coverage?#{URI.encode_www_form(page: i.to_s, beneficiary: "Patient/#{patient}")}"
+      end
+    end
+    responses = {}
+    urls.each_with_index do |url, index|
+      next_url = urls[index + 1]
+      resource = parity_coverage_resource(patient, "cap#{index}")
+      bundle = coverage_bundle(entries: [ resource ], next_url: next_url)
+      responses[url] = http_ok_json(bundle)
+    end
+    assert_rejected_next_link_parity(case_name, responses, patient)
   end
 
   def with_stubbed_coverage_http(responses_by_url, now: nil)
@@ -4126,9 +4661,62 @@ class Corvid::Adapters::FhirAdapterTest < Minitest::Test
     assert_equal "active", results.first.clinical_status
   end
 
-  TRUST_DEFEATING_OUTCOME_CODES = %w[suppressed incomplete too-costly].freeze
+  TRUST_DEFEATING_OUTCOME_CODES = %w[
+    suppressed incomplete too-costly timeout throttled too-long exception
+  ].freeze
+
+  INEXACT_TRUST_DEFEATING_OUTCOME_CODES = [
+    "Suppressed",
+    "incomplete ",
+    " TOO-COSTLY",
+    "Timeout"
+  ].freeze
 
   OUTCOME_SEVERITIES = %w[fatal error warning information].freeze
+
+  def test_get_conditions_returns_nil_when_operation_outcome_has_untrusted_code_at_any_severity
+    condition = build_condition_resource
+    TRUST_DEFEATING_OUTCOME_CODES.each do |code|
+      OUTCOME_SEVERITIES.each do |severity|
+        bundle = conditions_bundle_with_operation_outcome([ condition ], issue_code: code, severity: severity)
+        assert_nil get_conditions_with_bundle(bundle),
+                   "expected nil for OperationOutcome #{severity}/#{code} on Condition search"
+      end
+    end
+  end
+
+  def test_get_medications_returns_nil_when_operation_outcome_has_untrusted_code_at_any_severity
+    request = build_medication_request_resource
+    TRUST_DEFEATING_OUTCOME_CODES.each do |code|
+      OUTCOME_SEVERITIES.each do |severity|
+        bundle = medications_bundle_with_operation_outcome([ request ], issue_code: code, severity: severity)
+        assert_nil get_medications_with_bundle(bundle),
+                   "expected nil for OperationOutcome #{severity}/#{code} on MedicationRequest search"
+      end
+    end
+  end
+
+  def test_get_conditions_returns_nil_when_operation_outcome_has_inexact_untrusted_code_at_any_severity
+    condition = build_condition_resource
+    INEXACT_TRUST_DEFEATING_OUTCOME_CODES.each do |code|
+      OUTCOME_SEVERITIES.each do |severity|
+        bundle = conditions_bundle_with_operation_outcome([ condition ], issue_code: code, severity: severity)
+        assert_nil get_conditions_with_bundle(bundle),
+                   "expected nil for inexact untrusted OperationOutcome #{severity}/#{code.inspect}"
+      end
+    end
+  end
+
+  def test_get_medications_returns_nil_when_operation_outcome_has_inexact_untrusted_code_at_any_severity
+    request = build_medication_request_resource
+    INEXACT_TRUST_DEFEATING_OUTCOME_CODES.each do |code|
+      OUTCOME_SEVERITIES.each do |severity|
+        bundle = medications_bundle_with_operation_outcome([ request ], issue_code: code, severity: severity)
+        assert_nil get_medications_with_bundle(bundle),
+                   "expected nil for inexact untrusted OperationOutcome #{severity}/#{code.inspect}"
+      end
+    end
+  end
 
   def test_get_conditions_keeps_list_when_operation_outcome_informational_at_information_severity
     condition = build_condition_resource
