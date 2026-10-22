@@ -349,7 +349,9 @@ class Corvid::AlternateResourceCheckVerifyMedicaidEligibilityGroupTest < ActiveS
       log_io = capture_rails_warn_log do
         Corvid::MedicaidEligibilityGroupService.stub(:new, ->(**) { recorder }) do
           with_adapter(broken) do
-            travel_to Time.zone.local(2026, 2, 1, 10, 0, 0) { assert check.verify! }
+            travel_to Time.zone.local(2026, 2, 1, 10, 0, 0) do
+              assert check.verify!
+            end
           end
         end
       end
@@ -419,7 +421,9 @@ class Corvid::AlternateResourceCheckVerifyMedicaidEligibilityGroupTest < ActiveS
         eligibility_group_source: "eligibility_response"
       )
 
-      travel_to Time.zone.local(2026, 6, 1, 10, 0, 0) { assert check.verify! }
+      travel_to Time.zone.local(2026, 6, 1, 10, 0, 0) do
+        assert check.verify!
+      end
       check.reload
 
       assert_equal "unknown", check.eligibility_group
@@ -457,7 +461,9 @@ class Corvid::AlternateResourceCheckVerifyMedicaidEligibilityGroupTest < ActiveS
         eligibility_group_source: "eligibility_response"
       )
 
-      travel_to Time.zone.local(2026, 6, 1, 10, 0, 0) { assert check.verify! }
+      travel_to Time.zone.local(2026, 6, 1, 10, 0, 0) do
+        assert check.verify!
+      end
       check.reload
 
       assert_equal "unknown", check.eligibility_group
