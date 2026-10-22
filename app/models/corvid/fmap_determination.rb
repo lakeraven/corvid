@@ -51,6 +51,8 @@ module Corvid
     CATEGORIES = (FmapRule::CATEGORIES + [ FmapClassificationService::UNDETERMINED ]).freeze
 
     validates :category, presence: true, inclusion: { in: CATEGORIES }
+    validates :received_through_basis, inclusion: { in: FmapRule::RECEIVED_THROUGH_BASES }, allow_nil: true
+    validates :authority_type, inclusion: { in: FacilityAuthority::AUTHORITY_TYPES }, allow_nil: true
     validate :immutable_once_claimed
     validate :supersession_is_final
     # Checked when the decided fields are written, not when only the

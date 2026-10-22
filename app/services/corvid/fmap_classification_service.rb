@@ -45,6 +45,9 @@ module Corvid
                    coverage_group: nil, billed_amount_cents: nil,
                    evidence_refs: [])
         check_coverage_group!(coverage_group)
+        if received_through_basis.present? && !FmapRule::RECEIVED_THROUGH_BASES.include?(received_through_basis.to_s)
+          raise ArgumentError, "received_through_basis is not recognized"
+        end
         authority = stored_authority(facility_authority)
         authority = nil unless authority&.in_force_on?(date_of_service)
         authority_type = authority&.authority_type
@@ -110,7 +113,7 @@ module Corvid
       # and basis classification used.
       def classify!(encounter_identifier:, person_identifier: nil, facility_identifier: nil,
                     evidence_refs: [], claim_reference: nil, **classify_opts)
-        authority = classify_opts[:facility_authority]
+        authority = stored_authority(classify_opts[:facility_authority])
         if authority && facility_identifier.present? && authority.facility_identifier != facility_identifier
           raise ArgumentError, "facility authority belongs to a different facility than the encounter"
         end
