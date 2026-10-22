@@ -87,6 +87,7 @@ module AdapterContractTests
     get_obligation: "unknown obligation id yields nil",
     get_obligation_by_referral: "unknown referral yields nil obligation",
     get_payments: "unknown obligation id yields empty array",
+    indian_health_service_eligibility: "unknown patient must not return determination :eligible",
     list_claims: "unknown patient yields empty array",
     list_referrals: "unknown patient yields empty array",
     record_payment: "unknown obligation must not succeed",
@@ -131,6 +132,7 @@ module AdapterContractTests
     get_outstanding_obligations: ->(_seed) { [ [], { fiscal_year: nil } ] },
     get_payments: ->(seed) { [ [], { obligation_id: seed[:obligation_identifier] } ] },
     get_site_params: ->(_seed) { [ [], {} ] },
+    indian_health_service_eligibility: ->(seed) { [ [ seed[:patient_identifier] ], {} ] },
     list_claims: ->(seed) { [ [ seed[:patient_identifier] ], {} ] },
     list_referrals: ->(seed) { [ [ seed[:patient_identifier] ], {} ] },
     process_payment: lambda do |seed|
@@ -671,6 +673,11 @@ module AdapterContractTests
       when :verify_tribal_enrollment
         result = adapter.verify_tribal_enrollment(seed[:unknown_patient_identifier])
         assert_tribal_enrollment_unknown(result)
+      when :indian_health_service_eligibility
+        result = adapter.indian_health_service_eligibility(seed[:unknown_patient_identifier])
+        assert_service_eligibility_shape(result)
+        refute_equal :eligible, result[:determination],
+                     "indian_health_service_eligibility(unknown) must not return determination :eligible"
       when :verify_identity_documents
         result = adapter.verify_identity_documents(seed[:unknown_patient_identifier])
         assert_identity_documents_unknown(result)
@@ -795,6 +802,8 @@ module AdapterContractTests
         assert_verify_eligibility_shape(result)
       when :verify_tribal_enrollment
         assert_tribal_enrollment_shape(result)
+      when :indian_health_service_eligibility
+        assert_service_eligibility_shape(result)
       when :verify_identity_documents
         assert_identity_documents_shape(result)
       when :verify_residency
@@ -883,6 +892,15 @@ module AdapterContractTests
       assert_blood_quantum_shape(value[:blood_quantum])
       assert_includes %i[verified stale unavailable], value[:confidence]
       assert_time_like(value[:verified_at])
+    end
+
+    def assert_service_eligibility_shape(value)
+      assert_instance_of Hash, value
+      assert_keys(value, %i[determination asserted_by determined_at confidence])
+      assert_includes %i[eligible not_eligible unknown], value[:determination]
+      assert_optional_string(value[:asserted_by])
+      assert_time_like(value[:determined_at]) unless value[:determined_at].nil?
+      assert_includes %i[verified unavailable], value[:confidence]
     end
 
     # base.rb: { display: String, decimal: Float|nil } or nil.

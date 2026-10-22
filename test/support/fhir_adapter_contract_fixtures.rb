@@ -178,5 +178,6 @@ FHIR_ADAPTER_CONTRACT_UNSUPPORTED = {
   update_obligation_status: "Stock FHIR has no obligation status API on Base/FhirAdapter",
   get_obligation: "Stock FHIR cannot create obligations, so it has none to read",
   get_obligation_by_referral: "Stock FHIR cannot create obligations, so it has none to read",
-  get_payments: "Stock FHIR has no obligation payment API, so it has no payments to read"
+  get_payments: "Stock FHIR has no obligation payment API, so it has no payments to read",
+  indian_health_service_eligibility: "Stock FHIR has no source for an Indian health provider's own determination"
 }.freeze
