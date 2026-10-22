@@ -76,7 +76,7 @@ class Corvid::AlternateResourceProvenanceDatabaseTest < ActiveSupport::TestCase
     end
   end
 
-  test "authorize! does not sync authorized CHS status when authorization did not persist" do
+  test "on_provenance database failure still syncs authorized CHS status after authorize!" do
     updates = []
 
     with_tenant(TENANT) do
@@ -87,10 +87,16 @@ class Corvid::AlternateResourceProvenanceDatabaseTest < ActiveSupport::TestCase
       end
       configure_db_failing_provenance!
 
-      assert referral.authorize!
-      refute referral.reload.authorized?
-      refute updates.any? { |(_, params)| params[:chs_approval_status] == "A" },
-        "expected no authorized CHS sync when transition rolled back, got #{updates.inspect}"
+      logged = []
+      Rails.logger.stub(:error, ->(msg) { logged << msg }) do
+        assert referral.authorize!
+      end
+      assert referral.reload.authorized?
+      authorized_syncs = updates.select { |(_, params)| params[:chs_approval_status] == "A" }
+      assert_equal 1, authorized_syncs.size,
+        "expected exactly one authorized CHS sync, got #{updates.inspect}"
+      assert_equal referral.referral_identifier, authorized_syncs.first.first
+      assert logged.any? { |m| m.to_s.include?("Provenance hook failed") }
     end
   end
 
