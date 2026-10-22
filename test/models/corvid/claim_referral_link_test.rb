@@ -274,6 +274,83 @@ class Corvid::ClaimReferralLinkTest < ActiveSupport::TestCase
     end
   end
 
+  test "linked claim sent with adapter error status and claim_identifier can be accepted via check_status!" do
+    with_tenant(TENANT) do
+      travel_to Time.zone.parse("2025-07-01 12:00:00 UTC") do
+        claim = linked_claim_sent_with_adapter_error!("REF-ERR-SENT-1", "CLM-ERR-SENT-1")
+
+        Corvid.adapter.add_claim("CLM-ERR-SENT-1", { status: "accepted" })
+        assert_nothing_raised { claim.check_status! }
+        assert_equal "accepted", claim.reload.status
+      end
+    end
+  end
+
+  test "linked claim in adapter error status with claim_identifier can be paid via check_status!" do
+    with_tenant(TENANT) do
+      travel_to Time.zone.parse("2025-07-01 12:00:00 UTC") do
+        claim = linked_claim_sent_with_adapter_error!("REF-ERR-SENT-2", "CLM-ERR-SENT-2")
+        Corvid.adapter.add_claim("CLM-ERR-SENT-2", { status: "paid", paid_amount: 90.0 })
+
+        assert_nothing_raised { claim.check_status! }
+        assert_equal "paid", claim.reload.status
+        assert_equal Money.from_amount(90, "USD"), claim.paid_amount
+      end
+    end
+  end
+
+  test "linked claim in adapter error status with claim_identifier can be denied via check_status!" do
+    with_tenant(TENANT) do
+      travel_to Time.zone.parse("2025-07-01 12:00:00 UTC") do
+        claim = linked_claim_sent_with_adapter_error!("REF-ERR-SENT-3", "CLM-ERR-SENT-3")
+        Corvid.adapter.add_claim("CLM-ERR-SENT-3", { status: "denied", denial_reason_codes: [ "CO-16" ] })
+
+        assert_nothing_raised { claim.check_status! }
+        claim.reload
+        assert claim.denied?
+        assert_equal [ "CO-16" ], claim.denial_reason_codes
+      end
+    end
+  end
+
+  test "RemittanceProcessor applies an 835 batch containing a linked claim sent with adapter error status" do
+    with_tenant(TENANT) do
+      travel_to Time.zone.parse("2025-07-01 12:00:00 UTC") do
+        claim = linked_claim_sent_with_adapter_error!("REF-ERR-REMIT", "CLM-ERR-REMIT")
+
+        result = Corvid::RemittanceProcessor.call([
+          {
+            remittance_identifier: "REM-ERR-SENT",
+            payer_name: "Synthetic Payer",
+            payment_date: Date.new(2025, 6, 20),
+            total_paid: 75.0,
+            line_items: [
+              { claim_identifier: "CLM-ERR-REMIT", paid_amount: 75.0 }
+            ]
+          }
+        ])
+
+        assert_equal 1, result.paid
+        assert_equal "paid", claim.reload.status
+        assert_equal Money.from_amount(75, "USD"), claim.paid_amount
+      end
+    end
+  end
+
+  test "linked error claim with claim_identifier but no submitted_at can reach paid via mark_paid!" do
+    with_tenant(TENANT) do
+      referral = referral_at("fac_a", "REF-ERR-ID-ONLY")
+      patient = referral.case.patient_identifier
+      authorize!(referral)
+      claim = build_claim(facility: "fac_a", referral_identifier: "REF-ERR-ID-ONLY", patient: patient)
+      claim.save!
+      claim.update_columns(status: "error", claim_identifier: "CLM-ERR-ID-ONLY", submitted_at: nil)
+
+      assert_nothing_raised { claim.mark_paid!(paid_amount: 60.0) }
+      assert_equal "paid", claim.reload.status
+    end
+  end
+
   test "legacy linked claim submitted with nil submitted_at can be paid via mark_paid!" do
     with_tenant(TENANT) do
       referral = referral_at("fac_a", "REF-LEGACY-PAID")
@@ -582,5 +659,23 @@ class Corvid::ClaimReferralLinkTest < ActiveSupport::TestCase
     # should fabricate.
     referral.authorize! if referral.may_authorize? && !referral.committee_review?
     referral.reload
+  end
+
+  # Adapter returned an error status but assigned a claim identifier — treated as sent.
+  def linked_claim_sent_with_adapter_error!(referral_identifier, claim_identifier)
+    referral = referral_at("fac_a", referral_identifier)
+    patient = referral.case.patient_identifier
+    authorize!(referral)
+    claim = build_claim(
+      facility: "fac_a", referral_identifier: referral_identifier, patient: patient,
+      service_date: Date.new(2025, 6, 15)
+    )
+    claim.save!
+    claim.update_columns(
+      status: "error",
+      claim_identifier: claim_identifier,
+      submitted_at: Time.zone.parse("2025-07-01 10:00:00 UTC")
+    )
+    claim.reload
   end
 end

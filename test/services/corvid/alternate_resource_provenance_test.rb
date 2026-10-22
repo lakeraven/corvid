@@ -106,7 +106,76 @@ class Corvid::AlternateResourceProvenanceTest < ActiveSupport::TestCase
     end
   end
 
+  test "on_provenance database failure does not roll back claim submit!" do
+    with_tenant(TENANT) do
+      travel_to Time.zone.parse("2025-06-15 12:00:00 UTC") do
+        referral = referral_at("fac_a", "REF-PROV-SUBMIT-DB")
+        authorize_referral!(referral)
+        claim = build_claim(
+          facility: "fac_a",
+          referral_identifier: "REF-PROV-SUBMIT-DB",
+          patient: referral.case.patient_identifier,
+          service_date: Date.new(2025, 6, 10)
+        )
+        claim.save!
+        Corvid.configure { |c| c.on_provenance = db_failing_provenance_hook }
+
+        claim.submit!
+        assert_equal "submitted", claim.reload.status
+        assert claim.claim_identifier.present?
+      end
+    end
+  end
+
+  test "on_provenance database failure does not roll back mark_submitted!" do
+    with_tenant(TENANT) do
+      travel_to Time.zone.parse("2025-06-15 12:00:00 UTC") do
+        referral = referral_at("fac_a", "REF-PROV-MARK-DB")
+        authorize_referral!(referral)
+        claim = build_claim(
+          facility: "fac_a",
+          referral_identifier: "REF-PROV-MARK-DB",
+          patient: referral.case.patient_identifier,
+          service_date: Date.new(2025, 6, 10)
+        )
+        claim.save!
+        Corvid.configure { |c| c.on_provenance = db_failing_provenance_hook }
+
+        claim.mark_submitted!(claim_identifier: "CLM-PROV-DB-1")
+        claim.reload
+        assert_equal "submitted", claim.status
+        assert_equal "CLM-PROV-DB-1", claim.claim_identifier
+      end
+    end
+  end
+
+  test "authorize! does not sync authorized CHS status when outer transaction rolls back" do
+    updates = []
+    Corvid.configure { |c| c.on_provenance = nil }
+
+    with_tenant(TENANT) do
+      referral = authorized_referral_ready_to_authorize!
+      Corvid.adapter.define_singleton_method(:update_referral) do |identifier, params|
+        updates << [ identifier, params.dup ]
+        true
+      end
+
+      ActiveRecord::Base.transaction do
+        assert referral.authorize!
+        raise ActiveRecord::Rollback
+      end
+
+      refute referral.reload.authorized?
+      refute updates.any? { |(_, params)| params[:chs_approval_status] == "A" },
+        "expected EHR sync only after commit, got #{updates.inspect}"
+    end
+  end
+
   private
+
+  def db_failing_provenance_hook
+    ->(**_attrs) { ActiveRecord::Base.connection.execute("SELECT 1/0") }
+  end
 
   def referral_at(facility, identifier)
     kase = Corvid::Case.create!(
