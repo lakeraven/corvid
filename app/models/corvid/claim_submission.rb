@@ -205,7 +205,10 @@ module Corvid
       attrs = { last_checked_at: Time.current }
       attrs[:status] = result[:status] if STATUSES.include?(result[:status])
       attrs[:rejection_reason_token] = result[:rejection_reason_token] if result[:rejection_reason_token]
-      attrs[:denial_reason_codes] = Array(result[:denial_reason_codes]).map(&:to_s) if result[:denial_reason_codes]
+      # A poll that reports no codes says nothing about a past denial, so it
+      # must not erase the codes already recorded for it.
+      denial_codes = Array(result[:denial_reason_codes]).map(&:to_s).reject(&:blank?)
+      attrs[:denial_reason_codes] = denial_codes if denial_codes.any?
       attrs[:paid_amount] = result[:paid_amount] if result[:paid_amount]
       attrs[:adjustment_amount] = result[:adjustment_amount] if result[:adjustment_amount]
       attrs[:paid_date] = result[:paid_date] if result[:paid_date]
