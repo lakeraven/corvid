@@ -4,9 +4,9 @@ require "test_helper"
 require "open3"
 
 # Pins the guards on the bin/demo-* entry points (docs/demo.md). These only
-# exercise paths that stop before any demo runs, so they are cheap and never
-# touch a database: DATABASE_URL points at an unreachable host in case a
-# guard is missing.
+# exercise paths that stop before any demo runs, so they are cheap. If a guard
+# were missing the script would go on to db:prepare, so DATABASE_URL points at
+# an unreachable host to keep that failure from touching any real database.
 class DemoEntryPointsTest < ActiveSupport::TestCase
   ROOT = File.expand_path("../../..", __dir__)
   UNREACHABLE_DB = "postgres://nobody@127.0.0.1:1/corvid_demo_guard_test"
