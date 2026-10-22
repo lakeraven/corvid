@@ -35,12 +35,10 @@ module Corvid
       { success: false, error: Corvid.sanitize_phi(e.message) }
     end
 
-    # KNOWN LIMITATION (#264): the `apply_to_referral!` half drives AASM
-    # state transitions on PrcReferral whose `after:` callbacks call
-    # `Corvid.adapter.update_referral` directly. Until #264 lands the
-    # apply half is NOT routed through the injected `@adapter` — the
-    # `sync_decision` half is. Per-tenant adapter routing for the
-    # combined flow isn't safe yet; see ADR 0005 §"Known limitation".
+    # KNOWN LIMITATION (#264): apply_to_referral! drives AASM transitions
+    # whose after callbacks call Corvid.adapter.update_referral directly.
+    # Re-verification inside apply uses the injected @adapter (ADR 0005).
+    # The EHR status sync in those after callbacks does not, until #264.
     #
     # Apply locally first. Sync the decision to the EHR only once the
     # referral has reached that state, so APPROVED is never written
@@ -128,7 +126,7 @@ module Corvid
     # Updated only when the referral actually reached the decision's
     # state. A guard that returns false must not look like success.
     def apply_referral!(committee_review)
-      committee_review.apply_to_referral!
+      committee_review.apply_to_referral!(adapter: @adapter)
       referral_reached_decision?(committee_review)
     rescue AuthorizationBlockedError
       raise
