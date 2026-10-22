@@ -101,6 +101,34 @@ class Corvid::PriorAuthorizationServiceTest < ActiveSupport::TestCase
     end
   end
 
+  test "blank authorization reason above cost threshold uses cost threshold exceeded reason" do
+    with_tenant(TENANT) do
+      sr = build_service_request(
+        urgency: "ROUTINE",
+        authorization_required: true,
+        authorization_reason: "",
+        estimated_cost: 100_000
+      )
+      result = Corvid::PriorAuthorizationService.check(sr)
+
+      assert_includes result.authorization_reason, "cost threshold exceeded"
+    end
+  end
+
+  test "whitespace authorization reason above cost threshold uses cost threshold exceeded reason" do
+    with_tenant(TENANT) do
+      sr = build_service_request(
+        urgency: "ROUTINE",
+        authorization_required: true,
+        authorization_reason: "   ",
+        estimated_cost: 100_000
+      )
+      result = Corvid::PriorAuthorizationService.check(sr)
+
+      assert_includes result.authorization_reason, "cost threshold exceeded"
+    end
+  end
+
   test "service request below cost threshold does not require committee review" do
     with_tenant(TENANT) do
       sr = build_service_request(estimated_cost: 5_000, requires_committee_review: false)
@@ -187,6 +215,52 @@ class Corvid::PriorAuthorizationServiceTest < ActiveSupport::TestCase
     end
   end
 
+  # -- PRC referral auto-authorization (42 CFR 136.61 exhaustion) ------------
+
+  test "auto_authorizable? false when referral has no alternate resource checks" do
+    with_tenant(TENANT) do
+      referral = create_referral_without_committee
+
+      refute Corvid::PriorAuthorizationService.auto_authorizable?(referral)
+    end
+  end
+
+  test "auto_authorizable? false when only a partial set of alternate resources is unavailable" do
+    with_tenant(TENANT) do
+      referral = create_referral_without_committee
+      %w[medicare_a medicaid private_insurance charity_care].each do |type|
+        Corvid::AlternateResourceCheck.create!(
+          prc_referral: referral, resource_type: type, status: "not_enrolled"
+        )
+      end
+
+      refute Corvid::PriorAuthorizationService.auto_authorizable?(referral)
+    end
+  end
+
+  test "auto_authorizable? true when all twelve alternate resources are unavailable and committee not required" do
+    with_tenant(TENANT) do
+      referral = create_referral_without_committee
+      create_all_twelve_unavailable_checks(
+        referral,
+        "medicare_a" => "not_enrolled",
+        "medicaid" => "denied",
+        "private_insurance" => "exhausted"
+      )
+
+      assert Corvid::PriorAuthorizationService.auto_authorizable?(referral)
+    end
+  end
+
+  test "auto_authorizable? false when committee review is required even if all resources exhausted" do
+    with_tenant(TENANT) do
+      referral = create_referral_without_committee(estimated_cost: 50_000)
+      create_all_twelve_unavailable_checks(referral)
+
+      refute Corvid::PriorAuthorizationService.auto_authorizable?(referral)
+    end
+  end
+
   private
 
   def build_service_request(attrs = {})
@@ -199,5 +273,31 @@ class Corvid::PriorAuthorizationServiceTest < ActiveSupport::TestCase
       requires_committee_review: false,
       case_manager_ien: nil
     }.merge(attrs))
+  end
+
+  def create_referral_without_committee(estimated_cost: 1_000, medical_priority: 2, flagged_for_review: false)
+    kase = Corvid::Case.create!(
+      patient_identifier: "pt_pa_test_001",
+      lifecycle_status: "intake",
+      facility_identifier: "fac_test"
+    )
+    Corvid::PrcReferral.create!(
+      case: kase,
+      referral_identifier: "ref_#{SecureRandom.hex(4)}",
+      facility_identifier: "fac_test",
+      estimated_cost: estimated_cost,
+      medical_priority: medical_priority,
+      flagged_for_review: flagged_for_review
+    )
+  end
+
+  def create_all_twelve_unavailable_checks(referral, status_overrides = {})
+    Corvid::AlternateResourceCheck::RESOURCE_TYPES.each do |type|
+      Corvid::AlternateResourceCheck.create!(
+        prc_referral: referral,
+        resource_type: type,
+        status: status_overrides.fetch(type, "not_enrolled")
+      )
+    end
   end
 end

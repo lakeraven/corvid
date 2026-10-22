@@ -67,11 +67,27 @@ class Corvid::ProgramCaseAuditServiceTest < ActiveSupport::TestCase
     end
   end
 
+  test "program_compliance_summary scopes to facility object when facility_identifier is blank string" do
+    facility = Struct.new(:id).new("fac_scope_a")
+    with_tenant(TENANT) do
+      create_program_case("pt_fac_a", "hep_b", facility_identifier: "fac_scope_a")
+      create_program_case("pt_fac_b", "hep_b", facility_identifier: "fac_scope_b")
+
+      summary = Corvid::ProgramCaseAuditService.program_compliance_summary(
+        program_type: "hep_b",
+        facility_identifier: "",
+        facility: facility
+      )
+
+      assert_equal 1, summary[:total_cases]
+    end
+  end
+
   private
 
-  def create_program_case(patient_identifier, program_code)
+  def create_program_case(patient_identifier, program_code, facility_identifier: "fac_test")
     kase = Corvid::Case.create!(
-      patient_identifier: patient_identifier, facility_identifier: "fac_test"
+      patient_identifier: patient_identifier, facility_identifier: facility_identifier
     )
     Corvid::CaseProgram.create!(
       case: kase, program_name: program_code.titleize,
