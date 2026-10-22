@@ -164,9 +164,9 @@ Each `cms:import` writes a `Corvid::CmsFeeScheduleRelease` record capturing the 
 
 ## Demos
 
-Three fully synthetic, fully offline demos ship with the engine — a stock-FHIR
-multi-clinic PRC + MLR overlay, a narrated PRC happy path, and a governed
-patient-data migration. Each is one command from a fresh checkout:
+Three fully synthetic demos ship with the engine (offline once gems are
+installed) — a stock-FHIR multi-clinic PRC + MLR overlay, a narrated PRC happy
+path, and a governed patient-data migration. Each is one command from a fresh checkout:
 
 ```bash
 bin/demo-overlay

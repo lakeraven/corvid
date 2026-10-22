@@ -20,7 +20,7 @@ case "$only" in
     ;;
 esac
 failures=0
-tmp="$(mktemp -d)"
+tmp="$(mktemp -d)" || exit 1
 trap 'rm -rf "$tmp"' EXIT
 
 check() {
@@ -85,4 +85,8 @@ if [ "$failures" -gt 0 ]; then
   printf '\ndemo-smoke: %d demo(s) failed\n' "$failures"
   exit 1
 fi
-printf '\ndemo-smoke: all demos green\n'
+if [ "$only" = "all" ]; then
+  printf '\ndemo-smoke: all demos green\n'
+else
+  printf '\ndemo-smoke: %s green\n' "$only"
+fi

@@ -21,8 +21,9 @@ in-process.
 
 The demos use the **development** database. Each entry point forces
 `RAILS_ENV=development` and refuses to start if a different `RAILS_ENV` is
-inherited from your shell (for example one set up for the suites), so it can
-never reset the test database.
+inherited from your shell (for example one set up for the suites). A
+`DATABASE_URL` is used exactly as given, so make sure it names a development
+database — never `corvid_dummy_test`.
 
 `test/dummy/config/database.yml` names no user, so it connects as your OS user
 over the local socket. If your Postgres needs a role, host, or password, set
@@ -83,8 +84,10 @@ is **halted**. Both outcomes are recorded as audit `Determination`s.
 Each entry point resets before it runs, so **re-running the script is enough**,
 and the demos can run in any order (the PRC demo and the overlay share the
 Broken Rock facility; the overlay reset clears what the PRC demo leaves). All
-three demos are also idempotent — a second run without a reset produces the
-same numbers and does not duplicate rows.
+three entry points are idempotent — a second run produces the same numbers
+and does not duplicate rows. (Calling the rake task `demo:migrate` directly,
+without `demo:migration_reset` first, appends a fresh audit `Determination`
+per hero on each run; the entry point resets first for that reason.)
 
 To reset by hand:
 
