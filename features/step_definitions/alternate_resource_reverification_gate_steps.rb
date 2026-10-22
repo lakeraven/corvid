@@ -103,3 +103,60 @@ Then("the claim should remain in draft with no submitted_at") do
   assert_equal "draft", @claim.reload.status
   assert_nil @claim.submitted_at
 end
+
+Given("the claim status is {string} with no submitted_at") do |status|
+  @claim.update!(status: status)
+  @claim.update_column(:submitted_at, nil)
+  @claim.reload
+  assert_nil @claim.submitted_at
+end
+
+Then("the claim should remain in {string} with no submitted_at") do |status|
+  assert_equal status, @claim.reload.status
+  assert_nil @claim.submitted_at
+end
+
+Given("a draft claim linked to referral {string} for patient {string} with service date {string}") do |identifier, patient_id, iso_date|
+  @case = Corvid::Case.create!(
+    patient_identifier: patient_id,
+    facility_identifier: @facility,
+    lifecycle_status: "intake"
+  )
+  @referral = Corvid::PrcReferral.create!(
+    case: @case,
+    referral_identifier: identifier,
+    facility_identifier: @facility
+  )
+  Corvid.adapter.add_referral(
+    identifier,
+    patient_identifier: patient_id,
+    status: "pending",
+    estimated_cost: 5_000,
+    service_requested: "TEST"
+  )
+  @claim = Corvid::ClaimSubmission.create!(
+    tenant_identifier: @tenant,
+    facility_identifier: @facility,
+    patient_identifier: patient_id,
+    referral_identifier: identifier,
+    claim_type: "professional",
+    service_date: Date.parse(iso_date),
+    billed_amount: 100.0,
+    status: "draft"
+  )
+  assert_equal @referral.id, @claim.reload.prc_referral_id
+end
+
+When("mark_submitted! is attempted for claim identifier {string}") do |claim_identifier|
+  @mark_submitted_error = nil
+  begin
+    @claim.mark_submitted!(claim_identifier: claim_identifier)
+  rescue Corvid::ClaimSubmission::ReferralNotAuthorized => e
+    @mark_submitted_error = e
+  end
+end
+
+Then("mark_submitted! should be refused for unauthorized referral") do
+  assert_kind_of Corvid::ClaimSubmission::ReferralNotAuthorized, @mark_submitted_error
+  assert_match(/not authorized/, @mark_submitted_error.message)
+end

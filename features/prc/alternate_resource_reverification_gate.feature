@@ -25,3 +25,17 @@ Feature: Alternate resource re-verification gates
     When the billing coordinator updates the claim status to "submitted" without submit!
     Then the claim update should be rejected
     And the claim should remain in draft with no submitted_at
+
+  Scenario: Linked claim in error cannot bypass submission gate to submitted
+    Given an authorized PRC referral "REF-CU-ERROR" for patient "pt_cu_error"
+    And a draft claim linked to that referral with service date "2025-06-15"
+    And the claim status is "error" with no submitted_at
+    When the billing coordinator updates the claim status to "submitted" without submit!
+    Then the claim update should be rejected
+    And the claim should remain in "error" with no submitted_at
+
+  Scenario: mark_submitted! refuses when the linked referral is not authorized
+    Given a draft claim linked to referral "REF-CU-MARK" for patient "pt_cu_mark" with service date "2025-06-15"
+    When mark_submitted! is attempted for claim identifier "CLM-CU-MARK"
+    Then mark_submitted! should be refused for unauthorized referral
+    And the claim should remain in draft with no submitted_at

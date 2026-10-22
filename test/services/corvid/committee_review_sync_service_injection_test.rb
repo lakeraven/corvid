@@ -28,6 +28,11 @@ class Corvid::CommitteeReviewSyncServiceInjectionTest < ActiveSupport::TestCase
       @calls << [ :fetch_text, token ]
       "text-for-#{token}"
     end
+
+    def verify_eligibility(patient_identifier, resource_type)
+      @calls << [ :verify_eligibility, patient_identifier, resource_type ]
+      { eligible: false }
+    end
   end
 
   setup do
@@ -41,6 +46,18 @@ class Corvid::CommitteeReviewSyncServiceInjectionTest < ActiveSupport::TestCase
     # adapter for the next test, but explicit teardown here keeps this
     # file self-contained and survives test_helper reorganizations.
     Corvid.configure { |c| c.adapter = @original_adapter }
+  end
+
+  test "instance.sync_decision re-verifies stale checks through the injected adapter only" do
+    review = build_approved_review_with_stale_medicaid
+    Corvid.configure { |c| c.adapter = poison_adapter }
+    service = Corvid::CommitteeReviewSyncService.new(adapter: @fake)
+
+    service.sync_decision(review)
+
+    verify_calls = @fake.calls.select { |entry| entry.first == :verify_eligibility }
+    assert verify_calls.any?,
+           "stale alternate-resource checks must re-verify via the injected adapter; got #{@fake.calls.inspect}"
   end
 
   test "instance.sync_decision routes through the injected adapter, not Corvid.adapter" do
@@ -119,6 +136,15 @@ class Corvid::CommitteeReviewSyncServiceInjectionTest < ActiveSupport::TestCase
   end
 
   private
+
+  def build_approved_review_with_stale_medicaid
+    travel_to Time.zone.parse("2025-07-01 12:00:00 UTC") do
+      review = build_approved_review
+      medicaid = review.prc_referral.alternate_resource_checks.find_by!(resource_type: "medicaid")
+      medicaid.update!(checked_at: 31.days.ago)
+      review
+    end
+  end
 
   def build_approved_review
     Corvid::TenantContext.with_tenant(TENANT) do

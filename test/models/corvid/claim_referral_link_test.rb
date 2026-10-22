@@ -159,6 +159,72 @@ class Corvid::ClaimReferralLinkTest < ActiveSupport::TestCase
     end
   end
 
+  test "linked claim with nil submitted_at cannot reach submitted from error status" do
+    with_tenant(TENANT) do
+      referral = referral_at("fac_a", "REF-BYPASS-5")
+      patient = referral.case.patient_identifier
+      authorize!(referral)
+      claim = build_claim(facility: "fac_a", referral_identifier: "REF-BYPASS-5", patient: patient)
+      claim.save!
+
+      claim.update!(status: "error")
+      assert_equal "error", claim.reload.status
+      assert_nil claim.submitted_at
+
+      refute claim.update(status: "submitted")
+      assert_predicate claim.errors[:status], :present?
+      assert_equal "error", claim.reload.status
+      assert_nil claim.submitted_at
+    end
+  end
+
+  test "linked claim with nil submitted_at cannot reach paid from appealed status" do
+    with_tenant(TENANT) do
+      referral = referral_at("fac_a", "REF-BYPASS-6")
+      patient = referral.case.patient_identifier
+      authorize!(referral)
+      claim = build_claim(facility: "fac_a", referral_identifier: "REF-BYPASS-6", patient: patient)
+      claim.save!
+
+      claim.update!(status: "appealed")
+      assert_equal "appealed", claim.reload.status
+      assert_nil claim.submitted_at
+
+      refute claim.update(status: "paid", paid_amount: 100)
+      assert_predicate claim.errors[:status], :present?
+      assert_equal "appealed", claim.reload.status
+      assert_nil claim.submitted_at
+    end
+  end
+
+  test "mark_submitted! refuses unauthorized referral like submit!" do
+    with_tenant(TENANT) do
+      referral = referral_at("fac_a", "REF-MARK-GATE")
+      exhaust_alternate_resources!(referral)
+      assert_equal "draft", referral.reload.status
+
+      claim = build_claim(
+        facility: "fac_a", referral_identifier: "REF-MARK-GATE",
+        patient: referral.case.patient_identifier
+      )
+      claim.save!
+
+      verify_calls = []
+      Corvid.adapter.define_singleton_method(:verify_eligibility) do |patient_identifier, resource_type|
+        verify_calls << [ patient_identifier, resource_type ]
+        { eligible: false }
+      end
+
+      error = assert_raises(Corvid::ClaimSubmission::ReferralNotAuthorized) do
+        claim.mark_submitted!(claim_identifier: "CLM-MARK-GATE")
+      end
+      assert_match(/not authorized/, error.message)
+      assert_equal "draft", claim.reload.status
+      assert_nil claim.submitted_at
+      assert_empty verify_calls, "referral gate must run before payer re-verification"
+    end
+  end
+
   # referral_identifier is a loose external reference — a payer's or
   # provider's referral number with no PrcReferral behind it is ordinary
   # billing, not PRC billing (features/billing/claims_submission.feature bills

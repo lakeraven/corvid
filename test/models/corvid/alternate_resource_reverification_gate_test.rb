@@ -296,6 +296,141 @@ module Corvid
       end
     end
 
+    test "committee apply_to_referral! on cancelled referral makes no payer calls and leaves checks unchanged" do
+      with_tenant(TENANT) do
+        travel_to Time.zone.parse("2025-07-01 12:00:00 UTC") do
+          referral, review = committee_approved_review_with_stale_medicaid
+          referral.cancel!
+          before = alternate_resource_check_snapshot(referral)
+
+          @verify_calls.clear
+          error = assert_raises(AuthorizationBlockedError) { review.apply_to_referral! }
+          assert_includes error.blockers, "referral: cancelled"
+
+          assert_empty @verify_calls
+          assert_equal before, alternate_resource_check_snapshot(referral.reload)
+          assert_equal "cancelled", referral.status
+        end
+      end
+    end
+
+    test "committee apply_to_referral! on denied referral makes no payer calls and leaves checks unchanged" do
+      with_tenant(TENANT) do
+        travel_to Time.zone.parse("2025-07-01 12:00:00 UTC") do
+          referral, review = committee_approved_review_with_stale_medicaid
+          referral.mark_denied!
+          before = alternate_resource_check_snapshot(referral)
+
+          @verify_calls.clear
+          error = assert_raises(AuthorizationBlockedError) { review.apply_to_referral! }
+          assert_includes error.blockers, "referral: denied"
+
+          assert_empty @verify_calls
+          assert_equal before, alternate_resource_check_snapshot(referral.reload)
+          assert_equal "denied", referral.status
+        end
+      end
+    end
+
+    test "committee apply_to_referral! on draft referral makes no payer calls and leaves checks unchanged" do
+      with_tenant(TENANT) do
+        travel_to Time.zone.parse("2025-07-01 12:00:00 UTC") do
+          referral = create_referral_record
+          create_all_determined_checks(referral)
+          referral.alternate_resource_checks.find_by!(resource_type: "medicaid").update!(checked_at: 31.days.ago)
+          review = CommitteeReview.create!(
+            prc_referral: referral,
+            committee_date: Date.current,
+            decision: "approved",
+            approved_amount: 5_000,
+            facility_identifier: FACILITY,
+            reviewer_identifier: "rv_draft_gate"
+          )
+          before = alternate_resource_check_snapshot(referral)
+
+          @verify_calls.clear
+          error = assert_raises(AuthorizationBlockedError) { review.apply_to_referral! }
+          assert_includes error.blockers, "referral: draft"
+
+          assert_empty @verify_calls
+          assert_equal before, alternate_resource_check_snapshot(referral.reload)
+          assert_equal "draft", referral.status
+        end
+      end
+    end
+
+    test "sync_decision on cancelled referral makes no payer calls and leaves checks unchanged" do
+      with_tenant(TENANT) do
+        travel_to Time.zone.parse("2025-07-01 12:00:00 UTC") do
+          referral, review = committee_approved_review_with_stale_medicaid
+          referral.cancel!
+          before = alternate_resource_check_snapshot(referral)
+
+          recording = sync_recording_adapter
+          @verify_calls.clear
+          result = CommitteeReviewSyncService.sync_decision(review, adapter: recording)
+
+          refute result[:success]
+          assert result[:blocked]
+          assert_includes result[:blockers], "referral: cancelled"
+          assert_empty recording.verify_calls
+          assert_empty @verify_calls
+          assert_equal before, alternate_resource_check_snapshot(referral.reload)
+        end
+      end
+    end
+
+    test "sync_decision on denied referral makes no payer calls and leaves checks unchanged" do
+      with_tenant(TENANT) do
+        travel_to Time.zone.parse("2025-07-01 12:00:00 UTC") do
+          referral, review = committee_approved_review_with_stale_medicaid
+          referral.mark_denied!
+          before = alternate_resource_check_snapshot(referral)
+
+          recording = sync_recording_adapter
+          @verify_calls.clear
+          result = CommitteeReviewSyncService.sync_decision(review, adapter: recording)
+
+          refute result[:success]
+          assert result[:blocked]
+          assert_includes result[:blockers], "referral: denied"
+          assert_empty recording.verify_calls
+          assert_empty @verify_calls
+          assert_equal before, alternate_resource_check_snapshot(referral.reload)
+        end
+      end
+    end
+
+    test "sync_decision on draft referral makes no payer calls and leaves checks unchanged" do
+      with_tenant(TENANT) do
+        travel_to Time.zone.parse("2025-07-01 12:00:00 UTC") do
+          referral = create_referral_record
+          create_all_determined_checks(referral)
+          referral.alternate_resource_checks.find_by!(resource_type: "medicaid").update!(checked_at: 31.days.ago)
+          review = CommitteeReview.create!(
+            prc_referral: referral,
+            committee_date: Date.current,
+            decision: "approved",
+            approved_amount: 5_000,
+            facility_identifier: FACILITY,
+            reviewer_identifier: "rv_sync_draft"
+          )
+          before = alternate_resource_check_snapshot(referral)
+
+          recording = sync_recording_adapter
+          @verify_calls.clear
+          result = CommitteeReviewSyncService.sync_decision(review, adapter: recording)
+
+          refute result[:success]
+          assert result[:blocked]
+          assert_includes result[:blockers], "referral: draft"
+          assert_empty recording.verify_calls
+          assert_empty @verify_calls
+          assert_equal before, alternate_resource_check_snapshot(referral.reload)
+        end
+      end
+    end
+
     test "verify_alternate_resources! on draft referral makes no payer calls" do
       with_tenant(TENANT) do
         referral = create_referral_record
@@ -536,6 +671,40 @@ module Corvid
         billed_amount: 100.0,
         status: "draft"
       )
+    end
+
+    def committee_approved_review_with_stale_medicaid
+      referral = referral_in_alternate_resource_review
+      create_all_determined_checks(referral)
+      assert referral.verify_alternate_resources!
+      referral.update!(medical_priority: 3, estimated_cost: 5_000)
+      assert referral.complete_priority_assignment!
+      assert_equal "committee_review", referral.status
+      exhaust_alternate_resources!(referral, date_of_service: Date.current, as_of: Time.current)
+      referral.alternate_resource_checks.find_by!(resource_type: "medicaid").update!(checked_at: 31.days.ago)
+      review = CommitteeReview.create!(
+        prc_referral: referral,
+        committee_date: Date.current,
+        decision: "approved",
+        approved_amount: 5_000,
+        facility_identifier: FACILITY,
+        reviewer_identifier: "rv_stale_gate"
+      )
+      [ referral, review ]
+    end
+
+    def sync_recording_adapter
+      verify_calls = []
+      Class.new do
+        define_method(:initialize) { @verify_calls = verify_calls }
+        define_method(:verify_calls) { @verify_calls }
+        define_method(:update_referral) { |_id, _params| true }
+        define_method(:fetch_text) { |_token| "" }
+        define_method(:verify_eligibility) do |patient_identifier, resource_type|
+          @verify_calls << [ patient_identifier, resource_type ]
+          { eligible: false }
+        end
+      end.new
     end
 
     def authorize_referral!(referral)
