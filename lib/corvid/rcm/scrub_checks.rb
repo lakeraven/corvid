@@ -65,6 +65,14 @@ module Corvid
         minutes.nil? ? "no documented time" : "#{minutes} minutes"
       end
 
+      # Documented minutes as a whole number, or nil when they are absent or
+      # not a number — either way the time does not support the code.
+      def documented_minutes_of(item)
+        Integer(item.documented_minutes.to_s.strip, 10)
+      rescue ArgumentError, TypeError
+        nil
+      end
+
       # -- structural completeness --------------------------------------------
 
       def npi_valid(claim, params, _context)
@@ -121,6 +129,12 @@ module Corvid
             []
           end
         end
+      end
+
+      # The patient token is what every history rule matches on. A blank one
+      # matches nothing, which would read as "no prior services".
+      def patient_identifier_present(claim, _params, _context)
+        blank?(claim.patient_identifier) ? fail_with({}) : []
       end
 
       PATIENT_DEMOGRAPHICS = [
@@ -288,9 +302,10 @@ module Corvid
         minimum = params.fetch("minimum_minutes")
 
         Array(claim.items).select { |item| item.procedure_code == code }.flat_map do |item|
-          next [] if item.documented_minutes && item.documented_minutes >= minimum
+          minutes = documented_minutes_of(item)
+          next [] if minutes && minutes >= minimum
 
-          fail_with({ code: code, documented: minutes_phrase(item.documented_minutes), minimum: minimum },
+          fail_with({ code: code, documented: minutes_phrase(minutes), minimum: minimum },
                     line_sequence: item.sequence)
         end
       end
@@ -301,7 +316,7 @@ module Corvid
         maximum = params.fetch("maximum_minutes")
 
         Array(claim.items).select { |item| item.procedure_code == code }.flat_map do |item|
-          minutes = item.documented_minutes
+          minutes = documented_minutes_of(item)
           next [] if minutes && minutes >= minimum && minutes <= maximum
 
           fail_with({ code: code, documented: minutes_phrase(minutes), minimum: minimum,

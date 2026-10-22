@@ -80,6 +80,14 @@ rules:
     message: "Coverage is %{problem} for the date of service."
     remedy: "Re-verify eligibility for the date of service. Submitting against terminated coverage buys a denial and a wasted filing window."
 
+  - id: patient_identifier_present
+    category: structural_completeness
+    severity: block
+    check: patient_identifier_present
+    params: {}
+    message: "The claim carries no patient identifier."
+    remedy: "Attach the patient's identifier from the adapter. Without it the claim cannot be checked against prior submissions, so a duplicate would pass unseen."
+
   - id: patient_demographics_present
     category: structural_completeness
     severity: block

@@ -37,6 +37,11 @@ module Corvid
       ELEMENT_SEPARATOR = "*"
       COMPOSITE_SEPARATOR = ">"
 
+      # Segments that only mean anything inside the ST/SE transaction. One that
+      # appears outside it is not covered by SE01, so it is refused rather than
+      # posted.
+      TRANSACTION_SEGMENTS = %w[BPR TRN DTM N1 LX CLP NM1 SVC CAS LQ].freeze
+
       # DTM qualifiers used by the 835.
       DTM_PRODUCTION_DATE = "405"
       DTM_CLAIM_RECEIVED = "050"
@@ -66,6 +71,10 @@ module Corvid
         envelope = { st_position: nil, se_position: nil, se_count: nil }
 
         segments.each_with_index do |elements, position|
+          if envelope[:se_position] && TRANSACTION_SEGMENTS.include?(elements[0])
+            raise ParseError, "#{elements[0]} segment outside the ST/SE transaction"
+          end
+
           case elements[0]
           when "ST"
             raise ParseError, "more than one ST transaction in the file; only one is supported" if envelope[:st_position]
@@ -284,7 +293,10 @@ module Corvid
       def decimal(value)
         return BigDecimal(0) if value.nil? || value.to_s.strip.empty?
 
-        BigDecimal(value.to_s.strip)
+        amount = BigDecimal(value.to_s.strip)
+        raise ParseError, "not a finite amount: #{value.inspect}" unless amount.finite?
+
+        amount
       rescue ArgumentError
         raise ParseError, "not a numeric value: #{value.inspect}"
       end
