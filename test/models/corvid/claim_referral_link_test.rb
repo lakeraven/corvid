@@ -364,19 +364,41 @@ class Corvid::ClaimReferralLinkTest < ActiveSupport::TestCase
       authorize!(referral)
       claim = build_claim(facility: "fac_a", referral_identifier: "REF-HOST-ERR-STAMP", patient: patient)
       claim.save!
-      claim.update_column(:submitted_at, 1.hour.ago)
+
+      refute claim.update(submitted_at: 1.hour.ago)
+      assert_predicate claim.errors[:submitted_at], :present?
+      assert_nil claim.reload.submitted_at
+
+      assert claim.update(status: "error", submitted_at: 1.hour.ago)
+      claim.reload
+      assert_equal "error", claim.status
+      assert_nil claim.submitted_at
 
       assert claim.update(status: "error")
       claim.reload
+      assert_equal "error", claim.status
+      assert_nil claim.submitted_at
       assert_nil claim.claim_identifier
 
-      assert_raises(ActiveRecord::RecordInvalid) { claim.mark_paid!(paid_amount: 25.0) }
+      refute claim.update(submitted_at: 1.hour.ago)
+      assert_predicate claim.errors[:submitted_at], :present?
+      assert_nil claim.reload.submitted_at
 
       Corvid.adapter.add_claim("HOST-POLL-ONLY", { status: "paid", paid_amount: 25.0 })
-      claim.update_column(:claim_identifier, "HOST-POLL-ONLY")
-      claim.reload
+      refute claim.update(claim_identifier: "HOST-POLL-ONLY")
+      assert_predicate claim.errors[:claim_identifier], :present?
+      assert_nil claim.reload.claim_identifier
 
-      assert_raises(ActiveRecord::RecordInvalid) { claim.check_status! }
+      assert_raises(ActiveRecord::RecordInvalid) { claim.mark_paid!(paid_amount: 25.0) }
+      refute_equal "paid", claim.reload.status
+
+      refute claim.update(status: "error", claim_identifier: "HOST-POLL-ONLY", submitted_at: 1.hour.ago)
+      assert claim.errors[:claim_identifier].present? || claim.errors[:submitted_at].present?
+      claim.reload
+      assert_nil claim.claim_identifier
+      assert_nil claim.submitted_at
+
+      claim.check_status!
       refute_equal "paid", claim.reload.status
     end
   end

@@ -152,12 +152,13 @@ class Corvid::AlternateResourceProvenanceTest < ActiveSupport::TestCase
   test "non-bang authorize followed by save! syncs authorized CHS status once and records provenance once" do
     updates = []
     provenance_calls = []
-    Corvid.configure do |c|
-      c.on_provenance = ->(**attrs) { provenance_calls << attrs[:target_id] }
-    end
+    Corvid.configure { |c| c.on_provenance = nil }
 
     with_tenant(TENANT) do
       referral = authorized_referral_ready_to_authorize!
+      Corvid.configure do |c|
+        c.on_provenance = ->(**attrs) { provenance_calls << attrs[:target_id] }
+      end
       Corvid.adapter.define_singleton_method(:update_referral) do |identifier, params|
         updates << [ identifier, params.dup ]
         true
