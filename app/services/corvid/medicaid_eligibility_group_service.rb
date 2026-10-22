@@ -18,15 +18,17 @@ module Corvid
   # snapshotted before an inference is computed, and the adapter runs
   # before any lock. A non-medicaid row, coverage that states a real
   # group, or a fresh unlocked read that already has staff_entry or a
-  # stated real group does not call the adapter. Visibility, resource
-  # type, and precedence are checked again under the lock. The coverage
-  # is for the member of the loaded referral, so a different referral id
-  # writes neither a stated nor an inferred group and returns the stored
-  # group. A stated real group or a staff entry is never
-  # overwritten. A stored "unknown" with a stated source may be replaced
-  # by an inference. When the stored inferred group changed during the
-  # lookup and disagrees with the new inference, the recorded group is
-  # unknown.
+  # stated real group does not call the adapter. supersede_stated still
+  # infers over that stated group. The stated fields are replaced only
+  # by the later locked write, so a failed inference leaves the previous
+  # group in place. Visibility, resource type, and precedence are checked
+  # again under the lock. The coverage is for the member of the loaded
+  # referral, so a different referral id writes neither a stated nor an
+  # inferred group and returns the stored group. A staff entry is never
+  # overwritten. A stated real group is kept unless supersede_stated is
+  # set. A stored "unknown" with a stated source may be replaced by an
+  # inference. When the stored inferred group changed during the lookup
+  # and disagrees with the new inference, the recorded group is unknown.
   #
   # Coverage may state only eligibility_response, state_case_data, or
   # registration. Any other source is recorded as eligibility_response.
@@ -59,15 +61,18 @@ module Corvid
       @adapter = adapter
     end
 
-    def record!(check, coverage:, date_of_service:)
+    # supersede_stated lets one locked write replace a stated real group
+    # with the inference. Staff entry is still kept. Inference runs before
+    # the lock; if it raises, nothing is written.
+    def record!(check, coverage:, date_of_service:, supersede_stated: false)
       coverage = coverage_hash(coverage)
       row = persisted_check(check)
       return unless row
 
       loaded_referral_id = row.prc_referral_id
-      inferred, snapshot = prepare_inference(row, coverage, date_of_service)
+      inferred, snapshot = prepare_inference(row, coverage, date_of_service, supersede_stated:)
       row.with_lock do
-        apply_locked(row, coverage, inferred, snapshot, loaded_referral_id)
+        apply_locked(row, coverage, inferred, snapshot, loaded_referral_id, supersede_stated:)
       end
     rescue ActiveRecord::RecordNotFound
       # The row can disappear between the unlocked load and the lock.
@@ -137,32 +142,33 @@ module Corvid
     # The row was just loaded and is not locked. A non-medicaid row, a
     # real group on the coverage, a staff entry, or a stated real group
     # does not need the patient, so a failing lookup cannot block that
-    # write. Stored unknown with a stated source still needs one.
-    def prepare_inference(row, coverage, date_of_service)
-      return unless adapter_needed?(row, coverage)
+    # write. supersede_stated still infers over that stated group. Stored
+    # unknown with a stated source still needs one.
+    def prepare_inference(row, coverage, date_of_service, supersede_stated:)
+      return unless adapter_needed?(row, coverage, supersede_stated:)
 
       snapshot = eligibility_snapshot(row)
       [ inferred_group(row, coverage, date_of_service), snapshot ]
     end
 
-    def adapter_needed?(row, coverage)
+    def adapter_needed?(row, coverage, supersede_stated:)
       return false unless medicaid?(row)
       return false if stated?(coverage)
 
-      !preserved?(row)
+      !preserved?(row, supersede_stated:)
     end
 
     # with_lock has reloaded this row. Visibility, resource type, and
     # precedence come from that read. The coverage and any inference
     # belong to the member of the loaded referral id, so a different id
     # writes neither and returns the stored group.
-    def apply_locked(row, coverage, inferred, snapshot, loaded_referral_id)
+    def apply_locked(row, coverage, inferred, snapshot, loaded_referral_id, supersede_stated:)
       return unless medicaid?(row)
       return unless referral_visible?(row)
       return current_group(row) if staff_entry?(row)
       return current_group(row) if row.prc_referral_id != loaded_referral_id
       return write_stated!(row, coverage) if stated?(coverage)
-      return current_group(row) if preserved?(row)
+      return current_group(row) if preserved?(row, supersede_stated:)
 
       apply_inference(row, inferred, snapshot)
     end
@@ -216,8 +222,10 @@ module Corvid
 
     # A staff entry or a stated real group blocks inference. Stored
     # unknown from a stated source does not: inference may replace it.
-    def preserved?(check)
+    # supersede_stated lifts the block for a stated real group only.
+    def preserved?(check, supersede_stated:)
       return false if stated_unknown?(check)
+      return false if supersede_stated && STATED_SOURCES.include?(check.eligibility_group_source)
 
       source = check.eligibility_group_source
       source.present? && source != "inferred"

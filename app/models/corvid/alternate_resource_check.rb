@@ -39,6 +39,10 @@ module Corvid
     VERIFY_MEDICAID_ELIGIBILITY_GROUP_WARNING =
       "medicaid eligibility group could not be recorded during verification"
 
+    # get_coverages returned nil or a non-Array. The source did not answer.
+    class UnansweredCoverages < StandardError; end
+    private_constant :UnansweredCoverages
+
     validates :eligibility_group, inclusion: { in: ELIGIBILITY_GROUPS }, allow_nil: true
     validates :eligibility_group_source, inclusion: { in: ELIGIBILITY_GROUP_SOURCES }, allow_nil: true
     validate :eligibility_group_only_on_medicaid
@@ -229,13 +233,19 @@ module Corvid
 
     # After the Medicaid answer is saved. record! keeps a staff entry.
     # An EHR failure leaves that answer in place and the group as it was.
+    # Nil or a non-Array from get_coverages is that failure, so record!
+    # is not called. With no single matching coverage, inference replaces
+    # a stated group in one write. A failed inference leaves the previous
+    # group. A staff entry stays.
     def record_medicaid_eligibility_group
       return unless resource_type == "medicaid"
 
+      coverage = medicaid_group_coverage
       MedicaidEligibilityGroupService.new(adapter: Corvid.adapter).record!(
         self,
-        coverage: medicaid_group_coverage,
-        date_of_service: medicaid_group_date_of_service
+        coverage: coverage,
+        date_of_service: medicaid_group_date_of_service,
+        **stated_group_supersede(coverage)
       )
     rescue StandardError
       Rails.logger.warn(VERIFY_MEDICAID_ELIGIBILITY_GROUP_WARNING)
@@ -251,12 +261,30 @@ module Corvid
       matches.first
     end
 
+    # An Array is an answer, including an empty one. Nil or any other
+    # type means the source did not answer.
     def coverages_for_resource_type
       patient_identifier = prc_referral.case&.patient_identifier
       rows = Corvid.adapter.get_coverages(patient_identifier)
-      return [] unless rows.is_a?(Array)
+      raise UnansweredCoverages unless rows.is_a?(Array)
 
       rows.select { |row| resource_type_coverage?(row) }
+    end
+
+    # Pass the option only when this answer has no single matching row
+    # and the stored source is a stated one. Omitting it leaves record!'s
+    # other callers, and a staff entry, on the existing path.
+    def stated_group_supersede(coverage)
+      return {} unless coverage.empty? && stated_eligibility_source?
+
+      { supersede_stated: true }
+    end
+
+    # The stored source. record! writes through another instance, so
+    # eligibility_group_source on this object can lag the database.
+    def stated_eligibility_source?
+      source = self.class.where(id: id).pick(:eligibility_group_source)
+      MedicaidEligibilityGroupService::STATED_SOURCES.include?(source)
     end
 
     def resource_type_coverage?(coverage)
