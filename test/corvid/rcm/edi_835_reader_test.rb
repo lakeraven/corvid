@@ -254,4 +254,26 @@ class Corvid::Rcm::Edi835ReaderTest < Minitest::Test
 
     assert_match(/CLP01/, error.message)
   end
+
+  # -- panel round 2 ------------------------------------------------------------
+
+  def test_a_non_finite_amount_raises
+    source = File.read(File.join(FIXTURES, "clean_full_pay.835")).sub("SVC*HC>90837*200.00*200.00", "SVC*HC>90837*200.00*Infinity")
+    error = assert_raises(Corvid::Rcm::Edi835Reader::ParseError) do
+      Corvid::Rcm::Edi835Reader.new(source).parse
+    end
+
+    assert_match(/Infinity/, error.message)
+  end
+
+  # Claim loops after SE are outside the transaction its count covers.
+  def test_a_claim_loop_outside_the_st_se_transaction_raises
+    source = File.read(File.join(FIXTURES, "clean_full_pay.835"))
+                 .sub("SE*12*0001~", "SE*12*0001~CLP*CLM-1098*1*0.00*0.00*0*12*PAYER-CTL-1098*11~")
+    error = assert_raises(Corvid::Rcm::Edi835Reader::ParseError) do
+      Corvid::Rcm::Edi835Reader.new(source).parse
+    end
+
+    assert_match(/outside the ST\/SE transaction/, error.message)
+  end
 end

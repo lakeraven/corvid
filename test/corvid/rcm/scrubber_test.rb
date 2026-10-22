@@ -742,4 +742,27 @@ class Corvid::Rcm::ScrubberTest < Minitest::Test
   def test_an_infinite_billed_amount_blocks
     assert_only_rule(:service_line_complete, scrub(Factory.claim_with_line(billed_amount: Float::INFINITY)))
   end
+
+  # -- panel round 2 ------------------------------------------------------------
+
+  # A blank patient token cannot be matched against history, so the duplicate
+  # and repeat rules would find nothing and the claim would pass.
+  def test_a_blank_patient_identifier_blocks
+    [ "", "  " ].each do |blank|
+      result = scrub(Factory.claim(patient_identifier: blank))
+
+      assert_only_rule(:patient_identifier_present, result)
+      refute result.submittable?
+    end
+  end
+
+  # Minutes arrive from FHIR supportingInfo and may be strings; a scrub must
+  # judge them, not raise.
+  def test_documented_minutes_given_as_a_string_are_judged_rather_than_raising
+    assert scrub(Factory.claim_with_line(documented_minutes: "55")).clean?
+    assert_only_rule(:psychotherapy_60_minute_time_support,
+                     scrub(Factory.claim_with_line(documented_minutes: "45")))
+    assert_only_rule(:psychotherapy_60_minute_time_support,
+                     scrub(Factory.claim_with_line(documented_minutes: "about an hour")))
+  end
 end
