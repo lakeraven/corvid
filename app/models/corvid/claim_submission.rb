@@ -25,6 +25,11 @@ module Corvid
     # unauthorized referral bills care the programme never agreed to buy.
     class ReferralNotAuthorized < StandardError; end
 
+    # Raised by #submit! when a pending Medicaid application may still
+    # cover the service. The message names that rule and carries no
+    # patient data (ADR 0003).
+    class HeldForPendingMedicaid < StandardError; end
+
     # The referral this claim bills, where there is one. Optional: claims
     # billed outside the referral workflow, and legacy rows the backfill could
     # not match unambiguously, carry no reference.
@@ -190,8 +195,22 @@ module Corvid
       )
     end
 
+    # Records the staff override that releases a pending-Medicaid hold.
+    # reason_token is a vault token for the reason, never free text.
+    def override_medicaid_hold!(reason_token:, by_identifier:)
+      raise ArgumentError, "reason_token is blank" if reason_token.blank?
+      raise ArgumentError, "by_identifier is blank" if by_identifier.blank?
+
+      update!(
+        medicaid_hold_override_reason_token: reason_token,
+        medicaid_hold_override_by_identifier: by_identifier,
+        medicaid_hold_overridden_at: Time.current
+      )
+    end
+
     def submit!
       enforce_referral_authorization_gate!
+      enforce_pending_medicaid_hold!
       result = Corvid.adapter.submit_claim(to_claim_data)
       update!(
         claim_identifier: result[:claim_identifier],
@@ -342,6 +361,61 @@ module Corvid
       Corvid::PrcReferral
         .where(facility_identifier: facility_identifier, referral_identifier: referral_identifier)
         .limit(1).exists?
+    end
+
+    # PRC is payer of last resort. Hold while a pending Medicaid
+    # application covers the service date, or while that window cannot
+    # be determined. The check does not record an Indian exemption, so
+    # resolution passes "unknown". A recorded override releases the hold.
+    def enforce_pending_medicaid_hold!
+      return if medicaid_hold_overridden?
+
+      check = pending_medicaid_check
+      return unless check
+      return unless medicaid_window_blocks?(check)
+
+      raise HeldForPendingMedicaid, "pending Medicaid retroactive coverage"
+    end
+
+    def medicaid_hold_overridden?
+      medicaid_hold_override_reason_token.present? &&
+        medicaid_hold_override_by_identifier.present? &&
+        medicaid_hold_overridden_at.present?
+    end
+
+    def pending_medicaid_check
+      return if prc_referral.blank?
+
+      prc_referral.alternate_resource_checks.find_by(
+        resource_type: "medicaid",
+        status: "pending_enrollment"
+      )
+    end
+
+    # Missing service date, an unresolvable group, or a window that is
+    # not a determined non-cover all fail closed.
+    def medicaid_window_blocks?(check)
+      return true if service_date.nil?
+
+      rule_set = medicaid_rule_set_for(check)
+      return true unless rule_set
+
+      RetroactiveCoverageWindow.covers?(
+        date_of_service: service_date,
+        application_date: check.application_date,
+        rule_set:
+      ) != false
+    end
+
+    def medicaid_rule_set_for(check)
+      group = check.eligibility_group
+      return unless AlternateResourceCheck::ELIGIBILITY_GROUPS.include?(group)
+
+      MedicaidRuleSetResolver.resolve(
+        eligibility_group: group,
+        state: check.medicaid_state_code,
+        indian_exemption: "unknown"
+      )
     end
 
     def to_claim_data

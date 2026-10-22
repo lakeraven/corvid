@@ -41,6 +41,24 @@ module Corvid
     validate :eligibility_group_paired_with_source
     validate :eligibility_group_set_at_paired_with_group
 
+    # ADR 0002: string values, same sets the Postgres CHECKs allow.
+    # The date and its source are stored together or not at all. The
+    # state code is two uppercase letters. These fields are recorded
+    # only on a medicaid row. A future application date is rejected
+    # here; that limit depends on today's date, so it is not a CHECK.
+    APPLICATION_DATE_SOURCES = %w[
+      eligibility_response state_case_data registration staff_entry inferred
+    ].freeze
+
+    validates :application_date_source, inclusion: { in: APPLICATION_DATE_SOURCES }, allow_nil: true
+    validates :medicaid_state_code, format: { with: /\A[A-Z]{2}\z/ }, allow_nil: true
+    validate :application_fields_only_on_medicaid
+    validate :application_date_paired_with_source
+    # A new row cannot record an application date after Date.current.
+    # An update can, so a filing dated after H.R. 1 can be stored while
+    # the calendar is still in 2026.
+    validate :application_date_not_in_future, on: :create
+
     RESOURCE_NAMES = {
       "medicare_a" => "Medicare Part A", "medicare_b" => "Medicare Part B",
       "medicare_d" => "Medicare Part D", "medicaid" => "Medicaid",
@@ -340,6 +358,30 @@ module Corvid
       return if eligibility_group.nil? == eligibility_group_set_at.nil?
 
       errors.add(:eligibility_group_set_at, "must be present exactly when eligibility group is present")
+    end
+
+    def application_fields_only_on_medicaid
+      return if resource_type == "medicaid"
+
+      %i[application_date application_date_source medicaid_state_code].each do |attribute|
+        errors.add(attribute, "is only recorded for medicaid") if self[attribute].present?
+      end
+    end
+
+    def application_date_paired_with_source
+      return if application_date.nil? == application_date_source.nil?
+
+      if application_date.nil?
+        errors.add(:application_date, "must be set when application_date_source is set")
+      else
+        errors.add(:application_date_source, "must be set when application_date is set")
+      end
+    end
+
+    def application_date_not_in_future
+      return if application_date.nil? || application_date <= Date.current
+
+      errors.add(:application_date, "cannot be in the future")
     end
   end
 end

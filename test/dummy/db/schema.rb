@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_10_21_000003) do
+ActiveRecord::Schema[8.1].define(version: 2026_10_22_000002) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
@@ -31,13 +31,20 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_21_000003) do
     t.string "eligibility_group_source"
     t.datetime "eligibility_group_set_at"
     t.date "renewal_date"
+    t.date "application_date"
+    t.string "application_date_source"
+    t.string "medicaid_state_code"
     t.index ["prc_referral_id", "resource_type"], name: "idx_corvid_arc_referral_type", unique: true
     t.index ["prc_referral_id"], name: "index_corvid_alternate_resource_checks_on_prc_referral_id"
+    t.check_constraint "application_date IS NULL AND application_date_source IS NULL AND medicaid_state_code IS NULL OR resource_type::text = 'medicaid'::text", name: "corvid_arc_application_date_medicaid_only_check"
+    t.check_constraint "application_date IS NULL AND application_date_source IS NULL OR application_date IS NOT NULL AND application_date_source IS NOT NULL", name: "corvid_arc_application_date_pair_check"
+    t.check_constraint "application_date_source IS NULL OR (application_date_source::text = ANY (ARRAY['eligibility_response'::character varying, 'state_case_data'::character varying, 'registration'::character varying, 'staff_entry'::character varying, 'inferred'::character varying]::text[]))", name: "corvid_arc_application_date_source_check"
     t.check_constraint "eligibility_group IS NULL AND eligibility_group_set_at IS NULL OR eligibility_group IS NOT NULL AND eligibility_group_set_at IS NOT NULL", name: "corvid_arc_eligibility_group_set_at_check"
     t.check_constraint "eligibility_group IS NULL AND eligibility_group_source IS NULL OR eligibility_group IS NOT NULL AND eligibility_group_source IS NOT NULL", name: "corvid_arc_eligibility_group_pair_check"
     t.check_constraint "eligibility_group IS NULL OR (eligibility_group::text = ANY (ARRAY['expansion_adult'::character varying, 'waiver_adult'::character varying, 'other'::character varying, 'unknown'::character varying]::text[]))", name: "corvid_arc_eligibility_group_check"
     t.check_constraint "eligibility_group IS NULL OR resource_type::text = 'medicaid'::text", name: "corvid_arc_eligibility_group_medicaid_only_check"
     t.check_constraint "eligibility_group_source IS NULL OR (eligibility_group_source::text = ANY (ARRAY['eligibility_response'::character varying, 'state_case_data'::character varying, 'registration'::character varying, 'staff_entry'::character varying, 'inferred'::character varying]::text[]))", name: "corvid_arc_eligibility_group_source_check"
+    t.check_constraint "medicaid_state_code IS NULL OR medicaid_state_code::text ~ '^[A-Z]{2}$'::text", name: "corvid_arc_medicaid_state_code_check"
     t.check_constraint "resource_type::text = ANY (ARRAY['medicare_a'::character varying, 'medicare_b'::character varying, 'medicare_d'::character varying, 'medicaid'::character varying, 'va_benefits'::character varying, 'private_insurance'::character varying, 'workers_comp'::character varying, 'auto_insurance'::character varying, 'liability_coverage'::character varying, 'state_program'::character varying, 'tribal_program'::character varying, 'charity_care'::character varying]::text[])", name: "corvid_arc_resource_type_check"
     t.check_constraint "status::text = ANY (ARRAY['not_checked'::character varying, 'checking'::character varying, 'enrolled'::character varying, 'not_enrolled'::character varying, 'denied'::character varying, 'exhausted'::character varying, 'pending_enrollment'::character varying, 'coordinated'::character varying]::text[])", name: "corvid_arc_status_check"
   end
@@ -225,11 +232,15 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_21_000003) do
     t.string "denial_reason_codes", default: [], null: false, array: true
     t.datetime "rejected_at"
     t.datetime "denied_at"
+    t.string "medicaid_hold_override_reason_token"
+    t.string "medicaid_hold_override_by_identifier"
+    t.datetime "medicaid_hold_overridden_at"
     t.index ["claim_identifier"], name: "index_corvid_claim_submissions_on_claim_identifier", unique: true
     t.index ["prc_referral_id"], name: "index_corvid_claim_submissions_on_prc_referral_id"
     t.index ["tenant_identifier", "patient_identifier"], name: "idx_on_tenant_identifier_patient_identifier_0a950bd516"
     t.index ["tenant_identifier", "status"], name: "index_corvid_claim_submissions_on_tenant_identifier_and_status"
     t.check_constraint "claim_type::text = ANY (ARRAY['professional'::character varying, 'institutional'::character varying, 'dental'::character varying]::text[])", name: "corvid_claim_submissions_type_check"
+    t.check_constraint "medicaid_hold_override_reason_token IS NULL AND medicaid_hold_override_by_identifier IS NULL AND medicaid_hold_overridden_at IS NULL OR medicaid_hold_override_reason_token IS NOT NULL AND medicaid_hold_override_by_identifier IS NOT NULL AND medicaid_hold_overridden_at IS NOT NULL", name: "corvid_claim_submissions_medicaid_hold_override_check"
     t.check_constraint "status::text = ANY (ARRAY['draft'::character varying, 'submitted'::character varying, 'accepted'::character varying, 'rejected'::character varying, 'paid'::character varying, 'denied'::character varying, 'appealed'::character varying, 'error'::character varying]::text[])", name: "corvid_claim_submissions_status_check"
   end
 
