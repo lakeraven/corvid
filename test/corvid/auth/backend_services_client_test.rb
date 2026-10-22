@@ -606,7 +606,7 @@ class Corvid::Auth::BackendServicesClientTest < Minitest::Test
   # without an expiry nor an expiry without a token.
   def assert_cache_untouched(client)
     assert_nil client.instance_variable_get(:@cached_token), "cache must hold no token"
-    assert_nil client.instance_variable_get(:@expires_at), "cache must hold no expiry"
+    assert_nil client.instance_variable_get(:@refresh_at), "cache must hold no refresh deadline"
   end
 
   # Build a real client (no stubbed POST) for constructor-validation tests.

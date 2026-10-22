@@ -158,17 +158,22 @@ module Corvid
 
         @mutex = Mutex.new
         @cached_token = nil
-        @expires_at = nil
+        @refresh_at = nil
       end
 
       # Return a valid bearer token, fetching a new one via the grant if the
-      # cache is empty or within +refresh_skew+ of expiry. The fetch runs
-      # under a mutex, so concurrent callers coalesce onto a single grant
-      # (no token-endpoint stampede) and never observe a torn token/expiry.
+      # cache is empty or within +refresh_skew+ of expiry (see #effective_skew
+      # for tokens shorter than that). The fetch runs under a mutex, so
+      # concurrent callers coalesce onto a single grant (no token-endpoint
+      # stampede) and never observe a torn token/expiry.
       def access_token
         @mutex.synchronize do
           return @cached_token if token_fresh?
 
+          # expires_in counts from when the server issued the token, which is
+          # no earlier than when we asked. Anchoring on the response arrival
+          # would let a slow grant keep a token cached past its real expiry.
+          started = now.to_i
           grant = request_grant
           token = extract_access_token(grant)
           validate_token_type!(grant)
@@ -177,7 +182,7 @@ module Corvid
           # Assign only after every check passes, so a malformed response
           # can never leave a half-updated cache.
           @cached_token = token
-          @expires_at = now.to_i + ttl
+          @refresh_at = started + ttl - effective_skew(ttl)
           token
         end
       end
@@ -200,7 +205,14 @@ module Corvid
 
       def token_fresh?
         return false if @cached_token.nil?
-        now.to_i < (@expires_at - @refresh_skew)
+        now.to_i < @refresh_at
+      end
+
+      # A lifetime at or below refresh_skew would be stale the moment it
+      # arrived, sending every FHIR request back to the token endpoint. Such
+      # a token refreshes halfway through its lifetime instead.
+      def effective_skew(ttl)
+        [ @refresh_skew, ttl / 2.0 ].min
       end
 
       # --- construction-time validation -------------------------------------
