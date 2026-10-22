@@ -52,6 +52,45 @@ class Corvid::Adapters::FhirDemoAdapterTest < Minitest::Test
     assert_equal "C-DEMO-001", results.first.code
   end
 
+  def test_get_coverages_returns_mapped_active_coverage_from_in_memory_store
+    coverage = synthetic_demo_coverage(for_patient: "pt_demo_cov")
+    adapter = Corvid::Adapters::FhirDemoAdapter.new(resources: [ coverage ])
+
+    result = adapter.get_coverages("pt_demo_cov")
+
+    refute_nil result
+    assert_equal 1, result.size
+    assert_equal({
+      payer_name: "TEST DEMO PAYER COV",
+      plan_name: "TEST DEMO PLAN COV",
+      coverage_type: "MCDSC",
+      policy_number: "POL_DEMO_COV",
+      coverage_start: Date.new(2020, 1, 1),
+      coverage_end: Date.new(2030, 12, 31),
+      status: "active"
+    }, result.first)
+  end
+
+  def test_get_coverages_returns_empty_array_when_patient_has_no_coverage_in_memory_store
+    adapter = Corvid::Adapters::FhirDemoAdapter.new(
+      resources: [ synthetic_condition ]
+    )
+
+    result = adapter.get_coverages("pt_demo_no_cov")
+
+    assert_equal [], result
+  end
+
+  def test_get_coverages_does_not_raise_for_patient_with_or_without_coverage
+    with_cov = Corvid::Adapters::FhirDemoAdapter.new(
+      resources: [ synthetic_demo_coverage(for_patient: "pt_demo_cov") ]
+    )
+    without_cov = Corvid::Adapters::FhirDemoAdapter.new(resources: [])
+
+    with_cov.get_coverages("pt_demo_cov")
+    without_cov.get_coverages("pt_demo_cov")
+  end
+
   private
 
   def synthetic_condition
@@ -85,6 +124,30 @@ class Corvid::Adapters::FhirDemoAdapterTest < Minitest::Test
           "display" => "TEST DEMO MEDICATION 001"
         } ]
       }
+    }
+  end
+
+  def synthetic_demo_coverage(for_patient:)
+    {
+      "resourceType" => "Coverage",
+      "id" => "cov_demo_cov",
+      "status" => "active",
+      "beneficiary" => { "reference" => "Patient/#{for_patient}" },
+      "subscriberId" => "POL_DEMO_COV",
+      "payor" => [
+        {
+          "reference" => "Organization/cov_demo_cov",
+          "display" => "TEST DEMO PAYER COV"
+        }
+      ],
+      "type" => { "coding" => [ { "code" => "MCDSC" } ] },
+      "period" => { "start" => "2020-01-01", "end" => "2030-12-31" },
+      "class" => [
+        {
+          "type" => { "coding" => [ { "code" => "plan" } ] },
+          "name" => "TEST DEMO PLAN COV"
+        }
+      ]
     }
   end
 

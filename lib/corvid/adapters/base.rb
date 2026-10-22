@@ -172,6 +172,11 @@ module Corvid
         nil
       end
 
+      # Active coverages for a patient. Returns an Array of Hashes with
+      # symbol keys :payer_name, :plan_name, :coverage_type, :policy_number,
+      # :coverage_start, :coverage_end, and :status. An empty array means
+      # none found. nil means unknown; callers fail closed and must not
+      # treat nil as "no coverage".
       def get_coverages(patient_identifier)
         []
       end
