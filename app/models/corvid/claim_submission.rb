@@ -90,7 +90,8 @@ module Corvid
     # Share of claims sent to the clearinghouse that were rejected before
     # adjudication at least once.
     def self.rejection_rate
-      percentage(where.not(rejected_at: nil), of: where.not(submitted_at: nil))
+      sent = where.not(submitted_at: nil)
+      percentage(sent.where.not(rejected_at: nil), of: sent)
     end
 
     # Share of claims the payer adjudicated (paid, or denied at least once)

@@ -27,7 +27,10 @@ module Corvid
 
       Array(remittances).each do |remittance|
         Array(remittance[:line_items]).each do |item|
-          claim = ClaimSubmission.find_by(claim_identifier: item[:claim_identifier])
+          # A line with no claim identifier names no claim. Looking it up
+          # anyway would match an unsubmitted claim whose identifier is NULL.
+          claim_identifier = item[:claim_identifier].to_s.strip.presence
+          claim = claim_identifier && ClaimSubmission.find_by(claim_identifier: claim_identifier)
           unless claim
             result.unmatched += 1
             next
