@@ -86,22 +86,42 @@ module Corvid
     # same national operating standardized amount used for the
     # NATIONAL row and every locality row — the wage index is what
     # varies by area; the base rate itself does not.
+    #
+    # Money stays exact (ADR 0004): `base_rate` is parsed as a
+    # BigDecimal from its string form and written as fixed-point
+    # dollars; a sub-cent or non-positive base rate raises instead of
+    # being rounded or written. Wage indexes are written exactly as
+    # CMS published them.
     def self.render(rows, base_rate:, release_label:)
+      dollars = fixed_point_dollars(base_rate)
       body = CSV.generate do |csv|
         csv << %w[locality base_rate wage_index]
-        csv << [ "NATIONAL", format("%.2f", base_rate), "1.0000" ]
+        csv << [ "NATIONAL", dollars, "1.0000" ]
         rows.each do |r|
-          csv << [ r[:locality], format("%.2f", base_rate), format("%.4f", r[:wage_index]) ]
+          csv << [ r[:locality], dollars, BigDecimal(r[:wage_index].to_s).to_s("F") ]
         end
       end
       "# release_label: #{release_label}\n" + body
     end
 
+    def self.fixed_point_dollars(raw)
+      amount = BigDecimal(raw.to_s.strip)
+      raise ArgumentError, "base_rate must be positive, got #{raw.inspect}" unless amount.finite? && amount.positive?
+      raise ArgumentError, "base_rate has sub-cent precision, got #{raw.inspect}" unless amount.round(2) == amount
+
+      whole, cents = amount.to_s("F").split(".")
+      "#{whole}.#{cents.to_s.ljust(2, "0")}"
+    end
+    private_class_method :fixed_point_dollars
+
     def self.parse_wage_index(raw, locality:, line:)
-      Float(raw.delete(","))
+      value = BigDecimal(raw.delete(","))
+      raise ArgumentError unless value.finite? && value.positive?
+
+      value
     rescue ArgumentError, TypeError
       raise MalformedFileError,
-            "could not parse wage index=#{raw.inspect} as numeric " \
+            "could not parse wage index=#{raw.inspect} as a positive number " \
             "for locality #{locality} at source line #{line}"
     end
     private_class_method :parse_wage_index

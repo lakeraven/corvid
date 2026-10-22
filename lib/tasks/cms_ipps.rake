@@ -87,9 +87,11 @@ namespace :cms do
       end
       abort "Input not found: #{args[:input]}" unless File.exist?(args[:input])
 
-      label = args[:label] || "cms_fy#{args[:year]}_final_rule"
+      label = args[:label].presence || "cms_fy#{args[:year]}_final_rule"
       rows = Corvid::CmsIppsWageIndexNormalizer.normalize(args[:input])
-      csv = Corvid::CmsIppsWageIndexNormalizer.render(rows, base_rate: args[:base_rate].to_f, release_label: label)
+      # The base rate goes through as typed: the normalizer parses it
+      # as an exact BigDecimal (ADR 0004), never via Float.
+      csv = Corvid::CmsIppsWageIndexNormalizer.render(rows, base_rate: args[:base_rate], release_label: label)
       File.write(args[:output], csv)
       puts "Wrote #{rows.size + 1} hospital rate rows (#{rows.size} CBSA/rural + 1 NATIONAL) to #{args[:output]} (label=#{label})"
     end
