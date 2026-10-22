@@ -15,8 +15,8 @@ class Corvid::Rcm::ScrubberTest < Minitest::Test
     @scrubber = Corvid::Rcm::Scrubber.new
   end
 
-  def scrub(claim, as_of: TODAY, history: nil)
-    @scrubber.scrub(claim, as_of: as_of, history: history)
+  def scrub(claim, as_of: TODAY, history: nil, **options)
+    @scrubber.scrub(claim, as_of: as_of, history: history, **options)
   end
 
   def findings_for(result, rule_id)
@@ -419,8 +419,27 @@ class Corvid::Rcm::ScrubberTest < Minitest::Test
     assert_match(/already submitted for this patient on CLM-1900/, result.findings.first.message)
   end
 
-  def test_the_same_claim_resubmitted_is_not_its_own_duplicate
+  # A front-door rejection was never adjudicated, so resubmitting the fixed
+  # claim cannot earn a CO-18 and must not be blocked as its own duplicate.
+  def test_a_claim_resubmitted_after_a_front_door_rejection_is_not_its_own_duplicate
+    history = Factory.history(Factory.prior_service(claim_identifier: "CLM-2001", rejected: true))
+
+    assert scrub(Factory.claim, history: history).clean?
+  end
+
+  # Regression: history matching the claim's own identifier used to be
+  # excluded wholesale, so re-sending an already-accepted claim under the same
+  # identifier passed the duplicate check and came back CO-18.
+  def test_resending_an_already_submitted_claim_under_the_same_identifier_blocks
     history = Factory.history(Factory.prior_service(claim_identifier: "CLM-2001"))
+    result = scrub(Factory.claim, history: history)
+
+    assert_only_rule(:duplicate_service_already_submitted, result)
+    refute result.submittable?
+  end
+
+  def test_a_rejected_prior_on_another_claim_is_not_a_duplicate_either
+    history = Factory.history(Factory.prior_service(claim_identifier: "CLM-1900", rejected: true))
 
     assert scrub(Factory.claim, history: history).clean?
   end
@@ -553,5 +572,126 @@ class Corvid::Rcm::ScrubberTest < Minitest::Test
     Corvid::Rcm::ScrubRuleset.default.rules.each do |rule|
       refute_nil rule.remedy, "rule #{rule.id} has no remedy — a finding without a next action is noise"
     end
+  end
+
+  # -- review regressions: identifiers have to be well-formed as written ------
+
+  def test_an_npi_with_non_digit_characters_blocks_even_when_its_digits_would_validate
+    result = scrub(Factory.claim(rendering_provider_npi: "abc#{Factory::RENDERING_NPI}"))
+
+    assert_only_rule(:rendering_provider_npi_present, result)
+  end
+
+  def test_a_tax_id_with_non_digit_characters_blocks
+    result = scrub(Factory.claim(billing_provider_tax_id: "abc990000001"))
+
+    assert_only_rule(:billing_provider_tax_id_present, result)
+  end
+
+  def test_a_hyphenated_ein_is_a_valid_tax_id
+    assert scrub(Factory.claim(billing_provider_tax_id: "99-0000001")).clean?
+  end
+
+  # -- review regressions: a claim has to carry what the 837P needs ------------
+
+  def test_a_claim_with_no_service_lines_blocks
+    result = scrub(Factory.claim(items: []))
+
+    assert_only_rule(:service_lines_present, result)
+    refute result.submittable?
+  end
+
+  def test_a_service_line_with_no_date_of_service_blocks
+    result = scrub(Factory.claim_with_line(serviced_date: nil))
+
+    assert_includes result.blocked_by, :service_line_complete
+    assert_match(/date of service/, findings_for(result, :service_line_complete).first.message)
+  end
+
+  def test_a_service_line_with_no_procedure_code_blocks
+    result = scrub(Factory.claim_with_line(procedure_code: nil))
+
+    assert_includes result.blocked_by, :service_line_complete
+  end
+
+  def test_a_service_line_with_no_billed_amount_blocks
+    result = scrub(Factory.claim_with_line(billed_amount: nil))
+
+    assert_only_rule(:service_line_complete, result)
+    assert_match(/billed amount/, result.findings.first.message)
+  end
+
+  def test_a_service_line_with_a_zero_or_negative_billed_amount_blocks
+    assert_only_rule(:service_line_complete, scrub(Factory.claim_with_line(billed_amount: 0)))
+    assert_only_rule(:service_line_complete, scrub(Factory.claim_with_line(billed_amount: BigDecimal("-5"))))
+  end
+
+  def test_a_service_line_whose_source_amount_was_unparseable_blocks
+    result = scrub(Factory.claim_with_line(billed_amount: nil, amount_error: "unparseable billed amount"))
+
+    assert_only_rule(:service_line_complete, result)
+    assert_match(/unparseable/, result.findings.first.message)
+  end
+
+  def test_a_service_line_with_fractional_cents_blocks
+    assert_only_rule(:service_line_complete, scrub(Factory.claim_with_line(billed_amount: BigDecimal("200.005"))))
+  end
+
+  def test_missing_patient_demographics_block
+    { patient_family_name: "family name", patient_given_name: "given name",
+      patient_birth_date: "date of birth", patient_gender: "gender" }.each do |field, label|
+      result = scrub(Factory.claim(field => nil))
+
+      assert_only_rule(:patient_demographics_present, result)
+      assert_match(/#{label}/, result.findings.first.message)
+    end
+  end
+
+  # Absence never verifies: a self-coverage record with no subscriber birth
+  # date cannot confirm that the claim's birth date matches the payer's.
+  def test_a_subscriber_field_missing_from_self_coverage_cannot_be_matched_and_blocks
+    result = scrub(Factory.claim(coverage: Factory.coverage(subscriber_birth_date: nil)))
+
+    assert_only_rule(:patient_demographics_match_subscriber, result)
+    assert_match(/date of birth/, result.findings.first.message)
+  end
+
+  # Findings are rendered and may be logged; per ADR 0003 they name the field
+  # that disagrees, never the patient's name or birth date.
+  def test_a_demographic_mismatch_names_the_field_but_not_the_values
+    result = scrub(Factory.claim(patient_family_name: "EXAMPLEOTHER", patient_birth_date: Date.new(1988, 4, 3)))
+    text = result.findings.map(&:to_s).join(" ")
+
+    assert_only_rule(:patient_demographics_match_subscriber, result)
+    assert_match(/family name/, text)
+    refute_match(/EXAMPLEOTHER|EXAMPLEPATIENT|1988/, text)
+  end
+
+  # -- review regression: rule selection and the filing clock are different dates
+
+  def test_rules_can_be_chosen_by_date_of_service_while_filing_is_judged_on_the_scrub_date
+    coverage = Factory.coverage(timely_filing_days: 90)
+    result = scrub(Factory.claim(coverage: coverage), as_of: Date.new(2027, 1, 15),
+                   rules_as_of: Factory::SERVICE_DATE)
+
+    assert_only_rule(:timely_filing_window_expired, result)
+    assert_equal Factory::SERVICE_DATE, result.rules_as_of
+    assert_equal Date.new(2027, 1, 15), result.evaluated_as_of
+  end
+
+  def test_rules_as_of_selects_the_rules_in_force_on_that_date
+    ruleset = Corvid::Rcm::ScrubRuleset.from_hash(
+      "ruleset_version" => "test-2",
+      "rules" => [
+        { "id" => "future", "category" => "structural_completeness", "severity" => "block",
+          "check" => "npi_valid", "params" => { "field" => "rendering_provider_npi" },
+          "message" => "future rule", "effective_start" => "2027-01-01" }
+      ]
+    )
+    scrubber = Corvid::Rcm::Scrubber.new(ruleset: ruleset)
+    claim = Factory.claim(rendering_provider_npi: nil)
+
+    assert_empty scrubber.scrub(claim, as_of: Date.new(2027, 6, 1), rules_as_of: Factory::SERVICE_DATE).findings
+    assert_equal [ :future ], scrubber.scrub(claim, as_of: Date.new(2027, 6, 1)).findings.map(&:rule_id)
   end
 end

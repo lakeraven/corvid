@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "minitest/autorun"
+require "corvid"
 require "corvid/rcm"
 require_relative "claim_factory"
 
@@ -116,9 +117,19 @@ class Corvid::Rcm::FixtureClearinghouseClientTest < Minitest::Test
     end
   end
 
-  def test_remittances_can_be_filtered_by_payment_date
-    assert_empty @client.fetch_remittances(since: Date.new(2026, 10, 1))
-    refute_empty @client.fetch_remittances(since: Date.new(2026, 9, 1))
+  # Same keyword as `Corvid::Adapters::Base#fetch_remittances`, so a caller
+  # written against the adapter contract is not refused with ArgumentError.
+  def test_remittances_can_be_filtered_by_a_payment_date_range
+    assert_empty @client.fetch_remittances(date_range: Date.new(2026, 10, 1)..Date.new(2026, 10, 31))
+    refute_empty @client.fetch_remittances(date_range: Date.new(2026, 9, 1)..Date.new(2026, 9, 30))
+    refute_empty @client.fetch_remittances(date_range: Date.new(2026, 9, 1)..)
+  end
+
+  def test_the_seam_takes_the_same_keyword_as_the_adapter_contract
+    seam = Corvid::Rcm::ClearinghouseClient.instance_method(:fetch_remittances).parameters
+    adapter = Corvid::Adapters::Base.instance_method(:fetch_remittances).parameters
+
+    assert_equal adapter, seam
   end
 
   def test_a_single_scenario_can_be_fetched_by_name

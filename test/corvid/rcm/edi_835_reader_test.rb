@@ -118,7 +118,7 @@ class Corvid::Rcm::Edi835ReaderTest < Minitest::Test
   def test_a_file_that_balances_across_several_claim_loops_parses
     source = File.read(File.join(FIXTURES, "clean_full_pay.835"))
                  .sub("BPR*I*200.00*", "BPR*I*350.00*")
-                 .sub("SE*13*0001~", "CLP*CLM-1099*1*150.00*150.00*0*12*PAYER-CTL-1099*11~SE*15*0001~")
+                 .sub("SE*12*0001~", "CLP*CLM-1099*1*150.00*150.00*0*12*PAYER-CTL-1099*11~SE*13*0001~")
     remittance = Corvid::Rcm::Edi835Reader.new(source).parse
 
     assert_equal 2, remittance.claims.length
@@ -161,5 +161,77 @@ class Corvid::Rcm::Edi835ReaderTest < Minitest::Test
     end
 
     assert_match(/BPR02/, error.message)
+  end
+
+  # -- the X12 envelope ------------------------------------------------------
+  #
+  # The fixtures are only evidence about real 835 syntax if their envelopes are
+  # real: ISA is fixed-width (106 characters, 15-character sender/receiver
+  # ids), GS02/GS03 are at most 15 characters, and SE01 counts the segments
+  # from ST through SE inclusive.
+
+  def fixture_lines(scenario)
+    File.read(File.join(FIXTURES, "#{scenario}.835")).split("~").map(&:strip).reject(&:empty?)
+  end
+
+  def test_every_fixture_has_a_fixed_width_isa_envelope
+    Corvid::Rcm::FixtureClearinghouseClient::SCENARIOS.each do |scenario|
+      isa = fixture_lines(scenario).first
+      elements = isa.split("*", -1)
+
+      assert_equal 106, isa.length + 1, "#{scenario}: ISA must be 106 characters including its terminator"
+      assert_equal 15, elements[6].length, "#{scenario}: ISA06 sender id must be 15 characters"
+      assert_equal 15, elements[8].length, "#{scenario}: ISA08 receiver id must be 15 characters"
+    end
+  end
+
+  def test_every_fixture_keeps_gs_application_codes_within_15_characters
+    Corvid::Rcm::FixtureClearinghouseClient::SCENARIOS.each do |scenario|
+      gs = fixture_lines(scenario).find { |segment| segment.start_with?("GS*") }.split("*", -1)
+
+      assert_operator gs[2].length, :<=, 15, "#{scenario}: GS02 is longer than 15 characters"
+      assert_operator gs[3].length, :<=, 15, "#{scenario}: GS03 is longer than 15 characters"
+    end
+  end
+
+  def test_every_fixture_declares_the_segment_count_it_actually_has
+    Corvid::Rcm::FixtureClearinghouseClient::SCENARIOS.each do |scenario|
+      lines = fixture_lines(scenario)
+      st = lines.index { |segment| segment.start_with?("ST*") }
+      se = lines.index { |segment| segment.start_with?("SE*") }
+
+      assert_equal se - st + 1, lines[se].split("*")[1].to_i, "#{scenario}: SE01 does not match its ST..SE count"
+    end
+  end
+
+  def test_a_transaction_whose_se_count_disagrees_with_its_segments_raises
+    source = File.read(File.join(FIXTURES, "clean_full_pay.835")).sub("SE*12*0001~", "SE*20*0001~")
+    error = assert_raises(Corvid::Rcm::Edi835Reader::ParseError) do
+      Corvid::Rcm::Edi835Reader.new(source).parse
+    end
+
+    assert_match(/SE01/, error.message)
+  end
+
+  # A file cut off after its last claim loop still balances, so the SE trailer
+  # is the only thing that can tell it was truncated.
+  def test_a_transaction_with_no_se_trailer_raises
+    source = File.read(File.join(FIXTURES, "clean_full_pay.835")).sub(/SE\*12\*0001~.*\z/m, "")
+    error = assert_raises(Corvid::Rcm::Edi835Reader::ParseError) do
+      Corvid::Rcm::Edi835Reader.new(source).parse
+    end
+
+    assert_match(/SE/, error.message)
+  end
+
+  # -- a CAS segment has to carry an adjustment --------------------------------
+
+  def test_a_cas_segment_with_no_adjustment_at_all_raises
+    source = File.read(File.join(FIXTURES, "denial_bundled_co97.835")).sub("CAS*CO*97*45.00~", "CAS*CO~")
+    error = assert_raises(Corvid::Rcm::Edi835Reader::ParseError) do
+      Corvid::Rcm::Edi835Reader.new(source).parse
+    end
+
+    assert_match(/CAS/, error.message)
   end
 end

@@ -263,4 +263,74 @@ class Corvid::Rcm::RemittanceClassifierTest < Minitest::Test
       end
     end
   end
+
+  # -- a claim has to explain where its money went ----------------------------
+  #
+  # CLP03 billed = CLP04 paid + every CAS adjustment. When the adjustments do
+  # not account for the difference, nobody knows what happened to it, and a
+  # machine must not close the claim on the strength of an empty CAS list.
+
+  def unexplained_claim(paid:)
+    Corvid::Rcm::RemittanceClaim.new(
+      claim_identifier: "CLM-UNEXPLAINED",
+      status_code: Corvid::Rcm::CLAIM_STATUS_PROCESSED_PRIMARY,
+      billed_amount: BigDecimal("200.00"),
+      paid_amount: BigDecimal(paid)
+    )
+  end
+
+  def test_a_zero_payment_with_no_adjustments_is_not_paid_in_full
+    claim = unexplained_claim(paid: "0.00")
+    routing = @classifier.classify(claim)
+
+    refute claim.paid_in_full?
+    assert_equal :needs_human_review, routing.outcome
+    assert_equal :human_review, routing.work_queue
+    refute routing.auto_postable?
+    refute routing.auto_closeable?
+  end
+
+  def test_a_partial_payment_with_no_adjustments_is_not_closed
+    routing = @classifier.classify(unexplained_claim(paid: "150.00"))
+
+    assert_equal :needs_human_review, routing.outcome
+    refute routing.auto_closeable?
+  end
+
+  def test_adjustments_that_do_not_account_for_the_balance_go_to_a_human
+    claim = Corvid::Rcm::RemittanceClaim.new(
+      claim_identifier: "CLM-SHORT",
+      status_code: Corvid::Rcm::CLAIM_STATUS_PROCESSED_PRIMARY,
+      billed_amount: BigDecimal("200.00"),
+      paid_amount: BigDecimal("150.00"),
+      adjustments: [ Corvid::Rcm::Adjustment.new(group_code: "CO", reason_code: "45", amount: BigDecimal("40.00")) ]
+    )
+    routing = @classifier.classify(claim)
+
+    assert_equal :needs_human_review, routing.outcome
+    refute routing.auto_closeable?
+  end
+
+  def test_a_claim_paid_exactly_as_billed_still_closes_itself
+    claim = unexplained_claim(paid: "200.00")
+
+    assert claim.paid_in_full?
+    assert @classifier.classify(claim).auto_closeable?
+  end
+
+  # A $0 payment with the whole charge written off as contractual is not
+  # something a machine closes: it is routed to a person, conservatively.
+  def test_a_zero_payment_written_off_entirely_as_contractual_is_not_auto_closed
+    claim = Corvid::Rcm::RemittanceClaim.new(
+      claim_identifier: "CLM-ZERO-CO45",
+      status_code: Corvid::Rcm::CLAIM_STATUS_PROCESSED_PRIMARY,
+      billed_amount: BigDecimal("200.00"),
+      paid_amount: BigDecimal("0.00"),
+      adjustments: [ Corvid::Rcm::Adjustment.new(group_code: "CO", reason_code: "45", amount: BigDecimal("200.00")) ]
+    )
+    routing = @classifier.classify(claim)
+
+    refute routing.auto_closeable?
+    assert_equal :human_review, routing.work_queue
+  end
 end

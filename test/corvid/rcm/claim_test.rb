@@ -32,6 +32,7 @@ class Corvid::Rcm::ClaimTest < Minitest::Test
                                    Factory.line(sequence: 2, billed_amount: 45.00) ])
 
     assert_in_delta 245.00, claim.total_billed, 0.001
+    assert_kind_of BigDecimal, claim.total_billed
     assert_equal Factory::SERVICE_DATE, claim.earliest_service_date
   end
 
@@ -78,6 +79,32 @@ class Corvid::Rcm::ClaimTest < Minitest::Test
     assert_equal BigDecimal("200.00"), line.billed_amount
     assert_equal Factory::SERVICE_DATE, line.serviced_date
     assert_equal :in_person, line.encounter_modality
+  end
+
+  # ADR 0004: money is exact. Ten-cent lines summed as floats do not make 0.30.
+  def test_a_claim_total_is_exact_rather_than_floating_point
+    claim = Factory.claim(items: [ Factory.line(billed_amount: BigDecimal("0.10")),
+                                   Factory.line(sequence: 2, billed_amount: BigDecimal("0.20")) ])
+
+    assert_equal BigDecimal("0.30"), claim.total_billed
+  end
+
+  # Regression: the bridge dropped `amount_error`, so a present-but-unparseable
+  # FHIR amount became indistinguishable from an absent one.
+  def test_the_bridge_keeps_an_unparseable_amount_visible
+    reference = Corvid::ClaimLineReference.new(
+      claim_identifier: "fhir-claim-3", patient_identifier: "pt_0001",
+      provider_identifier: Factory::RENDERING_NPI, procedure_code: "90837",
+      procedure_display: nil, serviced_date: Factory::SERVICE_DATE,
+      billed_amount: nil, currency: "USD", sequence: 1, amount_error: "unparseable billed amount"
+    )
+    line = Corvid::Rcm::ClaimLine.from_claim_line_reference(
+      reference, place_of_service: "11", encounter_modality: :in_person, documented_minutes: 55
+    )
+    result = Corvid::Rcm::Scrubber.new.scrub(Factory.claim(items: [ line ]), as_of: Factory::TODAY)
+
+    assert_equal "unparseable billed amount", line.amount_error
+    assert_equal [ :service_line_complete ], result.blocked_by
   end
 
   def test_a_line_bridged_without_encounter_facts_blocks_at_scrub_time
