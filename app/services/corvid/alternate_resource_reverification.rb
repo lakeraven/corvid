@@ -16,8 +16,16 @@ module Corvid
       end
 
       def record!(target, activity:, checks:)
+        hook = Corvid.configuration.on_provenance
+        return unless hook
+
         payload = provenance_payload(target, activity, checks)
-        Corvid.configuration.on_provenance&.call(**payload)
+        # A hook that runs SQL shares the caller's transaction. Keep it in
+        # its own savepoint so a database error cannot abort that transaction
+        # or undo a decision that already committed.
+        target.class.transaction(requires_new: true) do
+          hook.call(**payload)
+        end
       rescue StandardError => e
         Rails.logger.error("Provenance hook failed: #{Corvid.sanitize_phi(e.message)}")
       end
@@ -36,8 +44,14 @@ module Corvid
         !check.current_for?(date_of_service, as_of: as_of)
       end
 
+      # One savepoint per check. A host adapter that raises a database
+      # error must not leave the caller's transaction aborted; this check
+      # stays unconfirmed and the transition is refused.
       def confirm_check(check, date_of_service, as_of, adapter:)
-        return false unless check.verify!(adapter: adapter)
+        verified = check.class.transaction(requires_new: true) do
+          check.verify!(adapter: adapter)
+        end
+        return false unless verified
 
         check.reload
         check.current_for?(date_of_service, as_of: as_of_after_verify(check, as_of))

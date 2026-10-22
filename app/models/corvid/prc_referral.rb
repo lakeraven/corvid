@@ -98,23 +98,27 @@ module Corvid
                     guard: :alternate_resources_exhausted?
       end
 
+      # Provenance and the EHR sync wait until the outermost transaction
+      # commits. A host hook that fails must not undo the decision, and a
+      # transition that rolls back must not be told to the EHR.
       event :complete_priority_assignment, before: :reverify_before_complete_priority_assignment,
-            after: :record_authorization_provenance do
+            after_commit: :record_authorization_provenance do
         transitions from: :priority_assignment, to: :committee_review, guard: :requires_committee?
         transitions from: :priority_assignment, to: :authorized, guard: :alternate_resources_exhausted?
       end
 
       event :authorize, before: :reverify_before_authorize,
-            after: [ :sync_status_to_ehr, :record_authorization_provenance ] do
+            after_commit: [ :sync_status_to_ehr, :record_authorization_provenance ] do
         transitions from: [ :priority_assignment, :committee_review ], to: :authorized,
                     guard: :alternate_resources_exhausted?
       end
 
-      event :mark_denied, after: :sync_status_to_ehr do
+      event :mark_denied, after_commit: :sync_status_to_ehr do
         transitions from: [ :eligibility_review, :exception_review, :priority_assignment, :committee_review ], to: :denied
       end
 
-      event :mark_deferred, after: [ :sync_status_to_ehr, :record_deferred_determination ] do
+      event :mark_deferred, after: :record_deferred_determination,
+            after_commit: :sync_status_to_ehr do
         transitions from: [ :priority_assignment, :committee_review ], to: :deferred
       end
 
@@ -392,6 +396,14 @@ module Corvid
     end
 
     private
+
+    # AASM's after_commit runs the block immediately unless
+    # after_commit_everywhere is loaded. Hand the callback to Active
+    # Record so it waits for the outermost joinable transaction and is
+    # skipped when that transaction rolls back.
+    def aasm_execute_after_commit(&block)
+      ActiveRecord.after_all_transactions_commit(&block)
+    end
 
     def blocker_for(resource_type, check)
       return "#{resource_type}: not checked" if check.nil?

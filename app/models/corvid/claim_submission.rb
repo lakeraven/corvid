@@ -19,12 +19,15 @@ module Corvid
 
     STATUSES = %w[draft submitted accepted rejected paid denied appealed error].freeze
     CLAIM_TYPES = %w[professional institutional dental].freeze
-    # Draft and error have not been sent. A plain save cannot move a
-    # PRC-linked claim from those into a sent status, and cannot set
-    # status to "submitted" from any status. submit! and mark_submitted!
-    # are the only paths that do, and they re-run the gates. Later moves
-    # among sent statuses do not depend on submitted_at. A row created
-    # already sent is a historical import and is left unstamped.
+    # Draft has not been sent. Error has not been sent unless the row
+    # already stores a claim_identifier or submitted_at: the adapter
+    # identified the claim, or a submission time was stamped. A plain
+    # save cannot move a PRC-linked claim from an unsent status into a
+    # sent status, and cannot set status to "submitted" from any status.
+    # submit! and mark_submitted! are the only paths that do, and they
+    # re-run the gates. Later moves among sent statuses, including an
+    # error that was actually sent, do not depend on submitted_at. A row
+    # created already sent is a historical import and is left unstamped.
     UNSENT_STATUSES = %w[draft error].freeze
     SENT_STATUSES = %w[submitted accepted rejected paid denied appealed].freeze
 
@@ -184,12 +187,13 @@ module Corvid
       # any payer re-verification.
       enforce_referral_authorization_gate!
       enforce_alternate_resources_current!
-      save_through_submission_gate!(
+      saved = save_through_submission_gate!(
         claim_identifier: claim_identifier,
         status: "submitted",
         submitted_at: Time.current
       )
       record_submission_provenance
+      saved
     end
 
     def mark_paid!(paid_amount:)
@@ -269,10 +273,12 @@ module Corvid
 
     # PRC-linked claims: only submit! and mark_submitted! may enter
     # "submitted", from any stored status. A plain save also cannot leave
-    # draft or error for a sent status. Moves between sent statuses
-    # (payment, denial, appeal, remittance, a status poll) stay open
-    # whether or not submitted_at was stamped. Creating a row already
-    # sent is a historical import and is not validated here.
+    # an unsent row — draft, or error with neither claim_identifier nor
+    # submitted_at — for a sent status. An error that already has either
+    # was sent; a status poll, payment, or remittance may move it. Moves
+    # between sent statuses stay open whether or not submitted_at was
+    # stamped. Creating a row already sent is a historical import and is
+    # not validated here.
     def submission_status_requires_gate
       return if @submission_through_gate
       return unless guarded_status_transition?
@@ -289,7 +295,21 @@ module Corvid
     end
 
     def unsent_to_sent_status?
-      UNSENT_STATUSES.include?(status_in_database) && SENT_STATUSES.include?(status)
+      unsent_status_in_database? && SENT_STATUSES.include?(status)
+    end
+
+    def unsent_status_in_database?
+      return false unless UNSENT_STATUSES.include?(status_in_database)
+      return false if sent_despite_error_status?
+
+      true
+    end
+
+    # Adapter status "error" can still mean the claim was sent: a
+    # claim_identifier was assigned, or submitted_at was stamped.
+    def sent_despite_error_status?
+      status_in_database == "error" &&
+        (claim_identifier_in_database.present? || submitted_at_in_database.present?)
     end
 
     def save_through_submission_gate!(attributes)
