@@ -118,6 +118,29 @@ module Corvid
       assert_nil original.reload.superseded_by_id
     end
 
+    test "a correction to a group-scoped rule needs that group" do
+      original = FmapClassificationService.classify!(
+        encounter_identifier: "enc_example_27", facility_identifier: "fac_plain_example",
+        date_of_service: Date.new(2026, 3, 1), jurisdiction: "XA"
+      )
+      assert_raises(ActiveRecord::RecordInvalid) { original.supersede_with!(rule_key: "us-expansion-90") }
+      assert_raises(ActiveRecord::RecordInvalid) do
+        original.supersede_with!(rule_key: "us-expansion-90", coverage_group: "unknown")
+      end
+      correction = original.supersede_with!(rule_key: "us-expansion-90", coverage_group: "expansion_adult")
+      assert_equal "fmap_90_expansion", correction.category
+    end
+
+    test "an undetermined row names why, and the database holds it to no rule or percent" do
+      attrs = {
+        encounter_identifier: "enc_example_28", date_of_service: Date.new(2026, 3, 1), jurisdiction: "XA",
+        category: FmapClassificationService::UNDETERMINED, determined_at: Time.current
+      }
+      refute FmapDetermination.new(attrs).valid?
+      row = FmapDetermination.create!(attrs.merge(determination_reason: FmapClassificationService::NO_MATCHING_RULE))
+      assert_raises(ActiveRecord::StatementInvalid) { row.update_columns(fmap_percent: 100) }
+    end
+
     test "an undetermined row carries no percent" do
       row = FmapDetermination.new(
         encounter_identifier: "enc_example_26", date_of_service: Date.new(2026, 3, 1), jurisdiction: "XA",

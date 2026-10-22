@@ -11,6 +11,25 @@ module Corvid
       assert FmapRule.exists?(rule_key: "us-arpa-9815-uio-100")
     end
 
+    test "a rule file with a bad row loads nothing, not a partial rule set" do
+      Dir.mktmpdir do |dir|
+        path = File.join(dir, "fmap_rules.yml")
+        File.write(path, <<~YAML)
+          - rule_key: xa-good
+            jurisdiction: XA
+            category: fmap_regular
+            statutory_citation: "Example citation"
+            effective_on: 2020-01-01
+          - rule_key: xa-bad
+            jurisdiction: XA
+            category: bogus
+            statutory_citation: "Example citation"
+        YAML
+        assert_raises(ActiveRecord::RecordInvalid) { FmapRuleLoader.load_defaults!(path: path) }
+      end
+      refute FmapRule.exists?(rule_key: "xa-good")
+    end
+
     test "in_force_on applies effective and expiration dates" do
       FmapRuleLoader.load_defaults!
 
