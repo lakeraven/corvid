@@ -137,6 +137,15 @@ module Corvid
       @service_request ||= Corvid.adapter.find_referral(referral_identifier) if referral_identifier.present?
     end
 
+    # ActiveRecord reload refreshes columns only. Committee routing reads
+    # priority and cost from this memo, so a reload must drop it and take
+    # the EHR's current service request on the next read.
+    def reload(options = nil)
+      result = super
+      @service_request = nil
+      result
+    end
+
     # 42 CFR 136.61 — PRC pays last. True only when every alternate resource
     # has a determination: unavailable, or coverage with coordination complete.
     def alternate_resources_exhausted?
