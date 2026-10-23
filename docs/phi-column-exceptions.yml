@@ -397,7 +397,8 @@
     the rules in force on this date, so a token cannot be compared.
   safe_harbor_note: >
     Would be a (C) identifier if linked to an identity; the row carries
-    person_identifier and encounter_identifier, both opaque tokens.
+    encounter_identifier (required) and, when known, person_identifier - both
+    opaque tokens.
 
 - table: corvid_fmap_determinations
   column: evidence_refs
