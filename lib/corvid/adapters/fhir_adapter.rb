@@ -1269,25 +1269,10 @@ module Corvid
       end
 
       def list_search_resources(resource_type, params)
-        bundle = list_search_page(resource_type, params)
+        bundle = validated_search(resource_type, params)
         return nil if bundle.nil?
 
         match_resources(bundle, resource_type)
-      end
-
-      def list_search_page(resource_type, params)
-        validated_search(resource_type, params) { |bundle| list_search_bundle?(bundle) }
-      end
-
-      # #search_bundle? requires type searchset. A Bundle that omits type is
-      # still the shape these reads already accepted from #fhir_search. Any
-      # other declared type is unknown.
-      def list_search_bundle?(bundle)
-        search_bundle?(bundle) || bundle_omits_type?(bundle)
-      end
-
-      def bundle_omits_type?(bundle)
-        bundle.is_a?(Hash) && bundle["resourceType"] == "Bundle" && !bundle.key?("type")
       end
 
       def match_resources(bundle, resource_type)

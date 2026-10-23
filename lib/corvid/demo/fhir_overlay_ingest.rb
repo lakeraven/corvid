@@ -15,8 +15,10 @@ module Corvid
     # by the unchanged PrcOverpaymentAnalyzer. A nil find_patient or a nil
     # list_claims is unknown. The call is all-or-nothing: any unknown roster
     # id, or any raise while reading or writing, leaves no Case and no
-    # PrcObligation from that call. Unknown ids are reported, not ingested
-    # as zero claims.
+    # PrcObligation from that call. The call runs in its own savepoint, so
+    # that still holds when the caller already has a joinable transaction
+    # and rescues the failure. Unknown ids are reported, not ingested as
+    # zero claims.
     module FhirOverlayIngest
       module_function
 
@@ -29,7 +31,7 @@ module Corvid
       # whose claims could not be read. Either list being non-empty means
       # nothing from the call was written.
       def ingest(facility:, patient_identifiers:, adapter: Corvid.adapter, imported_at: Time.current)
-        ActiveRecord::Base.transaction do
+        ActiveRecord::Base.transaction(requires_new: true) do
           roster = read_roster(patient_identifiers, adapter)
           if roster_unknown?(roster)
             unknown_roster_counts(roster)
