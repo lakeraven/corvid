@@ -48,13 +48,40 @@ class Gm6MlrMethodologyDocTest < Minitest::Test
     \bbundle \s+ (?:check \s* \|\| \s*)? install \b
   }ix
 
+  INLINE_SHELL_COMMAND_PATTERN = %r{
+    \A
+    (?:
+      cd \s+ test/dummy \s+ && \s+
+    )?
+    (?:
+      RAILS_ENV \s* = \s* \S+ \s+
+    )?
+    (?:
+      bin/rails |
+      bundle \s+ exec \s+ rails |
+      rake
+    )
+    \s+
+    .+
+  }ix
+
   def setup
-    @doc = File.read(DOC)
+    @doc = File.read(DOC, encoding: "UTF-8")
     @defined_tasks = defined_rake_tasks
   end
 
+  def test_defined_rake_task_parser_recognises_nested_cms_tasks
+    %w[
+      cms:ipps:fetch_release
+      cms:opps:fetch_release
+      cms:import
+    ].each do |task|
+      assert_includes @defined_tasks, task, "expected nested rake task #{task} to be defined"
+    end
+  end
+
   def test_doc_commands_do_not_set_rails_env_to_test
-    offenders = doc_shell_commands.select { |cmd| command_sets_rails_env_test?(cmd) }
+    offenders = doc_all_shell_commands.select { |cmd| command_sets_rails_env_test?(cmd) }
     assert_empty offenders,
                  "commands must not set RAILS_ENV=test (use development): #{offenders.join(" | ")}"
   end
@@ -64,6 +91,18 @@ class Gm6MlrMethodologyDocTest < Minitest::Test
     undefined = tasks.reject { |task| task_defined?(task) }.sort.uniq
     assert_empty undefined,
                  "undefined rake/rails tasks in #{DOC}: #{undefined.join(", ")}"
+  end
+
+  def test_doc_shell_commands_are_runnable_from_reader_context
+    offenders = doc_all_shell_commands.reject { |cmd| runnable_from_reader_context?(cmd) }
+    assert_empty offenders,
+                 "commands must run from the reader context (test/dummy bin/rails, quoted args): " \
+                 "#{offenders.join(" | ")}"
+  end
+
+  def test_reproduce_section_warns_about_database_url
+    assert_match(/DATABASE_URL/, reproduce_section_text,
+                 "Reproduce section must warn that DATABASE_URL overrides the environment")
   end
 
   def test_reproduce_block_runs_demo_in_development
@@ -97,8 +136,33 @@ class Gm6MlrMethodologyDocTest < Minitest::Test
 
   private
 
+  def doc_all_shell_commands
+    doc_shell_commands + inline_shell_commands
+  end
+
   def doc_shell_commands
     bash_blocks.flat_map { |block| shell_lines(block) }
+  end
+
+  def inline_shell_commands
+    inline_code_spans.select { |span| span.match?(INLINE_SHELL_COMMAND_PATTERN) }
+  end
+
+  def inline_code_spans
+    spans = []
+    in_fence = false
+
+    @doc.each_line do |line|
+      if line.start_with?("```")
+        in_fence = !in_fence
+        next
+      end
+      next if in_fence
+
+      line.scan(/`([^`\n]+)`/) { spans << Regexp.last_match(1) }
+    end
+
+    spans
   end
 
   def bash_blocks
@@ -135,7 +199,7 @@ class Gm6MlrMethodologyDocTest < Minitest::Test
   end
 
   def doc_runnable_tasks
-    doc_shell_commands.flat_map { |cmd| tasks_from_command(cmd) }.uniq
+    doc_all_shell_commands.flat_map { |cmd| tasks_from_command(cmd) }.uniq
   end
 
   def tasks_from_command(command)
@@ -146,8 +210,55 @@ class Gm6MlrMethodologyDocTest < Minitest::Test
     tasks
   end
 
+  def runnable_from_reader_context?(command)
+    return true if command.match?(/\Abundle \s+ install\z/i)
+    return true if command.match?(/\Acd \s+ test\/dummy \s+ && \s+ bundle \s+ install\z/i)
+    return true if command.match?(/\Acd \s+ test\/dummy \s+ && \s+ cd \s+\.\.\/\.\.\z/i)
+
+    return false if command.match?(/\brane\s+/i)
+
+    if command.match?(/\b(?:bin\/rails|bundle \s+ exec \s+ rails)\b/i) &&
+       !command.match?(/test\/dummy/i)
+      return false
+    end
+
+    return false if shell_task_args_need_quoting?(command)
+
+    true
+  end
+
+  def shell_task_args_need_quoting?(command)
+    return false unless command.match?(/\[[^\]]+\]/)
+
+    command.match?(
+      %r{
+        (?:^|\s)
+        (?:
+          bin/rails |
+          bundle \s+ exec \s+ rails |
+          rake
+        )
+        \s+
+        [a-z][a-z0-9_:]*\[[^\]]+\]
+      }ix
+    )
+  end
+
   def task_defined?(task)
     STANDARD_RAILS_TASKS.include?(task) || @defined_tasks.include?(task)
+  end
+
+  def reproduce_section_text
+    lines = @doc.lines
+    reproduce_idx = lines.index { |line| line.match?(/\*\*Reproduce:\*\*/) }
+    return "" unless reproduce_idx
+
+    section = []
+    lines.drop(reproduce_idx + 1).each do |line|
+      break if line.start_with?("## ")
+      section << line
+    end
+    section.join
   end
 
   def reproduce_demo_lines
@@ -206,30 +317,49 @@ class Gm6MlrMethodologyDocTest < Minitest::Test
 
     rake_files.each do |path|
       namespaces = []
-      File.read(path).scan(/^\s*(.+)$/) do |(raw)|
-        line = raw.strip
-        if (m = line.match(/^namespace\s+:(\w+)\s+do\s*$/))
+      namespace_open_levels = []
+      block_level = 0
+
+      File.read(path, encoding: "UTF-8").each_line do |line|
+        code = line.split("#", 2).first
+        stripped = code.strip
+
+        if (m = stripped.match(/^namespace\s+:(\w+)\s+do\s*$/))
           namespaces << m[1]
-          next
-        end
-        if line == "end"
-          namespaces.pop
+          namespace_open_levels << block_level
+          block_level += 1
           next
         end
 
-        task_name = task_name_from_declaration(line)
-        next unless task_name
-
-        full_name = if task_name.include?(":")
-          task_name
-        else
-          ([ *namespaces, task_name ].join(":"))
+        task_name = task_name_from_declaration(stripped)
+        if task_name
+          full_name = if task_name.include?(":")
+            task_name
+          else
+            ([ *namespaces, task_name ].join(":"))
+          end
+          tasks << full_name
         end
-        tasks << full_name
+
+        if rake_line_opens_block?(stripped) && !stripped.match?(/^namespace\s+/)
+          block_level += 1
+        end
+
+        if stripped == "end"
+          block_level -= 1
+          while namespace_open_levels.any? && namespace_open_levels.last >= block_level
+            namespace_open_levels.pop
+            namespaces.pop
+          end
+        end
       end
     end
 
     tasks
+  end
+
+  def rake_line_opens_block?(line)
+    line.match?(/\bdo\s*(\|[^|]*\|)?\s*$/)
   end
 
   def task_name_from_declaration(line)
