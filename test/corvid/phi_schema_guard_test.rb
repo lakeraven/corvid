@@ -161,8 +161,9 @@ module Corvid
     # would be something else entirely (verified by probe).
     #
     # verification_snapshot_key_version names the host key the snapshot HMAC
-    # was taken under (ADR 0008): host configuration, printable ASCII, at most
-    # 64 characters. On an FMAP determination, rule_key must name a rule of
+    # was taken under (ADR 0008): host configuration. The model caps it at 64
+    # characters; SnapshotFingerprint, its only writer, also restricts it to
+    # printable ASCII, but the model does not. On an FMAP determination, rule_key must name a rule of
     # the global corvid_fmap_rules table in force on the date of service, or
     # be blank when undetermined — the model checks both whenever the decided
     # fields are written. (best_available_rule_key and jurisdiction on the
