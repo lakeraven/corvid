@@ -11,9 +11,12 @@ module Corvid
   # A refusal raises Refused and persists nothing.
   #
   # An estimated cost that is nil on the referral and nil from the
-  # adapter is unknown. When nothing else requires committee review,
-  # that unknown cost is refused before any transition, so nothing is
-  # persisted.
+  # adapter is unknown. A medical priority that is nil on the referral
+  # and nil from the adapter is unknown too. The adapter priority is
+  # service_request.medical_priority_level, the same lookup
+  # PrcReferral uses for its priority cache. When nothing else requires
+  # committee review, that unknown cost or priority is refused before
+  # any transition, so nothing is persisted.
   #
   # From priority_assignment the guarded event is
   # complete_priority_assignment!, which sends requires_committee?
@@ -22,7 +25,9 @@ module Corvid
   # refused the same way. The lock runs inside a savepoint
   # (transaction requires_new) so a Refused rescued inside a caller's
   # transaction persists nothing: no coordination, no authorization,
-  # no state change.
+  # no state change. When Refused or any other error escapes that
+  # savepoint, the caller's referral is reloaded so its status, AASM
+  # state, and checks match the database.
   #
   # The adapter is injected per ADR 0005. Model callbacks that still
   # reach Corvid.adapter are the #264 gap.
@@ -43,6 +48,11 @@ module Corvid
           finish_priority_assignment!(referral)
         end
       end
+    rescue StandardError
+      # Savepoint rollback restores the row, not this instance. A later
+      # authorize! would otherwise leave a state the database never had.
+      referral.reload
+      raise
     end
 
     private
@@ -111,13 +121,14 @@ module Corvid
 
     # complete_priority_assignment! routes requires_committee? referrals
     # to committee_review and everyone else to authorized. authorize!
-    # would skip that fork. Unknown cost is refused before that event
-    # when nothing else requires committee review. Landing in
-    # committee_review, already being there, or still requiring
-    # committee review persists nothing.
+    # would skip that fork. Unknown cost and unknown priority are
+    # refused before that event when nothing else requires committee
+    # review. Landing in committee_review, already being there, or
+    # still requiring committee review persists nothing.
     def finish_priority_assignment!(referral)
       raise Refused, committee_review_refusal if referral.committee_review?
       raise Refused, unknown_cost_refusal if refuses_for_unknown_cost?(referral)
+      raise Refused, unknown_priority_refusal if refuses_for_unknown_priority?(referral)
 
       referral.complete_priority_assignment! if referral.may_complete_priority_assignment?
       return if referral.authorized?
@@ -136,6 +147,20 @@ module Corvid
 
     def unknown_cost_refusal
       "unknown cost"
+    end
+
+    # Nil locally and nil from the adapter. Same read as
+    # PrcReferral#cached_medical_priority. Cost or a review flag still
+    # takes the committee path. Checked after unknown cost so a referral
+    # missing both is named for the cost.
+    def refuses_for_unknown_priority?(referral)
+      return false if referral.requires_committee?
+
+      referral.medical_priority.nil? && referral.service_request&.medical_priority_level.nil?
+    end
+
+    def unknown_priority_refusal
+      "unknown priority"
     end
 
     def committee_review_unresolved?(referral)
