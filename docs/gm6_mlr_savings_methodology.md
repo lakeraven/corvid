@@ -16,6 +16,7 @@ referred-care (PRC) claim panel for a 2-provider Urban Indian Organization
 ```bash
 bundle install                                                                 # first time
 cd test/dummy && bundle install && cd ../..                                    # first time
+unset DATABASE_URL
 cd test/dummy && RAILS_ENV=development bin/rails db:prepare && cd ../..        # first time
 cd test/dummy && RAILS_ENV=development bin/rails demo:mlr_savings
 ```
@@ -159,7 +160,7 @@ hand-verified literals rather than pulled through `cd test/dummy && RAILS_ENV=de
    loads `mp_rvu: 0.0` for CPT 99213, vs. the correct `0.09` read directly
    off the CMS file.
 
-A third, smaller issue — `cd test/dummy && RAILS_ENV=development bin/rails "cms:ipps:fetch_release[year]"`'s summary
+A third, smaller issue — the `cms:ipps:fetch_release` task's summary
 `puts` referenced an undefined `label` variable (`NameError` after the
 data import itself had already succeeded) — **is fixed in this branch**
 (`lib/tasks/cms_ipps.rake`), since it directly blocked this demo task
