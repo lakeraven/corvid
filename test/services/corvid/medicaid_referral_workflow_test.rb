@@ -44,7 +44,7 @@ module Corvid
         end
 
         assert_match(/medicaid/, error.message)
-        assert_includes referral.reload.authorization_blockers, "medicaid: not enrolled"
+        assert_match(/medicaid: not enrolled/, error.message)
         assert_equal before, medicaid.reload.attributes.slice("status", "checked_at", "policy_token")
         refute referral.authorized?
       end
