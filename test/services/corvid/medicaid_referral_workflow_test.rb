@@ -441,6 +441,96 @@ module Corvid
       end
     end
 
+    test "authorize_with_medicaid_primary! refuses when medical priority is unknown locally and in the adapter" do
+      with_tenant(TENANT) do
+        referral = referral_ready_for_medicaid_primary_authorization
+        referral.update_columns(medical_priority: nil, flagged_for_review: false)
+        Corvid.adapter.add_referral(
+          referral.referral_identifier,
+          patient_identifier: PATIENT,
+          status: "pending",
+          estimated_cost: referral.estimated_cost,
+          medical_priority_level: nil,
+          emergent: false,
+          urgent: false,
+          chs_approval_status: "P",
+          service_requested: "TEST"
+        )
+        referral.reload
+        refute referral.requires_committee?
+        medicaid = referral.alternate_resource_checks.find_by!(resource_type: "medicaid")
+        status_before = referral.status
+
+        workflow = Corvid::MedicaidReferralWorkflow.new
+        error = assert_raises(Corvid::MedicaidReferralWorkflow::Refused) do
+          workflow.authorize_with_medicaid_primary!(referral)
+        end
+
+        assert_match(/unknown priority/i, error.message)
+        refute medicaid.reload.coordinated?
+        refute referral.reload.authorized?
+        assert_equal status_before, referral.reload.status
+        assert_equal 0, referral.committee_reviews.count
+      end
+    end
+
+    test "authorize_with_medicaid_primary! leaves caller referral aligned with database after committee review refusal" do
+      with_tenant(TENANT) do
+        referral = referral_ready_for_medicaid_primary_authorization
+        referral.alternate_resource_checks.find_by!(resource_type: "medicaid").mark_coordinated!
+        referral.alternate_resource_checks.reset
+        referral.update_columns(flagged_for_review: true)
+        referral.reload
+        db_status = referral.status
+
+        workflow = Corvid::MedicaidReferralWorkflow.new
+        assert_raises(Corvid::MedicaidReferralWorkflow::Refused) do
+          workflow.authorize_with_medicaid_primary!(referral)
+        end
+
+        assert_equal referral.class.find(referral.id).status, referral.status
+        refute referral.authorize!
+        assert_equal db_status, referral.class.find(referral.id).status
+        refute referral.authorized?
+        assert_equal 0, referral.committee_reviews.count
+        ehr = Corvid.adapter.find_referral(referral.referral_identifier)
+        refute_equal "A", ehr.chs_approval_status
+      end
+    end
+
+    test "authorize_with_medicaid_primary! leaves caller referral aligned with database after unknown cost refusal" do
+      with_tenant(TENANT) do
+        referral = referral_ready_for_medicaid_primary_authorization
+        referral.update_columns(estimated_cost_cents: nil, medical_priority: 2, flagged_for_review: false)
+        Corvid.adapter.add_referral(
+          referral.referral_identifier,
+          patient_identifier: PATIENT,
+          status: "pending",
+          estimated_cost: nil,
+          emergent: false,
+          urgent: false,
+          chs_approval_status: "P",
+          service_requested: "TEST"
+        )
+        referral.reload
+        refute referral.requires_committee?
+        db_status = referral.status
+
+        workflow = Corvid::MedicaidReferralWorkflow.new
+        assert_raises(Corvid::MedicaidReferralWorkflow::Refused) do
+          workflow.authorize_with_medicaid_primary!(referral)
+        end
+
+        assert_equal referral.class.find(referral.id).status, referral.status
+        refute referral.authorize!
+        assert_equal db_status, referral.class.find(referral.id).status
+        refute referral.authorized?
+        assert_equal 0, referral.committee_reviews.count
+        ehr = Corvid.adapter.find_referral(referral.referral_identifier)
+        refute_equal "A", ehr.chs_approval_status
+      end
+    end
+
     test "authorize_with_medicaid_primary! leaves medicaid enrolled when Refused is rescued in an outer transaction" do
       with_tenant(TENANT) do
         referral = referral_ready_for_medicaid_primary_authorization
