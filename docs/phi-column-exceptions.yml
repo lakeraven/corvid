@@ -385,8 +385,8 @@
 
 # --- surfaced by the guard after merging main, 2026-10-23 -------------------
 # Each was checked against what writes it before being classified. Columns on
-# the same tables that are DB-bounded enums, reference-rule provenance or
-# facility configuration are permitted in the guard instead (reviewed as code).
+# the same tables that are DB-bounded enums, model-validated rule provenance or
+# facility authority dates are permitted in the guard instead (reviewed as code).
 
 - table: corvid_fmap_determinations
   column: date_of_service
