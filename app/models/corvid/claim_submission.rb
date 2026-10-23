@@ -306,15 +306,15 @@ module Corvid
 
     # A linked PRC referral is billable only when an external report names
     # delivered care. Unlinked claims are ordinary billing and are left
-    # alone. The referral is the one this save will link, read from the
-    # current identifier without assigning the association: a dirty
-    # referral_identifier must not be judged against the referral this
-    # claim used to name. Called before any clearinghouse call, so a
-    # refusal never submits and never changes the claim. The message
-    # names the referral identifier and the fulfilment status only
-    # (ADR 0003).
+    # alone. The referral is referral_for_submission_gates: the one this
+    # save will link, read from the current identifier without assigning
+    # the association. A dirty referral_identifier must not be judged
+    # against the referral this claim used to name. Called before any
+    # clearinghouse call, so a refusal never submits and never changes
+    # the claim. The message names the referral identifier and the
+    # fulfilment status only (ADR 0003).
     def enforce_referral_fulfilment_gate!
-      referral = referral_for_fulfilment_gate
+      referral = referral_for_submission_gates
       return if referral.blank?
 
       current = referral.reload
@@ -323,7 +323,10 @@ module Corvid
       raise FulfilmentNotRecorded, fulfilment_not_recorded_message(current)
     end
 
-    def referral_for_fulfilment_gate
+    # Shared by the authorization gate and the fulfilment gate. Reads
+    # the referral the current identifier will link, and does not assign
+    # the association.
+    def referral_for_submission_gates
       return unambiguous_patient_referral if referral_link_inputs_changed?
 
       prc_referral
@@ -345,18 +348,21 @@ module Corvid
     # through — the claim is simply not a PRC claim.
     #
     # What is NOT allowed through is an identifier that matches PRC referrals
-    # ambiguously. There a PRC referral demonstrably exists under that
-    # identifier and we cannot tell which, so we cannot establish that the one
-    # being billed was authorized.
+    # ambiguously, matches another patient's referral, or matches this
+    # patient's referral before it is authorized. There a PRC referral
+    # demonstrably exists and we cannot establish that the one being billed
+    # was authorized.
     #
-    # Resolution happens here rather than relying on the association, because
-    # the resolver runs on save: a claim can reach #submit! carrying an
-    # identifier whose prc_referral_id is still NULL, and returning early on a
-    # blank association would skip exactly the rows the gate exists for.
+    # The referral is referral_for_submission_gates, the same resolution the
+    # fulfilment gate uses. The association is not assigned before deciding:
+    # a dirty referral_identifier must not be judged against the referral
+    # this claim used to name, and a refusal must not retarget the link.
+    # The resolver still runs on save, so a claim can reach this gate with
+    # prc_referral_id NULL.
     def enforce_referral_authorization_gate!
-      resolve_prc_referral_from_identifier if prc_referral.blank? && referral_identifier.present?
+      referral = referral_for_submission_gates
 
-      if prc_referral.blank?
+      if referral.blank?
         raise ReferralNotAuthorized,
           "Claim naming referral #{referral_identifier} cannot be submitted: " \
           "a PRC referral exists under that identifier at this facility but it " \
@@ -366,10 +372,9 @@ module Corvid
         return
       end
 
-      # Re-read before deciding. The association may have been loaded earlier
-      # in this object's life, and authorizing care is exactly the kind of
-      # thing that happens between loading a claim and submitting it.
-      current = prc_referral.reload
+      # Re-read before deciding. Authorizing care can happen between loading
+      # a claim and submitting it. Reload does not assign the association.
+      current = referral.reload
       return if current.status == "authorized"
 
       raise ReferralNotAuthorized,

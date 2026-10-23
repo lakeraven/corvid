@@ -98,7 +98,13 @@ module Corvid
 
       event :complete_priority_assignment do
         transitions from: :priority_assignment, to: :committee_review, guard: :requires_committee?
-        transitions from: :priority_assignment, to: :authorized, guard: :alternate_resources_exhausted?
+        # success, not after: a transition after runs before status is
+        # authorized, so sync_status_to_ehr would record P. authorize's
+        # event after calls the same method once status is authorized.
+        # committee_review does not sync.
+        transitions from: :priority_assignment, to: :authorized,
+                    guard: :alternate_resources_exhausted?,
+                    success: :sync_status_to_ehr
       end
 
       event :authorize, after: :sync_status_to_ehr do

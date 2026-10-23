@@ -4,14 +4,16 @@ module Corvid
   # Authorizes a referral with Medicaid paying first.
   #
   # Primary payer is the coordinated Medicaid AlternateResourceCheck.
-  # There is no primary_payer column. An enrolled check is coordinated
-  # when that recorded answer is still usable: checked_at is present and
-  # inside the configured age, and any stored coverage period or renewal
-  # still covers today. A missing period is not a past period. When the
-  # answer is not usable (stale or nil checked_at, or a period that does
-  # not cover today), it is re-verified through the injected adapter and
-  # coordinated only if that fresh answer is enrolled and current_for?
-  # today. A refusal raises Refused and persists nothing.
+  # There is no primary_payer column. A recorded enrolled or coordinated
+  # answer is used as-is only when current_for?(Date.current). Otherwise
+  # it is re-verified through the injected adapter and refused unless
+  # that fresh answer is enrolled or coordinated and current_for? today.
+  # A refusal raises Refused and persists nothing.
+  #
+  # An estimated cost that is nil on the referral and nil from the
+  # adapter is unknown. When nothing else requires committee review,
+  # that unknown cost is refused before any transition, so nothing is
+  # persisted.
   #
   # From priority_assignment the guarded event is
   # complete_priority_assignment!, which sends requires_committee?
@@ -62,38 +64,13 @@ module Corvid
       referral.alternate_resource_checks.lock.find_by(resource_type: "medicaid")
     end
 
-    # Only an enrolled or coordinated row can be re-asked. Checking and
-    # not_enrolled are refused as they stand.
+    # Only an enrolled or coordinated row can be re-asked, and only
+    # when it is not current for today. Checking and not_enrolled are
+    # refused as they stand.
     def medicaid_needs_reverification?(medicaid)
       return false unless medicaid.enrolled? || medicaid.coordinated?
 
-      !recorded_answer_usable?(medicaid)
-    end
-
-    # Fresh, and any stored period or renewal still covers today.
-    # Both coverage dates nil is not a lapsed period.
-    def recorded_answer_usable?(medicaid)
-      !determination_aged_out?(medicaid) &&
-        !coverage_period_excludes_today?(medicaid) &&
-        !renewal_excludes_today?(medicaid)
-    end
-
-    def determination_aged_out?(check)
-      max_age = Corvid.configuration.alternate_resource_check_max_age.fetch(check.resource_type)
-      check.stale?(max_age: max_age)
-    end
-
-    def coverage_period_excludes_today?(check)
-      return false if check.coverage_start.nil? && check.coverage_end.nil?
-
-      today = Date.current
-      starts_later = check.coverage_start.present? && check.coverage_start > today
-      ends_earlier = check.coverage_end.present? && check.coverage_end < today
-      starts_later || ends_earlier
-    end
-
-    def renewal_excludes_today?(check)
-      check.renewal_date.present? && check.renewal_date < Date.current
+      !medicaid.current_for?(Date.current)
     end
 
     # verify! returns false and writes nothing when the adapter's answer
@@ -134,16 +111,31 @@ module Corvid
 
     # complete_priority_assignment! routes requires_committee? referrals
     # to committee_review and everyone else to authorized. authorize!
-    # would skip that fork. Landing in committee_review, already being
-    # there, or still requiring committee review persists nothing.
+    # would skip that fork. Unknown cost is refused before that event
+    # when nothing else requires committee review. Landing in
+    # committee_review, already being there, or still requiring
+    # committee review persists nothing.
     def finish_priority_assignment!(referral)
       raise Refused, committee_review_refusal if referral.committee_review?
+      raise Refused, unknown_cost_refusal if refuses_for_unknown_cost?(referral)
 
       referral.complete_priority_assignment! if referral.may_complete_priority_assignment?
       return if referral.authorized?
 
       raise Refused, committee_review_refusal if committee_review_unresolved?(referral)
       raise Refused, blocked_authorization_message(referral)
+    end
+
+    # Nil on the referral and nil from the adapter. A priority or a
+    # review flag still takes the committee path.
+    def refuses_for_unknown_cost?(referral)
+      return false if referral.requires_committee?
+
+      referral.estimated_cost.nil? && referral.service_request&.estimated_cost.nil?
+    end
+
+    def unknown_cost_refusal
+      "unknown cost"
     end
 
     def committee_review_unresolved?(referral)
