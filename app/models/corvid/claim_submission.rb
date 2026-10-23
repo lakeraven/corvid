@@ -19,11 +19,35 @@ module Corvid
 
     STATUSES = %w[draft submitted accepted rejected paid denied appealed error].freeze
     CLAIM_TYPES = %w[professional institutional dental].freeze
+    # Draft has not been sent. Error has not been sent unless the row
+    # already stores a claim_identifier: the adapter identified the claim.
+    # submitted_at alone does not make an error row sent. A plain save
+    # cannot move a PRC-linked claim from an unsent status into a sent
+    # status, cannot set status to "submitted" from any status, and cannot
+    # write claim_identifier or submitted_at on an unsent linked claim.
+    # submit! and mark_submitted! are the only paths that write those
+    # markers or enter "submitted" from an unsent row, and they re-run
+    # the gates. check_status! may record "submitted" on a claim that was
+    # already sent. Later moves among sent statuses, including an error
+    # that was actually sent, do not depend on submitted_at. A row created
+    # already sent is a historical import and is left unstamped.
+    UNSENT_STATUSES = %w[draft error].freeze
+    SENT_STATUSES = %w[submitted accepted rejected paid denied appealed].freeze
+    SENT_MARKER_MESSAGE = "must be set with submit! or mark_submitted!"
 
     # Raised by #submit! when this claim bills a PRC referral that has not been
     # authorized. PRC authorizes before care is purchased, so billing an
     # unauthorized referral bills care the programme never agreed to buy.
     class ReferralNotAuthorized < StandardError; end
+
+    # Raised when this claim bills a PRC referral whose alternate-resource
+    # checks are not current, exhausted determinations for service_date.
+    # A missing service date fails closed. No patient, payer, or policy data.
+    class AlternateResourcesNotCurrent < StandardError
+      def initialize(message = "Alternate resource checks are not current for the date of service")
+        super
+      end
+    end
 
     # The referral this claim bills, where there is one. Optional: claims
     # billed outside the referral workflow, and legacy rows the backfill could
@@ -46,6 +70,14 @@ module Corvid
     # helpers, remittance processing) records when it first happened, so the
     # KPIs above still count the claim after its status moves on.
     before_save :stamp_rejection_and_denial_times, if: :will_save_change_to_status?
+    # Provenance waits for the outermost commit. The check payload and the
+    # decision's tenant are captured here; delivery runs after commit inside
+    # that tenant. A rollback never calls the hook, and a hook failure does
+    # not undo the submission.
+    before_save :schedule_submission_provenance
+
+    validate :submission_status_requires_gate, on: :update
+    validate :unsent_linked_claim_cannot_gain_sent_markers, on: :update
 
     scope :by_status, ->(status) { where(status: status) }
     scope :pending, -> { where(status: %w[submitted accepted]) }
@@ -161,7 +193,11 @@ module Corvid
     end
 
     def mark_submitted!(claim_identifier:)
-      update!(
+      # Same order as submit!: an unauthorized referral is refused before
+      # any payer re-verification.
+      enforce_referral_authorization_gate!
+      enforce_alternate_resources_current!
+      save_through_submission_gate!(
         claim_identifier: claim_identifier,
         status: "submitted",
         submitted_at: Time.current
@@ -192,8 +228,9 @@ module Corvid
 
     def submit!
       enforce_referral_authorization_gate!
+      enforce_alternate_resources_current!
       result = Corvid.adapter.submit_claim(to_claim_data)
-      update!(
+      save_through_submission_gate!(
         claim_identifier: result[:claim_identifier],
         status: result[:status] == "accepted" ? "submitted" : result[:status],
         submitted_at: Time.current
@@ -217,7 +254,7 @@ module Corvid
       attrs[:paid_amount] = result[:paid_amount] if result[:paid_amount]
       attrs[:adjustment_amount] = result[:adjustment_amount] if result[:adjustment_amount]
       attrs[:paid_date] = result[:paid_date] if result[:paid_date]
-      update!(attrs)
+      save_status_poll!(attrs)
       result
     end
 
@@ -239,6 +276,117 @@ module Corvid
     def stamp_rejection_and_denial_times
       self.rejected_at ||= Time.current if status == "rejected"
       self.denied_at ||= Time.current if status == "denied"
+    end
+
+    # PRC-linked claims: a plain save cannot enter "submitted" from any
+    # stored status, and cannot leave an unsent row — draft, or error
+    # without a claim_identifier — for a sent status. submit! and
+    # mark_submitted! are the gated writers. An error that already has a
+    # claim_identifier was sent; check_status!, payment, or remittance
+    # may move it, including back to "submitted". Moves between sent
+    # statuses stay open whether or not submitted_at was stamped.
+    # Creating a row already sent is a historical import and is not
+    # validated here.
+    def submission_status_requires_gate
+      return if @submission_through_gate || status_poll_of_sent_claim?
+      return unless guarded_status_transition?
+
+      errors.add(:status, "must be submitted with submit! or mark_submitted!")
+    end
+
+    # A poll may record any valid status, including "submitted", once the
+    # claim was actually sent. It does not write the sent markers, and a
+    # plain save stays on the submission gate.
+    def save_status_poll!(attributes)
+      @recording_status_poll = true
+      update!(attributes)
+    ensure
+      @recording_status_poll = false
+    end
+
+    def status_poll_of_sent_claim?
+      @recording_status_poll && !unsent_status_in_database?
+    end
+
+    def guarded_status_transition?
+      prc_referral_id.present? && will_save_change_to_status? && submission_transition_blocked?
+    end
+
+    def submission_transition_blocked?
+      status == "submitted" || unsent_to_sent_status?
+    end
+
+    def unsent_to_sent_status?
+      unsent_status_in_database? && SENT_STATUSES.include?(status)
+    end
+
+    def unsent_status_in_database?
+      return false unless UNSENT_STATUSES.include?(status_in_database)
+      return false if sent_despite_error_status?
+
+      true
+    end
+
+    # Adapter status "error" can still mean the claim was sent: a
+    # claim_identifier was assigned. submitted_at by itself does not.
+    # A time stamp without an identifier is not proof the claim was sent.
+    def sent_despite_error_status?
+      status_in_database == "error" && claim_identifier_in_database.present?
+    end
+
+    # An unsent linked claim may gain claim_identifier or submitted_at
+    # only through save_through_submission_gate!. A plain save that writes
+    # either marker is rejected, whether or not it also changes other
+    # attributes. submit! and mark_submitted! are the only writers.
+    def unsent_linked_claim_cannot_gain_sent_markers
+      return if @submission_through_gate
+      return unless linked_unsent_claim? && sent_marker_changing?
+
+      add_sent_marker_errors
+    end
+
+    def linked_unsent_claim?
+      prc_referral_id.present? && unsent_status_in_database?
+    end
+
+    def sent_marker_changing?
+      will_save_change_to_claim_identifier? || will_save_change_to_submitted_at?
+    end
+
+    def add_sent_marker_errors
+      errors.add(:claim_identifier, SENT_MARKER_MESSAGE) if will_save_change_to_claim_identifier?
+      errors.add(:submitted_at, SENT_MARKER_MESSAGE) if will_save_change_to_submitted_at?
+    end
+
+    def schedule_submission_provenance
+      return unless @submission_through_gate
+      return if prc_referral.blank?
+
+      entities = AlternateResourceReverification.snapshot_entities(
+        prc_referral.alternate_resource_checks.reload
+      )
+      tenant = Corvid::TenantContext.current_tenant_identifier
+      ActiveRecord.after_all_transactions_commit do
+        deliver_submission_provenance(entities, tenant)
+      end
+    end
+
+    def deliver_submission_provenance(entities, tenant)
+      return if prc_referral.blank?
+
+      AlternateResourceReverification.record!(
+        self,
+        activity: "CREATE",
+        entities: entities,
+        tenant: tenant
+      )
+    end
+
+    def save_through_submission_gate!(attributes)
+      @submission_through_gate = true
+      update!(attributes)
+    ensure
+      @submission_through_gate = false
     end
 
     # Link this claim to the referral it bills, but only where that link is
@@ -286,6 +434,38 @@ module Corvid
         if candidates.size == 1 && candidates.first.case&.patient_identifier == patient_identifier
           candidates.first
         end
+    end
+
+    # A linked referral is re-verified for service_date before the claim is
+    # sent. No linked PRC referral is ordinary billing and skips this gate.
+    # A nil service date fails closed.
+    def enforce_alternate_resources_current!
+      referral = referral_for_alternate_resource_gate
+      return if referral.nil?
+      return if alternate_resources_current?(referral)
+
+      raise AlternateResourcesNotCurrent
+    end
+
+    def referral_for_alternate_resource_gate
+      resolve_prc_referral_from_identifier if prc_referral.blank? && referral_identifier.present?
+      prc_referral
+    end
+
+    # Re-verify first, then decide. A stale row that comes back current and
+    # exhausted is a determination this submission can rely on. An unreadable
+    # answer leaves the row unchanged and the claim is refused.
+    def alternate_resources_current?(referral)
+      return false if service_date.nil?
+      return false unless AlternateResourceReverification.reverify_stale!(
+        referral, date_of_service: service_date, as_of: Time.current
+      )
+
+      exhausted_for_claim?(referral)
+    end
+
+    def exhausted_for_claim?(referral)
+      AlternateResourceCheck.all_exhausted?(referral, date_of_service: service_date, as_of: Time.current)
     end
 
     # A claim that bills a PRC referral may only be submitted once that

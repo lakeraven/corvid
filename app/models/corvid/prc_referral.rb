@@ -18,8 +18,12 @@ module Corvid
 
     # CHS approval status codes for EHR sync.
     # Engine-owned mapping — no dependency on EHR-side constants.
+    # Deferred is absent here; a committed deferral syncs as CHS_STATUS_DEFAULT.
+    # Cancelled has no code and is not synced.
     CHS_STATUS_MAP = { "authorized" => "A", "denied" => "D" }.freeze
     CHS_STATUS_DEFAULT = "P"
+    # Authorize, deny, and defer only. In-progress states stay local.
+    EHR_SYNCED_STATUSES = %w[authorized denied deferred].freeze
 
     belongs_to :case, class_name: "Corvid::Case"
     has_one :eligibility_checklist, dependent: :destroy, class_name: "Corvid::EligibilityChecklist"
@@ -57,6 +61,12 @@ module Corvid
       state :priority_assignment, :committee_review, :exception_review
       state :authorized, :denied, :deferred, :cancelled
 
+      # Runs after a transition is chosen and before it is saved, for both
+      # bang events and non-bang events later saved with save!. Creating a
+      # row already in a terminal status, or update!(status:), is not an
+      # event and does not mark a publication.
+      after_all_transitions :mark_pending_referral_publication
+
       event :submit do
         transitions from: :draft, to: :submitted
       end
@@ -91,26 +101,30 @@ module Corvid
                     to: :eligibility_review
       end
 
-      event :verify_alternate_resources do
+      # Re-verify in the event callback, not the guard. Guards are pure and
+      # may_? would otherwise hit the payer on every check. AASM still runs
+      # that callback when no transition leaves the current state, so each
+      # callback checks from-states (ignoring guards) before any payer call.
+      event :verify_alternate_resources, before: :reverify_before_verify_alternate_resources do
         transitions from: :alternate_resource_review, to: :priority_assignment,
                     guard: :alternate_resources_exhausted?
       end
 
-      event :complete_priority_assignment do
+      event :complete_priority_assignment, before: :reverify_before_complete_priority_assignment do
         transitions from: :priority_assignment, to: :committee_review, guard: :requires_committee?
         transitions from: :priority_assignment, to: :authorized, guard: :alternate_resources_exhausted?
       end
 
-      event :authorize, after: :sync_status_to_ehr do
+      event :authorize, before: :reverify_before_authorize do
         transitions from: [ :priority_assignment, :committee_review ], to: :authorized,
                     guard: :alternate_resources_exhausted?
       end
 
-      event :mark_denied, after: :sync_status_to_ehr do
+      event :mark_denied do
         transitions from: [ :eligibility_review, :exception_review, :priority_assignment, :committee_review ], to: :denied
       end
 
-      event :mark_deferred, after: [ :sync_status_to_ehr, :record_deferred_determination ] do
+      event :mark_deferred, after: :record_deferred_determination do
         transitions from: [ :priority_assignment, :committee_review ], to: :deferred
       end
 
@@ -127,14 +141,38 @@ module Corvid
       end
     end
 
+    # The AASM callback marks authorize, deny, or defer. This save publishes
+    # that mark after the outermost commit. A plain status write never
+    # marks one. In-progress states are not synced. Cancelled has no CHS
+    # code and is not synced. Authorization provenance snapshots the checks
+    # and the tenant at this save; delivery and the EHR sync run after
+    # commit inside that tenant. A rolled-back save drops the callback.
+    before_save :remember_referral_status_transition
+
     def service_request
       @service_request ||= Corvid.adapter.find_referral(referral_identifier) if referral_identifier.present?
     end
 
     # 42 CFR 136.61 — PRC pays last. True only when every alternate resource
-    # has a determination: unavailable, or coverage with coordination complete.
+    # is unavailable and current for today. A referral has no date of service;
+    # the authorization date is the decision date.
     def alternate_resources_exhausted?
-      AlternateResourceCheck.all_exhausted?(self)
+      AlternateResourceCheck.all_exhausted?(self, date_of_service: Date.current, as_of: Time.current)
+    end
+
+    # Refresh checks that are not current for the authorization date when
+    # authorize can leave this state (priority_assignment or
+    # committee_review). Cancelled, denied, draft, and any other state are
+    # refused without a payer call. Event callbacks use reverify_for_event
+    # for the same from-state rule. Returns true so an AASM before-callback
+    # does not abort; the guard decides.
+    #
+    # Per ADR 0005, services inject adapter:. This model method still
+    # defaults to Corvid.adapter (#264). CommitteeReviewSyncService passes
+    # its injected adapter so re-verification does not use the global.
+    def reverify_alternate_resources_for_decision(adapter: Corvid.adapter)
+      refresh_stale_alternate_resources(adapter: adapter) if event_can_leave_state?(:authorize)
+      true
     end
 
     # Sorted reasons authorization is refused. Resource type and status only;
@@ -148,12 +186,14 @@ module Corvid
 
     # Why a committee approval must not authorize. An authorized
     # referral is already consistent with the approval, so a retried
-    # sync may proceed. While any alternate resource is open this is
-    # authorization_blockers, same strings and order. Once they are
-    # determined, a workflow state that cannot authorize is named
-    # alone, including draft (ADR 0003).
+    # sync may proceed. A state authorize cannot leave is named alone,
+    # including draft, cancelled, and denied, even when checks are
+    # stale — apply and sync refuse those without a payer call. From
+    # priority_assignment or committee_review, open alternate resources
+    # are authorization_blockers, same strings and order (ADR 0003).
     def committee_approval_blockers
       return [] if authorized?
+      return [ "referral: #{status}" ] unless event_can_leave_state?(:authorize)
       return authorization_blockers unless alternate_resources_exhausted?
       return [] if may_authorize?
 
@@ -371,13 +411,106 @@ module Corvid
 
     private
 
+    def remember_referral_status_transition
+      pending = @pending_referral_publication
+      return if pending.nil?
+      return unless will_save_change_to_status?
+
+      @pending_referral_publication = nil
+      return unless status.to_s == pending
+
+      provenance_entities = authorization_provenance_entities if pending == "authorized"
+      schedule_committed_referral_status(pending, provenance_entities)
+    end
+
+    # Latest transition wins. In-flight and cancelled transitions clear a
+    # mark left by an unsaved earlier event so only authorize, deny, and
+    # defer are published.
+    def mark_pending_referral_publication
+      new_status = aasm.to_state.to_s
+      @pending_referral_publication = ehr_synced_status?(new_status) ? new_status : nil
+      true
+    end
+
+    def schedule_committed_referral_status(new_status, provenance_entities)
+      tenant = Corvid::TenantContext.current_tenant_identifier
+      ActiveRecord.after_all_transactions_commit do
+        publish_committed_referral_status(new_status, provenance_entities, tenant)
+      end
+    end
+
+    def publish_committed_referral_status(new_status, provenance_entities, tenant)
+      if ehr_synced_status?(new_status)
+        Corvid::TenantContext.with_tenant(tenant) do
+          sync_status_to_ehr(new_status)
+        end
+      end
+      return if provenance_entities.nil?
+
+      AlternateResourceReverification.record!(
+        self,
+        activity: "UPDATE",
+        entities: provenance_entities,
+        tenant: tenant
+      )
+    end
+
+    def ehr_synced_status?(status_value)
+      EHR_SYNCED_STATUSES.include?(status_value.to_s)
+    end
+
+    def authorization_provenance_entities
+      AlternateResourceReverification.snapshot_entities(alternate_resource_checks.reload)
+    end
+
     def blocker_for(resource_type, check)
       return "#{resource_type}: not checked" if check.nil?
+      return "#{resource_type}: not current" if unavailable_but_not_current?(check)
       return if check.exhausted_or_unavailable?
 
       detail = check.status.to_s.tr("_", " ")
       detail = "#{detail} (coordination of benefits not complete)" if check.enrolled?
       "#{resource_type}: #{detail}"
+    end
+
+    # Unavailable by status, but not a determination for the authorization
+    # date. Resource type and a fixed reason only — no patient, payer, or
+    # policy data (ADR 0003).
+    def unavailable_but_not_current?(check)
+      check.exhausted_or_unavailable? && !check.current_for?(Date.current, as_of: Time.current)
+    end
+
+    def reverify_before_verify_alternate_resources
+      reverify_for_event(:verify_alternate_resources)
+    end
+
+    def reverify_before_complete_priority_assignment
+      reverify_for_event(:complete_priority_assignment)
+    end
+
+    def reverify_before_authorize
+      reverify_for_event(:authorize)
+    end
+
+    def reverify_for_event(event_name)
+      refresh_stale_alternate_resources if event_can_leave_state?(event_name)
+      true
+    end
+
+    def refresh_stale_alternate_resources(adapter: Corvid.adapter)
+      AlternateResourceReverification.reverify_stale!(
+        self, date_of_service: Date.current, as_of: Time.current, adapter: adapter
+      )
+    end
+
+    # From-states only. Guards run after the refresh and must not be
+    # consulted here, or a stale row would skip the payer call that
+    # could make the guard pass.
+    def event_can_leave_state?(event_name)
+      event = self.class.aasm.state_machine.events[event_name]
+      return false unless event
+
+      event.transitions_from_state?(aasm.current_state)
     end
 
     # Get authorization number from RCIS (source of truth).
@@ -453,10 +586,10 @@ module Corvid
       record_determination!(outcome: "deferred", decision_method: "automated")
     end
 
-    def sync_status_to_ehr
+    def sync_status_to_ehr(status_value = status)
       return unless referral_identifier.present?
 
-      chs_status = CHS_STATUS_MAP[status] || CHS_STATUS_DEFAULT
+      chs_status = CHS_STATUS_MAP[status_value.to_s] || CHS_STATUS_DEFAULT
       Corvid.adapter.update_referral(referral_identifier, chs_approval_status: chs_status)
     rescue NotImplementedError, StandardError => e
       # NotImplementedError descends from ScriptError, not StandardError, so a
