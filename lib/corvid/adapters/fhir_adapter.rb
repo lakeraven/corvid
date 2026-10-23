@@ -665,11 +665,12 @@ module Corvid
       # %2e/%2E are decoded (that URL is not requested); when a present
       # `total` is not a non-negative Integer, or differs from the count of
       # merged entries whose search.mode is "match" or absent (an equal
-      # total is kept, an absent total stays absent, and outcome and include
-      # entries are not counted); when the same resourceType and id appear
-      # twice among those match or no-mode entries (repeated include entries
-      # are allowed); when a next URL was already visited; or when the chain
-      # is longer than MAX_SEARCH_PAGES.
+      # total is kept, an absent total stays absent; outcome, include, and
+      # a search value that is not a Hash are not counted); when the same
+      # resourceType and id appear twice among those match or no-mode
+      # entries (repeated include entries are allowed); when a later page's
+      # Bundle.type differs from the first page's; when a next URL was
+      # already visited; or when the chain is longer than MAX_SEARCH_PAGES.
       def fhir_search(resource_type, params = {})
         query = URI.encode_www_form(params)
         pages = collect_search_pages("#{@base_url}/#{resource_type}?#{query}")
@@ -691,7 +692,7 @@ module Corvid
 
         while url && pages.size < MAX_SEARCH_PAGES && !seen[url]
           page = fetch_bundle_page(url)
-          return unless page && acceptable_entries?(page)
+          return unless page && acceptable_entries?(page) && same_bundle_type?(pages, page)
 
           seen[url] = true
           pages << page
@@ -842,14 +843,13 @@ module Corvid
         keys.size != keys.uniq.size
       end
 
+      # A non-Hash entry has no mode, so it counts toward total the way a
+      # mode-less entry does. A Hash entry is a match only under the same
+      # rule as #match_mode_entry? (absent search, or mode absent / "match").
       def search_match_entry?(entry)
         return true unless entry.is_a?(Hash)
 
-        search = entry["search"]
-        return true unless search.is_a?(Hash)
-
-        mode = search["mode"]
-        mode.nil? || mode == "match"
+        match_mode_entry?(entry)
       end
 
       def match_resource_key(entry)
@@ -862,6 +862,12 @@ module Corvid
         type = resource["resourceType"]
         id = resource["id"]
         [ type, id ] unless type.nil? || id.nil?
+      end
+
+      # The first page may be any Bundle.type. Every later page must
+      # declare that same type; a missing type is not the same as "searchset".
+      def same_bundle_type?(pages, page)
+        pages.empty? || page["type"] == pages.first["type"]
       end
 
       def acceptable_entries?(page)
@@ -1260,7 +1266,9 @@ module Corvid
       # nil when the search did not answer; [] when it answered with no
       # matches. Same gates as #clinical_search (#search_bundle?, next link,
       # total). Only match-mode (or mode-less) entries of resource_type are
-      # results. A blocking OperationOutcome or a malformed entry is unknown.
+      # results. A blocking OperationOutcome, a malformed entry, or an entry
+      # whose search is not a Hash or whose mode is not match, include, or
+      # outcome is unknown.
       def references_from_search(resource_type, params)
         resources = list_search_resources(resource_type, params)
         return nil if resources.nil?
@@ -1291,6 +1299,7 @@ module Corvid
         resource = entry_resource(entry)
         return :unknown if resource == :unknown
         return :unknown if blocking_list_outcome?(resource)
+        return :unknown if malformed_entry_search?(entry)
         return unless typed_match_entry?(entry, resource_type)
 
         resource
@@ -1522,14 +1531,26 @@ module Corvid
       end
 
       def match_mode_entry?(entry)
-        return false unless entry.is_a?(Hash)
+        entry.is_a?(Hash) && entry_search_state(entry) == :match
+      end
 
+      # :match, :other, or :malformed. Absent search or an absent mode is a
+      # match. include and outcome are known non-matches. Anything else,
+      # including a search value that is not a Hash, is malformed.
+      def entry_search_state(entry)
         search = entry["search"]
-        return true if search.nil?
-        return false unless search.is_a?(Hash)
+        return :match if search.nil?
+        return :malformed unless search.is_a?(Hash)
 
-        mode = search["mode"]
-        mode.nil? || mode == "match"
+        case search["mode"]
+        when nil, "match" then :match
+        when "include", "outcome" then :other
+        else :malformed
+        end
+      end
+
+      def malformed_entry_search?(entry)
+        entry.is_a?(Hash) && entry_search_state(entry) == :malformed
       end
 
       def bundle_entries(bundle)
