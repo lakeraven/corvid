@@ -330,6 +330,57 @@ class Corvid::Adapters::FhirAdapterListReadUnknownTest < Minitest::Test
     assert_nil result, "get_conditions must reject paginated search when a later page has no type"
   end
 
+  # --- malformed Bundle.entry.search via real fhir_search (issue #674) ------
+
+  MEDICAID_COVERAGE = {
+    "resourceType" => "Coverage",
+    "id" => "c1",
+    "status" => "active",
+    "type" => { "coding" => [ { "code" => "medicaid" } ] }
+  }.freeze
+
+  def test_verify_eligibility_returns_nil_for_total_zero_with_string_search_field_via_http
+    bundle = {
+      "resourceType" => "Bundle",
+      "type" => "searchset",
+      "total" => 0,
+      "entry" => [ { "search" => "match", "resource" => MEDICAID_COVERAGE } ]
+    }
+    result = with_http_bundle(bundle) { @adapter.verify_eligibility("pt_test_001", "medicaid") }
+
+    assert_nil result, "total=0 with a malformed search entry must not answer as eligible"
+  end
+
+  def test_verify_eligibility_returns_nil_for_duplicate_coverage_with_array_search_field_via_http
+    cancelled = MEDICAID_COVERAGE.merge("status" => "cancelled")
+    bundle = {
+      "resourceType" => "Bundle",
+      "type" => "searchset",
+      "entry" => [
+        { "search" => [], "resource" => MEDICAID_COVERAGE },
+        { "search" => [], "resource" => cancelled }
+      ]
+    }
+    result = with_http_bundle(bundle) { @adapter.verify_eligibility("pt_test_001", "medicaid") }
+
+    assert_nil result, "duplicate Coverage/c1 with malformed search must be unknown"
+  end
+
+  def test_get_conditions_returns_nil_for_duplicate_conditions_with_array_search_field_via_http
+    condition = synthetic_condition_resource(id: "cond_dup_674")
+    bundle = {
+      "resourceType" => "Bundle",
+      "type" => "searchset",
+      "entry" => [
+        { "search" => [], "resource" => condition },
+        { "search" => [], "resource" => condition }
+      ]
+    }
+    result = with_http_bundle(bundle) { @adapter.get_conditions("pt_test_001") }
+
+    assert_nil result, "duplicate Condition entries with malformed search must be unknown"
+  end
+
   TRANSPORT_ERRORS.each do |error_class|
     LIST_READS.each_key do |method|
       define_method("test_#{method}_returns_nil_when_http_get_raises_#{error_class.name.split('::').last.downcase}") do
@@ -489,6 +540,24 @@ class Corvid::Adapters::FhirAdapterListReadUnknownTest < Minitest::Test
         "item" => item
       },
       "search" => { "mode" => "match" }
+    }
+  end
+
+  CONDITION_CATEGORY_SYSTEM = "http://terminology.hl7.org/CodeSystem/condition-category"
+
+  def synthetic_condition_resource(id:)
+    {
+      "resourceType" => "Condition",
+      "id" => id,
+      "subject" => { "reference" => "Patient/pt_test_001" },
+      "category" => [ {
+        "coding" => [ { "system" => CONDITION_CATEGORY_SYSTEM, "code" => "problem-list-item" } ]
+      } ],
+      "clinicalStatus" => { "coding" => [ { "code" => "active" } ] },
+      "code" => {
+        "coding" => [ { "system" => "http://example.test/codes", "code" => "C674", "display" => "TEST CONDITION 674" } ]
+      },
+      "onsetDateTime" => "2020-01-01"
     }
   end
 end
