@@ -42,6 +42,12 @@ module Corvid
       end
     end
 
+    # Raised by #submit! and #mark_submitted! when the record has unsaved
+    # edits. with_lock would raise RuntimeError and send nothing; this
+    # names the refusal. Basis edits are refused separately, as an
+    # undetermined Medicaid window, before this runs.
+    class UnsavedChanges < StandardError; end
+
     # The referral this claim bills, where there is one. Optional: claims
     # billed outside the referral workflow, and legacy rows the backfill could
     # not match unambiguously, carry no reference.
@@ -70,16 +76,20 @@ module Corvid
     MEDICAID_APPLICATION_ENDED_STATUSES = %w[denied enrolled coordinated exhausted].freeze
     private_constant :MEDICAID_APPLICATION_ENDED_STATUSES
 
-    # A plain save cannot move a never-submitted claim into the
-    # submission lifecycle. error counts: a draft may stop there, and
-    # the next save still cannot submit it. Creating a row that is
-    # already submitted stays allowed. A row that already has
-    # submitted_at, or whose status is already past draft and error,
-    # can still change status.
-    DRAFT_SUBMISSION_STATUSES = %w[submitted accepted paid].freeze
-    private_constant :DRAFT_SUBMISSION_STATUSES
-    NEVER_SUBMITTED_STATUSES = %w[draft error].freeze
-    private_constant :NEVER_SUBMITTED_STATUSES
+    # A plain save cannot move a claim that has never been sent into
+    # submitted, accepted, or paid, whatever status it is stored under.
+    # Never sent means submitted_at is still nil and no claim_identifier
+    # has been written by submit! or mark_submitted!. Creating a row
+    # that is already in one of those statuses stays allowed, and that
+    # row may move among them. Leaving one of them records submitted_at
+    # when it was missing, so the return trip is not a first send.
+    SENT_STATUSES = %w[submitted accepted paid].freeze
+    private_constant :SENT_STATUSES
+
+    # Mixed into the advisory-lock hash. The SQL and any error carry
+    # only the resulting integers, never the tenant or patient token.
+    MEDICAID_SUBMISSION_LOCK_PREFIX = "corvid.medicaid_submission.v1"
+    private_constant :MEDICAID_SUBMISSION_LOCK_PREFIX
 
     # The link is derived from referral_identifier + facility_identifier +
     # patient_identifier, so it is recomputed whenever any of those change.
@@ -93,6 +103,7 @@ module Corvid
     # helpers, remittance processing) records when it first happened, so the
     # KPIs above still count the claim after its status moves on.
     before_save :stamp_rejection_and_denial_times, if: :will_save_change_to_status?
+    before_save :preserve_prior_sent_status, if: :leaving_unrecorded_sent_status?
     # After validation, so this clear is not a direct write of the
     # override columns. A caller who assigns those columns still fails.
     before_save :clear_medicaid_hold_override_when_basis_changes
@@ -212,7 +223,7 @@ module Corvid
 
     def mark_submitted!(claim_identifier:)
       prepare_medicaid_hold_submission!
-      with_lock do
+      with_medicaid_submission_lock do
         enforce_pending_medicaid_hold!
         record_claim_submission!(claim_identifier:, status: "submitted")
       end
@@ -253,11 +264,55 @@ module Corvid
     end
 
     def submit!
-      prepare_medicaid_hold_submission!
-      enforce_referral_authorization_gate!
-      discard_resolved_referral_link!
-      with_lock { submit_locked! }
+      prepare_for_clearinghouse_submit!
+      submitted = nil
+      failure = nil
+      with_medicaid_submission_lock do
+        submitted = submit_locked!
+      rescue ActiveRecord::RecordInvalid => invalid
+        reload if persisted?
+        failure = invalid
+      end
+      raise failure if failure
+
+      submitted
     end
+
+    # Patient-level lock shared with Medicaid AlternateResourceCheck
+    # writes. Transaction-scoped, so it is held for the whole locked
+    # section — the hold decision and the clearinghouse call — and
+    # released on commit or rollback. The integers are a hash of the
+    # claim's tenant and patient; those tokens are not interpolated
+    # into the statement or into errors.
+    def self.lock_medicaid_patient_submission!(tenant_identifier, patient_identifier)
+      key1, key2 = medicaid_patient_lock_keys(tenant_identifier, patient_identifier)
+      # The inner call returns void. Selecting 1 keeps that type out of
+      # the result so the adapter does not warn on an unknown OID, and
+      # the patient token is not part of the statement.
+      sql = sanitize_sql_array([
+        "SELECT 1 FROM (SELECT pg_advisory_xact_lock(CAST(? AS integer), CAST(? AS integer))) AS locked",
+        key1, key2
+      ])
+      with_connection { |db| db.select_value(sql) }
+    end
+
+    def self.medicaid_patient_lock_keys(tenant_identifier, patient_identifier)
+      if tenant_identifier.blank? || patient_identifier.blank?
+        raise ArgumentError, "Medicaid submission lock requires a tenant and a patient"
+      end
+
+      digest = Digest::SHA256.digest(
+        medicaid_lock_material(tenant_identifier, patient_identifier)
+      )
+      [ digest.byteslice(0, 4).unpack1("l>"), digest.byteslice(4, 4).unpack1("l>") ]
+    end
+    private_class_method :medicaid_patient_lock_keys
+
+    def self.medicaid_lock_material(tenant_identifier, patient_identifier)
+      encoded = [ tenant_identifier, patient_identifier ].map { |value| "#{value.bytesize}:#{value}" }
+      [ MEDICAID_SUBMISSION_LOCK_PREFIX, *encoded ].join("\0")
+    end
+    private_class_method :medicaid_lock_material
 
     def check_status!
       return unless claim_identifier
@@ -456,16 +511,44 @@ module Corvid
       errors.add(:status, "can only become submitted, accepted, or paid through submit! or mark_submitted!")
     end
 
-    # submitted_at_in_database is the persisted signal that this claim
-    # has been sent. Setting submitted_at on the same save does not
-    # count. Fixtures created already submitted, accepted, or paid have
-    # a status outside NEVER_SUBMITTED_STATUSES, so later status edits
-    # stay valid even when that timestamp was left nil.
+    # submitted_at_in_database and claim_identifier_in_database are the
+    # persisted signals that submit! or mark_submitted! sent this claim.
+    # Values assigned on this save do not count. The stored status does
+    # not count either: rejected, denied, and appealed are not a send.
+    # A row inserted already submitted, accepted, or paid may still move
+    # among those statuses. Once it leaves them, preserve_prior_sent_status
+    # records submitted_at so that return is not treated as a first send.
     def never_submitted_entering_submission?
-      persisted? &&
-        submitted_at_in_database.nil? &&
-        NEVER_SUBMITTED_STATUSES.include?(status_in_database) &&
-        DRAFT_SUBMISSION_STATUSES.include?(status)
+      persisted? && never_sent_in_database? && entering_sent_status?
+    end
+
+    def never_sent_in_database?
+      submitted_at_in_database.nil? && claim_identifier_in_database.blank?
+    end
+
+    def entering_sent_status?
+      sent_status?(status) && !sent_status?(status_in_database)
+    end
+
+    def sent_status?(value)
+      SENT_STATUSES.include?(value)
+    end
+
+    # A row created already submitted, accepted, or paid has entered the
+    # submission lifecycle even when the insert left submitted_at nil.
+    # Record that before the status moves to rejected, denied, or
+    # appealed, or a later plain save could not be told from a draft
+    # that was never sent.
+    def leaving_unrecorded_sent_status?
+      will_save_change_to_status? &&
+        sent_status?(status_in_database) &&
+        !sent_status?(status) &&
+        submitted_at.nil? &&
+        claim_identifier.blank?
+    end
+
+    def preserve_prior_sent_status
+      self.submitted_at = created_at || Time.current
     end
 
     def medicaid_hold_override_not_assigned_directly
@@ -508,10 +591,12 @@ module Corvid
     end
 
     # PRC is payer of last resort. Hold while any pending Medicaid
-    # application for this patient, in this tenant, covers the service
-    # date or that window cannot be determined. The claim's own referral
-    # is not special. The check does not record an Indian exemption, so
-    # resolution passes "unknown".
+    # application for this patient, in the claim's own tenant, covers
+    # the service date or that window cannot be determined. The active
+    # TenantContext is not the scope: a held claim must not be sent
+    # under another tenant. The claim's own referral is not special.
+    # The check does not record an Indian exemption, so resolution
+    # passes "unknown".
     #
     # An override releases the hold only from the persisted columns.
     # Unsaved assignments are ignored. Unsaved changes to the bill's
@@ -519,7 +604,7 @@ module Corvid
     # because the in-memory bill and the row under the lock would
     # disagree. A Case, PrcReferral, or Medicaid check for this patient
     # created or updated after medicaid_hold_overridden_at ends the
-    # release. Those reads stay on the tenant-scoped models (ADR 0002).
+    # release. Those reads are filtered by this claim's tenant_identifier.
     def enforce_pending_medicaid_hold!
       refuse_unsaved_medicaid_hold_override!
       return if active_persisted_medicaid_hold_override?
@@ -529,9 +614,45 @@ module Corvid
 
     # Called before the row lock. lock! refuses a dirty record, and a
     # reload would hide the unsaved basis the caller asked us to refuse.
+    # An unset tenant context refuses here, before any hold lookup, so
+    # the claim is not evaluated against some other tenant and sent.
     def prepare_medicaid_hold_submission!
+      require_submission_tenant_context!
       refuse_unsaved_hold_basis_changes!
       refuse_unsaved_medicaid_hold_override!
+      refuse_unsaved_claim_changes!
+    end
+
+    def prepare_for_clearinghouse_submit!
+      prepare_medicaid_hold_submission!
+      enforce_referral_authorization_gate!
+      discard_resolved_referral_link!
+      refuse_unsaved_claim_changes!
+    end
+
+    def require_submission_tenant_context!
+      return if Corvid::TenantContext.current_tenant_identifier.present?
+
+      raise Corvid::MissingTenantContextError, "current_tenant_identifier not set"
+    end
+
+    def refuse_unsaved_claim_changes!
+      return unless persisted? && has_changes_to_save?
+
+      raise UnsavedChanges, "unsaved changes must be saved before submission"
+    end
+
+    # The advisory lock and the row lock share one transaction, so a
+    # Medicaid write for this patient waits until this section commits.
+    def with_medicaid_submission_lock
+      transaction do
+        lock_patient_medicaid_submission!
+        with_lock { yield }
+      end
+    end
+
+    def lock_patient_medicaid_submission!
+      self.class.lock_medicaid_patient_submission!(tenant_identifier, patient_identifier)
     end
 
     # The basis on the locked row is the only basis we can hold against.
@@ -554,22 +675,37 @@ module Corvid
       reload
     end
 
-    # The row lock covers the hold check, the adapter call, and the
-    # status update. The override is cleared before the adapter so a
-    # second submit! on this connection, while the adapter is in flight,
-    # re-reads a row whose override is already spent and is held.
-    # A later submit! on another connection blocks on the lock, then
-    # re-reads the committed row. A failed adapter rolls the clear back
-    # with the rest of the transaction.
+    # The row lock and the patient advisory lock cover the hold check,
+    # the adapter call, and the status update. The override is spent in
+    # its own savepoint before the adapter. That savepoint is released
+    # before the call. The call and the status save use a second
+    # savepoint. If that save raises, only the second savepoint rolls
+    # back, and the outer transaction still commits the spent override.
+    # A failed adapter raises out of the outer transaction, so the spend
+    # rolls back with it: nothing was accepted from the clearinghouse.
+    # A second submit! on this connection, while the adapter is in
+    # flight, re-reads a row whose override is already spent and is held.
     def submit_locked!
       enforce_pending_medicaid_hold!
-      release_persisted_medicaid_hold_override!
-      result = Corvid.adapter.submit_claim(to_claim_data)
-      record_claim_submission!(
-        claim_identifier: result[:claim_identifier],
-        status: clearinghouse_submission_status(result[:status])
-      )
-      result
+      spend_medicaid_hold_override!
+      send_locked_claim!
+    end
+
+    def spend_medicaid_hold_override!
+      transaction(requires_new: true) do
+        release_persisted_medicaid_hold_override!
+      end
+    end
+
+    def send_locked_claim!
+      transaction(requires_new: true) do
+        result = Corvid.adapter.submit_claim(to_claim_data)
+        record_claim_submission!(
+          claim_identifier: result[:claim_identifier],
+          status: clearinghouse_submission_status(result[:status])
+        )
+        result
+      end
     end
 
     def release_persisted_medicaid_hold_override!
@@ -618,9 +754,10 @@ module Corvid
       self.class.where(id: id).pick(*MEDICAID_HOLD_OVERRIDE_COLUMNS)
     end
 
-    # Cases and referrals are tenant-scoped (ADR 0002). Medicaid checks
-    # have no tenant column; they are reached through those referrals,
-    # so another tenant's application is not a change.
+    # Cases and referrals are filtered by this claim's tenant_identifier,
+    # not by TenantContext. Medicaid checks have no tenant column; they
+    # are reached through those referrals, so another tenant's
+    # application is not a change.
     def patient_records_changed_since?(overridden_at)
       return false if patient_identifier.blank?
 
@@ -637,13 +774,19 @@ module Corvid
     end
 
     def patient_cases
-      return Case.none if patient_identifier.blank?
+      return Case.unscoped.none if patient_identifier.blank?
 
-      Case.where(patient_identifier: patient_identifier)
+      Case.unscoped.where(
+        tenant_identifier: tenant_identifier,
+        patient_identifier: patient_identifier
+      )
     end
 
     def patient_referrals
-      PrcReferral.where(case_id: patient_case_ids)
+      PrcReferral.unscoped.where(
+        tenant_identifier: tenant_identifier,
+        case_id: patient_case_ids
+      )
     end
 
     def clearinghouse_submission_status(status)
@@ -691,8 +834,8 @@ module Corvid
     end
 
     # Medicaid rows for this patient that can still cover the service.
-    # Case and PrcReferral are tenant-scoped (ADR 0002), so another
-    # tenant's application is invisible here.
+    # The referral ids come from the claim's tenant, not the active one,
+    # so another tenant's context cannot hide a pending application.
     def pending_medicaid_checks
       patient_medicaid_checks
         .where.not(status: MEDICAID_APPLICATION_ENDED_STATUSES)
@@ -703,9 +846,9 @@ module Corvid
     end
 
     def patient_medicaid_checks
-      return AlternateResourceCheck.none if patient_identifier.blank?
+      return AlternateResourceCheck.unscoped.none if patient_identifier.blank?
 
-      AlternateResourceCheck.where(
+      AlternateResourceCheck.unscoped.where(
         prc_referral_id: patient_referral_ids,
         resource_type: "medicaid"
       )

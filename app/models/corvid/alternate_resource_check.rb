@@ -93,6 +93,9 @@ module Corvid
     scope :private_payer, -> { where(resource_type: PRIVATE_TYPES) }
 
     before_save :set_checked_at, if: :status_changed?
+    # Every Medicaid write takes the same patient lock as claim
+    # submission, so a concurrent submit! waits until this save commits.
+    before_save :lock_patient_medicaid_submission!
 
     # Class methods
     def self.create_all_for_referral(prc_referral)
@@ -166,6 +169,15 @@ module Corvid
     end
 
     def verify!
+      if resource_type == "medicaid"
+        transaction { verify_eligibility_answer! }
+      else
+        verify_eligibility_answer!
+      end
+    end
+
+    def verify_eligibility_answer!
+      lock_patient_medicaid_submission!
       patient_identifier = prc_referral.case&.patient_identifier
       return false unless patient_identifier
 
@@ -181,6 +193,7 @@ module Corvid
       update!(verification_attributes(result, next_status))
       true
     end
+    private :verify_eligibility_answer!
 
     # Record that coordination of benefits for this service is done.
     # Only active enrollment can be coordinated. Coordination is not a new
@@ -233,6 +246,27 @@ module Corvid
     end
 
     private
+
+    # Serialize with ClaimSubmission#submit! / #mark_submitted! for this
+    # patient. The key is hashed there; this method does not log the
+    # tenant or the patient token. A Medicaid row that cannot name its
+    # patient fails closed instead of writing without the lock.
+    def lock_patient_medicaid_submission!
+      return unless resource_type == "medicaid"
+
+      tenant_identifier, patient_identifier = medicaid_patient_lock_parts
+      if tenant_identifier.blank? || patient_identifier.blank?
+        raise ArgumentError, "Medicaid check cannot be saved without its patient"
+      end
+
+      ClaimSubmission.lock_medicaid_patient_submission!(tenant_identifier, patient_identifier)
+    end
+
+    def medicaid_patient_lock_parts
+      referral = PrcReferral.unscoped.find_by(id: prc_referral_id)
+      kase = Case.unscoped.find_by(id: referral.case_id) if referral
+      [ referral&.tenant_identifier, kase&.patient_identifier ]
+    end
 
     # checked_at is when eligibility was answered. Only a persisted row
     # leaving not_checked or checking records one. Coordination is not an
