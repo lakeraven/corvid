@@ -108,11 +108,17 @@ module Corvid
     # nothing, and `group` must not ride on a constraint for
     # `eligibility_group`.
     def bounded?(table, column)
-      value_list = /(?<![\w"])"?#{Regexp.escape(column)}"?(?:::[\w ]+?)?\s*(?:=\s*ANY\s*\(|IN\s*\()/i
       constraints = ActiveRecord::Base.connection.check_constraints(table)
-      constraints.any? { |c| c.expression.to_s.match?(value_list) }
+      constraints.any? { |c| confines_to_value_list?(c.expression.to_s, column) }
     rescue NotImplementedError
       false
+    end
+
+    # The cast is matched as a type name, not as any run of words, so
+    # "status::text NOT IN (...)" cannot pass as "status::text ... IN (".
+    def confines_to_value_list?(expression, column)
+      cast = /(?:::(?:text|character varying|varchar))?/
+      expression.match?(/(?<![\w"])"?#{Regexp.escape(column)}"?#{cast}\s*(?:=\s*ANY\s*\(|IN\s*\()/i)
     end
 
     # Rails polymorphic partner: a `*_type` string that has a matching `*_id`
