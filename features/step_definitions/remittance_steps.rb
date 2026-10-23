@@ -73,19 +73,7 @@ end
 
 When("I process the remittance") do
   @remittances ||= Corvid.adapter.fetch_remittances
-  @remittances.each do |rem|
-    (rem[:line_items] || []).each do |item|
-      claim = Corvid::ClaimSubmission.find_by(claim_identifier: item[:claim_identifier])
-      next unless claim
-      attrs = {}
-      attrs[:paid_amount] = item[:paid_amount] if item[:paid_amount]
-      attrs[:adjustment_amount] = item[:adjustment_amount] if item[:adjustment_amount]
-      attrs[:patient_responsibility] = item[:patient_responsibility] if item[:patient_responsibility]
-      attrs[:paid_date] = rem[:payment_date]
-      attrs[:status] = item[:status] == "denied" ? "denied" : (item[:paid_amount].to_f > 0 ? "paid" : claim.status)
-      claim.update!(attrs)
-    end
-  end
+  Corvid::RemittanceProcessor.call(@remittances)
 end
 
 When("the remittance polling job runs") do

@@ -96,10 +96,9 @@ module Corvid
       return if checklist.enrollment_verified
 
       result = @adapter.verify_tribal_enrollment(patient_id)
-      # Treat nil / non-hash adapter responses as "verification failed"
-      # rather than crashing — adapters reaching across network or
-      # backend boundaries can legitimately return nil on lookup miss.
-      return unless result.is_a?(Hash) && result[:enrolled]
+      # Nil / non-hash responses are a lookup miss. Only enrolled exactly
+      # true with confidence exactly :verified may check the item.
+      return unless result.is_a?(Hash) && result[:enrolled] == true && result[:confidence] == :verified
 
       checklist.verify_item!(:enrollment_verified, source: source)
     end

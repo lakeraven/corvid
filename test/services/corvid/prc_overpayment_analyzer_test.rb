@@ -523,9 +523,75 @@ class Corvid::PrcOverpaymentAnalyzerTest < ActiveSupport::TestCase
               "rate_source must be nil when no Medicare rate was actually computed"
   end
 
+  # -- Wage index keys are CMS wage areas, not PFS localities (#369) --------
+  #
+  # corvid_ipps_hospital_rates is keyed by CMS wage area: 5-digit CBSA
+  # codes and 2-digit rural-state codes ("02" = Alaska rest-of-state).
+  # The facility dictionary's locality is a PFS (MAC) locality ("02" =
+  # Seattle metro). The two code systems overlap, so until a facility
+  # carries a real CBSA (#372) the institutional providers must price
+  # at the NATIONAL wage row, never at whichever wage area happens to
+  # share the PFS locality's digits.
+
+  test "an inpatient claim does not take the wage index of a wage area that shares the PFS locality code" do
+    Corvid::IppsDrgWeight.create!(fiscal_year: 2009, drg_code: "470", relative_weight: 2.0743)
+    seed_colliding_wage_areas(fiscal_year: 2009)
+
+    result = analyze_single_obligation(procedure: "HIP_REPLACE_THR", paid: 42_000).results.first
+
+    # 2.0743 × 6000 × 1.0 (NATIONAL) = 12_445.80, not × 1.3 (rural Alaska)
+    assert_in_delta 12_445.80, result.medicare_equivalent.to_f, 0.01
+  end
+
+  test "an outpatient claim does not take the wage index of a wage area that shares the PFS locality code" do
+    Corvid::PrcProcedureDictionary.register(
+      "OUTPATIENT_TEST", hcpcs: "12345", apc: "5071", description: "Test outpatient procedure"
+    )
+    Corvid::OppsApcWeight.create!(calendar_year: 2009, apc_code: "5071", relative_weight: 25.4378)
+    Corvid::OppsConversionFactor.create!(calendar_year: 2009, locality: "NATIONAL", conversion_factor: 70.0)
+    seed_colliding_wage_areas(fiscal_year: 2009)
+
+    result = analyze_single_obligation(procedure: "OUTPATIENT_TEST", paid: 5_000).results.first
+
+    # 25.4378 × 70.0 × 1.0 (NATIONAL) = 1780.65, not × 1.3 (rural Alaska)
+    assert_equal :opps, result.payment_system
+    assert_in_delta 1_780.65, result.medicare_equivalent.to_f, 0.01
+  end
+
+  test "an ASC claim does not take the wage index of a wage area that shares the PFS locality code" do
+    Corvid::PrcProcedureDictionary.register(
+      "OUTPATIENT_TEST", hcpcs: "12345", apc: "5071", description: "Test outpatient procedure"
+    )
+    Corvid::AscHcpcsRate.create!(
+      calendar_year: 2009, hcpcs_code: "12345", payment_indicator: "G2", payment_weight: 20.0
+    )
+    Corvid::AscConversionFactor.create!(calendar_year: 2009, locality: "NATIONAL", conversion_factor: 42.0)
+    Corvid::AscFacility.create!(ccn: "ASC-VENDOR-1", effective_date: Date.new(2009, 1, 1))
+    seed_colliding_wage_areas(fiscal_year: 2009)
+
+    result = analyze_single_obligation(
+      procedure: "OUTPATIENT_TEST", paid: 1_000, vendor_id: "ASC-VENDOR-1"
+    ).results.first
+
+    # 20.0 × 42.0 × 1.0 (NATIONAL) = 840.00, not × 1.3 (rural Alaska)
+    assert_equal :asc, result.payment_system
+    assert_in_delta 840.00, result.medicare_equivalent.to_f, 0.01
+  end
+
   # -- Helpers ---------------------------------------------------------------
 
   private
+
+  # NATIONAL plus the rural-state wage area whose code equals the SEA
+  # facility's PFS locality ("02").
+  def seed_colliding_wage_areas(fiscal_year:)
+    Corvid::IppsHospitalRate.create!(
+      fiscal_year: fiscal_year, locality: "NATIONAL", base_rate: 6_000.0, wage_index: 1.0
+    )
+    Corvid::IppsHospitalRate.create!(
+      fiscal_year: fiscal_year, locality: TEST_LOCALITY, base_rate: 6_000.0, wage_index: 1.3
+    )
+  end
 
   def analyze_single_obligation(procedure:, paid:, service_date: TEST_DATE, vendor_id: "V01")
     paid_str = format("%.2f", paid)

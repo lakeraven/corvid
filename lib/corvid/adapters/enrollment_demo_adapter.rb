@@ -42,12 +42,12 @@ module Corvid
           sex: "M",
           ssn_last4: nil
         )
+        # No confidence key: MockAdapter reports :unavailable.
         add_enrollment("pt_demo_nonenrolled",
           enrolled: false,
           membership_number: nil,
           tribe_name: nil,
-          member_status: "denied",
-          confidence: :verified
+          member_status: "denied"
         )
         add_residency("pt_demo_nonenrolled",
           on_reservation: false,
