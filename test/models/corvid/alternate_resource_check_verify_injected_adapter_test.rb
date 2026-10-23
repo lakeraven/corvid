@@ -22,7 +22,7 @@ class Corvid::AlternateResourceCheckVerifyInjectedAdapterTest < ActiveSupport::T
         coverage_type: "medicaid",
         eligible: true,
         state: "XA",
-        eligibility_group: "expansion_adult",
+        eligibility_group: "waiver_adult",
         eligibility_group_source: "eligibility_response",
         coverage_start: Date.current.beginning_of_year,
         coverage_end: Date.current.end_of_year + 1.year
@@ -54,7 +54,7 @@ class Corvid::AlternateResourceCheckVerifyInjectedAdapterTest < ActiveSupport::T
 
       assert_empty global_get_coverages_calls,
         "verify!(adapter:) must not read coverages from the global adapter"
-      refute_equal "expansion_adult", check.eligibility_group,
+      refute_equal "waiver_adult", check.eligibility_group,
         "eligibility group must not come from global adapter coverages"
       refute_equal "eligibility_response", check.eligibility_group_source,
         "eligibility group source must not come from global adapter coverages"
