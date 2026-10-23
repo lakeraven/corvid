@@ -434,6 +434,26 @@
     convention permit would cover it; if it holds a payer claim number it is
     an (R) unique identifying number on a person-linked row.
 
+- table: corvid_fmap_determinations
+  column: best_available_rule_key
+  classification: unclassified
+  type: string
+  why: >
+    FmapClassificationService writes the key of a corvid_fmap_rules row, but
+    unlike rule_key nothing validates it, and supersede_with! or a direct
+    create can store any string. Not patient data by design; permit it once a
+    foreign key to corvid_fmap_rules.rule_key bounds it.
+
+- table: corvid_fmap_determinations
+  column: jurisdiction
+  classification: unclassified
+  type: string
+  why: >
+    Caller-supplied state (or US) whose rules were applied. A state is not a
+    Safe Harbor identifier, but the model checks presence only, and an
+    unrecognised value is persisted (it simply matches no rules). Permit it
+    once a CHECK bounds it to a state-code shape.
+
 - table: corvid_claim_submissions
   column: denial_reason_codes
   classification: needs_decision

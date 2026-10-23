@@ -161,17 +161,18 @@ module Corvid
     # would be something else entirely (verified by probe).
     #
     # verification_snapshot_key_version names the host key the snapshot HMAC
-    # was taken under (ADR 0008), length-capped by the model. On an FMAP
-    # determination, rule_key and best_available_rule_key name rows of the
-    # global corvid_fmap_rules table (the model requires the applied rule to
-    # exist and be in force), and jurisdiction is the state or "US" whose
-    # rules were applied — a state is not a Safe Harbor geographic identifier.
+    # was taken under (ADR 0008): host configuration, printable ASCII, at most
+    # 64 characters. On an FMAP determination, rule_key must name a rule of
+    # the global corvid_fmap_rules table in force on the date of service, or
+    # be blank when undetermined — the model checks both whenever the decided
+    # fields are written. (best_available_rule_key and jurisdiction on the
+    # same row are NOT validated that way, so they are disclosed instead.)
     PROVENANCE_COLUMNS = {
       "corvid_prc_overpayment_analyses" => %w[analyzer_version rate_source rate_source_release],
       "corvid_cms_fee_schedule_releases" => %w[cms_release_tag],
       "corvid_tasks" => %w[milestone_key],
       "corvid_prc_eligibility_decisions" => %w[verification_snapshot_hash verification_snapshot_key_version],
-      "corvid_fmap_determinations" => %w[rule_key best_available_rule_key jurisdiction]
+      "corvid_fmap_determinations" => %w[rule_key]
     }.freeze
 
     # Provenance held as jsonb. rule_citations is the applied rule's
