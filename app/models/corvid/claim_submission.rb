@@ -25,6 +25,11 @@ module Corvid
     # unauthorized referral bills care the programme never agreed to buy.
     class ReferralNotAuthorized < StandardError; end
 
+    # Raised by #submit! and #mark_submitted! when this claim bills a PRC
+    # referral whose delivered care has not been recorded. No report means
+    # awaiting_report. A not_delivered report is not billable (corvid#599).
+    class FulfilmentNotRecorded < StandardError; end
+
     # The referral this claim bills, where there is one. Optional: claims
     # billed outside the referral workflow, and legacy rows the backfill could
     # not match unambiguously, carry no reference.
@@ -161,6 +166,7 @@ module Corvid
     end
 
     def mark_submitted!(claim_identifier:)
+      enforce_referral_fulfilment_gate!
       update!(
         claim_identifier: claim_identifier,
         status: "submitted",
@@ -192,6 +198,8 @@ module Corvid
 
     def submit!
       enforce_referral_authorization_gate!
+      # Fulfilment is decided before the clearinghouse is touched.
+      enforce_referral_fulfilment_gate!
       result = Corvid.adapter.submit_claim(to_claim_data)
       update!(
         claim_identifier: result[:claim_identifier],
@@ -286,6 +294,27 @@ module Corvid
         if candidates.size == 1 && candidates.first.case&.patient_identifier == patient_identifier
           candidates.first
         end
+    end
+
+    # A linked PRC referral is billable only when an external report names
+    # delivered care. Unlinked claims are ordinary billing and are left
+    # alone. Called before any clearinghouse call, so a refusal never
+    # submits and never changes the claim. The message names the referral
+    # identifier and the fulfilment status only (ADR 0003).
+    def enforce_referral_fulfilment_gate!
+      resolve_prc_referral_from_identifier if prc_referral.blank? && referral_identifier.present?
+      return if prc_referral.blank?
+
+      referral = prc_referral.reload
+      return if Corvid::ReferralFulfilment.billable_for_delivered_care?(referral)
+
+      raise FulfilmentNotRecorded, fulfilment_not_recorded_message(referral)
+    end
+
+    def fulfilment_not_recorded_message(referral)
+      fulfilment = Corvid::ReferralFulfilment.status(referral)
+      "Claim for referral #{referral.referral_identifier} cannot be submitted: " \
+        "fulfilment is #{fulfilment}; delivered care has not been recorded"
     end
 
     # A claim that bills a PRC referral may only be submitted once that
