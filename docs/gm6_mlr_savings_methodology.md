@@ -14,11 +14,14 @@ referred-care (PRC) claim panel for a 2-provider Urban Indian Organization
 **Reproduce:**
 
 ```bash
-cd corvid
-bundle install                                                      # first time
-cd test/dummy && RAILS_ENV=test bin/rails db:prepare && cd ../..    # first time
-cd test/dummy && RAILS_ENV=test bin/rails demo:mlr_savings
+bundle install                                                                 # first time
+cd test/dummy && bundle install && cd ../..                                    # first time
+cd test/dummy && RAILS_ENV=development bin/rails db:prepare && cd ../..        # first time
+cd test/dummy && RAILS_ENV=development bin/rails demo:mlr_savings
 ```
+
+The demos use the development database and must never be run with
+`RAILS_ENV=test` (it can wipe the test database).
 
 The task is idempotent — every seeded rate row and the whole claim panel are
 deleted/recreated on each run, so it's safe to re-run.
