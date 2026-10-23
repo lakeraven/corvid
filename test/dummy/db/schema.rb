@@ -332,6 +332,21 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_22_000002) do
     t.index ["tenant_identifier", "facility_identifier"], name: "idx_corvid_elig_checklists_tenant_facility"
   end
 
+  create_table "corvid_facility_authorities", force: :cascade do |t|
+    t.boolean "air_eligible", default: false, null: false
+    t.string "authority_type", null: false
+    t.datetime "created_at", null: false
+    t.date "effective_on", null: false
+    t.date "expires_on"
+    t.string "facility_identifier", null: false
+    t.string "four_walls_exception_basis"
+    t.string "service_area"
+    t.string "tenant_identifier", null: false
+    t.datetime "updated_at", null: false
+    t.index ["tenant_identifier", "facility_identifier"], name: "idx_corvid_facility_authorities_tenant_facility"
+    t.check_constraint "authority_type::text = ANY (ARRAY['ihs_direct'::character varying, 'contract_638'::character varying, 'compact_638'::character varying, 'uio'::character varying, 'fqhc'::character varying, 'other'::character varying]::text[])", name: "corvid_facility_authorities_type_check"
+  end
+
   create_table "corvid_fee_schedule_entries", force: :cascade do |t|
     t.string "cpt_code", null: false
     t.string "locality", null: false
@@ -365,6 +380,68 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_22_000002) do
     t.datetime "updated_at", null: false
     t.index ["tenant_identifier", "facility_identifier"], name: "idx_on_tenant_identifier_facility_identifier_4bbe5beaee"
     t.index ["tenant_identifier", "program"], name: "index_corvid_fee_schedules_on_tenant_identifier_and_program"
+  end
+
+  create_table "corvid_fmap_determinations", force: :cascade do |t|
+    t.boolean "aian_verified", default: false, null: false
+    t.string "best_available_category"
+    t.string "best_available_rule_key"
+    t.string "category", null: false
+    t.string "claim_reference"
+    t.string "coverage_group"
+    t.datetime "created_at", null: false
+    t.date "date_of_service", null: false
+    t.string "determination_reason"
+    t.datetime "determined_at", null: false
+    t.string "encounter_identifier", null: false
+    t.jsonb "evidence_refs", default: [], null: false
+    t.string "facility_identifier"
+    t.decimal "fmap_percent", precision: 5, scale: 2
+    t.string "jurisdiction", null: false
+    t.jsonb "missing_evidence", default: [], null: false
+    t.string "person_identifier"
+    t.string "received_through_basis"
+    t.jsonb "rule_citations", default: [], null: false
+    t.string "rule_key"
+    t.bigint "state_share_delta_cents"
+    t.bigint "superseded_by_id"
+    t.string "tenant_identifier", null: false
+    t.datetime "updated_at", null: false
+    t.bigint "facility_authority_id"
+    t.string "authority_type"
+    t.index ["facility_authority_id"], name: "idx_corvid_fmap_determinations_authority"
+    t.index ["superseded_by_id"], name: "idx_corvid_fmap_determinations_superseded_by", unique: true, where: "(superseded_by_id IS NOT NULL)"
+    t.index ["tenant_identifier", "date_of_service"], name: "idx_corvid_fmap_determinations_tenant_dos"
+    t.index ["tenant_identifier", "encounter_identifier"], name: "idx_corvid_fmap_determinations_tenant_encounter"
+    t.check_constraint "authority_type IS NULL OR (authority_type::text = ANY (ARRAY['ihs_direct'::character varying, 'contract_638'::character varying, 'compact_638'::character varying, 'uio'::character varying, 'fqhc'::character varying, 'other'::character varying]::text[]))", name: "corvid_fmap_determinations_authority_type_check"
+    t.check_constraint "best_available_category IS NULL OR (best_available_category::text = ANY (ARRAY['fmap_100_ihs_638'::character varying, 'fmap_100_cca'::character varying, 'fmap_100_uio'::character varying, 'fmap_90_expansion'::character varying, 'fmap_regular'::character varying, 'non_medicaid'::character varying]::text[]))", name: "corvid_fmap_determinations_best_category_check"
+    t.check_constraint "category::text = ANY (ARRAY['fmap_100_ihs_638'::character varying, 'fmap_100_cca'::character varying, 'fmap_100_uio'::character varying, 'fmap_90_expansion'::character varying, 'fmap_regular'::character varying, 'non_medicaid'::character varying, 'undetermined'::character varying]::text[])", name: "corvid_fmap_determinations_category_check"
+    t.check_constraint "coverage_group IS NULL OR (coverage_group::text = ANY (ARRAY['expansion_adult'::character varying, 'waiver_adult'::character varying, 'other'::character varying, 'unknown'::character varying]::text[]))", name: "corvid_fmap_determinations_coverage_group_check"
+    t.check_constraint "category::text <> 'undetermined'::text OR rule_key IS NULL AND fmap_percent IS NULL AND determination_reason IS NOT NULL", name: "corvid_fmap_determinations_undetermined_check"
+    t.check_constraint "determination_reason IS NULL OR (determination_reason::text = ANY (ARRAY['no_rules_in_force'::character varying, 'no_matching_rule'::character varying, 'unevidenced_100_percent'::character varying]::text[]))", name: "corvid_fmap_determinations_reason_check"
+    t.check_constraint "received_through_basis IS NULL OR (received_through_basis::text = ANY (ARRAY['facility_authority'::character varying, 'cca'::character varying]::text[]))", name: "corvid_fmap_determinations_basis_check"
+  end
+
+  create_table "corvid_fmap_rules", force: :cascade do |t|
+    t.string "category", null: false
+    t.string "coverage_group"
+    t.datetime "created_at", null: false
+    t.date "effective_on"
+    t.date "expires_on"
+    t.jsonb "facility_authority_types", default: [], null: false
+    t.decimal "fmap_percent", precision: 5, scale: 2
+    t.string "jurisdiction", default: "US", null: false
+    t.text "notes"
+    t.jsonb "received_through_bases", default: [], null: false
+    t.boolean "requires_aian", default: false, null: false
+    t.boolean "requires_received_through", default: false, null: false
+    t.string "rule_key", null: false
+    t.string "statutory_citation", null: false
+    t.datetime "updated_at", null: false
+    t.index ["jurisdiction", "effective_on"], name: "index_corvid_fmap_rules_on_jurisdiction_and_effective_on"
+    t.index ["rule_key"], name: "index_corvid_fmap_rules_on_rule_key", unique: true
+    t.check_constraint "category::text = ANY (ARRAY['fmap_100_ihs_638'::character varying, 'fmap_100_cca'::character varying, 'fmap_100_uio'::character varying, 'fmap_90_expansion'::character varying, 'fmap_regular'::character varying, 'non_medicaid'::character varying]::text[])", name: "corvid_fmap_rules_category_check"
+    t.check_constraint "coverage_group IS NULL OR (coverage_group::text = ANY (ARRAY['expansion_adult'::character varying, 'waiver_adult'::character varying, 'other'::character varying]::text[]))", name: "corvid_fmap_rules_coverage_group_check"
   end
 
   create_table "corvid_ipps_drg_weights", force: :cascade do |t|
@@ -620,6 +697,8 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_22_000002) do
   add_foreign_key "corvid_claim_submissions", "corvid_prc_referrals", column: "prc_referral_id"
   add_foreign_key "corvid_committee_reviews", "corvid_prc_referrals", column: "prc_referral_id"
   add_foreign_key "corvid_eligibility_checklists", "corvid_prc_referrals", column: "prc_referral_id"
+  add_foreign_key "corvid_fmap_determinations", "corvid_facility_authorities", column: "facility_authority_id"
+  add_foreign_key "corvid_fmap_determinations", "corvid_fmap_determinations", column: "superseded_by_id"
   add_foreign_key "corvid_prc_overpayment_analyses", "corvid_prc_obligations", column: "prc_obligation_id"
   add_foreign_key "corvid_prc_payments", "corvid_prc_obligations", column: "prc_obligation_id"
   add_foreign_key "corvid_prc_referrals", "corvid_cases", column: "case_id"
