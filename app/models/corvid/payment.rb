@@ -32,7 +32,9 @@ module Corvid
       end
     end
 
-    aasm column: :status do
+    # whiny_persistence pinned: aasm 6 flipped its default to true, which would
+    # make a bang event on an invalid record raise instead of returning false.
+    aasm column: :status, whiny_persistence: false do
       state :pending, initial: true
       state :processing, :succeeded, :failed, :refunded
 
