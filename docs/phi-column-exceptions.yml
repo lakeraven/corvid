@@ -535,8 +535,9 @@
   classification: unclassified
   type: string
   why: >
-    Role code (from the FHIR role coding on import); presence-validated only,
-    no constraint.
+    Role code; FhirAdapter reads it from the CareTeam participant role
+    coding, add_member! takes any string. Presence-validated only, no
+    constraint.
 
 - table: corvid_claim_submissions
   column: provider_type
@@ -548,13 +549,13 @@
   column: provider_confidence
   classification: unclassified
   type: string
-  why: "Confidence label set by the eligibility service; no constraint."
+  why: "Copied verbatim from the adapter enrollment response (confidence) by TribalEligibilityService; no constraint."
 
 - table: corvid_prc_obligations
   column: status
   classification: unclassified
   type: string
-  why: "Obligation status from the CHS/TRD import; no constraint."
+  why: "Copied verbatim from a field of the PRC report file by prc_report_parser and prc_importer; no constraint."
 
 - table: corvid_prc_overpayment_analyses
   column: payment_system
