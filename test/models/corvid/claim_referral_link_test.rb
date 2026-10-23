@@ -345,8 +345,11 @@ class Corvid::ClaimReferralLinkTest < ActiveSupport::TestCase
       claim = build_claim(facility: "fac_a", referral_identifier: "REF-HOST-ERR-ID", patient: patient)
       claim.save!
 
-      assert claim.update(status: "error", claim_identifier: "HOST-IMPORTED-1")
-      assert_equal "error", claim.reload.status
+      refute claim.update(status: "error", claim_identifier: "HOST-IMPORTED-1")
+      assert_includes claim.errors[:claim_identifier], Corvid::ClaimSubmission::SENT_MARKER_MESSAGE
+      claim.reload
+      assert_equal "draft", claim.status
+      assert_nil claim.claim_identifier
       assert_nil claim.submitted_at
 
       assert_raises(ActiveRecord::RecordInvalid) { claim.mark_paid!(paid_amount: 60.0) }
@@ -369,9 +372,10 @@ class Corvid::ClaimReferralLinkTest < ActiveSupport::TestCase
       assert_predicate claim.errors[:submitted_at], :present?
       assert_nil claim.reload.submitted_at
 
-      assert claim.update(status: "error", submitted_at: 1.hour.ago)
+      refute claim.update(status: "error", submitted_at: 1.hour.ago)
+      assert claim.errors[:submitted_at].present? || claim.errors[:claim_identifier].present?
       claim.reload
-      assert_equal "error", claim.status
+      assert_equal "draft", claim.status
       assert_nil claim.submitted_at
 
       assert claim.update(status: "error")
@@ -439,7 +443,11 @@ class Corvid::ClaimReferralLinkTest < ActiveSupport::TestCase
       claim.save!
 
       refute claim.update(status: "paid")
-      assert claim.update(status: "error", claim_identifier: "HOST-IMPORTED-1")
+      refute claim.update(status: "error", claim_identifier: "HOST-IMPORTED-1")
+      assert_includes claim.errors[:claim_identifier], Corvid::ClaimSubmission::SENT_MARKER_MESSAGE
+      claim.reload
+      assert_equal "draft", claim.status
+      assert_nil claim.claim_identifier
 
       assert_raises(ActiveRecord::RecordInvalid) { claim.mark_paid!(paid_amount: 100.0) }
       refute_equal "paid", claim.reload.status
