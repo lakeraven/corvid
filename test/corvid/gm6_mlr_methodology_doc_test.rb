@@ -62,6 +62,20 @@ class Gm6MlrMethodologyDocTest < Minitest::Test
     .+
   }ix
 
+  DEMO_TEST_ENV_COMMAND = "cd test/dummy && RAILS_ENV=test bin/rails demo:mlr_savings"
+
+  FENCE_STYLE_SAMPLES = [
+    [ "```bash\n#{DEMO_TEST_ENV_COMMAND}\n```", "column-0 bash backticks" ],
+    [ "```sh\n#{DEMO_TEST_ENV_COMMAND}\n```", "sh info string" ],
+    [ "```shell\n#{DEMO_TEST_ENV_COMMAND}\n```", "shell info string" ],
+    [ "```console\n#{DEMO_TEST_ENV_COMMAND}\n```", "console info string" ],
+    [ "~~~bash\n#{DEMO_TEST_ENV_COMMAND}\n~~~", "tilde bash fence" ],
+    [ "~~~sh\n#{DEMO_TEST_ENV_COMMAND}\n~~~", "tilde sh fence" ],
+    [ "1. step\n   ```bash\n   #{DEMO_TEST_ENV_COMMAND}\n   ```\n", "list-nested bash fence" ]
+  ].freeze
+
+  SHELL_FENCE_INFO = /\A(?:bash|sh|shell|console)\z/i
+
   def setup
     @doc = File.read(DOC, encoding: "UTF-8")
     @defined_tasks = defined_rake_tasks
@@ -83,6 +97,20 @@ class Gm6MlrMethodologyDocTest < Minitest::Test
                  "commands must not set RAILS_ENV=test (use development): #{offenders.join(" | ")}"
   end
 
+  def test_all_fence_styles_extract_commands_for_rails_env_test_check
+    FENCE_STYLE_SAMPLES.each do |snippet, label|
+      offenders = shell_commands_from_markdown(snippet).select { |cmd| command_sets_rails_env_test?(cmd) }
+      refute_empty offenders,
+                   "#{label} fence must surface RAILS_ENV=test demo command for checks: #{snippet.inspect}"
+    end
+  end
+
+  def test_inline_demo_test_env_command_is_checked
+    offenders = shell_commands_from_markdown("run `#{DEMO_TEST_ENV_COMMAND}` once")
+      .select { |cmd| command_sets_rails_env_test?(cmd) }
+    refute_empty offenders, "inline span must be checked for RAILS_ENV=test"
+  end
+
   def test_doc_rake_tasks_are_defined
     tasks = doc_runnable_tasks
     undefined = tasks.reject { |task| task_defined?(task) }.sort.uniq
@@ -102,11 +130,44 @@ class Gm6MlrMethodologyDocTest < Minitest::Test
                  "Reproduce section must warn that DATABASE_URL overrides the environment")
   end
 
+  def test_reproduce_section_warns_test_database_rate_row_hazard
+    text = reproduce_section_text
+    assert_match(/test\s+database/i, text,
+                 "Reproduce section must name the test-database hazard explicitly")
+    assert_match(/rate\s+row/i, text,
+                 "Reproduce section must warn that rate rows are left in the test database")
+    assert_match(/delete|reinsert|recreated/i, text,
+                 "Reproduce section must describe delete-and-reinsert behaviour")
+  end
+
+  def test_reproduce_section_does_not_claim_test_database_wipe
+    refute_match(/\bwipe(?:s)?\s+the\s+test\s+database\b/i, reproduce_section_text,
+                 "Reproduce section must not claim the demo wipes the test database")
+  end
+
   def test_reproduce_block_unsets_database_url_before_rails
     offenders = reproduce_rails_lines_before_database_url_unset
     assert_empty offenders,
-                 "Reproduce bash block must unset DATABASE_URL (or env -u) before bin/rails: " \
+                 "Reproduce shell block must unset DATABASE_URL (or env -u) before bin/rails: " \
                  "#{offenders.join(" | ")}"
+  end
+
+  def test_line_clears_database_url_rejects_echo_and_conditional_mutations
+    refute line_clears_database_url?("echo unset DATABASE_URL"),
+           "echo mentioning unset must not count as clearing DATABASE_URL"
+    refute line_clears_database_url?('[ -n "$X" ] && unset DATABASE_URL'),
+           "conditional unset must not count as clearing DATABASE_URL"
+    assert line_clears_database_url?("unset DATABASE_URL")
+    assert line_clears_database_url?("unset OTHER_VAR DATABASE_URL")
+  end
+
+  def test_doc_outside_reproduce_bin_rails_commands_clear_database_url
+    offenders = bin_rails_test_dummy_commands_outside_reproduce_shell_fence
+      .reject { |entry| command_includes_database_url_clear?(entry[:command]) }
+    assert_empty offenders,
+                 "every test/dummy bin/rails command outside the Reproduce shell block must clear " \
+                 "DATABASE_URL (unset DATABASE_URL && or env -u DATABASE_URL): " \
+                 "#{offenders.map { |e| e[:command] }.join(" | ")}"
   end
 
   def test_doc_commands_use_numeric_task_arguments_only
@@ -163,8 +224,8 @@ class Gm6MlrMethodologyDocTest < Minitest::Test
   end
 
   def test_reproduce_block_installs_dummy_gems_before_bin_rails
-    block = reproduce_bash_block
-    assert block, "Reproduce block must include a ```bash``` snippet"
+    block = reproduce_shell_fence_block
+    assert block, "Reproduce section must include a fenced shell snippet"
 
     offenders = []
     dummy_gems_ready = false
@@ -183,62 +244,103 @@ class Gm6MlrMethodologyDocTest < Minitest::Test
 
   private
 
+  def shell_commands_from_markdown(text)
+    fenced_shell_command_lines(text) + inline_shell_commands_from(text)
+  end
+
   def doc_all_shell_commands
-    doc_shell_commands + inline_shell_commands
+    shell_commands_from_markdown(@doc)
   end
 
-  def doc_shell_commands
-    bash_blocks.flat_map { |block| shell_lines(block) }
-  end
-
-  def inline_shell_commands
-    inline_code_spans.select { |span| span.match?(INLINE_SHELL_COMMAND_PATTERN) }
-  end
-
-  def inline_code_spans
-    spans = []
-    in_fence = false
-
-    @doc.each_line do |line|
-      if line.start_with?("```")
-        in_fence = !in_fence
-        next
+  def fenced_shell_command_lines(text)
+    fenced_code_blocks_with_info(text).flat_map do |block, info|
+      lines = shell_lines(block)
+      if shell_fence_info?(info)
+        lines
+      else
+        lines.select { |line| looks_like_shell_command_line?(line) }
       end
-      next if in_fence
-
-      line.scan(/`([^`\n]+)`/) { spans << Regexp.last_match(1) }
     end
-
-    spans
   end
 
-  def bash_blocks
+  def shell_fence_info?(info)
+    info&.match?(SHELL_FENCE_INFO)
+  end
+
+  def looks_like_shell_command_line?(line)
+    return true if line.match?(INLINE_SHELL_COMMAND_PATTERN)
+    return true if line.match?(/\A(?:unset|export|env|cd|bundle|RAILS_ENV=)/i)
+
+    line.match?(/\b(?:bin\/rails|bundle \s+ exec \s+ rails|bundle \s+ exec \s+ rake|rake)\b/i)
+  end
+
+  def inline_shell_commands_from(text)
+    inline_code_spans_from(text).select { |span| span.match?(INLINE_SHELL_COMMAND_PATTERN) }
+  end
+
+  def fenced_code_blocks_with_info(text)
     blocks = []
-    in_bash = false
+    in_fence = false
+    open_marker = nil
+    open_info = nil
     buffer = []
 
-    @doc.each_line do |line|
-      if line.start_with?("```bash")
-        in_bash = true
+    text.each_line do |line|
+      if in_fence
+        if fence_close?(line, open_marker)
+          blocks << [ buffer.join, open_info ]
+          in_fence = false
+          buffer = []
+        else
+          buffer << line
+        end
+      elsif (open = parse_fence_open(line))
+        in_fence = true
+        open_marker = open[:marker]
+        open_info = open[:info]
         buffer = []
-        next
       end
-      if in_bash && line.start_with?("```")
-        blocks << buffer.join("\n")
-        in_bash = false
-        next
-      end
-      buffer << line if in_bash
     end
 
     blocks
   end
 
-  def shell_lines(block)
-    block.lines.filter_map do |line|
-      stripped = line.split("#", 2).first&.strip
-      stripped if stripped && !stripped.empty?
+  def parse_fence_open(line)
+    match = line.match(/^(\s*)(`{3,}|~{3,})([^\s`~]*)(.*)$/)
+    return nil unless match
+
+    { marker: match[2], info: match[3] }
+  end
+
+  def fence_close?(line, open_marker)
+    match = line.match(/^(\s*)(`{3,}|~{3,})\s*$/)
+    return false unless match
+
+    close_marker = match[2]
+    close_marker[0] == open_marker[0] && close_marker.length >= open_marker.length
+  end
+
+  def inline_code_spans_from(text)
+    spans = []
+    in_fence = false
+    open_marker = nil
+
+    text.each_line do |line|
+      if in_fence
+        in_fence = false if fence_close?(line, open_marker)
+        next
+      end
+
+      if (open = parse_fence_open(line))
+        in_fence = true
+        open_marker = open[:marker]
+        next
+      end
+
+      line.scan(/`([^`\n]+)`/) { spans << Regexp.last_match(1) }
     end
+
+    spans
   end
 
   def command_sets_rails_env_test?(command)
@@ -314,14 +416,14 @@ class Gm6MlrMethodologyDocTest < Minitest::Test
   end
 
   def reproduce_demo_lines
-    block = reproduce_bash_block
+    block = reproduce_shell_fence_block
     return [] unless block
 
     shell_lines(block).select { |line| line.match?(DEMO_LINE_PATTERN) }
   end
 
   def reproduce_shell_lines
-    block = reproduce_bash_block
+    block = reproduce_shell_fence_block
     return [] unless block
 
     shell_lines(block)
@@ -334,6 +436,117 @@ class Gm6MlrMethodologyDocTest < Minitest::Test
     true
   end
 
+  def bin_rails_test_dummy_command?(command)
+    bin_rails_in_test_dummy?(command)
+  end
+
+  def bin_rails_test_dummy_commands_outside_reproduce_shell_fence
+    fence_range = reproduce_shell_fence_content_line_range
+    entries = []
+
+    each_fenced_shell_command_line_with_line(@doc) do |command, line_no, _info|
+      next unless bin_rails_test_dummy_command?(command)
+      next if fence_range&.cover?(line_no)
+
+      entries << { command: command, line: line_no }
+    end
+
+    each_inline_shell_command_with_line(@doc) do |command, line_no|
+      next unless bin_rails_test_dummy_command?(command)
+      next if fence_range&.cover?(line_no)
+
+      entries << { command: command, line: line_no }
+    end
+
+    entries
+  end
+
+  def each_fenced_shell_command_line_with_line(text)
+    line_no = 0
+    in_fence = false
+    open_marker = nil
+    open_info = nil
+    buffer = []
+    content_line_no = nil
+
+    text.each_line do |line|
+      line_no += 1
+      if in_fence
+        if fence_close?(line, open_marker)
+          lines = shell_lines(buffer.join)
+          lines = lines.select { |cmd| looks_like_shell_command_line?(cmd) } unless shell_fence_info?(open_info)
+          lines.each_with_index do |command, idx|
+            yield command, content_line_no + idx, open_info
+          end
+          in_fence = false
+          buffer = []
+        else
+          buffer << line
+        end
+      elsif (open = parse_fence_open(line))
+        in_fence = true
+        open_marker = open[:marker]
+        open_info = open[:info]
+        buffer = []
+        content_line_no = line_no + 1
+      end
+    end
+  end
+
+  def each_inline_shell_command_with_line(text)
+    line_no = 0
+    in_fence = false
+    open_marker = nil
+
+    text.each_line do |line|
+      line_no += 1
+      if in_fence
+        in_fence = false if fence_close?(line, open_marker)
+        next
+      end
+
+      if (open = parse_fence_open(line))
+        in_fence = true
+        open_marker = open[:marker]
+        next
+      end
+
+      line.scan(/`([^`\n]+)`/) do
+        span = Regexp.last_match(1)
+        yield span, line_no if span.match?(INLINE_SHELL_COMMAND_PATTERN)
+      end
+    end
+  end
+
+  def reproduce_shell_fence_content_line_range
+    lines = @doc.lines
+    reproduce_idx = lines.index { |line| line.match?(/\*\*Reproduce:\*\*/) }
+    return nil unless reproduce_idx
+
+    line_no = 0
+    in_fence = false
+    open_marker = nil
+    content_start = nil
+
+    lines.each_with_index do |line, idx|
+      line_no = idx + 1
+      next if idx <= reproduce_idx
+      break if line.start_with?("## ") && idx > reproduce_idx
+
+      if in_fence
+        if fence_close?(line, open_marker)
+          return (content_start...(line_no))
+        end
+      elsif parse_fence_open(line)
+        in_fence = true
+        open_marker = parse_fence_open(line)[:marker]
+        content_start = line_no + 1
+      end
+    end
+
+    nil
+  end
+
   def reproduce_rails_lines_before_database_url_unset
     lines = reproduce_shell_lines
     return [] if lines.empty?
@@ -344,14 +557,27 @@ class Gm6MlrMethodologyDocTest < Minitest::Test
       database_url_cleared = true if line_clears_database_url?(line)
       next unless line.match?(/\b(?:bin\/rails|bundle \s+ exec \s+ rails)\b/i)
 
-      offenders << line unless database_url_cleared
+      ok = database_url_cleared || rails_line_uses_env_u_database_url?(line)
+      offenders << line unless ok
     end
     offenders
   end
 
   def line_clears_database_url?(line)
-    line.match?(/\bunset\s+DATABASE_URL\b/i) ||
-      line.match?(/\benv\s+-u\s+DATABASE_URL\b/i)
+    stripped = line.split("#", 2).first&.strip
+    return false unless stripped
+
+    stripped.match?(/\Aunset\s+(?:[A-Za-z_][A-Za-z0-9_]*\s+)*DATABASE_URL(?:\s+[A-Za-z_][A-Za-z0-9_]*)*\z/i)
+  end
+
+  def rails_line_uses_env_u_database_url?(line)
+    line.match?(/\benv\s+-u\s+DATABASE_URL\b/i)
+  end
+
+  def command_includes_database_url_clear?(command)
+    return true if command.match?(/\benv\s+-u\s+DATABASE_URL\b/i)
+
+    command.split(/\s*&&\s*/).any? { |segment| line_clears_database_url?(segment) }
   end
 
   def command_has_placeholder_bracket_args?(command)
@@ -361,22 +587,27 @@ class Gm6MlrMethodologyDocTest < Minitest::Test
     false
   end
 
-  def reproduce_bash_block
+  def reproduce_shell_fence_block
     lines = @doc.lines
     reproduce_idx = lines.index { |line| line.match?(/\*\*Reproduce:\*\*/) }
     return nil unless reproduce_idx
 
-    in_bash = false
+    in_fence = false
+    open_marker = nil
     buffer = []
     lines.drop(reproduce_idx + 1).each do |line|
-      if line.start_with?("```bash")
-        in_bash = true
-        next
+      break if line.start_with?("## ")
+
+      if in_fence
+        if fence_close?(line, open_marker)
+          return buffer.join
+        end
+        buffer << line
+      elsif (open = parse_fence_open(line))
+        in_fence = true
+        open_marker = open[:marker]
+        buffer = []
       end
-      if in_bash && line.start_with?("```")
-        return buffer.join("\n")
-      end
-      buffer << line if in_bash
     end
 
     nil
@@ -387,6 +618,13 @@ class Gm6MlrMethodologyDocTest < Minitest::Test
     return true if line.match?(/\bRAILS_ENV\s*=\s*development\b/i)
 
     false
+  end
+
+  def shell_lines(block)
+    block.lines.filter_map do |line|
+      stripped = line.split("#", 2).first&.strip
+      stripped if stripped && !stripped.empty?
+    end
   end
 
   def defined_rake_tasks
