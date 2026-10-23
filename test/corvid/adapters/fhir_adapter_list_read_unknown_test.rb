@@ -3,6 +3,7 @@
 require "minitest/autorun"
 require "minitest/mock"
 require "json"
+require "active_support/all" # adapter uses String#presence in claim line mapping
 require "corvid/adapters/fhir_adapter"
 
 # Issue #674: list/search reads must distinguish failed search (nil) from
@@ -250,6 +251,85 @@ class Corvid::Adapters::FhirAdapterListReadUnknownTest < Minitest::Test
     assert_equal [ "pt_match_001" ], result.map(&:identifier)
   end
 
+  # --- malformed Bundle.entry.search (must be unknown, not []) --------------
+
+  LIST_READS.each_key do |method|
+    define_method("test_#{method}_returns_nil_for_string_search_field_on_match_entry_via_http") do
+      entry = malformed_search_bundle_entry(method, "match")
+      bundle = { "resourceType" => "Bundle", "type" => "searchset", "entry" => [ entry ] }
+      arg = LIST_READS.fetch(method)
+      result = with_http_bundle(bundle) { @adapter.public_send(method, arg) }
+
+      assert_nil result, "#{method}: non-Hash search must not answer as empty"
+    end
+  end
+
+  def test_list_claims_returns_nil_for_unknown_search_mode_on_match_entry_via_http
+    entry = claim_bundle_entry(item: [ claim_line_item_fixture ]).merge(
+      "search" => { "mode" => "bogus" }
+    )
+    bundle = { "resourceType" => "Bundle", "type" => "searchset", "entry" => [ entry ] }
+    result = with_http_bundle(bundle) { @adapter.list_claims("pt_test_001") }
+
+    assert_nil result
+  end
+
+  # --- multi-page fhir_search: later page not searchset ---------------------
+
+  def test_list_claims_returns_nil_when_page_two_is_collection_bundle_via_http
+    url1 = claim_search_url
+    url2 = page2_url("Claim")
+    page1 = searchset_with_next(
+      entry: [ claim_bundle_entry(item: [ claim_line_item_fixture ]) ],
+      next_url: url2
+    )
+    page2 = { "resourceType" => "Bundle", "type" => "collection", "entry" => [] }
+    result = with_http_responses({ url1 => http_response(page1), url2 => http_response(page2) }) {
+      @adapter.list_claims("pt_test_001")
+    }
+
+    assert_nil result, "list_claims must reject paginated search when a later page is not searchset"
+  end
+
+  def test_list_claims_returns_nil_when_page_two_is_untyped_bundle_via_http
+    url1 = claim_search_url
+    url2 = page2_url("Claim")
+    page1 = searchset_with_next(
+      entry: [ claim_bundle_entry(item: [ claim_line_item_fixture ]) ],
+      next_url: url2
+    )
+    page2 = { "resourceType" => "Bundle", "entry" => [] }
+    result = with_http_responses({ url1 => http_response(page1), url2 => http_response(page2) }) {
+      @adapter.list_claims("pt_test_001")
+    }
+
+    assert_nil result, "list_claims must reject paginated search when a later page has no type"
+  end
+
+  def test_get_conditions_returns_nil_when_page_two_is_collection_bundle_via_http
+    url1 = condition_search_url
+    url2 = page2_url("Condition")
+    page1 = searchset_with_next(entry: [], next_url: url2)
+    page2 = { "resourceType" => "Bundle", "type" => "collection", "entry" => [] }
+    result = with_http_responses({ url1 => http_response(page1), url2 => http_response(page2) }) {
+      @adapter.get_conditions("pt_test_001")
+    }
+
+    assert_nil result, "get_conditions must reject paginated search when a later page is not searchset"
+  end
+
+  def test_get_conditions_returns_nil_when_page_two_is_untyped_bundle_via_http
+    url1 = condition_search_url
+    url2 = page2_url("Condition")
+    page1 = searchset_with_next(entry: [], next_url: url2)
+    page2 = { "resourceType" => "Bundle", "entry" => [] }
+    result = with_http_responses({ url1 => http_response(page1), url2 => http_response(page2) }) {
+      @adapter.get_conditions("pt_test_001")
+    }
+
+    assert_nil result, "get_conditions must reject paginated search when a later page has no type"
+  end
+
   TRANSPORT_ERRORS.each do |error_class|
     LIST_READS.each_key do |method|
       define_method("test_#{method}_returns_nil_when_http_get_raises_#{error_class.name.split('::').last.downcase}") do
@@ -289,8 +369,54 @@ class Corvid::Adapters::FhirAdapterListReadUnknownTest < Minitest::Test
     @adapter.stub(:http_get, ->(_url) { response }) { yield }
   end
 
+  def with_http_responses(responses_by_url)
+    handler = lambda do |url|
+      response = responses_by_url[url]
+      raise "unexpected http_get: #{url}" unless response
+
+      response
+    end
+    @adapter.stub(:http_get, handler) { yield }
+  end
+
   def with_http_error(error_class)
     @adapter.stub(:http_get, ->(_url) { raise error_class }) { yield }
+  end
+
+  def claim_search_url(patient_id: "pt_test_001")
+    "https://fhir.example.com/r4/Claim?patient=#{patient_id}"
+  end
+
+  def condition_search_url(patient_id: "pt_test_001")
+    "https://fhir.example.com/r4/Condition?patient=#{patient_id}"
+  end
+
+  def page2_url(resource_type)
+    "https://fhir.example.com/r4/#{resource_type}?_getpages=674_test_page2"
+  end
+
+  def searchset_with_next(entry:, next_url:)
+    {
+      "resourceType" => "Bundle",
+      "type" => "searchset",
+      "entry" => entry,
+      "link" => [ { "relation" => "next", "url" => next_url } ]
+    }
+  end
+
+  def claim_line_item_fixture
+    {
+      "sequence" => 1,
+      "productOrService" => {
+        "coding" => [ { "system" => "http://www.ama-assn.org/go/cpt", "code" => "99213" } ]
+      },
+      "net" => { "value" => 100.0, "currency" => "USD" }
+    }
+  end
+
+  def malformed_search_bundle_entry(method, search_field)
+    entry = untyped_match_bundle_entry(method)
+    entry.merge("search" => search_field)
   end
 
   def http_response(body, status: 200)
