@@ -342,6 +342,17 @@ module Corvid
         "a constraint on eligibility_group must not bound a column named group"
     end
 
+    # The same rule on constraint text no schema here happens to contain: an
+    # exclusion list leaves the column unbounded, whatever the cast.
+    def test_an_exclusion_list_is_not_a_bound
+      assert confines_to_value_list?("status::text = ANY (ARRAY['a'::character varying])", "status")
+      assert confines_to_value_list?("status::character varying IN ('a')", "status")
+
+      refute confines_to_value_list?("status::text NOT IN ('a')", "status")
+      refute confines_to_value_list?("status::character varying NOT IN ('a')", "status")
+      refute confines_to_value_list?("status::text <> ALL (ARRAY['a'::character varying])", "status")
+    end
+
     private
 
     def build_message(violations)
