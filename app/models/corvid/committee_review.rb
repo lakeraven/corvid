@@ -47,10 +47,11 @@ module Corvid
       # would belong on the tenant config alongside default_currency_iso —
       # not yet a real requirement.
       cost_dollars = referral.estimated_cost ? referral.estimated_cost.to_d : 0
-      priority = referral.medical_priority
+      priority = referral.effective_medical_priority
 
       return true if cost_dollars >= threshold
-      return true if priority.present? && priority >= 3
+      # Unknown priority fails closed, same as PrcReferral#requires_committee?.
+      return true if priority.nil? || (priority.present? && priority >= 3)
       return true if referral.respond_to?(:flagged_for_review?) && referral.flagged_for_review?
 
       false

@@ -172,9 +172,10 @@ module Corvid
       # convention, so coerce Money → BigDecimal-of-dollars for comparison.
       cost = service_request&.estimated_cost || estimated_cost
       cost_dollars = cost.respond_to?(:to_d) ? cost.to_d : cost
-      priority = medical_priority
+      # Unknown priority fails closed. A known priority requires review at 3+.
+      priority = effective_medical_priority
       (cost_dollars.present? && cost_dollars >= committee_threshold) ||
-        (priority.present? && priority >= 3) ||
+        priority.nil? || priority >= 3 ||
         flagged_for_review?
     end
 
@@ -239,6 +240,14 @@ module Corvid
       return true if medical_priority_cached_at.blank?
 
       medical_priority_cached_at < CACHE_STALENESS_THRESHOLD_HOURS.hours.ago
+    end
+
+    # Priority for a decision. The service request's level when it has one,
+    # otherwise the local column. This is a read: it does not refresh the
+    # cache the way cached_medical_priority does.
+    def effective_medical_priority
+      rcis_priority = service_request&.medical_priority_level
+      rcis_priority.present? ? rcis_priority : medical_priority
     end
 
     def cached_medical_priority
