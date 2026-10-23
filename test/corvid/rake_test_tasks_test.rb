@@ -3,6 +3,7 @@
 require "minitest/autorun"
 require "bundler/setup"
 require "rake"
+require "rake/testtask"
 require "set"
 require "pathname"
 
@@ -23,6 +24,11 @@ class RakeTestTasksTest < Minitest::Test
   end
 
   def test_every_test_rb_file_is_scheduled_by_exactly_one_rake_test_task
+    RAKE_TEST_TASKS.each do |name|
+      assert_operator @rake_test_files.fetch(name).size, :>, 0,
+                      "#{name} has no configured test files (vacuous pass)"
+    end
+
     problems = []
 
     @all_test_files.each do |file|
@@ -42,25 +48,49 @@ class RakeTestTasksTest < Minitest::Test
 
   private
 
-  def load_rake_tasks_without_running
-    previous = Dir.getwd
-    Dir.chdir(ROOT)
-    Rake.application.clear
-    Rake.application.init
-    Rake.application.load_rakefile
+  def rake_test_task_files_by_name
+    captured = {}
+    previous_cwd = Dir.pwd
+
+    with_captured_rake_test_tasks(captured) do
+      Rake.application.clear
+      Rake.application.init
+      Dir.chdir(ROOT)
+      Rake.load_rakefile(File.join(ROOT, "Rakefile"))
+
+      RAKE_TEST_TASKS.each_with_object({}) do |name, hash|
+        task = captured[name]
+        raise "missing Rake::TestTask #{name}" unless task
+
+        paths = configured_test_files(task)
+        hash[name] = paths.map { |path| normalize_test_path(path) }.to_set
+      end
+    end
   ensure
-    Dir.chdir(previous) if previous
+    Dir.chdir(previous_cwd)
   end
 
-  def rake_test_task_files_by_name
-    load_rake_tasks_without_running
-
-    RAKE_TEST_TASKS.each_with_object({}) do |name, hash|
-      task = ObjectSpace.each_object(Rake::TestTask).find { |t| t.name.to_s == name }
-      raise "missing Rake::TestTask #{name}" unless task
-
-      hash[name] = task.file_list.to_a.map { |path| normalize_test_path(path) }.to_set
+  def with_captured_rake_test_tasks(captured)
+    singleton = class << Rake::TestTask; self; end
+    original_new = singleton.instance_method(:new)
+    singleton.define_method(:new) do |*args, **kwargs, &block|
+      task = original_new.bind_call(Rake::TestTask, *args, **kwargs, &block)
+      name = task.name.to_s
+      captured[name] = task if RAKE_TEST_TASKS.include?(name)
+      task
     end
+    yield
+  ensure
+    singleton.define_method(:new, original_new)
+  end
+
+  def configured_test_files(test_task)
+    files = []
+    test_files = test_task.instance_variable_get(:@test_files)
+    files.concat(test_files.to_a) if test_files
+    pattern = test_task.pattern
+    files.concat(FileList[pattern].to_a) if pattern
+    files
   end
 
   def discover_test_files
