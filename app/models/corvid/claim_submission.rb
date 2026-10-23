@@ -20,9 +20,11 @@ module Corvid
     STATUSES = %w[draft submitted accepted rejected paid denied appealed error].freeze
     CLAIM_TYPES = %w[professional institutional dental].freeze
 
-    # Raised by #submit! when this claim bills a PRC referral that has not been
-    # authorized. PRC authorizes before care is purchased, so billing an
-    # unauthorized referral bills care the programme never agreed to buy.
+    # Raised by #submit! and #mark_submitted! when this claim bills a PRC
+    # referral that has not been authorized, or names one that cannot be
+    # tied to this patient. PRC authorizes before care is purchased, so
+    # billing an unauthorized referral bills care the programme never
+    # agreed to buy.
     class ReferralNotAuthorized < StandardError; end
 
     # Raised by #submit! and #mark_submitted! when this claim bills a PRC
@@ -166,6 +168,7 @@ module Corvid
     end
 
     def mark_submitted!(claim_identifier:)
+      enforce_referral_authorization_gate!
       enforce_referral_fulfilment_gate!
       update!(
         claim_identifier: claim_identifier,
@@ -284,31 +287,46 @@ module Corvid
     # A claim that resolves to neither stays unlinked, and #submit! decides
     # what that means.
     def resolve_prc_referral_from_identifier
+      self.prc_referral = unambiguous_patient_referral
+    end
+
+    def unambiguous_patient_referral
+      return if referral_identifier.blank?
+
       candidates = Corvid::PrcReferral
         .includes(:case)
         .where(facility_identifier: facility_identifier, referral_identifier: referral_identifier)
         .limit(2)
         .to_a
+      candidate = candidates.first
+      return if candidates.size != 1 || candidate.case&.patient_identifier != patient_identifier
 
-      self.prc_referral =
-        if candidates.size == 1 && candidates.first.case&.patient_identifier == patient_identifier
-          candidates.first
-        end
+      candidate
     end
 
     # A linked PRC referral is billable only when an external report names
     # delivered care. Unlinked claims are ordinary billing and are left
-    # alone. Called before any clearinghouse call, so a refusal never
-    # submits and never changes the claim. The message names the referral
-    # identifier and the fulfilment status only (ADR 0003).
+    # alone. The referral is the one this save will link, read from the
+    # current identifier without assigning the association: a dirty
+    # referral_identifier must not be judged against the referral this
+    # claim used to name. Called before any clearinghouse call, so a
+    # refusal never submits and never changes the claim. The message
+    # names the referral identifier and the fulfilment status only
+    # (ADR 0003).
     def enforce_referral_fulfilment_gate!
-      resolve_prc_referral_from_identifier if prc_referral.blank? && referral_identifier.present?
-      return if prc_referral.blank?
+      referral = referral_for_fulfilment_gate
+      return if referral.blank?
 
-      referral = prc_referral.reload
-      return if Corvid::ReferralFulfilment.billable_for_delivered_care?(referral)
+      current = referral.reload
+      return if Corvid::ReferralFulfilment.billable_for_delivered_care?(current)
 
-      raise FulfilmentNotRecorded, fulfilment_not_recorded_message(referral)
+      raise FulfilmentNotRecorded, fulfilment_not_recorded_message(current)
+    end
+
+    def referral_for_fulfilment_gate
+      return unambiguous_patient_referral if referral_link_inputs_changed?
+
+      prc_referral
     end
 
     def fulfilment_not_recorded_message(referral)
