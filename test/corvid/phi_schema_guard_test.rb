@@ -349,6 +349,16 @@ module Corvid
         "a constraint on eligibility_group must not bound a column named group"
     end
 
+    # REFERENCE_TABLES skips a whole table, so it must hold only global
+    # published data. A tenant_identifier means a host writes the rows — that
+    # is configuration, and its columns need the per-column scan.
+    def test_reference_tables_are_not_tenant_data
+      tenant_tables = REFERENCE_TABLES.select do |table|
+        ActiveRecord::Base.connection.columns(table).any? { |c| c.name == "tenant_identifier" }
+      end
+      assert_empty tenant_tables, "tenant-scoped tables are not reference data"
+    end
+
     # The same rule on constraint text no schema here happens to contain: an
     # exclusion list leaves the column unbounded, whatever the cast.
     def test_an_exclusion_list_is_not_a_bound
