@@ -34,6 +34,10 @@ module Corvid
     # would inherit the `corvid_cah` exemption and hide a `patient_name` column
     # (verified by probe). It also listed 14 names of which 8 were not real
     # tables — the list "worked" only because 4 stubs happened to prefix-match.
+    #
+    # corvid_fmap_rules is the same kind of table: the statutory FMAP rule
+    # set, global (no tenant), loaded from lib/corvid/data/fmap_rules.yml,
+    # with no column that links a row to a person or an encounter.
     REFERENCE_TABLES = %w[
       corvid_asc_conversion_factors
       corvid_asc_facilities
@@ -42,6 +46,7 @@ module Corvid
       corvid_cms_fee_schedule_releases
       corvid_fee_schedule_entries
       corvid_fee_schedules
+      corvid_fmap_rules
       corvid_ipps_drg_weights
       corvid_ipps_hospital_rates
       corvid_npi_ccn_crosswalks
@@ -85,6 +90,7 @@ module Corvid
       when ENUM_COLUMNS.include?(name)
         type == :string && bounded?(table, name)
       when PROVENANCE_COLUMNS[table]&.include?(name)   then type == :string
+      when PROVENANCE_JSONB_COLUMNS[table]&.include?(name) then type == :jsonb
       when polymorphic_type_column?(name, type, table) then true
       else false
       end
@@ -136,6 +142,9 @@ module Corvid
       provider_confidence recovery_confidence decision_method
       transaction_type provider_type outcome
       api_name
+      eligibility_group eligibility_group_source source
+      category best_available_category coverage_group authority_type
+      received_through_basis determination_reason
     ].freeze
 
     # Software and reference-data provenance, not patient data: which version
@@ -144,11 +153,27 @@ module Corvid
     # pattern-matched, so adding one is a reviewed line of code.
     # Scoped to the tables that own them: a `rate_source` on corvid_cases
     # would be something else entirely (verified by probe).
+    #
+    # verification_snapshot_key_version names the host key the snapshot HMAC
+    # was taken under (ADR 0008), length-capped by the model. On an FMAP
+    # determination, rule_key and best_available_rule_key name rows of the
+    # global corvid_fmap_rules table (the model requires the applied rule to
+    # exist and be in force), and jurisdiction is the state or "US" whose
+    # rules were applied — a state is not a Safe Harbor geographic identifier.
     PROVENANCE_COLUMNS = {
       "corvid_prc_overpayment_analyses" => %w[analyzer_version rate_source rate_source_release],
       "corvid_cms_fee_schedule_releases" => %w[cms_release_tag],
       "corvid_tasks" => %w[milestone_key],
-      "corvid_prc_eligibility_decisions" => %w[verification_snapshot_hash]
+      "corvid_prc_eligibility_decisions" => %w[verification_snapshot_hash verification_snapshot_key_version],
+      "corvid_fmap_determinations" => %w[rule_key best_available_rule_key jurisdiction]
+    }.freeze
+
+    # Provenance held as jsonb. rule_citations is the applied rule's
+    # statutory citation; the model requires it to equal
+    # [rule.statutory_citation] whenever the decided fields are written, so
+    # it can only hold text copied from the shipped rule set.
+    PROVENANCE_JSONB_COLUMNS = {
+      "corvid_fmap_determinations" => %w[rule_citations]
     }.freeze
 
     # Workforce tenure, not a patient's dates. A care-team member is a
@@ -159,6 +184,19 @@ module Corvid
     PERMITTED_WORKFORCE_DATES = [
       %w[corvid_care_team_members start_date],
       %w[corvid_care_team_members end_date]
+    ].freeze
+
+    # A facility's billing authority, not a patient's: corvid_facility_authorities
+    # rows carry a tenant, a facility token, an authority type and the
+    # period the authority was held, with no column that links them to a
+    # person or an encounter. The dates are when a contract or compact was
+    # in force; the two strings describe the facility's four-walls basis and
+    # service area. Permitted for the same reason as the workforce dates.
+    PERMITTED_FACILITY_COLUMNS = [
+      %w[corvid_facility_authorities effective_on],
+      %w[corvid_facility_authorities expires_on],
+      %w[corvid_facility_authorities four_walls_exception_basis],
+      %w[corvid_facility_authorities service_area]
     ].freeze
 
     # Always a violation, regardless of what the exceptions file says. These two
@@ -208,6 +246,7 @@ module Corvid
             next if SAFE_TYPES.include?(type)
             next if permitted_by_convention?(name, type, table)
             next if PERMITTED_WORKFORCE_DATES.include?([ table, name ])
+            next if PERMITTED_FACILITY_COLUMNS.include?([ table, name ])
             next if exceptions[table]&.include?(name)
           end
 
@@ -228,16 +267,16 @@ module Corvid
       # A scan that examined nothing also finds no violations, and that is
       # indistinguishable from a clean schema.
       #
-      # MEASURED, not guessed: 18 tables and 286 columns today (31 corvid
-      # tables less the 13 reference tables). The floors sit just under, so
+      # MEASURED, not guessed: 21 tables and 344 columns as of 2026-10-23 (35
+      # corvid tables less the 14 reference tables). The floors sit just under, so
       # losing a table or a dozen columns to a widened exemption fails here
       # rather than passing quietly. The first version used 20/150 against
       # 31/400 — loose enough to lose a third of the schema unnoticed — and the
       # second used 300, which was the pre-exclusion count and failed on a
       # clean schema. Raise these when tables are added.
-      assert_operator tables_scanned, :>=, 18,
+      assert_operator tables_scanned, :>=, 21,
         "scanned only #{tables_scanned} tables — the scan is broken, not the schema clean"
-      assert_operator columns_scanned, :>=, 280,
+      assert_operator columns_scanned, :>=, 335,
         "scanned only #{columns_scanned} columns — the scan is broken, not the schema clean"
     end
 
@@ -246,7 +285,7 @@ module Corvid
     # on the day after the last date a public repo shows a missed promise
     # instead of a kept one.
     def test_exception_entries_are_honest
-      raw = YAML.load_file(EXCEPTIONS_FILE, permitted_classes: [Date]) || []
+      raw = YAML.load_file(EXCEPTIONS_FILE, permitted_classes: [ Date ]) || []
 
       bad_class = raw.reject { |e| VALID_CLASSIFICATIONS.include?(e["classification"]) }
       assert_empty bad_class.map { |e| "#{e['table']}.#{e['column']}=#{e['classification']}" },
@@ -357,7 +396,7 @@ module Corvid
       # permitted_classes: an UNQUOTED date in the yml makes Psych 4 raise
       # DisallowedClass, which errors load_exceptions and takes the FIRST test
       # red with a message about YAML classes rather than about PHI.
-      data = YAML.load_file(EXCEPTIONS_FILE, permitted_classes: [Date]) || []
+      data = YAML.load_file(EXCEPTIONS_FILE, permitted_classes: [ Date ]) || []
       data.each_with_object(Hash.new { |h, k| h[k] = [] }) do |entry, acc|
         acc[entry["table"]] << entry["column"]
       end

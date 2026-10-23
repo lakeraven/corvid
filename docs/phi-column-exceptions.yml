@@ -61,10 +61,15 @@
 
 - table: corvid_prc_obligations
   column: service_date
-  classification: accepted_workflow_date
+  classification: needs_decision
   adr: "0003 section 3"
   why: "Date of service on an imported CHS/TRD obligation. The overpayment analyzer reprices by date; a token cannot be compared."
-  safe_harbor_note: "Would be a (C) identifier if linked to an identity; here the row is linked to an opaque token, not to a name or DOB."
+  safe_harbor_note: >
+    A (C) date on an IDENTIFIED row: this table carries a plaintext
+    patient_dfn, so the opaque-token argument the other workflow dates rely on
+    does not hold here. Accept only once the prc_obligations design (key
+    protection for obligation_id and vendor_id, protection for patient_dfn and
+    procedure_code) has landed.
 
 - table: corvid_claim_submissions
   column: service_date
@@ -92,37 +97,47 @@
 # dates belonging to OUR workflow. The four below are dates belonging to the
 # PATIENT's coverage and programme participation, which is a different kind of
 # fact even though the storage argument (range queries, eligibility arithmetic)
-# is the same. Classified here under the same decision; flagged so the choice is
-# visible in the artifact rather than only in a chat log. Narrow the ADR's
-# wording or move these to patient_phi if the distinction should bite.
+# is the same. needs_decision until the ADR names them: accepting them by
+# extension would be an acceptance the ADR has not made. Widen the ADR's
+# wording to cover them, or move them to patient_phi.
 
 - table: corvid_alternate_resource_checks
   column: coverage_start
-  classification: accepted_workflow_date
-  adr: "0003 section 3 (applied by extension — see note above)"
+  classification: needs_decision
+  adr: "0003 section 3 (extension proposed — see note above)"
   why: "Start of an alternate resource's coverage period."
-  safe_harbor_note: "Patient-attribute date rather than an internal workflow date. Confirm the extension is intended."
+  safe_harbor_note: "Patient-attribute date rather than an internal workflow date."
 
 - table: corvid_alternate_resource_checks
   column: coverage_end
-  classification: accepted_workflow_date
-  adr: "0003 section 3 (applied by extension — see note above)"
+  classification: needs_decision
+  adr: "0003 section 3 (extension proposed — see note above)"
   why: "End of an alternate resource's coverage period."
-  safe_harbor_note: "Patient-attribute date rather than an internal workflow date. Confirm the extension is intended."
+  safe_harbor_note: "Patient-attribute date rather than an internal workflow date."
 
 - table: corvid_case_programs
   column: enrollment_date
-  classification: accepted_workflow_date
-  adr: "0003 section 3 (applied by extension — see note above)"
+  classification: needs_decision
+  adr: "0003 section 3 (extension proposed — see note above)"
   why: "Date the patient enrolled in the programme."
-  safe_harbor_note: "Patient-attribute date rather than an internal workflow date. Confirm the extension is intended."
+  safe_harbor_note: "Patient-attribute date rather than an internal workflow date."
 
 - table: corvid_case_programs
   column: disenrollment_date
-  classification: accepted_workflow_date
-  adr: "0003 section 3 (applied by extension — see note above)"
+  classification: needs_decision
+  adr: "0003 section 3 (extension proposed — see note above)"
   why: "Date the patient left the programme."
-  safe_harbor_note: "Patient-attribute date rather than an internal workflow date. Confirm the extension is intended."
+  safe_harbor_note: "Patient-attribute date rather than an internal workflow date."
+
+- table: corvid_alternate_resource_checks
+  column: renewal_date
+  classification: needs_decision
+  adr: "0003 section 3 (extension proposed — see note above)"
+  why: >
+    The member's Medicaid renewal (redetermination) date, used to decide
+    whether a check is current for a date of service. Same kind of fact as
+    coverage_start and coverage_end on the same row.
+  safe_harbor_note: "Patient-attribute date rather than an internal workflow date."
 
 # --- patient_phi: real, dated, not in dispute ------------------------------
 
@@ -367,3 +382,168 @@
     scope :for_program. So the name is a denormalized label that can be
     resolved from the registry on read. Needs no vault and no encryption keys.
   remediate_by: "2026-10-20"
+
+# --- surfaced by the guard after merging main, 2026-10-23 -------------------
+# Each was checked against what writes it before being classified. Columns on
+# the same tables that are DB-bounded enums, reference-rule provenance or
+# facility configuration are permitted in the guard instead (reviewed as code).
+
+- table: corvid_fmap_determinations
+  column: date_of_service
+  classification: accepted_workflow_date
+  adr: "0003 section 3"
+  why: >
+    Date of service of the classified encounter. FMAP rules are selected by
+    the rules in force on this date, so a token cannot be compared.
+  safe_harbor_note: >
+    Would be a (C) identifier if linked to an identity; the row carries
+    person_identifier and encounter_identifier, both opaque tokens.
+
+- table: corvid_fmap_determinations
+  column: evidence_refs
+  classification: unclassified
+  type: jsonb
+  why: >
+    Caller-supplied { supports, ref } entries on a person-linked row.
+    FmapClassificationService limits `supports` to aian_status, but `ref` is
+    any non-blank string - meant to be a vault or artifact reference (tests
+    use attestation:tok_example_aian) and never checked to be one. Nothing in
+    the model validates the entries, so a row written directly, or through
+    supersede_with!, can hold anything.
+
+- table: corvid_fmap_determinations
+  column: missing_evidence
+  classification: unclassified
+  type: jsonb
+  why: >
+    Written by FmapClassificationService from a fixed vocabulary
+    (evidence_refs, aian_attestation, received_through_basis,
+    aian_status_evidence, care_coordination_agreement,
+    received_through_evidence) - not patient data by design. Nothing at the
+    database or model level bounds it; permit it in the guard once a CHECK
+    constraint does.
+
+- table: corvid_fmap_determinations
+  column: claim_reference
+  classification: unclassified
+  type: string
+  why: >
+    Caller-supplied reference to the claim that used the determination; its
+    presence makes the row immutable. Unvalidated free string. If it holds an
+    opaque claim token it should be named claim_identifier (ADR 0001) and the
+    convention permit would cover it; if it holds a payer claim number it is
+    an (R) unique identifying number on a person-linked row.
+
+- table: corvid_claim_submissions
+  column: denial_reason_codes
+  classification: needs_decision
+  type: "string[]"
+  hipaa: "(R) at most, by combination"
+  why: >
+    CARC/RARC codes from the 835 or a status poll (CO-97, N130); remark text
+    already goes to denial_reason_token. ADR 0003 section 3 stores decision
+    codes, but these are an external code set passed through verbatim with no
+    format bound, and some codes state a clinical fact about the claim
+    (CO-50 not medically necessary, CO-11 diagnosis inconsistent with
+    procedure). Decide whether they are decision codes or clinical facts; if
+    the former, bound each element to the CARC/RARC shape and permit it.
+
+# --- open work from this PR's own gate, disclosed so the guard can run -----
+# Present before the merge; listed in the PR body's open work.
+
+- table: corvid_prc_obligations
+  column: obligation_id
+  classification: patient_phi
+  hipaa: "(R) Any other unique identifying number"
+  why: >
+    String CHS document number, unique-indexed per tenant - a per-episode
+    identifier on the row that carries plaintext patient_dfn. Encrypting the
+    DFN alone leaves the row re-identifiable from the source CHS/TRD file by
+    this number. Needs deterministic encryption or an HMAC, since it is a key.
+  blocked_on: "The prc_obligations protection design (PR #591 open work) and #232 (VaultTextGateway)."
+
+- table: corvid_prc_obligations
+  column: vendor_id
+  classification: patient_phi
+  hipaa: "(R) Any other unique identifying number"
+  why: >
+    String vendor key on a patient-linked obligation. Same reasoning as
+    corvid_prc_payments.vendor_name: on this row it says where the patient was
+    sent. A key, so deterministic encryption or an HMAC.
+  blocked_on: "The prc_obligations protection design (PR #591 open work) and #232 (VaultTextGateway)."
+
+- table: corvid_prc_payments
+  column: payment_id
+  classification: patient_phi
+  hipaa: "(R) Any other unique identifying number"
+  why: >
+    String payment key from the PRC report, on a patient-linked payment row.
+    Classified conservatively, as check_number is.
+  blocked_on: "The prc_obligations protection design (PR #591 open work) and #232 (VaultTextGateway)."
+
+# Enum by name, but no CHECK constraint bounds them, so the guard's enum
+# permit does not apply (ADR 0002 asks for string enums with CHECK
+# constraints). Not patient data by design; each needs a constraint - or, for a
+# column nothing writes, a drop - before it can be permitted.
+
+- table: corvid_cases
+  column: closure_reason
+  classification: unclassified
+  type: string
+  why: >
+    No constraint, no inclusion validation and no writer anywhere - an
+    unbounded string named "reason", which ADR 0003 section 1 lists among
+    never-stored free text. Drop or constrain.
+
+- table: corvid_prc_referrals
+  column: current_activity
+  classification: unclassified
+  type: string
+  why: >
+    Free text in practice, not an enum: the FHIR PAS path writes "Submitted
+    via FHIR PAS" and a cucumber step writes "Assigned to reviewer <ien>".
+    A free-text activity line on a referral can carry anything staff type.
+
+- table: corvid_prc_referrals
+  column: priority_system
+  classification: unclassified
+  type: string
+  why: "Names the priority scheme (corvid_v1). No constraint."
+
+- table: corvid_care_team_members
+  column: role
+  classification: unclassified
+  type: string
+  why: >
+    Role code (from the FHIR role coding on import); presence-validated only,
+    no constraint.
+
+- table: corvid_claim_submissions
+  column: provider_type
+  classification: unclassified
+  type: string
+  why: "No writer in the engine and no constraint."
+
+- table: corvid_prc_eligibility_decisions
+  column: provider_confidence
+  classification: unclassified
+  type: string
+  why: "Confidence label set by the eligibility service; no constraint."
+
+- table: corvid_prc_obligations
+  column: status
+  classification: unclassified
+  type: string
+  why: "Obligation status from the CHS/TRD import; no constraint."
+
+- table: corvid_prc_overpayment_analyses
+  column: payment_system
+  classification: unclassified
+  type: string
+  why: "Payment system symbol from the analyzer (pfs, ipps ...); no constraint."
+
+- table: corvid_prc_overpayment_analyses
+  column: recovery_confidence
+  classification: unclassified
+  type: string
+  why: "Recovery label from the analyzer (clear ...); presence-validated only, no constraint."
