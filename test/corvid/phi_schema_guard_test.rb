@@ -95,9 +95,16 @@ module Corvid
     # corvid_cases.closure_reason has no constraint, no inclusion validation
     # and no writer anywhere — an unbounded string whose name is "reason",
     # which ADR 0003 section 1 lists among free text that is never stored.
+    #
+    # The constraint must confine THIS column to a value list — Postgres
+    # stores `col IN (...)` as `col::text = ANY (ARRAY[...])`. Mentioning the
+    # column is not enough: a pairing check or an IS NULL clause bounds
+    # nothing, and `group` must not ride on a constraint for
+    # `eligibility_group`.
     def bounded?(table, column)
+      value_list = /(?<![\w"])"?#{Regexp.escape(column)}"?(?:::[\w ]+?)?\s*(?:=\s*ANY\s*\(|IN\s*\()/i
       constraints = ActiveRecord::Base.connection.check_constraints(table)
-      constraints.any? { |c| c.expression.to_s.include?(column) }
+      constraints.any? { |c| c.expression.to_s.match?(value_list) }
     rescue NotImplementedError
       false
     end
