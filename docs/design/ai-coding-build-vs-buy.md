@@ -126,9 +126,15 @@ defined in #460, or build one in-house.
 
 The encounter bundle needs Encounter, Condition, Procedure, DocumentReference
 (clinical note), Observation and Coverage. Of these, `FhirAdapter` today reads
-only Condition (`get_conditions`). **Encounter, Procedure, DocumentReference,
-Observation and Coverage reads are not yet in `FhirAdapter`** and are
-prerequisite work under #460.
+Condition (`get_conditions`) and already searches Coverage, but only inside
+`verify_eligibility`, which picks one Coverage for a resource type and returns
+an eligibility summary (active flag, payer display, subscriber id, period).
+**Encounter, Procedure, DocumentReference and Observation reads are not yet in
+`FhirAdapter`**, nor is a Coverage read that returns the resources themselves
+for the encounter bundle (all payer coverages in force on the date of
+service, not one summary). Those are the prerequisite work under #460; the
+bundle's Coverage read can reuse the existing Coverage search rather than
+starting from nothing.
 
 ### 5.3 Flow
 
@@ -136,7 +142,9 @@ prerequisite work under #460.
 EHR (RPMS or any other)
   │  §170.315(g)(10) FHIR — Encounter, Condition, Procedure,
   │  DocumentReference, Observation, Coverage
-  │  (only Condition is read by FhirAdapter today; the rest are #460 work)
+  │  (FhirAdapter reads Condition today, and Coverage only as an
+  │   eligibility summary; Encounter, Procedure, DocumentReference,
+  │   Observation and a bundle-shaped Coverage read are #460 work)
   ▼
 corvid: encounter assembly (FHIR bundle for the visit)
   │
@@ -156,8 +164,10 @@ corvid claim assembly  ← tribal / safety-net layer applied here, above the por
   │                       and eligibility group (#657),
   │                       ENG-7 pre-submission screens (consented-payer-rules-moat.md)
   ▼
-ClaimSubmission linked to its PRC referral (#600);
-  submit! refuses unless that referral is authorized
+ClaimSubmission linked to its PRC referral when one matches (#600);
+  submit! refuses a linked referral that is not authorized, and an
+  ambiguous or other-patient referral match; claims with no PRC
+  referral (ordinary non-PRC billing) pass this gate
   │
   ▼
 ClaimSubmission#submit! → Corvid.adapter.submit_claim  (global adapter, #264)
@@ -169,10 +179,14 @@ ClaimSubmission#submit! → Corvid.adapter.submit_claim  (global adapter, #264)
 
 Notes on the flow as it stands on main:
 
-- **#600:** a claim is linked to the referral it bills and is billed only
-  once that referral is authorized (`enforce_referral_authorization_gate!`).
-  Coded output never bypasses this gate; a well-coded claim for unauthorized
-  care is still refused.
+- **#600:** this is a PRC referral gate, not a general authorization check.
+  Where a claim names a PRC referral that resolves unambiguously to this
+  patient, the claim is linked to it and billed only once that referral is
+  authorized (`enforce_referral_authorization_gate!`). Where the identifier
+  matches several referrals or only another patient's, submission is refused.
+  A claim with no matching PRC referral is not blocked by this gate, so
+  ordinary non-PRC billing proceeds. Coded output never bypasses the gate; a
+  well-coded claim against an unauthorized PRC referral is still refused.
 - **Submission path:** `ClaimSubmission` still submits through the global
   `Corvid.adapter`, not a dedicated EDI / clearinghouse adapter instance.
   Per-tenant routing of submission (and of the coder, §4.3) waits on #264
