@@ -1,7 +1,7 @@
 # frozen_string_literal: true
 
 module Corvid
-  # Multi-step PRC referral creation wizard (ported from a prior implementation).
+  # Multi-step PRC referral creation wizard (ported from the predecessor app).
   # Guides care coordinators through the complete PRC authorization process,
   # ensuring all required information per 42 CFR 136.61 is captured.
   #
@@ -22,8 +22,14 @@ module Corvid
 
     PRIVATE_INSURANCE_FIELDS = %i[payer_name policy_number group_number coverage_start coverage_end].freeze
 
+    # Prefix only: the warning names a count of resource types, never a patient (ADR 0003).
+    UNDETERMINED_ELIGIBILITY_WARNING_PREFIX = "Eligibility could not be determined"
+    # Read when warnings is asked for. A selected patient whose status is not
+    # exactly "verified" warns; a later status change drops or restores it.
+    ELIGIBILITY_PENDING_WARNING = "Patient eligibility verification pending"
+
     attr_reader :tenant_identifier, :facility_identifier,
-                :current_step, :data, :errors, :warnings, :messages,
+                :current_step, :data, :errors, :messages,
                 :field_errors, :prc_referral, :alternate_resources
 
     # patient_identifier always comes from @data so callers updating the
@@ -42,15 +48,16 @@ module Corvid
       # Default tenant/facility from the ambient context (consistent with
       # TenantScoped), so callers already inside with_tenant blocks don't
       # have to thread the identifiers through explicitly.
-      @tenant_identifier = tenant_identifier ||
-        Corvid::TenantContext.current_tenant_identifier
-      @facility_identifier = facility_identifier ||
-        Corvid::TenantContext.current_facility_identifier
+      @tenant_identifier = tenant_identifier.presence ||
+        Corvid::TenantContext.current_tenant_identifier.presence
+      @facility_identifier = facility_identifier.presence ||
+        Corvid::TenantContext.current_facility_identifier.presence
       raise ArgumentError, "tenant_identifier required (pass explicitly or set Corvid::TenantContext)" unless @tenant_identifier
       @current_step = :patient_selection
       @data = { patient_identifier: patient_identifier }
       @errors = []
       @warnings = []
+      @undetermined_resource_types = Set.new
       @messages = []
       @field_errors = {}
       @alternate_resources = initialize_alternate_resources
@@ -64,7 +71,6 @@ module Corvid
 
     def start!
       @current_step = :patient_selection
-      check_patient_eligibility if patient_identifier
       self
     end
 
@@ -152,15 +158,23 @@ module Corvid
       @patient ||= Corvid.adapter.find_patient(patient_identifier) if patient_identifier
     end
 
-    # STUB: defaults to "verified" until real eligibility verification is
-    # wired through the adapter. Host apps / tests can set it explicitly.
-    # See #14 / #60 for the eligibility dashboard that will feed this.
+    # Undetermined until set.
     def patient_eligibility_status
-      @patient_eligibility_status ||= "verified"
+      @patient_eligibility_status
     end
 
     def patient_eligibility_status=(status)
       @patient_eligibility_status = status
+    end
+
+    # Eligibility pending is derived here so it cannot linger after the status
+    # becomes "verified" or appear before a patient is selected. Other warnings
+    # stay as they were recorded.
+    def warnings
+      recorded = @warnings.reject { |warning| warning == ELIGIBILITY_PENDING_WARNING }
+      return recorded unless eligibility_verification_pending?
+
+      recorded + [ ELIGIBILITY_PENDING_WARNING ]
     end
 
     # ----------------------------------------------------------------
@@ -189,6 +203,8 @@ module Corvid
       PRIVATE_INSURANCE_FIELDS
     end
 
+    # Statuses match AlternateResourceCheck, including coordinated.
+    # Only bare enrollment still needs coordination of benefits.
     def set_resource_status(resource_type, status)
       status_sym = status.to_sym
       @alternate_resources[resource_type] = {
@@ -197,11 +213,14 @@ module Corvid
         checked_at: Time.current
       }
       @warnings << "Active coverage found - coordination of benefits required" if status_sym == :enrolled
+      @undetermined_resource_types.delete(resource_type) unless status_sym == :not_checked
+      refresh_undetermined_warning
     end
 
     def alternate_resources_exhausted?
+      determined = Corvid::AlternateResourceCheck::UNAVAILABLE_STATUSES.map(&:to_sym)
       @alternate_resources.all? do |_, resource|
-        %i[not_enrolled denied exhausted].include?(resource[:status])
+        determined.include?(resource[:status])
       end
     end
 
@@ -210,14 +229,27 @@ module Corvid
       "Bill primary payer first. IHS is payer of last resort per 42 CFR 136.61."
     end
 
+    # A failed or malformed lookup is not a determination of no coverage
+    # (42 CFR 136.61). Only an explicit boolean :eligible enrolls or
+    # refuses; anything else stays :not_checked so an unanswered payer
+    # lookup cannot be treated as a refusal. The warning count is the
+    # number of resource types whose latest lookup was undetermined.
     def verify_all_enrollment!
       @enrollment_verification_run = true
       @alternate_resources.each do |type, resource|
         next unless resource[:status] == :not_checked
-        result = Corvid.adapter.verify_eligibility(patient_identifier, type)
-        @alternate_resources[type][:status] = result&.dig(:eligible) ? :enrolled : :not_enrolled
-        @alternate_resources[type][:checked_at] = Time.current
+
+        status = enrollment_status_from(Corvid.adapter.verify_eligibility(patient_identifier, type))
+        if status
+          resource[:status] = status
+          resource[:checked_at] = Time.current
+          @undetermined_resource_types.delete(type)
+        else
+          @undetermined_resource_types.add(type)
+        end
       end
+    ensure
+      refresh_undetermined_warning
     end
 
     def enrollment_verification_run?
@@ -247,7 +279,7 @@ module Corvid
       @errors = []
       @field_errors = {}
       validate_review
-      return { success: false, errors: @errors } unless @errors.empty?
+      return { success: false, errors: @errors, warnings: warnings } unless @errors.empty?
 
       # Check adapter side-effects BEFORE we create any local AR records,
       # so a nil/blank referral_id fails closed without leaving an
@@ -260,7 +292,7 @@ module Corvid
         requesting_provider_identifier: @data[:referring_provider]
       })
       if referral_id.nil? || referral_id.to_s.strip.empty?
-        return { success: false, errors: [ "Adapter did not return a referral identifier" ] }
+        return { success: false, errors: [ "Adapter did not return a referral identifier" ], warnings: warnings }
       end
 
       Corvid::TenantContext.with_tenant(@tenant_identifier) do
@@ -297,9 +329,9 @@ module Corvid
       end
       @messages << message if requires_committee_review?
 
-      { success: true, message: message, referral: @prc_referral }
+      { success: true, message: message, referral: @prc_referral, warnings: warnings }
     rescue => e
-      { success: false, errors: [ Corvid.sanitize_phi(e.message) ] }
+      { success: false, errors: [ Corvid.sanitize_phi(e.message) ], warnings: warnings }
     end
 
     # ----------------------------------------------------------------
@@ -391,13 +423,33 @@ module Corvid
       validate_alternate_resources_step
     end
 
-    def check_patient_eligibility
-      @warnings << "Patient eligibility verification pending" if patient_eligibility_status == "pending"
+    # Exact String "verified" only. No patient selected is not a pending check.
+    def eligibility_verification_pending?
+      patient_identifier && patient_eligibility_status != "verified"
     end
 
     def initialize_alternate_resources
       Corvid::AlternateResourceCheck::RESOURCE_TYPES.each_with_object({}) do |type, hash|
         hash[type] = { status: :not_checked, requires_coordination: false, checked_at: nil }
+      end
+    end
+
+    # Count only, never a patient identifier (ADR 0003).
+    def refresh_undetermined_warning
+      @warnings.delete_if { |warning| warning.start_with?(UNDETERMINED_ELIGIBILITY_WARNING_PREFIX) }
+      return if @undetermined_resource_types.empty?
+
+      count = @undetermined_resource_types.size
+      @warnings << "#{UNDETERMINED_ELIGIBILITY_WARNING_PREFIX} for #{count} alternate resource(s); they remain unverified"
+    end
+
+    # Symbol key only: a string-keyed or error hash is an unanswered lookup.
+    def enrollment_status_from(result)
+      return unless result.is_a?(Hash)
+
+      case result[:eligible]
+      when true then :enrolled
+      when false then :not_enrolled
       end
     end
 

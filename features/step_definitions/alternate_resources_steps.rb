@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-# Alternate resource step definitions (ported from a prior implementation)
+# Alternate resource step definitions (ported from the predecessor app)
 
 When("I create an alternate resource check for {string}") do |resource_type|
   @check = Corvid::AlternateResourceCheck.create!(
@@ -40,6 +40,24 @@ Given("an alternate resource check for {string} exists with status {string}") do
     resource_type: resource_type,
     status: status
   )
+end
+
+Given("the adapter has eligible coverage for patient {string} for resource type {string}") do |patient_id, resource_type|
+  Corvid.adapter.add_coverage(patient_id,
+                              coverage_type: resource_type,
+                              payer_name: "MOCK #{resource_type.upcase.tr('_', ' ')} PAYER",
+                              plan_name: "Mock Plan",
+                              eligible: true)
+end
+
+Given("the adapter has eligible coverage for all alternate resource types for patient {string}") do |patient_id|
+  Corvid::AlternateResourceCheck::RESOURCE_TYPES.each do |type|
+    Corvid.adapter.add_coverage(patient_id,
+                                coverage_type: type,
+                                payer_name: "MOCK #{type.to_s.upcase.tr('_', ' ')} PAYER",
+                                plan_name: "Mock Plan",
+                                eligible: true)
+  end
 end
 
 Given("an alternate resource check exists with status {string}") do |status|
@@ -98,6 +116,17 @@ When("I verify all enrollment statuses for the referral") do
   @referral.alternate_resource_checks.reload
 end
 
+Given("every eligibility lookup returns an error payload") do
+  Corvid.adapter.define_singleton_method(:verify_eligibility) do |_patient_identifier, _resource_type|
+    { error: "unreachable" }
+  end
+end
+
+When("I verify all enrollment statuses through the alternate resource service") do
+  Corvid::AlternateResourceService.verify_all(@referral)
+  @referral.alternate_resource_checks.reload
+end
+
 When("I create all resource checks for the referral") do
   Corvid::AlternateResourceCheck.create_all_for_referral(@referral)
 end
@@ -114,6 +143,23 @@ end
 Then("the check status should be {string}") do |status|
   @check.reload
   assert_equal status, @check.status
+end
+
+Given("the check has policy token {string}") do |token|
+  @check.update!(policy_token: token)
+end
+
+When("the check is re-verified with policy token {string}") do |token|
+  Corvid.adapter.define_singleton_method(:verify_eligibility) do |_pid, _type|
+    { eligible: true, policy_token: token }
+  end
+  @check.verify!
+  @check.reload
+end
+
+Then("the check policy token should be {string}") do |token|
+  @check.reload
+  assert_equal token, @check.policy_token
 end
 
 Then("the check status should not be {string}") do |status|

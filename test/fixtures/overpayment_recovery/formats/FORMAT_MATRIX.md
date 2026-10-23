@@ -25,6 +25,18 @@ sites and ETL hops. Use them to drive parser/import compatibility tests.
 - `malformed_no_header.prc`
   - No `H` record.
   - Verifies importer fails closed with `MalformedExportError`.
+- `duplicate_ids_v1.prc`
+  - Duplicate `obligation_id` and duplicate `payment_id` in one file.
+  - Verifies upsert/uniq behavior and "last record wins" assumptions.
+- `amount_precision_extremes_v1.prc`
+  - Penny-scale values, >2-decimal values, and very large amounts.
+  - Verifies cent conversion, rounding, and numeric stability.
+- `unknown_record_types_v1.prc`
+  - Interleaves unknown record tags (`X/Y/Z`) with valid rows.
+  - Verifies parser safely ignores unknown row types.
+- `unmapped_facility_v1.prc`
+  - Header facility code not in facility dictionary (`XYZ`).
+  - Verifies analyzer returns `:unmapped_facility` paths.
 
 ## Notes
 

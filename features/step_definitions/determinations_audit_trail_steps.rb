@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-# Determination audit trail step definitions (ported from a prior implementation)
+# Determination audit trail step definitions (ported from the predecessor app)
 
 Given("a PRC referral exists with estimated cost {string}") do |cost|
   @referral = Corvid::PrcReferral.create!(

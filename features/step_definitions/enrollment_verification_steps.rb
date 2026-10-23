@@ -12,11 +12,12 @@ Given("a patient {string} registered in the adapter as enrolled") do |patient_id
     membership_number: "BR-12345",
     tribe_name: "Test Tribe",
     blood_quantum: "1/4",
-    member_status: "enrolled"
+    member_status: "enrolled",
+    confidence: :verified
   )
   Corvid.adapter.add_residency(patient_id,
     on_reservation: true,
-    address: "123 Main St, Broken Rock City, WA 98948",
+    address: "123 Main St, Broken Rock City, WA 98990",
     service_area: "brokenrock"
   )
 end
@@ -40,7 +41,7 @@ Given("a patient {string} registered in the adapter with an on-reservation addre
   # Patient data may already exist from a previous step; just ensure residency is set
   Corvid.adapter.add_residency(patient_id,
     on_reservation: true,
-    address: "456 Elm St, Broken Rock City, WA 98948",
+    address: "456 Elm St, Broken Rock City, WA 98990",
     service_area: "brokenrock"
   )
 end
@@ -85,6 +86,10 @@ end
 
 Then("the enrollment result should include a tribe name") do
   refute_nil @enrollment_result[:tribe_name]
+end
+
+Then("the enrollment result should have confidence verified") do
+  assert_equal :verified, @enrollment_result[:confidence]
 end
 
 Then("the identity result should show ssn_present as true") do

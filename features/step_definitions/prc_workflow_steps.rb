@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-# PRC workflow step definitions (ported from a prior implementation)
+# PRC workflow step definitions (ported from the predecessor app)
 
 Given("a service request in {string} workflow state") do |state|
   case state
@@ -24,8 +24,10 @@ Given("a service request in {string} workflow state") do |state|
     @referral.request_management_approval!
     @referral.pending_approval_by = "pr_test_mgr"
     @referral.approve_management!
+    exhaust_alternate_resources!(@referral)
     @referral.verify_alternate_resources!
     @referral.update!(estimated_cost: 100_000)
+    exhaust_alternate_resources!(@referral)
     @referral.complete_priority_assignment!
   end
   assert_equal state, @referral.status
@@ -46,7 +48,9 @@ Given("an authorized service request from {int} days ago") do |days|
   @referral.request_management_approval!
   @referral.pending_approval_by = "pr_test_mgr"
   @referral.approve_management!
+  exhaust_alternate_resources!(@referral)
   @referral.verify_alternate_resources!
+  exhaust_alternate_resources!(@referral)
   @referral.complete_priority_assignment!
   @referral.update!(authorization_number: "AUTH-001", updated_at: days.days.ago)
 end
@@ -72,6 +76,7 @@ end
 When("the request workflow state changes to {string}") do |state|
   case state
   when "authorized"
+    exhaust_alternate_resources!(@referral)
     @referral.authorize!
   when "denied"
     @referral.mark_denied!

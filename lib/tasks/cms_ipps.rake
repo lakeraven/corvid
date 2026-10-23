@@ -10,9 +10,9 @@ namespace :cms do
       abort "File not found: #{args[:path]}" unless File.exist?(args[:path])
 
       year = args[:year].to_i
-      label = args[:label] || "manual"
+      label = args[:label].presence || "manual"
       rows = Corvid::CmsIppsParser.parse_drg_weights(
-        File.read(args[:path]), fiscal_year: year, release_label: label
+        strip_comments(File.read(args[:path])), fiscal_year: year, release_label: label
       )
 
       ActiveRecord::Base.transaction do
@@ -29,9 +29,9 @@ namespace :cms do
       abort "File not found: #{args[:path]}" unless File.exist?(args[:path])
 
       year = args[:year].to_i
-      label = args[:label] || "manual"
+      label = args[:label].presence || "manual"
       rows = Corvid::CmsIppsParser.parse_hospital_rates(
-        File.read(args[:path]), fiscal_year: year, release_label: label
+        strip_comments(File.read(args[:path])), fiscal_year: year, release_label: label
       )
 
       ActiveRecord::Base.transaction do
@@ -78,6 +78,22 @@ namespace :cms do
 
     def strip_comments(csv_text)
       csv_text.lines.reject { |l| l.lstrip.start_with?("#") }.join
+    end
+
+    desc "Normalize a CMS IPPS Wage Index PUF file into the canonical hospital_rates CSV: rake cms:ipps:normalize_wage_index[year,/path/to/cbsaoccmix.txt,/path/to/output.csv,base_rate,release_label]"
+    task :normalize_wage_index, [ :year, :input, :output, :base_rate, :label ] => :environment do |_t, args|
+      unless args[:year] && args[:input] && args[:output] && args[:base_rate]
+        abort "Usage: rake cms:ipps:normalize_wage_index[year,input.txt,output.csv,base_rate,release_label]"
+      end
+      abort "Input not found: #{args[:input]}" unless File.exist?(args[:input])
+
+      label = args[:label].presence || "cms_fy#{args[:year]}_final_rule"
+      rows = Corvid::CmsIppsWageIndexNormalizer.normalize(args[:input])
+      # The base rate goes through as typed: the normalizer parses it
+      # as an exact BigDecimal (ADR 0004), never via Float.
+      csv = Corvid::CmsIppsWageIndexNormalizer.render(rows, base_rate: args[:base_rate], release_label: label)
+      File.write(args[:output], csv)
+      puts "Wrote #{rows.size + 1} hospital rate rows (#{rows.size} CBSA/rural + 1 NATIONAL) to #{args[:output]} (label=#{label})"
     end
   end
 end

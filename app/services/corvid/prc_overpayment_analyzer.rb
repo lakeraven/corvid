@@ -167,7 +167,9 @@ module Corvid
             payment_system: :pfs,
             rate_source: :real,
             recovery_confidence: :clear,
-            rate_source_release: entry.release_label
+            # .presence collapses "" → nil so a blank label doesn't leak
+            # into methodology.json's rate_source_releases list.
+            rate_source_release: entry.release_label.presence
           )
         )
       end
@@ -182,7 +184,7 @@ module Corvid
         # mark :clear / :real.
         lookup = Corvid::IppsRateProvider.lookup_for(
           drg_code: proc_info.drg,
-          locality: facility.locality,
+          locality: wage_area(facility),
           date: obligation.service_date
         )
 
@@ -195,7 +197,7 @@ module Corvid
               payment_system: :ipps,
               rate_source: stub_derived ? :stub : :real,
               recovery_confidence: stub_derived ? :stub_estimate : :clear,
-              rate_source_release: lookup.release_label,
+              rate_source_release: lookup.release_label.presence,
               notes: stub_derived ?
                 "Inpatient hospital claim (DRG #{proc_info.drg}). Priced via " \
                 "stub-derived IPPS canonical CSV (release=#{lookup.release_label}); " \
@@ -257,7 +259,7 @@ module Corvid
         )
         asc_lookup = is_asc ? Corvid::AscRateProvider.lookup_for(
           hcpcs_code: proc_info.hcpcs,
-          locality: facility.locality,
+          locality: wage_area(facility),
           date: obligation.service_date
         ) : nil
 
@@ -270,7 +272,7 @@ module Corvid
               payment_system: :asc,
               rate_source: stub_derived ? :stub : :real,
               recovery_confidence: stub_derived ? :stub_estimate : :clear,
-              rate_source_release: asc_lookup.release_label,
+              rate_source_release: asc_lookup.release_label.presence,
               notes: stub_derived ?
                 "Ambulatory surgical center (HCPCS #{proc_info.hcpcs}). Priced via " \
                 "stub-derived ASC canonical CSV (release=#{asc_lookup.release_label})." :
@@ -282,7 +284,7 @@ module Corvid
 
         lookup = Corvid::OppsRateProvider.lookup_for(
           apc_code: proc_info.apc,
-          locality: facility.locality,
+          locality: wage_area(facility),
           date: obligation.service_date
         )
 
@@ -295,7 +297,7 @@ module Corvid
               payment_system: :opps,
               rate_source: stub_derived ? :stub : :real,
               recovery_confidence: stub_derived ? :stub_estimate : :clear,
-              rate_source_release: lookup.release_label,
+              rate_source_release: lookup.release_label.presence,
               notes: stub_derived ?
                 "Hospital outpatient (APC #{proc_info.apc}). Priced via " \
                 "stub-derived OPPS canonical CSV (release=#{lookup.release_label})." :
@@ -370,6 +372,17 @@ module Corvid
           notes: "Obligation has no parseable service_date (upstream date malformed); " \
                  "cannot select a fee schedule. Clean the obligation row, then re-import."
         )
+      end
+
+      # The IPPS/OPPS/ASC providers key their wage index by CMS wage
+      # area (5-digit CBSA or 2-digit rural-state code), not by the PFS
+      # locality the facility dictionary carries, and the two code
+      # systems overlap (PFS "02" Seattle vs. wage area "02" rural
+      # Alaska). Until a facility resolves to a real CBSA (#372), price
+      # institutional claims at the NATIONAL wage row (nil normalizes to
+      # NATIONAL) rather than at a wage area that merely shares digits.
+      def wage_area(_facility)
+        nil
       end
 
       def base_fields(obligation, proc_info, facility)

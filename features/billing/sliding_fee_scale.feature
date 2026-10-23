@@ -1,4 +1,4 @@
-@billing @ulster-rfp
+@billing @county-rfp
 Feature: Sliding Fee Scale
   As a billing administrator
   I want to configure sliding fee schedules based on income

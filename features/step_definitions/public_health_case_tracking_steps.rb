@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-# Public health case tracking (ported from a prior implementation)
+# Public health case tracking (ported from the predecessor app)
 
 When("I create a TB case for patient {string} anchored on {string}") do |patient_id, anchor|
   @case = Corvid::ProgramTemplateService.create_case(

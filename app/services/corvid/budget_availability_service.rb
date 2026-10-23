@@ -10,18 +10,21 @@ module Corvid
   # existing call sites keep working while tests and per-tenant code
   # paths can swap in their own adapters without mutating global state.
   class BudgetAvailabilityService
-    DEFAULT_FISCAL_YEAR_BUDGET = 1_000_000.00
     COMMITTEE_REVIEW_THRESHOLD = 50_000.00
 
     def initialize(adapter: Corvid.adapter)
       @adapter = adapter
     end
 
+    # nil means the adapter has no budget data — "unknown", never a
+    # stand-in figure. Callers surface unavailability rather than a
+    # fictional total.
     def fiscal_year_budget
       summary = @adapter.get_budget_summary
-      return DEFAULT_FISCAL_YEAR_BUDGET unless summary
+      return nil unless summary
 
-      (summary[:total_budget] || summary[:total]).to_f.nonzero? || DEFAULT_FISCAL_YEAR_BUDGET
+      total = (summary[:total_budget] || summary[:total]).to_f
+      total.positive? ? total : nil
     end
 
     def reserved_funds
@@ -68,8 +71,9 @@ module Corvid
       total = fiscal_year_budget
 
       BudgetCheckResult.new(
-        funds_available: cost_dollars.present? && cost_dollars > 0 && budget >= cost_dollars,
-        budget_sufficient: cost_dollars.present? && budget >= cost_dollars,
+        funds_available: total.present? && cost_dollars.present? && cost_dollars > 0 && budget >= cost_dollars,
+        budget_sufficient: total.present? && cost_dollars.present? && budget >= cost_dollars,
+        budget_unavailable: total.nil?,
         remaining_budget: budget,
         total_budget: total,
         fiscal_year: current_fiscal_year,
@@ -116,13 +120,18 @@ module Corvid
     end
 
     BudgetCheckResult = Struct.new(
-      :funds_available, :budget_sufficient, :remaining_budget, :total_budget,
+      :funds_available, :budget_sufficient, :budget_unavailable,
+      :remaining_budget, :total_budget,
       :fiscal_year, :requires_cost_estimate, :requires_committee_review,
       :valid_funding_source,
       keyword_init: true
     ) do
       def funds_available?
         funds_available
+      end
+
+      def budget_unavailable?
+        budget_unavailable
       end
 
       def budget_sufficient?

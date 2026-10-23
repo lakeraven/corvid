@@ -1,4 +1,4 @@
-@payments @ulster-rfp
+@payments @county-rfp
 Feature: Payment Processing
   As a billing staff member
   I want to accept credit and debit card payments from patients
@@ -53,6 +53,7 @@ Feature: Payment Processing
 
   Scenario: Refund a completed payment
     Given a succeeded payment of "$75.00" exists with Stripe ID "pi_test_refund"
+    And the payment is stored in the billing adapter
     When I refund the payment
     Then the payment status should be "refunded"
 

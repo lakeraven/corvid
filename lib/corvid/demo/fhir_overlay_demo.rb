@@ -94,6 +94,18 @@ module Corvid
         Corvid::PrcOverpaymentAnalysis.unscoped.where(tenant_identifier: current_tenant).delete_all
         Corvid::PrcObligation.for_facility(facility).delete_all
         Corvid::EligibilityChecklist.where(facility_identifier: facility).delete_all
+        # Fulfilment reports are append-only, so the referral association
+        # restricts rather than cascades and the delete below would be blocked
+        # by the foreign key once any referral carried a report. Rebuilding a
+        # demo tenant is the one legitimate reason to discard them, so it is
+        # done here explicitly rather than by weakening the guarantee.
+        referral_ids = Corvid::PrcReferral.for_facility(facility).select(:id)
+        Corvid::ReferralFulfilmentReport.where(prc_referral_id: referral_ids).delete_all
+        # The narrated PRC demo shares this facility and seeds alternate-
+        # resource checks (and could open a committee review); clear them so
+        # the demos can run in any order.
+        Corvid::AlternateResourceCheck.where(prc_referral_id: referral_ids).delete_all
+        Corvid::CommitteeReview.where(prc_referral_id: referral_ids).delete_all
         Corvid::PrcReferral.for_facility(facility).delete_all
         Corvid::Case.for_facility(facility).delete_all
       end

@@ -91,6 +91,8 @@ class Corvid::BudgetAvailabilityServiceInjectionTest < ActiveSupport::TestCase
       result = Corvid::BudgetAvailabilityService.new(adapter: @fake).check(ref)
 
       assert_equal 900_000.0, result.remaining_budget
+      refute result.budget_unavailable?, "a real adapter summary must not read as unavailable"
+      assert_equal 1_000_000.0, result.total_budget
       assert_includes @fake.calls.map(&:first), :get_budget_summary
     end
   end
@@ -124,24 +126,89 @@ class Corvid::BudgetAvailabilityServiceInjectionTest < ActiveSupport::TestCase
     def get_budget_summary; {}; end
   end
 
+  # Remaining funds without a total: enough "remaining" to cover any small
+  # cost, so a check that grants funds on remaining alone would say yes here.
+  class RemainingOnlyAdapter
+    def get_budget_summary; { remaining: 50_000.0 }; end
+  end
+
+  # A corrupt total must not count as budget data.
+  class NegativeTotalAdapter
+    def get_budget_summary; { total_budget: -5_000.0, remaining: 50_000.0 }; end
+  end
+
   test "remaining_budget falls back to 0.0 when adapter returns nil" do
     service = Corvid::BudgetAvailabilityService.new(adapter: NilSummaryAdapter.new)
     assert_equal 0.0, service.remaining_budget
     assert_equal 0.0, service.reserved_funds
   end
 
-  test "fiscal_year_budget falls back to default when adapter returns nil" do
+  test "fiscal_year_budget is unavailable (nil) when adapter returns nil" do
     service = Corvid::BudgetAvailabilityService.new(adapter: NilSummaryAdapter.new)
-    assert_equal Corvid::BudgetAvailabilityService::DEFAULT_FISCAL_YEAR_BUDGET,
-                 service.fiscal_year_budget
+    assert_nil service.fiscal_year_budget
   end
 
-  test "fiscal_year_budget falls back to default when adapter returns an empty payload" do
+  test "fiscal_year_budget is unavailable (nil) when adapter returns an empty payload" do
     service = Corvid::BudgetAvailabilityService.new(adapter: EmptySummaryAdapter.new)
-    assert_equal Corvid::BudgetAvailabilityService::DEFAULT_FISCAL_YEAR_BUDGET,
-                 service.fiscal_year_budget
+    assert_nil service.fiscal_year_budget
     assert_equal 0.0, service.remaining_budget
     assert_equal 0.0, service.reserved_funds
+  end
+
+  test "check reports budget_unavailable and withholds funds when the adapter has no data" do
+    Corvid::TenantContext.with_tenant(TENANT) do
+      ref = Corvid::PrcReferral.create!(
+        case: Corvid::Case.create!(patient_identifier: "p_na", facility_identifier: "fac_na"),
+        referral_identifier: "rf_nobudget_#{SecureRandom.hex(4)}",
+        estimated_cost_cents: 10_000,
+        currency_iso: "USD"
+      )
+
+      result = Corvid::BudgetAvailabilityService.new(adapter: NilSummaryAdapter.new).check(ref)
+
+      assert result.budget_unavailable?, "no adapter data must read as unavailable, not as a budget"
+      refute result.funds_available?
+      refute result.budget_sufficient?
+      assert_nil result.total_budget
+    end
+  end
+
+  test "check withholds funds when remaining is sufficient but the total is unknown" do
+    Corvid::TenantContext.with_tenant(TENANT) do
+      ref = Corvid::PrcReferral.create!(
+        case: Corvid::Case.create!(patient_identifier: "p_ro", facility_identifier: "fac_ro"),
+        referral_identifier: "rf_remonly_#{SecureRandom.hex(4)}",
+        estimated_cost_cents: 10_000,
+        currency_iso: "USD"
+      )
+
+      result = Corvid::BudgetAvailabilityService.new(adapter: RemainingOnlyAdapter.new).check(ref)
+
+      assert result.budget_unavailable?
+      refute result.funds_available?,
+             "remaining alone must not grant funds when the fiscal-year total is unknown"
+      refute result.budget_sufficient?
+      assert_equal 50_000.0, result.remaining_budget
+    end
+  end
+
+  test "a negative total reads as unavailable, not as budget data" do
+    service = Corvid::BudgetAvailabilityService.new(adapter: NegativeTotalAdapter.new)
+    assert_nil service.fiscal_year_budget
+
+    Corvid::TenantContext.with_tenant(TENANT) do
+      ref = Corvid::PrcReferral.create!(
+        case: Corvid::Case.create!(patient_identifier: "p_neg", facility_identifier: "fac_neg"),
+        referral_identifier: "rf_negtotal_#{SecureRandom.hex(4)}",
+        estimated_cost_cents: 10_000,
+        currency_iso: "USD"
+      )
+
+      result = service.check(ref)
+
+      assert result.budget_unavailable?
+      refute result.funds_available?
+    end
   end
 
   private

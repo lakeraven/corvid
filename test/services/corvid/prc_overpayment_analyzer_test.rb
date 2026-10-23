@@ -216,6 +216,95 @@ class Corvid::PrcOverpaymentAnalyzerTest < ActiveSupport::TestCase
     assert_equal "cms_pfs_2009q2", result.rate_source_release
   end
 
+  test "blank release_label on the rate row collapses to nil on Result#rate_source_release" do
+    # A row carrying release_label: "" (or whitespace) must not leak
+    # into methodology.json's rate_source_releases — the manifest
+    # would show an empty string and reduce audit clarity.
+    Corvid::FeeScheduleEntry.where(cpt_code: "99213", locality: TEST_LOCALITY).update_all(release_label: "")
+    summary = analyze_single_obligation(procedure: "OFFICE_VISIT_EST", paid: 250)
+    result = summary.results.first
+    assert_nil result.rate_source_release,
+               "blank label must normalize to nil at the analyzer boundary"
+  end
+
+  test "whitespace-only release_label on the rate row collapses to nil (PFS)" do
+    # The blank case is not only "": a label of spaces is equally unusable
+    # as provenance and must not reach the manifest either.
+    Corvid::FeeScheduleEntry.where(cpt_code: "99213", locality: TEST_LOCALITY).update_all(release_label: "   ")
+    summary = analyze_single_obligation(procedure: "OFFICE_VISIT_EST", paid: 250)
+    assert_nil summary.results.first.rate_source_release,
+               "whitespace-only label must normalize to nil at the analyzer boundary"
+  end
+
+  test "blank release_label collapses to nil on the IPPS path" do
+    Corvid::IppsDrgWeight.create!(
+      fiscal_year: 2009, drg_code: "470",
+      relative_weight: 2.0743, release_label: ""
+    )
+    Corvid::IppsHospitalRate.create!(
+      fiscal_year: 2009, locality: "NATIONAL",
+      base_rate: 6_000.0, wage_index: 1.0, release_label: ""
+    )
+
+    result = analyze_single_obligation(procedure: "HIP_REPLACE_THR", paid: 42_000).results.first
+    assert_equal :ipps, result.payment_system
+    assert_equal :real, result.rate_source, "blank label must not be read as a stub"
+    assert_nil result.rate_source_release,
+               "blank IPPS label must not leak into the provenance manifest"
+  end
+
+  test "blank release_label collapses to nil on the OPPS path" do
+    Corvid::PrcProcedureDictionary.register(
+      "OUTPATIENT_TEST", hcpcs: "12345", apc: "5071",
+      description: "Test outpatient procedure"
+    )
+    Corvid::OppsApcWeight.create!(
+      calendar_year: 2009, apc_code: "5071", relative_weight: 25.4378, release_label: ""
+    )
+    Corvid::OppsConversionFactor.create!(
+      calendar_year: 2009, locality: "NATIONAL",
+      conversion_factor: 70.0, wage_index: 1.0, release_label: ""
+    )
+
+    result = analyze_single_obligation(
+      procedure: "OUTPATIENT_TEST", paid: 5_000, vendor_id: "REGULAR-HOSPITAL"
+    ).results.first
+    assert_equal :opps, result.payment_system
+    assert_equal :real, result.rate_source, "blank label must not be read as a stub"
+    assert_nil result.rate_source_release,
+               "blank OPPS label must not leak into the provenance manifest"
+  end
+
+  test "blank release_label collapses to nil on the ASC path" do
+    # Regression: the ASC branch is the fourth rate_source_release assignment
+    # site. A blank label here reached methodology.json as "" because the
+    # manifest only drops nil (.compact), so an ASC recoverable dollar showed
+    # up as an unnamed CMS release.
+    Corvid::PrcProcedureDictionary.register(
+      "OUTPATIENT_TEST", hcpcs: "12345", apc: "5071",
+      description: "Test outpatient procedure"
+    )
+    Corvid::AscHcpcsRate.create!(
+      calendar_year: 2009, hcpcs_code: "12345",
+      payment_indicator: "G2", payment_weight: 20.0, release_label: ""
+    )
+    Corvid::AscConversionFactor.create!(
+      calendar_year: 2009, locality: "NATIONAL",
+      conversion_factor: 42.0, wage_index: 1.0, release_label: ""
+    )
+    Corvid::AscFacility.create!(
+      ccn: "ASC-VENDOR-1", effective_date: Date.new(2009, 1, 1)
+    )
+
+    result = analyze_single_obligation(
+      procedure: "OUTPATIENT_TEST", paid: 1_000, vendor_id: "ASC-VENDOR-1"
+    ).results.first
+    assert_equal :asc, result.payment_system
+    assert_equal :real, result.rate_source, "blank label must not be read as a stub"
+    assert_nil result.rate_source_release,
+               "blank ASC label must not leak into the provenance manifest"
+  end
+
   test "stub-fallback (no IPPS row loaded) leaves rate_source_release nil" do
     # No IPPS rows loaded; analyzer falls back to IppsStubRateProvider,
     # which is in-code data with no release label to attribute.
@@ -434,9 +523,75 @@ class Corvid::PrcOverpaymentAnalyzerTest < ActiveSupport::TestCase
               "rate_source must be nil when no Medicare rate was actually computed"
   end
 
+  # -- Wage index keys are CMS wage areas, not PFS localities (#369) --------
+  #
+  # corvid_ipps_hospital_rates is keyed by CMS wage area: 5-digit CBSA
+  # codes and 2-digit rural-state codes ("02" = Alaska rest-of-state).
+  # The facility dictionary's locality is a PFS (MAC) locality ("02" =
+  # Seattle metro). The two code systems overlap, so until a facility
+  # carries a real CBSA (#372) the institutional providers must price
+  # at the NATIONAL wage row, never at whichever wage area happens to
+  # share the PFS locality's digits.
+
+  test "an inpatient claim does not take the wage index of a wage area that shares the PFS locality code" do
+    Corvid::IppsDrgWeight.create!(fiscal_year: 2009, drg_code: "470", relative_weight: 2.0743)
+    seed_colliding_wage_areas(fiscal_year: 2009)
+
+    result = analyze_single_obligation(procedure: "HIP_REPLACE_THR", paid: 42_000).results.first
+
+    # 2.0743 × 6000 × 1.0 (NATIONAL) = 12_445.80, not × 1.3 (rural Alaska)
+    assert_in_delta 12_445.80, result.medicare_equivalent.to_f, 0.01
+  end
+
+  test "an outpatient claim does not take the wage index of a wage area that shares the PFS locality code" do
+    Corvid::PrcProcedureDictionary.register(
+      "OUTPATIENT_TEST", hcpcs: "12345", apc: "5071", description: "Test outpatient procedure"
+    )
+    Corvid::OppsApcWeight.create!(calendar_year: 2009, apc_code: "5071", relative_weight: 25.4378)
+    Corvid::OppsConversionFactor.create!(calendar_year: 2009, locality: "NATIONAL", conversion_factor: 70.0)
+    seed_colliding_wage_areas(fiscal_year: 2009)
+
+    result = analyze_single_obligation(procedure: "OUTPATIENT_TEST", paid: 5_000).results.first
+
+    # 25.4378 × 70.0 × 1.0 (NATIONAL) = 1780.65, not × 1.3 (rural Alaska)
+    assert_equal :opps, result.payment_system
+    assert_in_delta 1_780.65, result.medicare_equivalent.to_f, 0.01
+  end
+
+  test "an ASC claim does not take the wage index of a wage area that shares the PFS locality code" do
+    Corvid::PrcProcedureDictionary.register(
+      "OUTPATIENT_TEST", hcpcs: "12345", apc: "5071", description: "Test outpatient procedure"
+    )
+    Corvid::AscHcpcsRate.create!(
+      calendar_year: 2009, hcpcs_code: "12345", payment_indicator: "G2", payment_weight: 20.0
+    )
+    Corvid::AscConversionFactor.create!(calendar_year: 2009, locality: "NATIONAL", conversion_factor: 42.0)
+    Corvid::AscFacility.create!(ccn: "ASC-VENDOR-1", effective_date: Date.new(2009, 1, 1))
+    seed_colliding_wage_areas(fiscal_year: 2009)
+
+    result = analyze_single_obligation(
+      procedure: "OUTPATIENT_TEST", paid: 1_000, vendor_id: "ASC-VENDOR-1"
+    ).results.first
+
+    # 20.0 × 42.0 × 1.0 (NATIONAL) = 840.00, not × 1.3 (rural Alaska)
+    assert_equal :asc, result.payment_system
+    assert_in_delta 840.00, result.medicare_equivalent.to_f, 0.01
+  end
+
   # -- Helpers ---------------------------------------------------------------
 
   private
+
+  # NATIONAL plus the rural-state wage area whose code equals the SEA
+  # facility's PFS locality ("02").
+  def seed_colliding_wage_areas(fiscal_year:)
+    Corvid::IppsHospitalRate.create!(
+      fiscal_year: fiscal_year, locality: "NATIONAL", base_rate: 6_000.0, wage_index: 1.0
+    )
+    Corvid::IppsHospitalRate.create!(
+      fiscal_year: fiscal_year, locality: TEST_LOCALITY, base_rate: 6_000.0, wage_index: 1.3
+    )
+  end
 
   def analyze_single_obligation(procedure:, paid:, service_date: TEST_DATE, vendor_id: "V01")
     paid_str = format("%.2f", paid)
@@ -489,5 +644,24 @@ class Corvid::PrcOverpaymentAnalyzerTest < ActiveSupport::TestCase
       mp_gpci: 0.706,
       conversion_factor: 36.0666
     }
+  end
+  test "mixed blank and real IPPS labels keep the real release on Result#rate_source_release" do
+    # DRG weight label is blank; the hospital rate carries the real CMS
+    # release. Before the fix the provider's `||` kept the blank (truthy ""),
+    # and the analyzer's .presence then stored nil — the real label never
+    # reached the provenance manifest. Assert the raw real label.
+    Corvid::IppsDrgWeight.create!(
+      fiscal_year: 2009, drg_code: "470",
+      relative_weight: 2.0743, release_label: ""
+    )
+    Corvid::IppsHospitalRate.create!(
+      fiscal_year: 2009, locality: "NATIONAL",
+      base_rate: 6_000.0, wage_index: 1.0, release_label: "cms_fy2009_final_rule"
+    )
+
+    result = analyze_single_obligation(procedure: "HIP_REPLACE_THR", paid: 42_000).results.first
+    assert_equal :ipps, result.payment_system
+    assert_equal :real, result.rate_source
+    assert_equal "cms_fy2009_final_rule", result.rate_source_release
   end
 end

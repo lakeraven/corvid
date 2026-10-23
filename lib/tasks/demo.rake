@@ -22,6 +22,15 @@ namespace :demo do
       puts "  #{tag} #{label}"
     end
 
+    # Guarded authorization events return false instead of raising.
+    # Say why, using resource type and status only, and let the caller stop.
+    def advance_or_report_blockers(referral)
+      return true if yield
+
+      beat("authorization_blockers: #{referral.authorization_blockers.join('; ')}", real: true)
+      false
+    end
+
     banner("GM-5 · Corvid PRC demo — narrated happy path (corvid#468)")
     puts "Adapter: Corvid::Adapters::EnrollmentDemoAdapter (offline, in-process, no RPMS/AWS dependency)"
     puts "Tenant:  #{tenant}   Facility: #{facility}"
@@ -32,8 +41,20 @@ namespace :demo do
       Corvid::TenantContext.current_facility_identifier = facility
 
       # Clean up any prior run so this task is safely re-runnable.
+      #
+      # Fulfilment reports are append-only, so the referral association
+      # restricts rather than cascades and Case#destroy! would raise once a
+      # referral carries any report. Reseeding a demo is the one legitimate
+      # reason to discard them, so it is done here, explicitly and visibly,
+      # rather than by weakening the guarantee the application relies on.
       old_case = Corvid::Case.find_by(patient_identifier: patient_id, facility_identifier: facility)
-      old_case&.destroy!
+      if old_case
+        report_ids = Corvid::ReferralFulfilmentReport
+          .where(prc_referral_id: old_case.prc_referrals.select(:id))
+          .pluck(:id)
+        Corvid::ReferralFulfilmentReport.where(id: report_ids).delete_all if report_ids.any?
+        old_case.destroy!
+      end
 
       # ----------------------------------------------------------------
       # 1. Patient registration
@@ -120,7 +141,21 @@ namespace :demo do
       referral.approve_management!
       beat("referral.approve_management! (by pr_demo_002) -> status=#{referral.status}", real: true)
 
-      referral.verify_alternate_resources!
+      # Synthetic payer determinations. The demo does not query a payer;
+      # each resource is recorded not_enrolled so the exhaustion guard
+      # can pass without inventing coverage.
+      Corvid::AlternateResourceCheck::RESOURCE_TYPES.each do |type|
+        referral.alternate_resource_checks.find_or_create_by!(resource_type: type) do |check|
+          check.status = "not_enrolled"
+        end
+      end
+      referral.alternate_resource_checks.reload
+      beat(
+        "Seeded #{referral.alternate_resource_checks.size} alternate-resource checks (synthetic not_enrolled)",
+        real: true
+      )
+
+      resources_verified = advance_or_report_blockers(referral) { referral.verify_alternate_resources! }
       beat("referral.verify_alternate_resources! -> status=#{referral.status}", real: true)
 
       # ----------------------------------------------------------------
@@ -136,22 +171,30 @@ namespace :demo do
       beat("funds_available=#{result.funds_available?} " \
            "requires_committee_review=#{result.requires_committee_review?}", real: true)
 
-      reservation = Corvid::BudgetAvailabilityService.reserve_funds_if_available(
-        referral.referral_identifier, referral.estimated_cost
-      )
-      if reservation.success?
-        beat("Funds reserved: obligation #{reservation.id} (adapter-side CHS obligation)", real: false)
+      reservation = nil
+      if resources_verified
+        reservation = Corvid::BudgetAvailabilityService.reserve_funds_if_available(
+          referral.referral_identifier, referral.estimated_cost
+        )
+        if reservation.success?
+          beat("Funds reserved: obligation #{reservation.id} (adapter-side CHS obligation)", real: false)
 
-        referral.complete_priority_assignment!
-        beat("referral.complete_priority_assignment! -> status=#{referral.status}", real: true)
+          priority_assigned = advance_or_report_blockers(referral) { referral.complete_priority_assignment! }
+          if priority_assigned
+            beat("referral.complete_priority_assignment! -> status=#{referral.status}", real: true)
+          end
 
-        unless referral.authorized?
-          referral.authorize!
-          beat("referral.authorize! -> status=#{referral.status}", real: true)
+          if priority_assigned && !referral.authorized?
+            if advance_or_report_blockers(referral) { referral.authorize! }
+              beat("referral.authorize! -> status=#{referral.status}", real: true)
+            end
+          end
+        else
+          beat("[FAILED] funds not reserved: #{reservation.message} — " \
+               "authorization not attempted", real: false)
         end
       else
-        beat("[FAILED] funds not reserved: #{reservation.message} — " \
-             "authorization not attempted", real: false)
+        beat("[FAILED] alternate resources not exhausted — funds not reserved", real: true)
       end
 
       # ----------------------------------------------------------------
@@ -163,7 +206,12 @@ namespace :demo do
       puts "  Referral:       #{referral.referral_identifier} -> #{referral.status}"
       puts "  Checklist:      #{checklist.reload.compliance_percentage}% complete"
       puts "  Estimated cost: $#{'%.2f' % referral.estimated_cost.to_d}"
-      puts "  Obligation:     #{reservation.id} (#{reservation.success? ? 'reserved' : 'FAILED'})"
+      obligation = if reservation.nil?
+        "not reserved"
+      else
+        "#{reservation.id} (#{reservation.success? ? 'reserved' : 'FAILED'})"
+      end
+      puts "  Obligation:     #{obligation}"
       puts
       puts "REAL (engine-native, PG-backed): Case, PrcReferral state machine, EligibilityChecklist," \
            " Determination, BudgetAvailabilityService logic, tenant scoping."

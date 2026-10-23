@@ -10,7 +10,7 @@ Feature: Section 506 overpayment recovery
       | 99213    | 01       | 1.30     | 1.59   | 0.09   | 1.000     | 0.988   | 0.825   | 32.74             | 2025-01-01     |
       | 99214    | 01       | 1.92     | 2.11   | 0.16   | 1.000     | 0.988   | 0.825   | 32.74             | 2025-01-01     |
       | 27447    | 01       | 20.77    | 18.26  | 4.58   | 1.000     | 0.988   | 0.825   | 32.74             | 2025-01-01     |
-    And ZIP "98948" maps to locality "01"
+    And ZIP "98990" maps to locality "01"
 
   # =========================================================================
   # CLAIMS UPLOAD AND AUDIT
@@ -19,9 +19,9 @@ Feature: Section 506 overpayment recovery
   Scenario: Upload historical claims and identify overpayments
     Given the customer uploads paid claims:
       | cpt_code | zip   | paid_amount | provider_npi | provider_name      | date_of_service |
-      | 99213    | 98948 | 185.00      | 1234567890   | Northwest Cardio   | 2025-06-15      |
-      | 99214    | 98948 | 320.00      | 1234567890   | Northwest Cardio   | 2025-07-20      |
-      | 27447    | 98948 | 45000.00    | 9876543210   | Valley Surgery     | 2025-08-01      |
+      | 99213    | 98990 | 185.00      | 1234567890   | Northwest Cardio   | 2025-06-15      |
+      | 99214    | 98990 | 320.00      | 1234567890   | Northwest Cardio   | 2025-07-20      |
+      | 27447    | 98990 | 45000.00    | 9876543210   | Valley Surgery     | 2025-08-01      |
     When the audit runs
     Then overpayments should be identified
     And the total overpayment should be greater than 0
@@ -30,7 +30,7 @@ Feature: Section 506 overpayment recovery
   Scenario: Correctly priced claims are excluded from recovery
     Given the customer uploads paid claims:
       | cpt_code | zip   | paid_amount | provider_npi | provider_name     | date_of_service |
-      | 99213    | 98948 | 90.00       | 1234567890   | Honest Medical    | 2025-06-15      |
+      | 99213    | 98990 | 90.00       | 1234567890   | Honest Medical    | 2025-06-15      |
     When the audit runs
     Then no overpayments should be identified
 
