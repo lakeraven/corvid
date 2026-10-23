@@ -249,7 +249,7 @@ class Corvid::CommitteeReviewTest < ActiveSupport::TestCase
   test "requires_committee_review? returns false for low-cost referrals" do
     with_tenant(TENANT) do
       referral = create_referral
-      referral.update!(estimated_cost: 10_000)
+      referral.update!(estimated_cost: 10_000, medical_priority: 1)
       refute Corvid::CommitteeReview.requires_committee_review?(referral)
     end
   end

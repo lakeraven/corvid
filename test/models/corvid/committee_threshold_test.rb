@@ -82,7 +82,7 @@ module Corvid
 
     private
 
-    def build_referral(estimated_cost: nil, medical_priority: nil, flagged_for_review: false)
+    def build_referral(estimated_cost: nil, medical_priority: 1, flagged_for_review: false)
       kase = Case.create!(patient_identifier: "pt_thr", facility_identifier: FACILITY)
       PrcReferral.create!(
         case: kase,

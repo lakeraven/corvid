@@ -483,7 +483,7 @@ module Corvid
     test "authorize_with_medicaid_primary! refuses when estimated cost is unknown locally and from the adapter" do
       with_tenant(TENANT) do
         referral = referral_ready_for_medicaid_primary_authorization
-        referral.update_columns(estimated_cost_cents: nil, medical_priority: nil, flagged_for_review: false)
+        referral.update_columns(estimated_cost_cents: nil, medical_priority: 1, flagged_for_review: false)
         Corvid.adapter.add_referral(
           referral.referral_identifier,
           patient_identifier: PATIENT,
