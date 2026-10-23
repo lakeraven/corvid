@@ -1,6 +1,8 @@
 # frozen_string_literal: true
 
 require "test_helper"
+require "json"
+require "corvid/adapters/fhir_adapter"
 require "corvid/demo/fhir_overlay_ingest"
 
 class Corvid::Demo::FhirOverlayIngestRosterUnknownTest < ActiveSupport::TestCase
@@ -29,6 +31,54 @@ class Corvid::Demo::FhirOverlayIngestRosterUnknownTest < ActiveSupport::TestCase
       currency: "USD",
       sequence: 1
     )
+  end
+
+  test "ingest treats untyped empty claim search bundle as claims unknown" do
+    base_url = "https://fhir.example.com/r4"
+    patient_id = "pt_test_001"
+    adapter = Corvid::Adapters::FhirAdapter.new(base_url: base_url)
+    patient_read_url = "#{base_url}/Patient/#{patient_id}"
+    claims_search_url = "#{base_url}/Claim?patient=#{patient_id}"
+    patient_resource = {
+      "resourceType" => "Patient",
+      "id" => patient_id,
+      "birthDate" => "1980-01-01",
+      "gender" => "female",
+      "name" => [ { "family" => "TEST", "given" => [ "PATIENT", "001" ] } ]
+    }
+    untyped_empty_claim_bundle = { "resourceType" => "Bundle", "entry" => [] }
+
+    adapter.define_singleton_method(:http_get) do |url|
+      body =
+        case url
+        when patient_read_url
+          JSON.generate(patient_resource)
+        when claims_search_url
+          JSON.generate(untyped_empty_claim_bundle)
+        else
+          raise "unexpected FHIR GET #{url}"
+        end
+      response = Net::HTTPOK.new("1.1", "200", "OK")
+      response.instance_variable_set(:@body, body)
+      response.instance_variable_set(:@read, true)
+      response
+    end
+
+    with_tenant("tnt_test") do
+      Corvid::TenantContext.current_facility_identifier = "fac_untyped_claims_674"
+
+      counts = Ingest.ingest(
+        facility: "fac_untyped_claims_674",
+        patient_identifiers: [ patient_id ],
+        adapter: adapter
+      )
+
+      assert_equal [ patient_id ], counts[:patients_claims_unknown]
+      assert_equal 0, counts[:cases_created]
+      assert_equal 0, counts[:obligations_created]
+      assert_equal 0, Corvid::Case.for_facility("fac_untyped_claims_674").count
+      assert_equal 0, Corvid::PrcObligation.for_facility("fac_untyped_claims_674").count
+    end
   end
 
   test "ingest is all-or-nothing when any roster patient has unknown claims" do
@@ -135,5 +185,43 @@ class Corvid::Demo::FhirOverlayIngestRosterUnknownTest < ActiveSupport::TestCase
     end
 
     adapter.verify
+  end
+
+  test "ingest leaves nothing visible when host rescues RecordInvalid inside joinable transaction" do
+    build_ref = ->(id) { patient_ref(id) }
+    build_line = ->(id) { claim_line(id) }
+    adapter = Object.new
+    adapter.define_singleton_method(:find_patient) { |id| build_ref.call(id) }
+    adapter.define_singleton_method(:list_claims) { |id| [ build_line.call(id) ] }
+
+    save_calls = 0
+    original_save = Corvid::PrcObligation.instance_method(:save!)
+    Corvid::PrcObligation.define_method(:save!) do |*args, **kwargs|
+      save_calls += 1
+      raise ActiveRecord::RecordInvalid, self if save_calls == 2
+
+      original_save.bind(self).call(*args, **kwargs)
+    end
+
+    with_tenant("tnt_test") do
+      Corvid::TenantContext.current_facility_identifier = "fac_ingest_txn_674"
+
+      ActiveRecord::Base.transaction do
+        begin
+          Ingest.ingest(
+            facility: "fac_ingest_txn_674",
+            patient_identifiers: %w[pt_test_001 pt_test_002],
+            adapter: adapter
+          )
+        rescue ActiveRecord::RecordInvalid
+        end
+
+        assert_equal 0, Corvid::Case.for_facility("fac_ingest_txn_674").count
+        assert_equal 0, Corvid::PrcObligation.for_facility("fac_ingest_txn_674").count
+        refute Corvid::Case.exists?(patient_identifier: "pt_test_001", facility_identifier: "fac_ingest_txn_674")
+      end
+    end
+  ensure
+    Corvid::PrcObligation.define_method(:save!, original_save)
   end
 end

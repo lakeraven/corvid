@@ -116,7 +116,30 @@ class Corvid::Adapters::FhirAdapterListReadUnknownTest < Minitest::Test
 
   # --- real fhir_search via http_get ----------------------------------------
 
+  UNTYPED_EMPTY_BUNDLE = {
+    "resourceType" => "Bundle",
+    "entry" => []
+  }.freeze
+
   NON_SEARCHSET_BUNDLE_TYPES = %w[collection transaction-response].freeze
+
+  LIST_READS.each_key do |method|
+    define_method("test_#{method}_returns_nil_for_untyped_empty_bundle_via_http") do
+      arg = LIST_READS.fetch(method)
+      result = with_http_bundle(UNTYPED_EMPTY_BUNDLE) { @adapter.public_send(method, arg) }
+
+      assert_nil result, "#{method}: Bundle without type is not an answered search"
+    end
+
+    define_method("test_#{method}_returns_nil_for_untyped_bundle_with_match_entry_via_http") do
+      entry = untyped_match_bundle_entry(method)
+      bundle = { "resourceType" => "Bundle", "entry" => [ entry ] }
+      arg = LIST_READS.fetch(method)
+      result = with_http_bundle(bundle) { @adapter.public_send(method, arg) }
+
+      assert_nil result, "#{method}: untyped Bundle with matches must not be treated as searchset"
+    end
+  end
 
   NON_SEARCHSET_BUNDLE_TYPES.each do |bundle_type|
     LIST_READS.each_key do |method|
@@ -240,6 +263,27 @@ class Corvid::Adapters::FhirAdapterListReadUnknownTest < Minitest::Test
 
   private
 
+  def untyped_match_bundle_entry(method)
+    case method
+    when :search_patients
+      patient_bundle_entry(mode: "match", id: "pt_untyped_match")
+    when :search_practitioners
+      practitioner_bundle_entry(mode: "match", id: "pr_untyped_match")
+    when :list_referrals
+      service_request_bundle_entry(id: "sr_untyped_match")
+    when :list_claims
+      claim_bundle_entry(item: [ {
+        "sequence" => 1,
+        "productOrService" => { "coding" => [ { "system" => "http://www.ama-assn.org/go/cpt", "code" => "99213" } ] },
+        "net" => { "value" => 100.0, "currency" => "USD" }
+      } ])
+    when :get_care_team
+      care_team_bundle_entry(id: "ct_untyped_match")
+    else
+      flunk "no untyped match fixture for #{method}"
+    end
+  end
+
   def with_http_bundle(bundle)
     response = http_response(bundle)
     @adapter.stub(:http_get, ->(_url) { response }) { yield }
@@ -266,6 +310,32 @@ class Corvid::Adapters::FhirAdapterListReadUnknownTest < Minitest::Test
         "name" => [ { "family" => "TEST", "given" => [ "PATIENT" ] } ]
       },
       "search" => { "mode" => mode }
+    }
+  end
+
+  def practitioner_bundle_entry(mode: "match", id: "pr_test_001")
+    {
+      "resource" => {
+        "resourceType" => "Practitioner",
+        "id" => id,
+        "name" => [ { "family" => "TEST", "given" => [ "PROVIDER" ] } ]
+      },
+      "search" => { "mode" => mode }
+    }
+  end
+
+  def care_team_bundle_entry(id: "ct_test_001")
+    {
+      "resource" => {
+        "resourceType" => "CareTeam",
+        "id" => id,
+        "status" => "active",
+        "subject" => { "reference" => "Patient/pt_test_001" },
+        "participant" => [
+          { "member" => { "reference" => "Practitioner/pr_test_001" } }
+        ]
+      },
+      "search" => { "mode" => "match" }
     }
   end
 

@@ -101,6 +101,27 @@ class Corvid::Demo::FhirOverlayTest < ActiveSupport::TestCase
            "find_patient unknown must withhold clinic and consortium dollar totals"
   end
 
+  test "withheld clinic banner does not blame claims alone when only patient read failed" do
+    clinic = Data.clinics.first
+    counts = {
+      patients_claims_unknown: [],
+      patients_unknown: [ patient_ids(clinic).first ],
+      cases_created: 0,
+      obligations_created: 0
+    }
+    io = StringIO.new
+    Corvid::Demo::FhirOverlayDemo.module_eval do
+      @io = io
+      print_clinic(clinic, counts, nil, nil)
+    end
+    output = io.string
+
+    refute_match(/Claims unknown for/i, output,
+                 "find_patient unknown must not be narrated as claims-unknown only")
+    assert_match(/patient|record/i, output,
+                 "withheld banner must name patient/record read failure")
+  end
+
   test "consortium total aggregates both clinics" do
     io = StringIO.new
     result = Corvid::Demo::FhirOverlayDemo.run(io: io)
