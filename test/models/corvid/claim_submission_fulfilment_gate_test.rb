@@ -84,6 +84,98 @@ class Corvid::ClaimSubmissionFulfilmentGateTest < ActiveSupport::TestCase
     end
   end
 
+  OTHER_PATIENT = "TEST,PATIENT 002"
+
+  test "submit! refuses when referral_identifier names an undelivered referral while prc_referral still points at delivered care" do
+    with_tenant(TENANT) do
+      delivered = authorized_referral("rf_fulfil_stale_submit_a")
+      undelivered = authorized_referral("rf_fulfil_stale_submit_b")
+      record_external_report!(delivered, outcome: "delivered", reported_at: Time.current)
+      claim = linked_claim(delivered)
+      claim.referral_identifier = undelivered.referral_identifier
+
+      adapter = submit_claim_counting_adapter
+      error = assert_raises(Corvid::ClaimSubmission::FulfilmentNotRecorded) { claim.submit! }
+
+      assert_match(/#{undelivered.referral_identifier}/, error.message)
+      assert_match(/awaiting_report|fulfilment/i, error.message)
+      assert_equal 0, adapter.submit_claim_count
+      assert_equal "draft", claim.reload.status
+      assert_nil claim.submitted_at
+      assert_equal delivered.id, claim.prc_referral_id
+    end
+  end
+
+  test "mark_submitted! refuses when referral_identifier names an undelivered referral while prc_referral still points at delivered care" do
+    with_tenant(TENANT) do
+      delivered = authorized_referral("rf_fulfil_stale_mark_a")
+      undelivered = authorized_referral("rf_fulfil_stale_mark_b")
+      record_external_report!(delivered, outcome: "delivered", reported_at: Time.current)
+      claim = linked_claim(delivered)
+      claim.referral_identifier = undelivered.referral_identifier
+
+      assert_raises(Corvid::ClaimSubmission::FulfilmentNotRecorded) do
+        claim.mark_submitted!(claim_identifier: "CLM-STALE-MARK")
+      end
+
+      claim.reload
+      assert_equal "draft", claim.status
+      assert_nil claim.claim_identifier
+      assert_equal delivered.id, claim.prc_referral_id
+    end
+  end
+
+  test "mark_submitted! refuses a claim naming another patient's referral like submit!" do
+    with_tenant(TENANT) do
+      referral = authorized_referral("rf_fulfil_xpat_mark")
+      record_external_report!(referral, outcome: "delivered", reported_at: Time.current)
+      claim = Corvid::ClaimSubmission.create!(
+        tenant_identifier: TENANT,
+        facility_identifier: FACILITY,
+        patient_identifier: OTHER_PATIENT,
+        referral_identifier: referral.referral_identifier,
+        claim_type: "professional",
+        service_date: Date.current,
+        billed_amount: 100.0,
+        status: "draft"
+      )
+      assert_nil claim.prc_referral_id
+
+      error = assert_raises(Corvid::ClaimSubmission::ReferralNotAuthorized) do
+        claim.mark_submitted!(claim_identifier: "CLM-XPAT-MARK")
+      end
+
+      assert_match(/not this patient's/, error.message)
+      assert_equal "draft", claim.reload.status
+      assert_nil claim.claim_identifier
+    end
+  end
+
+  test "mark_submitted! refuses a claim naming an ambiguous referral like submit!" do
+    with_tenant(TENANT) do
+      ambiguous_identifier = "rf_fulfil_ambig_mark"
+      duplicate_authorized_referrals_at(nil, ambiguous_identifier)
+      claim = Corvid::ClaimSubmission.create!(
+        tenant_identifier: TENANT,
+        facility_identifier: nil,
+        patient_identifier: PATIENT,
+        referral_identifier: ambiguous_identifier,
+        claim_type: "professional",
+        service_date: Date.current,
+        billed_amount: 100.0,
+        status: "draft"
+      )
+      assert_nil claim.prc_referral_id
+
+      error = assert_raises(Corvid::ClaimSubmission::ReferralNotAuthorized) do
+        claim.mark_submitted!(claim_identifier: "CLM-AMBIG-MARK")
+      end
+
+      assert_match(/several share it|cannot be established/, error.message)
+      assert_equal "draft", claim.reload.status
+    end
+  end
+
   test "submit! without a linked referral is unchanged by the fulfilment gate" do
     with_tenant(TENANT) do
       claim = Corvid::ClaimSubmission.create!(
@@ -105,6 +197,44 @@ class Corvid::ClaimSubmissionFulfilmentGateTest < ActiveSupport::TestCase
   end
 
   private
+
+  class SubmitClaimCountingAdapter < Corvid::Adapters::MockAdapter
+    def initialize
+      super()
+      @submit_claim_count = 0
+    end
+
+    def submit_claim(claim_data)
+      @submit_claim_count += 1
+      super(claim_data)
+    end
+
+    attr_reader :submit_claim_count
+  end
+
+  def submit_claim_counting_adapter
+    adapter = SubmitClaimCountingAdapter.new
+    Corvid.configure { |c| c.adapter = adapter }
+    adapter
+  end
+
+  def duplicate_authorized_referrals_at(facility_identifier, referral_identifier)
+    2.times do |index|
+      kase = Corvid::Case.create!(
+        patient_identifier: "PAT-AMB-#{index}-#{SecureRandom.hex(2)}",
+        facility_identifier: facility_identifier || FACILITY
+      )
+      referral = Corvid::PrcReferral.new(
+        case: kase,
+        referral_identifier: referral_identifier,
+        facility_identifier: facility_identifier
+      )
+      referral.save!(validate: false)
+      Corvid::AlternateResourceCheck.create_all_for_referral(referral)
+      exhaust_alternate_resources!(referral)
+      referral.update_column(:status, "authorized")
+    end
+  end
 
   def authorized_referral(identifier)
     kase = Corvid::Case.create!(patient_identifier: PATIENT, facility_identifier: FACILITY)

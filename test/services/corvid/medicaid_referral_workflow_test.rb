@@ -132,7 +132,217 @@ module Corvid
       end
     end
 
+    test "authorize_with_medicaid_primary! re-verifies stale medicaid through the injected adapter before coordinating" do
+      with_tenant(TENANT) do
+        referral = referral_ready_for_medicaid_primary_authorization
+        medicaid = referral.alternate_resource_checks.find_by!(resource_type: "medicaid")
+        medicaid.update_columns(
+          checked_at: 60.days.ago,
+          coverage_start: Date.new(2020, 1, 1),
+          coverage_end: Date.new(2020, 12, 31)
+        )
+        refute medicaid.reload.current_for?(Date.current)
+
+        adapter = medicaid_injected_adapter
+        seed_fresh_medicaid_coverage!(adapter, PATIENT)
+        workflow = Corvid::MedicaidReferralWorkflow.new(adapter: adapter)
+
+        workflow.authorize_with_medicaid_primary!(referral)
+
+        assert_equal [ [ PATIENT, "medicaid" ] ], adapter.verify_eligibility_calls
+        medicaid.reload
+        assert medicaid.coordinated?
+        assert_equal "authorized", referral.reload.status
+      end
+    end
+
+    test "authorize_with_medicaid_primary! refuses enrolled medicaid that is not current_for today" do
+      with_tenant(TENANT) do
+        referral = referral_ready_for_medicaid_primary_authorization
+        medicaid = referral.alternate_resource_checks.find_by!(resource_type: "medicaid")
+        medicaid.update_columns(
+          checked_at: 60.days.ago,
+          coverage_start: Date.new(2020, 1, 1),
+          coverage_end: Date.new(2020, 12, 31)
+        )
+        refute medicaid.reload.current_for?(Date.current)
+        before = medicaid.attributes.slice("status", "checked_at", "policy_token")
+
+        adapter = medicaid_injected_adapter
+        workflow = Corvid::MedicaidReferralWorkflow.new(adapter: adapter)
+        error = assert_raises(Corvid::MedicaidReferralWorkflow::Refused) do
+          workflow.authorize_with_medicaid_primary!(referral)
+        end
+
+        assert_match(/medicaid: not current/, error.message)
+        assert_equal before, medicaid.reload.attributes.slice("status", "checked_at", "policy_token")
+        refute medicaid.coordinated?
+        refute referral.reload.authorized?
+      end
+    end
+
+    test "authorize_with_medicaid_primary! refuses when injected adapter answers medicaid not enrolled" do
+      with_tenant(TENANT) do
+        referral = referral_ready_for_medicaid_primary_authorization
+        medicaid = referral.alternate_resource_checks.find_by!(resource_type: "medicaid")
+        medicaid.update_columns(checked_at: 60.days.ago)
+        refute medicaid.reload.current_for?(Date.current)
+
+        adapter = medicaid_injected_adapter
+        adapter.add_coverage(PATIENT, resource_type: "medicaid", eligible: false)
+        workflow = Corvid::MedicaidReferralWorkflow.new(adapter: adapter)
+        error = assert_raises(Corvid::MedicaidReferralWorkflow::Refused) do
+          workflow.authorize_with_medicaid_primary!(referral)
+        end
+
+        assert_match(/medicaid/, error.message)
+        refute medicaid.reload.coordinated?
+        refute referral.reload.authorized?
+      end
+    end
+
+    test "authorize_with_medicaid_primary! refuses seeded medicaid with nil checked_at until adapter confirms coverage" do
+      with_tenant(TENANT) do
+        referral = referral_ready_for_medicaid_primary_authorization
+        medicaid = referral.alternate_resource_checks.find_by!(resource_type: "medicaid")
+        medicaid.update_columns(checked_at: nil)
+        refute medicaid.reload.current_for?(Date.current)
+
+        adapter = medicaid_injected_adapter
+        workflow = Corvid::MedicaidReferralWorkflow.new(adapter: adapter)
+        error = assert_raises(Corvid::MedicaidReferralWorkflow::Refused) do
+          workflow.authorize_with_medicaid_primary!(referral)
+        end
+
+        assert_match(/medicaid: not current/, error.message)
+        refute medicaid.reload.coordinated?
+        refute referral.reload.authorized?
+      end
+    end
+
+    test "authorize_with_medicaid_primary! refuses flagged referrals that require committee review" do
+      with_tenant(TENANT) do
+        referral = referral_ready_for_medicaid_primary_authorization
+        referral.update!(flagged_for_review: true)
+        assert referral.requires_committee?
+        medicaid = referral.alternate_resource_checks.find_by!(resource_type: "medicaid")
+        status_before = referral.status
+
+        workflow = Corvid::MedicaidReferralWorkflow.new
+        error = assert_raises(Corvid::MedicaidReferralWorkflow::Refused) do
+          workflow.authorize_with_medicaid_primary!(referral)
+        end
+
+        assert_match(/committee review/i, error.message)
+        refute medicaid.reload.coordinated?
+        refute referral.reload.authorized?
+        assert_equal status_before, referral.status
+        assert_equal 0, referral.committee_reviews.count
+      end
+    end
+
+    test "authorize_with_medicaid_primary! refuses referrals at the committee cost threshold" do
+      with_tenant(TENANT) do
+        referral = referral_ready_for_medicaid_primary_authorization
+        referral.update!(estimated_cost: 50_000, flagged_for_review: false, medical_priority: 2)
+        Corvid.adapter.add_referral(
+          referral.referral_identifier,
+          patient_identifier: PATIENT,
+          status: "pending",
+          estimated_cost: 50_000,
+          emergent: false,
+          urgent: false,
+          chs_approval_status: "P",
+          service_requested: "TEST"
+        )
+        assert referral.requires_committee?
+        medicaid = referral.alternate_resource_checks.find_by!(resource_type: "medicaid")
+
+        workflow = Corvid::MedicaidReferralWorkflow.new
+        error = assert_raises(Corvid::MedicaidReferralWorkflow::Refused) do
+          workflow.authorize_with_medicaid_primary!(referral)
+        end
+
+        assert_match(/committee review/i, error.message)
+        refute medicaid.reload.coordinated?
+        refute referral.reload.authorized?
+      end
+    end
+
+    test "authorize_with_medicaid_primary! refuses referrals already in committee_review" do
+      with_tenant(TENANT) do
+        referral = referral_ready_for_medicaid_primary_authorization
+        referral.update_columns(flagged_for_review: true)
+        referral.reload
+        referral.alternate_resource_checks.find_by!(resource_type: "medicaid").mark_coordinated!
+        referral.alternate_resource_checks.reset
+        assert referral.verify_alternate_resources!
+        assert referral.complete_priority_assignment!
+        assert_equal "committee_review", referral.reload.status
+
+        medicaid = referral.alternate_resource_checks.find_by!(resource_type: "medicaid")
+        workflow = Corvid::MedicaidReferralWorkflow.new
+        error = assert_raises(Corvid::MedicaidReferralWorkflow::Refused) do
+          workflow.authorize_with_medicaid_primary!(referral)
+        end
+
+        assert_match(/committee review/i, error.message)
+        assert_equal "committee_review", referral.reload.status
+        refute referral.reload.authorized?
+      end
+    end
+
+    test "authorize_with_medicaid_primary! leaves medicaid enrolled when Refused is rescued in an outer transaction" do
+      with_tenant(TENANT) do
+        referral = referral_ready_for_medicaid_primary_authorization
+        referral.alternate_resource_checks.find_by!(resource_type: "medicare_a").update_columns(status: "enrolled")
+        medicaid = referral.alternate_resource_checks.find_by!(resource_type: "medicaid")
+        assert medicaid.enrolled?
+
+        workflow = Corvid::MedicaidReferralWorkflow.new
+        ActiveRecord::Base.transaction do
+          begin
+            workflow.authorize_with_medicaid_primary!(referral)
+          rescue Corvid::MedicaidReferralWorkflow::Refused
+          end
+        end
+
+        medicaid.reload
+        assert medicaid.enrolled?
+        refute medicaid.coordinated?
+        refute referral.reload.authorized?
+      end
+    end
+
     private
+
+    class MedicaidInjectedAdapter < Corvid::Adapters::MockAdapter
+      attr_reader :verify_eligibility_calls
+
+      def initialize
+        super()
+        @verify_eligibility_calls = []
+      end
+
+      def verify_eligibility(patient_identifier, resource_type)
+        @verify_eligibility_calls << [ patient_identifier, resource_type ]
+        super(patient_identifier, resource_type)
+      end
+    end
+
+    def medicaid_injected_adapter
+      MedicaidInjectedAdapter.new
+    end
+
+    def seed_fresh_medicaid_coverage!(adapter, patient_identifier)
+      adapter.add_coverage(
+        patient_identifier,
+        resource_type: "medicaid",
+        eligible: true,
+        coverage_start: Date.current.beginning_of_year,
+        coverage_end: Date.current.end_of_year + 1.year
+      )
+    end
 
     def create_referral_record
       kase = Case.create!(patient_identifier: PATIENT, facility_identifier: FACILITY)
