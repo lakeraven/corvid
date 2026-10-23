@@ -95,6 +95,8 @@ module Corvid
     before_save :set_checked_at, if: :status_changed?
     # Every Medicaid write takes the same patient lock as claim
     # submission, so a concurrent submit! waits until this save commits.
+    # lock! takes that lock before the row lock. This callback covers
+    # a save that never called lock!.
     before_save :lock_patient_medicaid_submission!
 
     # Class methods
@@ -174,6 +176,16 @@ module Corvid
       else
         verify_eligibility_answer!
       end
+    end
+
+    # with_lock opens its transaction and then calls lock!. On a
+    # Medicaid row the patient advisory lock is taken first, the same
+    # order as verify! and claim submission, and held until that
+    # transaction ends. A row lock taken first deadlocks a verify!
+    # that already holds the advisory lock and still needs the row.
+    def lock!(lock = true)
+      lock_patient_medicaid_submission! if persisted? && lock
+      super
     end
 
     def verify_eligibility_answer!

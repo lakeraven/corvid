@@ -57,6 +57,7 @@ module Corvid
     validates :status, inclusion: { in: STATUSES }
     validates :claim_type, inclusion: { in: CLAIM_TYPES }
     validate :never_submitted_claim_stays_unsubmitted
+    validate :never_sent_claim_markers_only_through_submission
     validate :medicaid_hold_override_not_assigned_directly
     validate :medicaid_hold_override_all_or_none
 
@@ -77,12 +78,12 @@ module Corvid
     private_constant :MEDICAID_APPLICATION_ENDED_STATUSES
 
     # A plain save cannot move a claim that has never been sent into
-    # submitted, accepted, or paid, whatever status it is stored under.
-    # Never sent means submitted_at is still nil and no claim_identifier
-    # has been written by submit! or mark_submitted!. Creating a row
-    # that is already in one of those statuses stays allowed, and that
-    # row may move among them. Leaving one of them records submitted_at
-    # when it was missing, so the return trip is not a first send.
+    # submitted, accepted, or paid, and cannot write claim_identifier
+    # or submitted_at. Never sent means both of those are still blank.
+    # Creating a row that is already in one of those statuses stays
+    # allowed, and that row may move among them. Leaving one of them
+    # records submitted_at when it was missing, so the return trip is
+    # not a first send.
     SENT_STATUSES = %w[submitted accepted paid].freeze
     private_constant :SENT_STATUSES
 
@@ -265,17 +266,10 @@ module Corvid
 
     def submit!
       prepare_for_clearinghouse_submit!
-      submitted = nil
-      failure = nil
-      with_medicaid_submission_lock do
-        submitted = submit_locked!
-      rescue ActiveRecord::RecordInvalid => invalid
-        reload if persisted?
-        failure = invalid
-      end
-      raise failure if failure
+      outcome = with_medicaid_submission_lock { submit_locked! }
+      raise outcome.fetch(:failure) if outcome[:failure]
 
-      submitted
+      outcome.fetch(:result)
     end
 
     # Patient-level lock shared with Medicaid AlternateResourceCheck
@@ -511,6 +505,23 @@ module Corvid
       errors.add(:status, "can only become submitted, accepted, or paid through submit! or mark_submitted!")
     end
 
+    # claim_identifier and submitted_at are how a later save tells a
+    # sent claim from one that never left. A plain save must not write
+    # either onto a never-sent row, or a held draft can store an
+    # identifier and then walk into a sent status. Inserts may still
+    # carry them. submit! and mark_submitted! set the recording flag.
+    def never_sent_claim_markers_only_through_submission
+      return if @recording_claim_submission
+      return unless persisted? && never_sent_in_database?
+
+      refuse_plain_sent_marker(:claim_identifier) if will_save_change_to_claim_identifier?
+      refuse_plain_sent_marker(:submitted_at) if will_save_change_to_submitted_at?
+    end
+
+    def refuse_plain_sent_marker(attribute)
+      errors.add(attribute, "can only be recorded through submit! or mark_submitted!")
+    end
+
     # submitted_at_in_database and claim_identifier_in_database are the
     # persisted signals that submit! or mark_submitted! sent this claim.
     # Values assigned on this save do not count. The stored status does
@@ -678,17 +689,19 @@ module Corvid
     # The row lock and the patient advisory lock cover the hold check,
     # the adapter call, and the status update. The override is spent in
     # its own savepoint before the adapter. That savepoint is released
-    # before the call. The call and the status save use a second
-    # savepoint. If that save raises, only the second savepoint rolls
-    # back, and the outer transaction still commits the spent override.
-    # A failed adapter raises out of the outer transaction, so the spend
-    # rolls back with it: nothing was accepted from the clearinghouse.
+    # before the call. The accepted result is recorded in a later
+    # savepoint. Any error from that save — not only RecordInvalid —
+    # rolls back only that savepoint. The outer transaction still
+    # commits the spent override, and the error is raised after it
+    # commits. An exception from submit_claim is not an acceptance: it
+    # leaves the outer transaction, so the spend rolls back with it.
     # A second submit! on this connection, while the adapter is in
     # flight, re-reads a row whose override is already spent and is held.
     def submit_locked!
       enforce_pending_medicaid_hold!
       spend_medicaid_hold_override!
-      send_locked_claim!
+      result = Corvid.adapter.submit_claim(to_claim_data)
+      { result: result, failure: accepted_result_failure(result) }
     end
 
     def spend_medicaid_hold_override!
@@ -697,14 +710,25 @@ module Corvid
       end
     end
 
-    def send_locked_claim!
+    # nil when the accepted result was stored. Otherwise the error from
+    # that save. Rescuing here, inside the outer transaction, lets that
+    # transaction commit the spent override. submit! raises afterwards.
+    # submit_claim has already returned; an exception from the call
+    # itself never reaches this method.
+    def accepted_result_failure(result)
+      save_accepted_result!(result)
+      nil
+    rescue Exception => error
+      reload if persisted?
+      error
+    end
+
+    def save_accepted_result!(result)
       transaction(requires_new: true) do
-        result = Corvid.adapter.submit_claim(to_claim_data)
         record_claim_submission!(
           claim_identifier: result[:claim_identifier],
           status: clearinghouse_submission_status(result[:status])
         )
-        result
       end
     end
 
