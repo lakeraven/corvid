@@ -293,6 +293,77 @@ module Corvid
       end
     end
 
+    test "authorize_with_medicaid_primary! refuses when EHR priority requires committee with nil local medical_priority" do
+      with_tenant(TENANT) do
+        referral = referral_ready_for_medicaid_primary_authorization
+        referral.update_columns(medical_priority: nil, flagged_for_review: false)
+        Corvid.adapter.add_referral(
+          referral.referral_identifier,
+          patient_identifier: PATIENT,
+          status: "pending",
+          estimated_cost: referral.estimated_cost,
+          medical_priority_level: 4,
+          emergent: false,
+          urgent: false,
+          chs_approval_status: "P",
+          service_requested: "TEST"
+        )
+        referral.reload
+        medicaid = referral.alternate_resource_checks.find_by!(resource_type: "medicaid")
+        status_before = referral.status
+
+        assert_equal 4, referral.service_request.medical_priority_level
+        assert referral.requires_committee?,
+          "effective priority 4 must require committee before medicaid primary authorization"
+
+        workflow = Corvid::MedicaidReferralWorkflow.new
+        error = assert_raises(Corvid::MedicaidReferralWorkflow::Refused) do
+          workflow.authorize_with_medicaid_primary!(referral)
+        end
+
+        assert_match(/committee review/i, error.message)
+        refute medicaid.reload.coordinated?
+        refute referral.reload.authorized?
+        assert_equal status_before, referral.status
+        assert_equal 0, referral.committee_reviews.count
+        ehr = Corvid.adapter.find_referral(referral.referral_identifier)
+        refute_equal "A", ehr.chs_approval_status
+      end
+    end
+
+    test "authorize_with_medicaid_primary! refuses unknown priority through committee review not authorization" do
+      with_tenant(TENANT) do
+        referral = referral_ready_for_medicaid_primary_authorization
+        referral.update_columns(medical_priority: nil, flagged_for_review: false)
+        Corvid.adapter.add_referral(
+          referral.referral_identifier,
+          patient_identifier: PATIENT,
+          status: "pending",
+          estimated_cost: referral.estimated_cost,
+          medical_priority_level: nil,
+          emergent: false,
+          urgent: false,
+          chs_approval_status: "P",
+          service_requested: "TEST"
+        )
+        referral.reload
+        medicaid = referral.alternate_resource_checks.find_by!(resource_type: "medicaid")
+
+        assert referral.requires_committee?,
+          "unknown priority must fail closed into committee review before medicaid authorization"
+
+        workflow = Corvid::MedicaidReferralWorkflow.new
+        error = assert_raises(Corvid::MedicaidReferralWorkflow::Refused) do
+          workflow.authorize_with_medicaid_primary!(referral)
+        end
+
+        assert_match(/committee review/i, error.message)
+        refute medicaid.reload.coordinated?
+        refute referral.reload.authorized?
+        assert_equal 0, referral.committee_reviews.count
+      end
+    end
+
     test "authorize_with_medicaid_primary! refuses flagged referrals that require committee review" do
       with_tenant(TENANT) do
         referral = referral_ready_for_medicaid_primary_authorization
@@ -457,7 +528,6 @@ module Corvid
           service_requested: "TEST"
         )
         referral.reload
-        refute referral.requires_committee?
         medicaid = referral.alternate_resource_checks.find_by!(resource_type: "medicaid")
         status_before = referral.status
 
@@ -466,7 +536,7 @@ module Corvid
           workflow.authorize_with_medicaid_primary!(referral)
         end
 
-        assert_match(/unknown priority/i, error.message)
+        assert_match(/committee review/i, error.message)
         refute medicaid.reload.coordinated?
         refute referral.reload.authorized?
         assert_equal status_before, referral.reload.status

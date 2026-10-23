@@ -43,8 +43,8 @@ module Corvid
       with_tenant(TENANT) { assert build_referral(estimated_cost: 100, medical_priority: 4).requires_committee? }
     end
 
-    test "nil priority does not require committee" do
-      with_tenant(TENANT) { refute build_referral(estimated_cost: 100, medical_priority: nil).requires_committee? }
+    test "nil priority requires committee review" do
+      with_tenant(TENANT) { assert build_referral(estimated_cost: 100, medical_priority: nil).requires_committee? }
     end
 
     # -- Flag tests --

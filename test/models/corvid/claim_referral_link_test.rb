@@ -301,6 +301,7 @@ class Corvid::ClaimReferralLinkTest < ActiveSupport::TestCase
     referral.verify_alternate_resources!
     referral.reload
     exhaust_alternate_resources!(referral)
+    referral.update!(medical_priority: 1)
     referral.complete_priority_assignment!
     referral.reload
     # complete_priority_assignment lands on :authorized directly, or on
