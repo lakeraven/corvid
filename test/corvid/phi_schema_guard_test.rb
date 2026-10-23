@@ -96,9 +96,9 @@ module Corvid
       end
     end
 
-    # An enum name is only safe if something actually bounds the values. 9 of
-    # the 21 names in ENUM_COLUMNS have no check constraint today, and
-    # corvid_cases.closure_reason has no constraint, no inclusion validation
+    # An enum name is only safe if something actually bounds the values. When
+    # this was written, 9 of the then 21 names in ENUM_COLUMNS had no check
+    # constraint on some table that uses them, and corvid_cases.closure_reason has no constraint, no inclusion validation
     # and no writer anywhere — an unbounded string whose name is "reason",
     # which ADR 0003 section 1 lists among free text that is never stored.
     #
@@ -196,14 +196,13 @@ module Corvid
     # A facility's billing authority, not a patient's: corvid_facility_authorities
     # rows carry a tenant, a facility token, an authority type and the
     # period the authority was held, with no column that links them to a
-    # person or an encounter. The dates are when a contract or compact was
-    # in force; the two strings describe the facility's four-walls basis and
-    # service area. Permitted for the same reason as the workforce dates.
+    # person or an encounter. These dates are when a contract or compact was
+    # in force. Permitted for the same reason as the workforce dates. The
+    # table's two free strings (four_walls_exception_basis, service_area) are
+    # NOT permitted: nothing bounds them, so they are disclosed instead.
     PERMITTED_FACILITY_COLUMNS = [
       %w[corvid_facility_authorities effective_on],
-      %w[corvid_facility_authorities expires_on],
-      %w[corvid_facility_authorities four_walls_exception_basis],
-      %w[corvid_facility_authorities service_area]
+      %w[corvid_facility_authorities expires_on]
     ].freeze
 
     # Always a violation, regardless of what the exceptions file says. These two
