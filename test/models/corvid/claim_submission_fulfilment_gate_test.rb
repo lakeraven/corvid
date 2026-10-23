@@ -176,6 +176,99 @@ class Corvid::ClaimSubmissionFulfilmentGateTest < ActiveSupport::TestCase
     end
   end
 
+  test "submit! refuses when referral_identifier names another patient's draft referral while prc_referral still points at authorized delivered care" do
+    with_tenant(TENANT) do
+      delivered = authorized_referral("rf_fulfil_auth_dirty_submit")
+      record_external_report!(delivered, outcome: "delivered", reported_at: Time.current)
+      claim = linked_claim(delivered)
+      other_kase = Corvid::Case.create!(patient_identifier: OTHER_PATIENT, facility_identifier: FACILITY)
+      draft = Corvid::PrcReferral.create!(
+        case: other_kase,
+        referral_identifier: "rf_fulfil_auth_dirty_other",
+        facility_identifier: FACILITY
+      )
+      claim.referral_identifier = draft.referral_identifier
+
+      adapter = submit_claim_counting_adapter
+      assert_raises(Corvid::ClaimSubmission::ReferralNotAuthorized) { claim.submit! }
+
+      assert_equal 0, adapter.submit_claim_count
+      claim.reload
+      assert_equal "draft", claim.status
+      assert_nil claim.submitted_at
+      assert_nil claim.claim_identifier
+      assert_equal delivered.id, claim.prc_referral_id
+      assert_equal delivered.referral_identifier, claim.referral_identifier
+    end
+  end
+
+  test "mark_submitted! refuses when referral_identifier names another patient's draft referral while prc_referral still points at authorized delivered care" do
+    with_tenant(TENANT) do
+      delivered = authorized_referral("rf_fulfil_auth_dirty_mark")
+      record_external_report!(delivered, outcome: "delivered", reported_at: Time.current)
+      claim = linked_claim(delivered)
+      other_kase = Corvid::Case.create!(patient_identifier: OTHER_PATIENT, facility_identifier: FACILITY)
+      draft = Corvid::PrcReferral.create!(
+        case: other_kase,
+        referral_identifier: "rf_fulfil_auth_dirty_mark_other",
+        facility_identifier: FACILITY
+      )
+      claim.referral_identifier = draft.referral_identifier
+
+      assert_raises(Corvid::ClaimSubmission::ReferralNotAuthorized) do
+        claim.mark_submitted!(claim_identifier: "CLM-AUTH-DIRTY-MARK")
+      end
+
+      claim.reload
+      assert_equal "draft", claim.status
+      assert_nil claim.claim_identifier
+      assert_equal delivered.id, claim.prc_referral_id
+      assert_equal delivered.referral_identifier, claim.referral_identifier
+    end
+  end
+
+  test "submit! refuses when referral_identifier names same patient's unauthorized delivered referral while prc_referral still points at authorized care" do
+    with_tenant(TENANT) do
+      authorized = authorized_referral("rf_fulfil_auth_samept_submit_a")
+      record_external_report!(authorized, outcome: "delivered", reported_at: Time.current)
+      unauthorized = authorized_referral("rf_fulfil_auth_samept_submit_b")
+      record_external_report!(unauthorized, outcome: "delivered", reported_at: Time.current)
+      unauthorized.update_column(:status, "priority_assignment")
+      claim = linked_claim(authorized)
+      claim.referral_identifier = unauthorized.referral_identifier
+
+      adapter = submit_claim_counting_adapter
+      assert_raises(Corvid::ClaimSubmission::ReferralNotAuthorized) { claim.submit! }
+
+      assert_equal 0, adapter.submit_claim_count
+      claim.reload
+      assert_equal "draft", claim.status
+      assert_nil claim.submitted_at
+      assert_equal authorized.id, claim.prc_referral_id
+    end
+  end
+
+  test "mark_submitted! refuses when referral_identifier names same patient's unauthorized delivered referral while prc_referral still points at authorized care" do
+    with_tenant(TENANT) do
+      authorized = authorized_referral("rf_fulfil_auth_samept_mark_a")
+      record_external_report!(authorized, outcome: "delivered", reported_at: Time.current)
+      unauthorized = authorized_referral("rf_fulfil_auth_samept_mark_b")
+      record_external_report!(unauthorized, outcome: "delivered", reported_at: Time.current)
+      unauthorized.update_column(:status, "priority_assignment")
+      claim = linked_claim(authorized)
+      claim.referral_identifier = unauthorized.referral_identifier
+
+      assert_raises(Corvid::ClaimSubmission::ReferralNotAuthorized) do
+        claim.mark_submitted!(claim_identifier: "CLM-AUTH-SAMEPT-MARK")
+      end
+
+      claim.reload
+      assert_equal "draft", claim.status
+      assert_nil claim.claim_identifier
+      assert_equal authorized.id, claim.prc_referral_id
+    end
+  end
+
   test "submit! without a linked referral is unchanged by the fulfilment gate" do
     with_tenant(TENANT) do
       claim = Corvid::ClaimSubmission.create!(

@@ -201,6 +201,79 @@ module Corvid
       end
     end
 
+    test "authorize_with_medicaid_primary! re-verifies enrolled medicaid with no coverage period when current_for? is false" do
+      with_tenant(TENANT) do
+        referral = referral_ready_for_medicaid_primary_authorization
+        medicaid = referral.alternate_resource_checks.find_by!(resource_type: "medicaid")
+        medicaid.update_columns(coverage_start: nil, coverage_end: nil, checked_at: Time.current)
+        medicaid.reload
+        refute medicaid.current_for?(Date.current)
+        before = medicaid.attributes.slice("status", "checked_at", "policy_token")
+
+        adapter = medicaid_injected_adapter
+        workflow = Corvid::MedicaidReferralWorkflow.new(adapter: adapter)
+        error = assert_raises(Corvid::MedicaidReferralWorkflow::Refused) do
+          workflow.authorize_with_medicaid_primary!(referral)
+        end
+
+        assert_equal [ [ PATIENT, "medicaid" ] ], adapter.verify_eligibility_calls
+        assert_match(/medicaid: not current/, error.message)
+        assert_equal before, medicaid.reload.attributes.slice("status", "checked_at", "policy_token")
+        refute medicaid.coordinated?
+        refute referral.reload.authorized?
+      end
+    end
+
+    test "authorize_with_medicaid_primary! re-verifies enrolled medicaid with only coverage_end when current_for? is false" do
+      with_tenant(TENANT) do
+        referral = referral_ready_for_medicaid_primary_authorization
+        medicaid = referral.alternate_resource_checks.find_by!(resource_type: "medicaid")
+        medicaid.update_columns(
+          coverage_start: nil,
+          coverage_end: Date.current.end_of_year,
+          checked_at: Time.current
+        )
+        medicaid.reload
+        refute medicaid.current_for?(Date.current)
+
+        adapter = medicaid_injected_adapter
+        workflow = Corvid::MedicaidReferralWorkflow.new(adapter: adapter)
+        error = assert_raises(Corvid::MedicaidReferralWorkflow::Refused) do
+          workflow.authorize_with_medicaid_primary!(referral)
+        end
+
+        assert_equal [ [ PATIENT, "medicaid" ] ], adapter.verify_eligibility_calls
+        assert_match(/medicaid: not current/, error.message)
+        refute medicaid.reload.coordinated?
+        refute referral.reload.authorized?
+      end
+    end
+
+    test "authorize_with_medicaid_primary! re-verifies enrolled medicaid with future checked_at when current_for? is false" do
+      with_tenant(TENANT) do
+        referral = referral_ready_for_medicaid_primary_authorization
+        medicaid = referral.alternate_resource_checks.find_by!(resource_type: "medicaid")
+        medicaid.update_columns(
+          checked_at: 1.hour.from_now,
+          coverage_start: Date.current.beginning_of_year,
+          coverage_end: Date.current.end_of_year
+        )
+        medicaid.reload
+        refute medicaid.current_for?(Date.current)
+
+        adapter = medicaid_injected_adapter
+        workflow = Corvid::MedicaidReferralWorkflow.new(adapter: adapter)
+        error = assert_raises(Corvid::MedicaidReferralWorkflow::Refused) do
+          workflow.authorize_with_medicaid_primary!(referral)
+        end
+
+        assert_equal [ [ PATIENT, "medicaid" ] ], adapter.verify_eligibility_calls
+        assert_match(/medicaid: not current/, error.message)
+        refute medicaid.reload.coordinated?
+        refute referral.reload.authorized?
+      end
+    end
+
     test "authorize_with_medicaid_primary! refuses seeded medicaid with nil checked_at until adapter confirms coverage" do
       with_tenant(TENANT) do
         referral = referral_ready_for_medicaid_primary_authorization
@@ -289,6 +362,82 @@ module Corvid
         assert_match(/committee review/i, error.message)
         assert_equal "committee_review", referral.reload.status
         refute referral.reload.authorized?
+      end
+    end
+
+    test "authorize_with_medicaid_primary! syncs authorized chs_approval_status to the EHR" do
+      with_tenant(TENANT) do
+        referral = referral_ready_for_medicaid_primary_authorization
+
+        Corvid::MedicaidReferralWorkflow.new.authorize_with_medicaid_primary!(referral)
+
+        assert_equal "authorized", referral.reload.status
+        ehr = Corvid.adapter.find_referral(referral.referral_identifier)
+        assert_equal "A", ehr.chs_approval_status
+      end
+    end
+
+    test "complete_priority_assignment! landing on authorized syncs chs_approval_status A to the EHR" do
+      with_tenant(TENANT) do
+        referral = referral_ready_for_medicaid_primary_authorization
+        referral.alternate_resource_checks.find_by!(resource_type: "medicaid").mark_coordinated!
+        assert referral.verify_alternate_resources!
+        assert_equal "priority_assignment", referral.reload.status
+
+        assert referral.complete_priority_assignment!
+
+        assert_equal "authorized", referral.reload.status
+        ehr = Corvid.adapter.find_referral(referral.referral_identifier)
+        assert_equal "A", ehr.chs_approval_status
+      end
+    end
+
+    test "complete_priority_assignment! landing on committee_review does not sync chs_approval_status A" do
+      with_tenant(TENANT) do
+        referral = referral_ready_for_medicaid_primary_authorization
+        referral.update_columns(flagged_for_review: true)
+        referral.reload
+        assert referral.requires_committee?
+        referral.alternate_resource_checks.find_by!(resource_type: "medicaid").mark_coordinated!
+        assert referral.verify_alternate_resources!
+
+        assert referral.complete_priority_assignment!
+
+        assert_equal "committee_review", referral.reload.status
+        ehr = Corvid.adapter.find_referral(referral.referral_identifier)
+        refute_equal "A", ehr.chs_approval_status
+      end
+    end
+
+    test "authorize_with_medicaid_primary! refuses when estimated cost is unknown locally and from the adapter" do
+      with_tenant(TENANT) do
+        referral = referral_ready_for_medicaid_primary_authorization
+        referral.update_columns(estimated_cost_cents: nil, medical_priority: nil, flagged_for_review: false)
+        Corvid.adapter.add_referral(
+          referral.referral_identifier,
+          patient_identifier: PATIENT,
+          status: "pending",
+          estimated_cost: nil,
+          emergent: false,
+          urgent: false,
+          chs_approval_status: "P",
+          service_requested: "TEST"
+        )
+        referral.reload
+        refute referral.requires_committee?
+        medicaid = referral.alternate_resource_checks.find_by!(resource_type: "medicaid")
+        status_before = referral.status
+
+        workflow = Corvid::MedicaidReferralWorkflow.new
+        error = assert_raises(Corvid::MedicaidReferralWorkflow::Refused) do
+          workflow.authorize_with_medicaid_primary!(referral)
+        end
+
+        assert_match(/unknown cost/i, error.message)
+        refute medicaid.reload.coordinated?
+        refute referral.reload.authorized?
+        assert_equal status_before, referral.status
+        assert_equal 0, referral.committee_reviews.count
       end
     end
 
@@ -400,7 +549,7 @@ module Corvid
       referral = referral_in_alternate_resource_review
       create_all_determermined_checks(referral, "medicaid" => "enrolled")
       medicaid = referral.alternate_resource_checks.find_by!(resource_type: "medicaid")
-      medicaid.update!(checked_at: Time.current) unless medicaid.checked_at
+      ensure_enrolled_medicaid_current_coverage!(medicaid)
       referral
     end
 
@@ -409,9 +558,22 @@ module Corvid
         check = referral.alternate_resource_checks.find_or_initialize_by(resource_type: type)
         check.status = status_overrides.fetch(type, "not_enrolled")
         check.checked_at = Time.current if check.status != "not_checked"
+        if type == "medicaid" && check.status == "enrolled"
+          check.coverage_start = Date.current.beginning_of_year
+          check.coverage_end = Date.current.end_of_year + 1.year
+        end
         check.save!
       end
       referral.alternate_resource_checks.reload
+    end
+
+    def ensure_enrolled_medicaid_current_coverage!(medicaid)
+      medicaid.update!(
+        checked_at: Time.current,
+        coverage_start: Date.current.beginning_of_year,
+        coverage_end: Date.current.end_of_year + 1.year
+      )
+      assert medicaid.current_for?(Date.current), "happy-path enrolled medicaid must be current_for? today"
     end
   end
 end
