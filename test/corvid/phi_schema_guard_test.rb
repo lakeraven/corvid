@@ -45,7 +45,6 @@ module Corvid
       corvid_cah_facilities
       corvid_cms_fee_schedule_releases
       corvid_fee_schedule_entries
-      corvid_fee_schedules
       corvid_fmap_rules
       corvid_ipps_drg_weights
       corvid_ipps_hospital_rates
@@ -201,9 +200,16 @@ module Corvid
     # in force. Permitted for the same reason as the workforce dates. The
     # table's two free strings (four_walls_exception_basis, service_area) are
     # NOT permitted: nothing bounds them, so they are disclosed instead.
+    #
+    # corvid_fee_schedules is the same kind of row: a tenant's sliding-fee
+    # schedule (tiers already tokenized), with no person or encounter column.
+    # Its validity dates are permitted; its name and program strings are
+    # unbounded and disclosed.
     PERMITTED_FACILITY_COLUMNS = [
       %w[corvid_facility_authorities effective_on],
-      %w[corvid_facility_authorities expires_on]
+      %w[corvid_facility_authorities expires_on],
+      %w[corvid_fee_schedules effective_date],
+      %w[corvid_fee_schedules end_date]
     ].freeze
 
     # Always a violation, regardless of what the exceptions file says. These two
@@ -274,16 +280,16 @@ module Corvid
       # A scan that examined nothing also finds no violations, and that is
       # indistinguishable from a clean schema.
       #
-      # MEASURED, not guessed: 21 tables and 344 columns as of 2026-10-23 (35
-      # corvid tables less the 14 reference tables). The floors sit just under, so
+      # MEASURED, not guessed: 22 tables and 355 columns as of 2026-10-23 (35
+      # corvid tables less the 13 reference tables). The floors sit just under, so
       # losing a table or a dozen columns to a widened exemption fails here
       # rather than passing quietly. The first version used 20/150 against
       # 31/400 — loose enough to lose a third of the schema unnoticed — and the
       # second used 300, which was the pre-exclusion count and failed on a
       # clean schema. Raise these when tables are added.
-      assert_operator tables_scanned, :>=, 21,
+      assert_operator tables_scanned, :>=, 22,
         "scanned only #{tables_scanned} tables — the scan is broken, not the schema clean"
-      assert_operator columns_scanned, :>=, 335,
+      assert_operator columns_scanned, :>=, 345,
         "scanned only #{columns_scanned} columns — the scan is broken, not the schema clean"
     end
 

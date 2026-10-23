@@ -474,6 +474,20 @@
     PrcEligibilityRuleset), which makes a mistaken copy into this column
     plausible.
 
+- table: corvid_fee_schedules
+  column: name
+  classification: unclassified
+  type: string
+  why: >
+    Tenant configuration (a sliding-fee schedule), not patient-linked. It was
+    wrongly exempted as CMS reference data. Presence-validated free string.
+
+- table: corvid_fee_schedules
+  column: program
+  classification: unclassified
+  type: string
+  why: "As name. Presence-validated free string; not checked against ProgramRegistry."
+
 - table: corvid_claim_submissions
   column: denial_reason_codes
   classification: needs_decision
