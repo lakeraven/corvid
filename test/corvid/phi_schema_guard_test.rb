@@ -277,6 +277,25 @@ module Corvid
         "remediate_by has passed — either remediate the column or re-date the entry deliberately"
     end
 
+    # bounded? is what lets an ENUM_COLUMNS name through, so it must mean
+    # "a CHECK constraint confines THIS column to a value list". A substring
+    # match also counted a column that a constraint merely mentions:
+    # eligibility_group_set_at appears only in a both-or-neither pairing
+    # check, and rule_key only in "rule_key IS NULL" — neither bounds what
+    # the column can hold.
+    def test_bounded_requires_a_value_list_on_the_column_itself
+      assert bounded?("corvid_fmap_determinations", "category")
+      assert bounded?("corvid_alternate_resource_checks", "eligibility_group")
+      assert bounded?("corvid_api_call_logs", "api_name")
+
+      refute bounded?("corvid_alternate_resource_checks", "eligibility_group_set_at"),
+        "a pairing check that mentions the column does not bound its values"
+      refute bounded?("corvid_fmap_determinations", "rule_key"),
+        "an IS NULL clause does not bound the column's values"
+      refute bounded?("corvid_alternate_resource_checks", "group"),
+        "a constraint on eligibility_group must not bound a column named group"
+    end
+
     private
 
     def build_message(violations)
