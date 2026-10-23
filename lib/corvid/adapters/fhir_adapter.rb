@@ -10,6 +10,7 @@ require "openssl"
 require "zlib"
 require "corvid/adapters/base"
 require "corvid/value_objects"
+require "corvid/fhir_reference"
 
 module Corvid
   module Adapters
@@ -467,7 +468,9 @@ module Corvid
         extract_entries(bundle).flat_map do |resource|
           (resource["participant"] || []).map do |p|
             Corvid::CareTeamMemberReference.new(
-              practitioner_identifier: p.dig("member", "reference")&.sub("Practitioner/", ""),
+              practitioner_identifier: id_from_reference(
+                p.dig("member", "reference"), type: "Practitioner"
+              ),
               role: p.dig("role", 0, "coding", 0, "code"),
               name: resource["name"],
               status: resource["status"]
@@ -1103,10 +1106,20 @@ module Corvid
         )
       end
 
+      # id_from(base_url:) reads only absolute refs on this server, so also
+      # accept a relative Type/id.
+      def id_from_reference(reference, type:)
+        Corvid::FhirReference.id_from(reference, type: type, base_url: @base_url) ||
+          Corvid::FhirReference.id_from(reference, type: type)
+      end
+
       def build_claim_line_references(claim)
-        patient_id = claim.dig("patient", "reference")&.sub("Patient/", "")
+        patient_id = id_from_reference(claim.dig("patient", "reference"), type: "Patient")
         provider_id = claim.dig("provider", "identifier", "value").presence ||
-                      claim.dig("provider", "reference")&.split("/", -1)&.last.presence ||
+                      id_from_reference(
+                        claim.dig("provider", "reference"),
+                        type: Corvid::FhirReference::PROVIDER_TYPES
+                      ) ||
                       claim.dig("provider", "display").presence
         claim_id = claim["id"]
 
@@ -1163,7 +1176,9 @@ module Corvid
       def build_referral_reference(resource)
         Corvid::ReferralReference.new(
           identifier: resource["id"],
-          patient_identifier: resource.dig("subject", "reference")&.sub("Patient/", ""),
+          patient_identifier: id_from_reference(
+            resource.dig("subject", "reference"), type: "Patient"
+          ),
           status: resource["status"],
           reason_token: nil,
           estimated_cost: nil,
@@ -1173,7 +1188,10 @@ module Corvid
           urgent: resource["priority"] == "urgent",
           chs_approval_status: nil,
           service_requested: resource.dig("code", "text").presence || resource.dig("code", "coding", 0, "display").presence,
-          requesting_provider_identifier: resource.dig("requester", "reference")&.split("/")&.last
+          requesting_provider_identifier: id_from_reference(
+            resource.dig("requester", "reference"),
+            type: Corvid::FhirReference::PROVIDER_TYPES
+          )
         )
       end
 
@@ -1487,11 +1505,11 @@ module Corvid
         patient_reference?(subject["reference"], patient_identifier)
       end
 
+      # Non-String identifiers are not coerced (an Integer must not match).
       def patient_reference?(reference, patient_identifier)
-        return false unless reference.is_a?(String)
+        return false unless patient_identifier.is_a?(String)
 
-        relative = "Patient/#{patient_identifier}"
-        reference == relative || reference == "#{@base_url}/#{relative}"
+        id_from_reference(reference, type: "Patient") == patient_identifier
       end
 
       # Conditions ------------------------------------------------------------

@@ -8,7 +8,7 @@ namespace :demo do
 
     tenant = "tnt_broken_rock"
     facility = "fac_broken_rock"
-    patient_id = "pt_demo_enrolled" # seeded by EnrollmentDemoAdapter: DEMO,ENROLLED MEMBER
+    patient_id = "pt-demo-enrolled" # seeded by EnrollmentDemoAdapter: DEMO,ENROLLED MEMBER
 
     def banner(title)
       puts
@@ -137,9 +137,9 @@ namespace :demo do
       referral.request_management_approval!
       beat("referral.request_management_approval! -> status=#{referral.status}", real: true)
 
-      referral.pending_approval_by = "pr_demo_002" # DEMO,HEALTH OFFICER
+      referral.pending_approval_by = "pr-demo-002" # DEMO,HEALTH OFFICER
       referral.approve_management!
-      beat("referral.approve_management! (by pr_demo_002) -> status=#{referral.status}", real: true)
+      beat("referral.approve_management! (by pr-demo-002) -> status=#{referral.status}", real: true)
 
       # Synthetic payer determinations. The demo does not query a payer;
       # each resource is recorded not_enrolled so the exhaustion guard

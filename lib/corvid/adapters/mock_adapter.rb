@@ -155,10 +155,13 @@ module Corvid
         @text_store[text_token.to_s]
       end
 
+      # '_' is the vault-token separator. '-' is the FHIR id separator, so a
+      # synthetic patient or practitioner id can be both a vault token and a
+      # reference id.
       def dereference(token)
         case token.to_s
-        when /\Apt_/ then @patients[token.to_s]
-        when /\Apr_/ then @practitioners[token.to_s]
+        when /\Apt[-_]/ then @patients[token.to_s]
+        when /\Apr[-_]/ then @practitioners[token.to_s]
         when /\Arf_/ then @referrals[token.to_s]
         else @text_store[token.to_s]
         end
@@ -664,8 +667,8 @@ module Corvid
 
       def seed!
         # Synthetic seed data per ADR 0003 — obviously fake, not realistic PHI.
-        add_patient("pt_seed_001", display_name: "TEST,PATIENT 001", dob: Date.new(1980, 1, 1), sex: "F", ssn_last4: "0001")
-        add_practitioner("pr_seed_001", display_name: "TEST,PROVIDER 001", npi: "0000000001", specialty: "TEST")
+        add_patient("pt-seed-001", display_name: "TEST,PATIENT 001", dob: Date.new(1980, 1, 1), sex: "F", ssn_last4: "0001")
+        add_practitioner("pr-seed-001", display_name: "TEST,PROVIDER 001", npi: "0000000001", specialty: "TEST")
       end
     end
   end

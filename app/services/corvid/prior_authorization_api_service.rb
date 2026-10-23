@@ -36,6 +36,12 @@ module Corvid
       "cancelled"               => { outcome: "error",    disposition: "cancelled" }
     }.freeze
 
+    # Unusable patient reference. Names the rule only — never the submitted
+    # reference value (ADR 0003).
+    PATIENT_REFERENCE_ERROR =
+      "patient reference must be a relative Patient/<id> reference " \
+      "with a FHIR id (letters, digits, '-' or '.', up to 64 characters)"
+
     class << self
       # POST /Claim/$submit handler. Accepts a FHIR Claim (as hash) and
       # creates a PrcReferral. Returns a ClaimResponse hash.
@@ -44,6 +50,9 @@ module Corvid
       # CMS-0057-F annual usage metrics (#46) can count distinct apps.
       def submit_from_claim(fhir_claim, app_identifier: nil)
         patient_id = extract_patient_identifier(fhir_claim)
+        # Fail closed before a Case row or an adapter referral exists.
+        raise ArgumentError, PATIENT_REFERENCE_ERROR if patient_id.nil?
+
         provider_id = extract_provider_identifier(fhir_claim)
         service_description = extract_service_description(fhir_claim)
         estimated_cost = extract_estimated_cost(fhir_claim)
@@ -220,13 +229,57 @@ module Corvid
       private
 
       def extract_patient_identifier(fhir_claim)
-        ref = fhir_claim.dig(:patient, :reference) || fhir_claim.dig("patient", "reference")
-        ref&.split("/")&.last
+        Corvid::FhirReference.id_from(element_reference(fhir_claim, :patient), type: "Patient")
       end
 
       def extract_provider_identifier(fhir_claim)
-        ref = fhir_claim.dig(:provider, :reference) || fhir_claim.dig("provider", "reference")
-        ref&.split("/")&.last
+        Corvid::FhirReference.id_from(
+          element_reference(fhir_claim, :provider),
+          type: Corvid::FhirReference::PROVIDER_TYPES
+        )
+      end
+
+      # Hash or anything that converts like one (#to_unsafe_h), so a Hash and
+      # raw or permitted ActionController::Parameters both work. A non-hash
+      # element is not a reference object: patient then fails closed (nil id,
+      # caller raises) and provider is optional, so nil. When a symbol key and
+      # a string key are both present and their references differ, fail closed
+      # the same way — neither reference is chosen.
+      def element_reference(claim, name)
+        elements = reference_elements(claim, name)
+        return nil if elements.nil?
+
+        references = elements.map { |element| reference_value(element) }
+        references.uniq.one? ? references.first : nil
+      end
+
+      def reference_elements(claim, name)
+        source = hash_like(claim)
+        return nil unless source
+
+        values = element_values(source, name)
+        return nil if values.empty?
+
+        hashes = values.map { |value| hash_like(value) }
+        hashes.all? ? hashes : nil
+      end
+
+      def element_values(source, name)
+        [ name.to_sym, name.to_s ].uniq.select { |key| source.key?(key) }.map { |key| source[key] }
+      end
+
+      # Keep a real Hash intact so a symbol key and a string key can disagree.
+      # Convert other hash-like objects (Parameters) without naming ActionController.
+      def hash_like(value)
+        return value if value.is_a?(Hash)
+        return nil unless value.respond_to?(:to_unsafe_h)
+
+        converted = value.to_unsafe_h
+        converted if converted.is_a?(Hash)
+      end
+
+      def reference_value(element)
+        element[:reference] || element["reference"]
       end
 
       def extract_service_description(fhir_claim)
