@@ -21,10 +21,17 @@ module Corvid
     STATUSES = %w[draft submitted accepted rejected paid denied appealed error].freeze
     CLAIM_TYPES = %w[professional institutional dental].freeze
 
-    # Raised by #submit! when this claim bills a PRC referral that has not been
-    # authorized. PRC authorizes before care is purchased, so billing an
-    # unauthorized referral bills care the programme never agreed to buy.
+    # Raised by #submit! and #mark_submitted! when this claim bills a PRC
+    # referral that has not been authorized, or names one that cannot be
+    # tied to this patient. PRC authorizes before care is purchased, so
+    # billing an unauthorized referral bills care the programme never
+    # agreed to buy.
     class ReferralNotAuthorized < StandardError; end
+
+    # Raised by #submit! and #mark_submitted! when this claim bills a PRC
+    # referral whose delivered care has not been recorded. No report means
+    # awaiting_report. A not_delivered report is not billable (corvid#599).
+    class FulfilmentNotRecorded < StandardError; end
 
     # The referral this claim bills, where there is one. Optional: claims
     # billed outside the referral workflow, and legacy rows the backfill could
@@ -162,6 +169,8 @@ module Corvid
     end
 
     def mark_submitted!(claim_identifier:)
+      enforce_referral_authorization_gate!
+      enforce_referral_fulfilment_gate!
       update!(
         claim_identifier: claim_identifier,
         status: "submitted",
@@ -193,6 +202,8 @@ module Corvid
 
     def submit!
       enforce_referral_authorization_gate!
+      # Fulfilment is decided before the clearinghouse is touched.
+      enforce_referral_fulfilment_gate!
       result = Corvid.adapter.submit_claim(to_claim_data)
       update!(
         claim_identifier: result[:claim_identifier],
@@ -277,16 +288,55 @@ module Corvid
     # A claim that resolves to neither stays unlinked, and #submit! decides
     # what that means.
     def resolve_prc_referral_from_identifier
+      self.prc_referral = unambiguous_patient_referral
+    end
+
+    def unambiguous_patient_referral
+      return if referral_identifier.blank?
+
       candidates = Corvid::PrcReferral
         .includes(:case)
         .where(facility_identifier: facility_identifier, referral_identifier: referral_identifier)
         .limit(2)
         .to_a
+      candidate = candidates.first
+      return if candidates.size != 1 || candidate.case&.patient_identifier != patient_identifier
 
-      self.prc_referral =
-        if candidates.size == 1 && candidates.first.case&.patient_identifier == patient_identifier
-          candidates.first
-        end
+      candidate
+    end
+
+    # A linked PRC referral is billable only when an external report names
+    # delivered care. Unlinked claims are ordinary billing and are left
+    # alone. The referral is referral_for_submission_gates: the one this
+    # save will link, read from the current identifier without assigning
+    # the association. A dirty referral_identifier must not be judged
+    # against the referral this claim used to name. Called before any
+    # clearinghouse call, so a refusal never submits and never changes
+    # the claim. The message names the referral identifier and the
+    # fulfilment status only (ADR 0003).
+    def enforce_referral_fulfilment_gate!
+      referral = referral_for_submission_gates
+      return if referral.blank?
+
+      current = referral.reload
+      return if Corvid::ReferralFulfilment.billable_for_delivered_care?(current)
+
+      raise FulfilmentNotRecorded, fulfilment_not_recorded_message(current)
+    end
+
+    # Shared by the authorization gate and the fulfilment gate. Reads
+    # the referral the current identifier will link, and does not assign
+    # the association.
+    def referral_for_submission_gates
+      return unambiguous_patient_referral if referral_link_inputs_changed?
+
+      prc_referral
+    end
+
+    def fulfilment_not_recorded_message(referral)
+      fulfilment = Corvid::ReferralFulfilment.status(referral)
+      "Claim for referral #{referral.referral_identifier} cannot be submitted: " \
+        "fulfilment is #{fulfilment}; delivered care has not been recorded"
     end
 
     # A claim that bills a PRC referral may only be submitted once that
@@ -299,18 +349,21 @@ module Corvid
     # through — the claim is simply not a PRC claim.
     #
     # What is NOT allowed through is an identifier that matches PRC referrals
-    # ambiguously. There a PRC referral demonstrably exists under that
-    # identifier and we cannot tell which, so we cannot establish that the one
-    # being billed was authorized.
+    # ambiguously, matches another patient's referral, or matches this
+    # patient's referral before it is authorized. There a PRC referral
+    # demonstrably exists and we cannot establish that the one being billed
+    # was authorized.
     #
-    # Resolution happens here rather than relying on the association, because
-    # the resolver runs on save: a claim can reach #submit! carrying an
-    # identifier whose prc_referral_id is still NULL, and returning early on a
-    # blank association would skip exactly the rows the gate exists for.
+    # The referral is referral_for_submission_gates, the same resolution the
+    # fulfilment gate uses. The association is not assigned before deciding:
+    # a dirty referral_identifier must not be judged against the referral
+    # this claim used to name, and a refusal must not retarget the link.
+    # The resolver still runs on save, so a claim can reach this gate with
+    # prc_referral_id NULL.
     def enforce_referral_authorization_gate!
-      resolve_prc_referral_from_identifier if prc_referral.blank? && referral_identifier.present?
+      referral = referral_for_submission_gates
 
-      if prc_referral.blank?
+      if referral.blank?
         raise ReferralNotAuthorized,
           "Claim naming referral #{referral_identifier} cannot be submitted: " \
           "a PRC referral exists under that identifier at this facility but it " \
@@ -320,10 +373,9 @@ module Corvid
         return
       end
 
-      # Re-read before deciding. The association may have been loaded earlier
-      # in this object's life, and authorizing care is exactly the kind of
-      # thing that happens between loading a claim and submitting it.
-      current = prc_referral.reload
+      # Re-read before deciding. Authorizing care can happen between loading
+      # a claim and submitting it. Reload does not assign the association.
+      current = referral.reload
       return if current.status == "authorized"
 
       raise ReferralNotAuthorized,

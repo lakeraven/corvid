@@ -76,6 +76,7 @@ class Corvid::ClaimReferralLinkTest < ActiveSupport::TestCase
         patient: referral.case.patient_identifier)
       claim.save!
       authorize!(referral)
+      record_delivered_fulfilment!(referral)
 
       claim.submit!
 
@@ -268,6 +269,15 @@ class Corvid::ClaimReferralLinkTest < ActiveSupport::TestCase
     )
   end
 
+  def record_delivered_fulfilment!(referral)
+    Corvid::ReferralFulfilment.record_external_report!(
+      referral,
+      source: "receiving_specialist",
+      outcome: "delivered",
+      reported_at: Time.current
+    )
+  end
+
   # Walks the real state machine rather than writing `status` directly, so the
   # gate is exercised against a referral authorized the way one actually is.
   def authorize!(referral)
@@ -291,6 +301,7 @@ class Corvid::ClaimReferralLinkTest < ActiveSupport::TestCase
     referral.verify_alternate_resources!
     referral.reload
     exhaust_alternate_resources!(referral)
+    referral.update!(medical_priority: 1)
     referral.complete_priority_assignment!
     referral.reload
     # complete_priority_assignment lands on :authorized directly, or on

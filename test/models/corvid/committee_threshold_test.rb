@@ -43,8 +43,8 @@ module Corvid
       with_tenant(TENANT) { assert build_referral(estimated_cost: 100, medical_priority: 4).requires_committee? }
     end
 
-    test "nil priority does not require committee" do
-      with_tenant(TENANT) { refute build_referral(estimated_cost: 100, medical_priority: nil).requires_committee? }
+    test "nil priority requires committee review" do
+      with_tenant(TENANT) { assert build_referral(estimated_cost: 100, medical_priority: nil).requires_committee? }
     end
 
     # -- Flag tests --
@@ -82,7 +82,7 @@ module Corvid
 
     private
 
-    def build_referral(estimated_cost: nil, medical_priority: nil, flagged_for_review: false)
+    def build_referral(estimated_cost: nil, medical_priority: 1, flagged_for_review: false)
       kase = Case.create!(patient_identifier: "pt_thr", facility_identifier: FACILITY)
       PrcReferral.create!(
         case: kase,

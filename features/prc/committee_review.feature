@@ -19,7 +19,8 @@ Feature: PRC Review Committee
     Then the referral should require committee review
 
   Scenario: Low-cost referral does not require committee review
-    Given the referral estimated cost is "$25,000"
+    Given the referral has medical priority 1
+    And the referral estimated cost is "$25,000"
     Then the referral should not require committee review
 
   Scenario: Priority 3 or higher requires committee review

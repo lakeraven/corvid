@@ -153,11 +153,15 @@ module Corvid
       end
     end
 
-    def verify!
+    # adapter defaults to the global so checklist and model callers stay
+    # put (ADR 0005). MedicaidReferralWorkflow passes its injected
+    # adapter when a check has to be re-verified. The eligibility group
+    # is read and recorded through that same adapter.
+    def verify!(adapter: Corvid.adapter)
       patient_identifier = prc_referral.case&.patient_identifier
       return false unless patient_identifier
 
-      result = Corvid.adapter.verify_eligibility(patient_identifier, resource_type)
+      result = adapter.verify_eligibility(patient_identifier, resource_type)
       # An unreadable answer is not a determination (42 CFR 136.61).
       # coverage_start, coverage_end, and renewal_date must be an exact
       # Date or nil. Any other type updates nothing. Absent keys store nil.
@@ -167,7 +171,7 @@ module Corvid
       return false if next_status.nil?
 
       update!(verification_attributes(result, next_status))
-      record_medicaid_eligibility_group
+      record_medicaid_eligibility_group(adapter)
       true
     end
 
@@ -236,22 +240,24 @@ module Corvid
       }
     end
 
-    # After the Medicaid answer is saved. record! keeps a staff entry.
-    # An EHR failure leaves that answer in place and the group as it was.
-    # Nil or a non-Array from get_coverages is that failure, so record!
-    # is not called. The pin is read before get_coverages. One matching
-    # coverage that states a real group is recorded as that group, and
-    # the pin is not passed. No single matching row, or one row that
-    # does not state a real group, asks record! to replace the pin.
-    # The pin is that group, source, and set_at. A later write changes
-    # set_at, so the locked comparison leaves the stored group. A failed
-    # inference leaves the previous group. A staff entry stays.
-    def record_medicaid_eligibility_group
+    # After the Medicaid answer is saved. adapter is the one verify!
+    # was called with, so get_coverages and the eligibility service
+    # share one EHR. record! keeps a staff entry. An EHR failure leaves
+    # that answer in place and the group as it was. Nil or a non-Array
+    # from get_coverages is that failure, so record! is not called. The
+    # pin is read before get_coverages. One matching coverage that
+    # states a real group is recorded as that group, and the pin is not
+    # passed. No single matching row, or one row that does not state a
+    # real group, asks record! to replace the pin. The pin is that
+    # group, source, and set_at. A later write changes set_at, so the
+    # locked comparison leaves the stored group. A failed inference
+    # leaves the previous group. A staff entry stays.
+    def record_medicaid_eligibility_group(adapter)
       return unless resource_type == "medicaid"
 
       pinned = pinned_stated_group
-      coverage = medicaid_group_coverage
-      MedicaidEligibilityGroupService.new(adapter: Corvid.adapter).record!(
+      coverage = medicaid_group_coverage(adapter)
+      MedicaidEligibilityGroupService.new(adapter: adapter).record!(
         self,
         coverage: coverage,
         date_of_service: medicaid_group_date_of_service,
@@ -264,8 +270,8 @@ module Corvid
     # The sole get_coverages row whose type matches this check.
     # coverage_type when that key is present, otherwise resource_type.
     # None or more than one states nothing.
-    def medicaid_group_coverage
-      matches = coverages_for_resource_type
+    def medicaid_group_coverage(adapter)
+      matches = coverages_for_resource_type(adapter)
       return {} unless matches.one?
 
       matches.first
@@ -273,9 +279,9 @@ module Corvid
 
     # An Array is an answer, including an empty one. Nil or any other
     # type means the source did not answer.
-    def coverages_for_resource_type
+    def coverages_for_resource_type(adapter)
       patient_identifier = prc_referral.case&.patient_identifier
-      rows = Corvid.adapter.get_coverages(patient_identifier)
+      rows = adapter.get_coverages(patient_identifier)
       raise UnansweredCoverages unless rows.is_a?(Array)
 
       rows.select { |row| resource_type_coverage?(row) }

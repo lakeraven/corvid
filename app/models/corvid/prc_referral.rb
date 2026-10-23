@@ -98,7 +98,13 @@ module Corvid
 
       event :complete_priority_assignment do
         transitions from: :priority_assignment, to: :committee_review, guard: :requires_committee?
-        transitions from: :priority_assignment, to: :authorized, guard: :alternate_resources_exhausted?
+        # success, not after: a transition after runs before status is
+        # authorized, so sync_status_to_ehr would record P. authorize's
+        # event after calls the same method once status is authorized.
+        # committee_review does not sync.
+        transitions from: :priority_assignment, to: :authorized,
+                    guard: :alternate_resources_exhausted?,
+                    success: :sync_status_to_ehr
       end
 
       event :authorize, after: :sync_status_to_ehr do
@@ -129,6 +135,15 @@ module Corvid
 
     def service_request
       @service_request ||= Corvid.adapter.find_referral(referral_identifier) if referral_identifier.present?
+    end
+
+    # ActiveRecord reload refreshes columns only. Committee routing reads
+    # priority and cost from this memo, so a reload must drop it and take
+    # the EHR's current service request on the next read.
+    def reload(options = nil)
+      result = super
+      @service_request = nil
+      result
     end
 
     # 42 CFR 136.61 — PRC pays last. True only when every alternate resource
@@ -166,9 +181,10 @@ module Corvid
       # convention, so coerce Money → BigDecimal-of-dollars for comparison.
       cost = service_request&.estimated_cost || estimated_cost
       cost_dollars = cost.respond_to?(:to_d) ? cost.to_d : cost
-      priority = medical_priority
+      # Unknown priority fails closed. A known priority requires review at 3+.
+      priority = effective_medical_priority
       (cost_dollars.present? && cost_dollars >= committee_threshold) ||
-        (priority.present? && priority >= 3) ||
+        priority.nil? || priority >= 3 ||
         flagged_for_review?
     end
 
@@ -233,6 +249,14 @@ module Corvid
       return true if medical_priority_cached_at.blank?
 
       medical_priority_cached_at < CACHE_STALENESS_THRESHOLD_HOURS.hours.ago
+    end
+
+    # Priority for a decision. The service request's level when it has one,
+    # otherwise the local column. This is a read: it does not refresh the
+    # cache the way cached_medical_priority does.
+    def effective_medical_priority
+      rcis_priority = service_request&.medical_priority_level
+      rcis_priority.present? ? rcis_priority : medical_priority
     end
 
     def cached_medical_priority
