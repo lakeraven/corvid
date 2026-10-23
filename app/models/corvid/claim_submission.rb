@@ -25,10 +25,12 @@ module Corvid
     # cannot move a PRC-linked claim from an unsent status into a sent
     # status, cannot set status to "submitted" from any status, and cannot
     # write claim_identifier or submitted_at on an unsent linked claim.
-    # submit! and mark_submitted! are the only paths that do, and they
-    # re-run the gates. Later moves among sent statuses, including an
-    # error that was actually sent, do not depend on submitted_at. A row
-    # created already sent is a historical import and is left unstamped.
+    # submit! and mark_submitted! are the only paths that write those
+    # markers or enter "submitted" from an unsent row, and they re-run
+    # the gates. check_status! may record "submitted" on a claim that was
+    # already sent. Later moves among sent statuses, including an error
+    # that was actually sent, do not depend on submitted_at. A row created
+    # already sent is a historical import and is left unstamped.
     UNSENT_STATUSES = %w[draft error].freeze
     SENT_STATUSES = %w[submitted accepted rejected paid denied appealed].freeze
     SENT_MARKER_MESSAGE = "must be set with submit! or mark_submitted!"
@@ -252,7 +254,7 @@ module Corvid
       attrs[:paid_amount] = result[:paid_amount] if result[:paid_amount]
       attrs[:adjustment_amount] = result[:adjustment_amount] if result[:adjustment_amount]
       attrs[:paid_date] = result[:paid_date] if result[:paid_date]
-      update!(attrs)
+      save_status_poll!(attrs)
       result
     end
 
@@ -276,19 +278,34 @@ module Corvid
       self.denied_at ||= Time.current if status == "denied"
     end
 
-    # PRC-linked claims: only submit! and mark_submitted! may enter
-    # "submitted", from any stored status. A plain save also cannot leave
-    # an unsent row — draft, or error without a claim_identifier — for a
-    # sent status. An error that already has a claim_identifier was sent;
-    # a status poll, payment, or remittance may move it. Moves between
-    # sent statuses stay open whether or not submitted_at was stamped.
+    # PRC-linked claims: a plain save cannot enter "submitted" from any
+    # stored status, and cannot leave an unsent row — draft, or error
+    # without a claim_identifier — for a sent status. submit! and
+    # mark_submitted! are the gated writers. An error that already has a
+    # claim_identifier was sent; check_status!, payment, or remittance
+    # may move it, including back to "submitted". Moves between sent
+    # statuses stay open whether or not submitted_at was stamped.
     # Creating a row already sent is a historical import and is not
     # validated here.
     def submission_status_requires_gate
-      return if @submission_through_gate
+      return if @submission_through_gate || status_poll_of_sent_claim?
       return unless guarded_status_transition?
 
       errors.add(:status, "must be submitted with submit! or mark_submitted!")
+    end
+
+    # A poll may record any valid status, including "submitted", once the
+    # claim was actually sent. It does not write the sent markers, and a
+    # plain save stays on the submission gate.
+    def save_status_poll!(attributes)
+      @recording_status_poll = true
+      update!(attributes)
+    ensure
+      @recording_status_poll = false
+    end
+
+    def status_poll_of_sent_claim?
+      @recording_status_poll && !unsent_status_in_database?
     end
 
     def guarded_status_transition?

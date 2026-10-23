@@ -61,6 +61,12 @@ module Corvid
       state :priority_assignment, :committee_review, :exception_review
       state :authorized, :denied, :deferred, :cancelled
 
+      # Runs after a transition is chosen and before it is saved, for both
+      # bang events and non-bang events later saved with save!. Creating a
+      # row already in a terminal status, or update!(status:), is not an
+      # event and does not mark a publication.
+      after_all_transitions :mark_pending_referral_publication
+
       event :submit do
         transitions from: :draft, to: :submitted
       end
@@ -135,12 +141,12 @@ module Corvid
       end
     end
 
-    # Bang and non-bang AASM events both end in a save. Capture a committed
-    # authorize, deny, or defer here and publish it after the outermost
-    # commit. In-progress states are not synced. Cancelled has no CHS code
-    # and is not synced. Authorization provenance snapshots the checks and
-    # the tenant at this save; only delivery waits for commit. A rolled-back
-    # save drops the callback with it.
+    # The AASM callback marks authorize, deny, or defer. This save publishes
+    # that mark after the outermost commit. A plain status write never
+    # marks one. In-progress states are not synced. Cancelled has no CHS
+    # code and is not synced. Authorization provenance snapshots the checks
+    # and the tenant at this save; delivery and the EHR sync run after
+    # commit inside that tenant. A rolled-back save drops the callback.
     before_save :remember_referral_status_transition
 
     def service_request
@@ -406,13 +412,24 @@ module Corvid
     private
 
     def remember_referral_status_transition
+      pending = @pending_referral_publication
+      return if pending.nil?
       return unless will_save_change_to_status?
 
-      new_status = status.to_s
-      provenance_entities = authorization_provenance_entities if new_status == "authorized"
-      return unless ehr_synced_status?(new_status) || provenance_entities
+      @pending_referral_publication = nil
+      return unless status.to_s == pending
 
-      schedule_committed_referral_status(new_status, provenance_entities)
+      provenance_entities = authorization_provenance_entities if pending == "authorized"
+      schedule_committed_referral_status(pending, provenance_entities)
+    end
+
+    # Latest transition wins. In-flight and cancelled transitions clear a
+    # mark left by an unsaved earlier event so only authorize, deny, and
+    # defer are published.
+    def mark_pending_referral_publication
+      new_status = aasm.to_state.to_s
+      @pending_referral_publication = ehr_synced_status?(new_status) ? new_status : nil
+      true
     end
 
     def schedule_committed_referral_status(new_status, provenance_entities)
@@ -423,7 +440,11 @@ module Corvid
     end
 
     def publish_committed_referral_status(new_status, provenance_entities, tenant)
-      sync_status_to_ehr(new_status) if ehr_synced_status?(new_status)
+      if ehr_synced_status?(new_status)
+        Corvid::TenantContext.with_tenant(tenant) do
+          sync_status_to_ehr(new_status)
+        end
+      end
       return if provenance_entities.nil?
 
       AlternateResourceReverification.record!(
