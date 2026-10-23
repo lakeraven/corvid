@@ -76,6 +76,7 @@ class Corvid::ClaimReferralLinkTest < ActiveSupport::TestCase
         patient: referral.case.patient_identifier)
       claim.save!
       authorize!(referral)
+      record_delivered_fulfilment!(referral)
 
       claim.submit!
 
@@ -265,6 +266,15 @@ class Corvid::ClaimReferralLinkTest < ActiveSupport::TestCase
       patient_identifier: patient || "pt_claim_#{SecureRandom.hex(3)}",
       referral_identifier: referral_identifier, claim_type: "professional",
       service_date: Date.current, billed_amount: 100.0, status: "draft"
+    )
+  end
+
+  def record_delivered_fulfilment!(referral)
+    Corvid::ReferralFulfilment.record_external_report!(
+      referral,
+      source: "receiving_specialist",
+      outcome: "delivered",
+      reported_at: Time.current
     )
   end
 
