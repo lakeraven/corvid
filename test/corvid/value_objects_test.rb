@@ -82,12 +82,44 @@ class Corvid::ValueObjectsTest < Minitest::Test
 
   # -- All references use *_identifier, never *_id ---------------------------
 
+  # -- ConditionReference (issue #611) ----------------------------------------
+
+  def test_condition_reference_has_expected_fields
+    assert_equal %i[code code_system display clinical_status category onset_date],
+                 Corvid::ConditionReference.members
+  end
+
+  def test_condition_reference_is_immutable
+    cond = Corvid::ConditionReference.new(
+      code: "C001", code_system: "http://example.test/codes", display: "TEST CONDITION 001",
+      clinical_status: "active", category: "problem-list-item", onset_date: Date.new(2020, 1, 1)
+    )
+    assert cond.frozen?
+  end
+
+  # -- MedicationReference (issue #611) ---------------------------------------
+
+  def test_medication_reference_has_expected_fields
+    assert_equal %i[code code_system display status authored_on dosage_text],
+                 Corvid::MedicationReference.members
+  end
+
+  def test_medication_reference_is_immutable
+    med = Corvid::MedicationReference.new(
+      code: "M001", code_system: "http://example.test/rxnorm", display: "TEST MEDICATION 001",
+      status: "active", authored_on: Date.new(2024, 6, 1), dosage_text: "TEST DOSAGE 001"
+    )
+    assert med.frozen?
+  end
+
   def test_no_value_object_uses_bare_id_field
     [
       Corvid::PatientReference,
       Corvid::PractitionerReference,
       Corvid::ReferralReference,
-      Corvid::CareTeamMemberReference
+      Corvid::CareTeamMemberReference,
+      Corvid::ConditionReference,
+      Corvid::MedicationReference
     ].each do |klass|
       members = klass.members.map(&:to_s)
       bare_ids = members.select { |m| m == "id" || m.end_with?("_id") }

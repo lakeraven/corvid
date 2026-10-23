@@ -4,10 +4,14 @@ ENV["RAILS_ENV"] = "test"
 
 require_relative "dummy/config/environment"
 require "rails/test_help"
+require_relative "../features/support/alternate_resource_exhaustion_helper"
 
 # FK-correct table cleanup. Mirrors features/support/env.rb so minitest
 # and cucumber share the same deletion order.
 def clean_corvid_tables!
+  Corvid::FmapDetermination.unscoped.delete_all
+  Corvid::FacilityAuthority.unscoped.delete_all
+  Corvid::FmapRule.unscoped.delete_all
   Corvid::FeeSchedule.unscoped.delete_all
   Corvid::FeeScheduleEntry.unscoped.delete_all
   Corvid::IppsDrgWeight.unscoped.delete_all
@@ -29,6 +33,10 @@ def clean_corvid_tables!
   Corvid::PrcPayment.unscoped.delete_all
   Corvid::PrcObligation.unscoped.delete_all
   Corvid::Task.unscoped.delete_all
+  # Before referrals: the fulfilment trail's foreign key restricts, so a report
+  # left behind by an interrupted run would fail the next setup on the FK
+  # rather than being cleaned up. features/support/env.rb orders it the same way.
+  Corvid::ReferralFulfilmentReport.unscoped.delete_all
   Corvid::PrcReferral.unscoped.delete_all
   Corvid::CaseProgram.unscoped.delete_all
   Corvid::Case.unscoped.delete_all

@@ -82,4 +82,62 @@ class Corvid::ProgramTemplateServiceTest < ActiveSupport::TestCase
   ensure
     Corvid::ProgramRegistry.reset!
   end
+
+  test "create_case falls back to program_type when registered program display_name is blank" do
+    Corvid::ProgramRegistry.register(
+      "blank_label_prog",
+      display_name: "",
+      milestones: [
+        { key: "step_one", description: "Step one", days_after_anchor: 0, required: true }
+      ]
+    )
+
+    with_tenant(TENANT) do
+      kase = nil
+      begin
+        kase = Corvid::ProgramTemplateService.create_case(
+          program_type: "blank_label_prog",
+          patient_identifier: "pt_blank_prog",
+          facility_identifier: "fac_a",
+          anchor_date: Date.new(2026, 1, 1)
+        )
+      rescue ActiveRecord::RecordInvalid
+        program = Corvid::ProgramRegistry.find("blank_label_prog")
+        flunk "blank display_name must fall back to program_type, got program_name=#{program.display_name.inspect}"
+      end
+      enrollment = kase.case_programs.sole
+      assert_equal "blank_label_prog", enrollment.program_name
+    end
+  ensure
+    Corvid::ProgramRegistry.reset!
+  end
+
+  test "create_case falls back to program_type when registered program display_name is whitespace" do
+    Corvid::ProgramRegistry.register(
+      "ws_label_prog",
+      display_name: "   ",
+      milestones: [
+        { key: "step_one", description: "Step one", days_after_anchor: 0, required: true }
+      ]
+    )
+
+    with_tenant(TENANT) do
+      kase = nil
+      begin
+        kase = Corvid::ProgramTemplateService.create_case(
+          program_type: "ws_label_prog",
+          patient_identifier: "pt_ws_prog",
+          facility_identifier: "fac_a",
+          anchor_date: Date.new(2026, 1, 1)
+        )
+      rescue ActiveRecord::RecordInvalid
+        program = Corvid::ProgramRegistry.find("ws_label_prog")
+        flunk "whitespace display_name must fall back to program_type, got program_name=#{program.display_name.inspect}"
+      end
+      enrollment = kase.case_programs.sole
+      assert_equal "ws_label_prog", enrollment.program_name
+    end
+  ensure
+    Corvid::ProgramRegistry.reset!
+  end
 end

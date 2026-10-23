@@ -12,12 +12,17 @@ class Corvid::OppsRateProviderTest < ActiveSupport::TestCase
       calendar_year: @cy, apc_code: "5071", relative_weight: 25.4378
     )
     Corvid::OppsConversionFactor.create!(
-      calendar_year: @cy, locality: "NATIONAL",
-      conversion_factor: 89.169, wage_index: 1.0
+      calendar_year: @cy, locality: "NATIONAL", conversion_factor: 89.169
     )
-    Corvid::OppsConversionFactor.create!(
-      calendar_year: @cy, locality: "01",
-      conversion_factor: 89.169, wage_index: 1.085
+    # Wage index is sourced from IppsHospitalRate, not from the CF row
+    # itself (#369) — the CF row's wage_index column is unread by the
+    # rate provider (still present in schema; dropped in the #370
+    # follow-up migration).
+    Corvid::IppsHospitalRate.create!(
+      fiscal_year: @cy, locality: "NATIONAL", base_rate: 6_752.61, wage_index: 1.0
+    )
+    Corvid::IppsHospitalRate.create!(
+      fiscal_year: @cy, locality: "01", base_rate: 6_752.61, wage_index: 1.085
     )
   end
 
@@ -99,5 +104,99 @@ class Corvid::OppsRateProviderTest < ActiveSupport::TestCase
     )
     assert_equal "stub_v1", lookup.release_label,
                  "if either row is stub-labeled, the lookup propagates it"
+  end
+
+  test "lookup_for propagates a stub label carried only by the IPPS wage index row" do
+    Corvid::IppsHospitalRate.unscoped.delete_all
+    Corvid::IppsHospitalRate.create!(
+      fiscal_year: @cy, locality: "NATIONAL", base_rate: 6_752.61,
+      wage_index: 1.0, release_label: "stub_v1"
+    )
+    lookup = Corvid::OppsRateProvider.lookup_for(
+      apc_code: "5071", locality: "NATIONAL", date: Date.new(2026, 6, 15)
+    )
+    assert_equal "stub_v1", lookup.release_label,
+                 "a stub-derived wage index row downgrades the combined result too"
+  end
+
+  test "changing the IPPS wage index for a CBSA changes the OPPS rate for that CBSA (#369)" do
+    Corvid::IppsHospitalRate.create!(
+      fiscal_year: @cy, locality: "31084", base_rate: 6_752.61, wage_index: 1.2463
+    )
+    low = Corvid::OppsRateProvider.rate_for(
+      apc_code: "5071", locality: "31084", date: Date.new(2026, 6, 15)
+    )
+
+    Corvid::IppsHospitalRate.find_by(fiscal_year: @cy, locality: "31084").update!(wage_index: 1.5)
+    high = Corvid::OppsRateProvider.rate_for(
+      apc_code: "5071", locality: "31084", date: Date.new(2026, 6, 15)
+    )
+
+    refute_in_delta low, high, 0.01,
+                    "updating the shared IPPS wage index for a CBSA should move the OPPS rate for that CBSA"
+  end
+
+  test "rate_for falls back to wage_index 1.0 when no IPPS hospital rate is loaded at all" do
+    Corvid::IppsHospitalRate.unscoped.delete_all
+    rate = Corvid::OppsRateProvider.rate_for(
+      apc_code: "5071", locality: "NATIONAL", date: Date.new(2026, 6, 15)
+    )
+    # 25.4378 × 89.169 × 1.0 = 2268.26
+    assert_in_delta 2_268.26, rate, 0.01
+  end
+
+  # release_label merge: the APC weight is row A, the conversion factor
+  # is row B. Assertions compare the raw label, never via .presence.
+
+  test "lookup_for returns the conversion-factor label when the APC weight label is blank" do
+    relabel_opps(weight: "", factor: "cms_opps_cy2026")
+    assert_equal "cms_opps_cy2026", opps_release_label
+  end
+
+  test "lookup_for keeps the APC weight label when the conversion-factor label is blank" do
+    relabel_opps(weight: "cms_opps_cy2026", factor: "")
+    assert_equal "cms_opps_cy2026", opps_release_label
+  end
+
+  test "lookup_for returns nil when both OPPS release labels are blank" do
+    # Nil, not "". "" is truthy, so the pre-fix `||` returned "" — the
+    # defect. Once blank labels are skipped, neither row contributes a
+    # label and the lookup must return nil. Asserting "" passed before the fix.
+    relabel_opps(weight: "", factor: "")
+    assert_nil opps_release_label
+  end
+
+  test "lookup_for lets a stub label on either OPPS row win over a real label" do
+    relabel_opps(weight: "stub_apc_v1", factor: "cms_opps_cy2026")
+    assert_equal "stub_apc_v1", opps_release_label
+
+    relabel_opps(weight: "cms_opps_cy2026", factor: "stub_cf_v1")
+    assert_equal "stub_cf_v1", opps_release_label
+  end
+
+  test "lookup_for treats a whitespace-only OPPS label as blank" do
+    relabel_opps(weight: "   ", factor: "cms_opps_cy2026")
+    assert_equal "cms_opps_cy2026", opps_release_label
+
+    relabel_opps(weight: "cms_opps_cy2026", factor: "   ")
+    assert_equal "cms_opps_cy2026", opps_release_label
+
+    relabel_opps(weight: "   ", factor: "   ")
+    assert_nil opps_release_label
+  end
+
+  private
+
+  def relabel_opps(weight:, factor:)
+    Corvid::OppsApcWeight.find_by!(calendar_year: @cy, apc_code: "5071")
+                         .update!(release_label: weight)
+    Corvid::OppsConversionFactor.find_by!(calendar_year: @cy, locality: "NATIONAL")
+                                .update!(release_label: factor)
+  end
+
+  def opps_release_label
+    Corvid::OppsRateProvider.lookup_for(
+      apc_code: "5071", locality: "NATIONAL", date: Date.new(2026, 6, 15)
+    ).release_label
   end
 end
