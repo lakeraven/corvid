@@ -122,9 +122,14 @@ module Corvid
         clinic.resources.select { |r| r["resourceType"] == "Patient" }.map { |r| r["id"] }
       end
 
-      # nil list_claims is unknown, not an empty panel with a zero total.
+      # nil list_claims or nil find_patient is unknown, not an empty panel
+      # with a zero total. Either list withholds clinic and consortium totals.
       def claims_unknown?(counts)
-        Array(counts[:patients_claims_unknown]).any?
+        unknown_roster_ids(counts).any?
+      end
+
+      def unknown_roster_ids(counts)
+        (Array(counts[:patients_claims_unknown]) + Array(counts[:patients_unknown])).uniq
       end
 
       # --- output ---------------------------------------------------------
@@ -134,7 +139,7 @@ module Corvid
         line "Source EHR:  #{clinic.source_ehr_label}"
         line "Ingest:      stock FHIR R4 via Corvid::Adapters::FhirAdapter (generic, no vendor code)"
         if claims_unknown?(counts)
-          line "Claims unknown for #{counts[:patients_claims_unknown].size} patient(s); " \
+          line "Claims unknown for #{unknown_roster_ids(counts).size} patient(s); " \
                "nothing written for them and no dollar total reported."
           return
         end

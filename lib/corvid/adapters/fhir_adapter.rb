@@ -289,12 +289,7 @@ module Corvid
 
       # nil when the search did not answer; [] when it answered with no matches.
       def search_patients(query)
-        resources = entries_from_search(fhir_search("Patient", name: query))
-        return nil if resources.nil?
-
-        resources
-          .select { |resource| resource["resourceType"] == "Patient" }
-          .map { |resource| build_patient_reference(resource) }
+        references_from_search("Patient", { name: query }) { |resource| build_patient_reference(resource) }
       end
 
       # ----------------------------------------------------------------------
@@ -310,10 +305,7 @@ module Corvid
 
       # nil when the search did not answer; [] when it answered with no matches.
       def search_practitioners(query)
-        resources = entries_from_search(fhir_search("Practitioner", name: query))
-        return nil if resources.nil?
-
-        resources.map { |r| build_practitioner_reference(r) }
+        references_from_search("Practitioner", { name: query }) { |resource| build_practitioner_reference(resource) }
       end
 
       # ----------------------------------------------------------------------
@@ -367,10 +359,9 @@ module Corvid
       def list_referrals(patient_identifier)
         return nil if blank_patient_identifier?(patient_identifier)
 
-        resources = entries_from_search(fhir_search("ServiceRequest", patient: patient_identifier))
-        return nil if resources.nil?
-
-        resources.map { |r| build_referral_reference(r) }
+        references_from_search("ServiceRequest", { patient: patient_identifier }) do |resource|
+          build_referral_reference(resource)
+        end
       end
 
       # ----------------------------------------------------------------------
@@ -389,10 +380,10 @@ module Corvid
       def list_claims(patient_identifier)
         return nil if blank_patient_identifier?(patient_identifier)
 
-        claims = entries_from_search(fhir_search("Claim", patient: patient_identifier))
+        claims = list_search_resources("Claim", { patient: patient_identifier })
         return nil if claims.nil?
 
-        claims.flat_map { |claim| build_claim_line_references(claim) }
+        claim_lines_from(claims)
       end
 
       # One Condition search page only. A Bundle.link relation "next" is
@@ -485,19 +476,10 @@ module Corvid
       def get_care_team(patient_identifier)
         return nil if blank_patient_identifier?(patient_identifier)
 
-        resources = entries_from_search(fhir_search("CareTeam", patient: patient_identifier))
-        return nil if resources.nil?
+        teams = list_search_resources("CareTeam", { patient: patient_identifier })
+        return nil if teams.nil?
 
-        resources.flat_map do |resource|
-          (resource["participant"] || []).map do |p|
-            Corvid::CareTeamMemberReference.new(
-              practitioner_identifier: p.dig("member", "reference")&.sub("Practitioner/", ""),
-              role: p.dig("role", 0, "coding", 0, "code"),
-              name: resource["name"],
-              status: resource["status"]
-            )
-          end
-        end
+        teams.flat_map { |team| care_team_members(team) }
       end
 
       # ----------------------------------------------------------------------
@@ -1127,6 +1109,31 @@ module Corvid
         )
       end
 
+      def claim_lines_from(claims)
+        claims.each_with_object([]) do |claim, lines|
+          built = safe_claim_lines(claim)
+          return nil if built.nil?
+
+          lines.concat(built)
+        end
+      end
+
+      # A non-Hash item makes the whole claim read unknown. nil item means
+      # the claim has no lines, which is an answer.
+      def safe_claim_lines(claim)
+        return nil unless claim_items_are_hashes?(claim)
+
+        build_claim_line_references(claim)
+      end
+
+      def claim_items_are_hashes?(claim)
+        raw = claim["item"]
+        return true if raw.nil?
+        return false unless raw.is_a?(Array)
+
+        raw.all? { |item| item.is_a?(Hash) }
+      end
+
       def build_claim_line_references(claim)
         patient_id = claim.dig("patient", "reference")&.sub("Patient/", "")
         provider_id = claim.dig("provider", "identifier", "value").presence ||
@@ -1196,9 +1203,27 @@ module Corvid
           emergent: resource["priority"] == "stat",
           urgent: resource["priority"] == "urgent",
           chs_approval_status: nil,
-          service_requested: resource.dig("code", "text").presence || resource.dig("code", "coding", 0, "display").presence,
+          service_requested: service_requested_label(resource),
           requesting_provider_identifier: resource.dig("requester", "reference")&.split("/")&.last
         )
+      end
+
+      # Empty or whitespace text is absent so coding.display can fill in.
+      # Kept in plain Ruby: a list read builds this reference without
+      # ActiveSupport loaded.
+      def service_requested_label(resource)
+        text = resource.dig("code", "text")
+        return text if kept_label?(text)
+
+        display = resource.dig("code", "coding", 0, "display")
+        display if kept_label?(display)
+      end
+
+      def kept_label?(value)
+        return false if value.nil?
+        return false if value.is_a?(String) && value.match?(/\A[[:space:]]*\z/)
+
+        true
       end
 
       def priority_to_level(priority)
@@ -1219,12 +1244,75 @@ module Corvid
         end
       end
 
-      # A nil search is unknown. An answered bundle yields its resources,
-      # which is [] when the server reported no entries.
-      def entries_from_search(bundle)
+      def care_team_members(resource)
+        (resource["participant"] || []).map { |participant| care_team_member(resource, participant) }
+      end
+
+      def care_team_member(resource, participant)
+        Corvid::CareTeamMemberReference.new(
+          practitioner_identifier: participant.dig("member", "reference")&.sub("Practitioner/", ""),
+          role: participant.dig("role", 0, "coding", 0, "code"),
+          name: resource["name"],
+          status: resource["status"]
+        )
+      end
+
+      # nil when the search did not answer; [] when it answered with no
+      # matches. Same gates as #clinical_search (#search_bundle?, next link,
+      # total). Only match-mode (or mode-less) entries of resource_type are
+      # results. A blocking OperationOutcome or a malformed entry is unknown.
+      def references_from_search(resource_type, params)
+        resources = list_search_resources(resource_type, params)
+        return nil if resources.nil?
+
+        resources.map { |resource| yield resource }
+      end
+
+      def list_search_resources(resource_type, params)
+        bundle = list_search_page(resource_type, params)
         return nil if bundle.nil?
 
-        extract_entries(bundle)
+        match_resources(bundle, resource_type)
+      end
+
+      def list_search_page(resource_type, params)
+        validated_search(resource_type, params) { |bundle| list_search_bundle?(bundle) }
+      end
+
+      # #search_bundle? requires type searchset. A Bundle that omits type is
+      # still the shape these reads already accepted from #fhir_search. Any
+      # other declared type is unknown.
+      def list_search_bundle?(bundle)
+        search_bundle?(bundle) || bundle_omits_type?(bundle)
+      end
+
+      def bundle_omits_type?(bundle)
+        bundle.is_a?(Hash) && bundle["resourceType"] == "Bundle" && !bundle.key?("type")
+      end
+
+      def match_resources(bundle, resource_type)
+        entries = bundle_entries(bundle)
+        return nil if entries.nil?
+
+        entries.each_with_object([]) do |entry, resources|
+          resource = list_entry_resource(entry, resource_type)
+          return nil if resource == :unknown
+
+          resources << resource if resource
+        end
+      end
+
+      def list_entry_resource(entry, resource_type)
+        resource = entry_resource(entry)
+        return :unknown if resource == :unknown
+        return :unknown if blocking_list_outcome?(resource)
+        return unless typed_match_entry?(entry, resource_type)
+
+        resource
+      end
+
+      def blocking_list_outcome?(resource)
+        resource["resourceType"] == "OperationOutcome" && blocking_outcome?(resource)
       end
 
       def extract_entries(bundle)
@@ -1389,12 +1477,24 @@ module Corvid
       def clinical_search(resource_type, patient_identifier)
         return nil if patient_identifier.blank?
 
-        bundle = fhir_search(resource_type, patient: patient_identifier)
-        return nil unless search_bundle?(bundle)
+        bundle = validated_search(resource_type, { patient: patient_identifier })
+        return nil if bundle.nil?
+
+        yield bundle
+      rescue *CLINICAL_READ_ERRORS
+        nil
+      end
+
+      # One answered search page, or nil. A transport failure is unknown.
+      # Pass a block to replace the #search_bundle? check; next-link and
+      # total gates stay the same.
+      def validated_search(resource_type, params, &accept)
+        bundle = fhir_search(resource_type, params)
+        return nil unless accept ? accept.call(bundle) : search_bundle?(bundle)
         return nil if next_page_link?(bundle)
         return nil unless consistent_search_total?(bundle, resource_type)
 
-        yield bundle
+        bundle
       rescue *CLINICAL_READ_ERRORS
         nil
       end
