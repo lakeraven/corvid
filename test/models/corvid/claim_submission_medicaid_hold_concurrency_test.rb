@@ -23,6 +23,77 @@ class Corvid::ClaimSubmissionMedicaidHoldConcurrencyTest < ActiveSupport::TestCa
     Corvid::TenantContext.reset!
   end
 
+  test "verify! and record_staff_entry! on same medicaid check complete without deadlock" do
+    check = nil
+    with_tenant(TENANT) do
+      referral = referral_at("fac_test", "REF-DEADLOCK-#{SecureRandom.hex(3)}")
+      @records[:referral_ids] << referral.id
+      @records[:case_ids] << referral.case_id
+      check = referral.alternate_resource_checks.find_by(resource_type: "medicaid") ||
+        Corvid::AlternateResourceCheck.create!(
+          prc_referral: referral,
+          resource_type: "medicaid",
+          status: "not_checked"
+        )
+      @records[:medicaid_ids] << check.id
+    end
+
+    adapter_started = Queue.new
+    release_adapter = Queue.new
+    Corvid.adapter.define_singleton_method(:verify_eligibility) do |*_args|
+      adapter_started.push(true)
+      release_adapter.pop
+      { eligible: false }
+    end
+
+    outcomes = Queue.new
+
+    verify_thread = Thread.new do
+      ActiveRecord::Base.connection_pool.with_connection do
+        Corvid::TenantContext.with_tenant(TENANT) do
+          Corvid::AlternateResourceCheck.unscoped.find(check.id).verify!
+          outcomes.push([ :verify, :ok ])
+        rescue StandardError => error
+          outcomes.push([ :verify, error.class.name ])
+        end
+      end
+    end
+
+    adapter_started.pop
+
+    staff_thread = Thread.new do
+      ActiveRecord::Base.connection_pool.with_connection do
+        Corvid::TenantContext.with_tenant(TENANT) do
+          Corvid::MedicaidEligibilityGroupService.new(adapter: Corvid.adapter).record_staff_entry!(
+            Corvid::AlternateResourceCheck.unscoped.find(check.id),
+            eligibility_group: "waiver_adult"
+          )
+          outcomes.push([ :staff_entry, :ok ])
+        rescue StandardError => error
+          outcomes.push([ :staff_entry, error.class.name ])
+        end
+      end
+    end
+
+    overlap_deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + 0.5
+    while Process.clock_gettime(Process::CLOCK_MONOTONIC) < overlap_deadline
+      Thread.pass
+    end
+    release_adapter.push(true)
+
+    assert verify_thread.join(10), "verify! thread should finish"
+    assert staff_thread.join(10), "record_staff_entry! thread should finish"
+
+    results = []
+    results << outcomes.pop until outcomes.empty?
+
+    refute results.any? { |_, result| result.to_s.include?("Deadlock") }, results.inspect
+    assert_equal [ [ :staff_entry, :ok ], [ :verify, :ok ] ], results.sort_by(&:first)
+  ensure
+    verify_thread&.kill if verify_thread&.alive?
+    staff_thread&.kill if staff_thread&.alive?
+  end
+
   test "medicaid check update waits until submit! adapter call finishes for same patient" do
     claim = nil
     medicaid = nil
