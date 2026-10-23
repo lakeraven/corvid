@@ -664,10 +664,10 @@ module Corvid
       # after percent-decoding, or a path segment is "." or ".." after
       # %2e/%2E are decoded (that URL is not requested); when a present
       # `total` is not a non-negative Integer, or differs from the count of
-      # merged entries whose search.mode is "match" or absent (an equal
-      # total is kept, an absent total stays absent; outcome, include, and
-      # a search value that is not a Hash are not counted); when the same
-      # resourceType and id appear twice among those match or no-mode
+      # merged entries whose search.mode is "match" or absent, or whose
+      # search value is not a Hash (an equal total is kept, an absent total
+      # stays absent, and outcome and include entries are not counted); when
+      # the same resourceType and id appear twice among those counted
       # entries (repeated include entries are allowed); when a later page's
       # Bundle.type differs from the first page's; when a next URL was
       # already visited; or when the chain is longer than MAX_SEARCH_PAGES.
@@ -843,13 +843,19 @@ module Corvid
         keys.size != keys.uniq.size
       end
 
-      # A non-Hash entry has no mode, so it counts toward total the way a
-      # mode-less entry does. A Hash entry is a match only under the same
-      # rule as #match_mode_entry? (absent search, or mode absent / "match").
+      # Counts for fhir_search total and duplicate checks. A non-Hash entry,
+      # a non-Hash search, or a missing mode is a match. A Hash search counts
+      # only when mode is absent or "match"; include, outcome, and any other
+      # mode do not. List reads do not use this: a non-Hash search or an
+      # unrecognized mode is unknown there.
       def search_match_entry?(entry)
         return true unless entry.is_a?(Hash)
 
-        match_mode_entry?(entry)
+        search = entry["search"]
+        return true unless search.is_a?(Hash)
+
+        mode = search["mode"]
+        mode.nil? || mode == "match"
       end
 
       def match_resource_key(entry)
@@ -1536,7 +1542,9 @@ module Corvid
 
       # :match, :other, or :malformed. Absent search or an absent mode is a
       # match. include and outcome are known non-matches. Anything else,
-      # including a search value that is not a Hash, is malformed.
+      # including a search value that is not a Hash, is malformed. List reads
+      # treat :malformed as unknown. fhir_search total and duplicate counts
+      # do not: see #search_match_entry?.
       def entry_search_state(entry)
         search = entry["search"]
         return :match if search.nil?
