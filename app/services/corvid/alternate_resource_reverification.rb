@@ -15,22 +15,35 @@ module Corvid
         }.all?
       end
 
-      def record!(target, activity:, checks:)
+      # entities is the decision-time snapshot. tenant is the TenantContext
+      # captured with that decision; delivery runs inside it (ADR 0002).
+      def record!(target, activity:, entities:, tenant:)
         hook = Corvid.configuration.on_provenance
         return unless hook
 
-        payload = provenance_payload(target, activity, checks)
-        # A hook that runs SQL shares the caller's transaction. Keep it in
-        # its own savepoint so a database error cannot abort that transaction
-        # or undo a decision that already committed.
-        target.class.transaction(requires_new: true) do
-          hook.call(**payload)
-        end
+        deliver_provenance_hook(target, hook, provenance_payload(target, activity, entities), tenant)
       rescue StandardError => e
         Rails.logger.error("Provenance hook failed: #{Corvid.sanitize_phi(e.message)}")
       end
 
+      # Plain hashes copied at decision time. Delivery must not reload the
+      # checks: a later write in the same host transaction is not this decision.
+      def snapshot_entities(checks)
+        Array(checks).map { |check| provenance_entity(check) }
+      end
+
       private
+
+      # A hook that runs SQL shares the caller's transaction. Keep it in
+      # its own savepoint so a database error cannot abort that transaction
+      # or undo a decision that already committed.
+      def deliver_provenance_hook(target, hook, payload, tenant)
+        Corvid::TenantContext.with_tenant(tenant) do
+          target.class.transaction(requires_new: true) do
+            hook.call(**payload)
+          end
+        end
+      end
 
       def stale_checks(prc_referral, date_of_service, as_of)
         prc_referral.alternate_resource_checks.reload.select do |check|
@@ -70,26 +83,30 @@ module Corvid
         as_of
       end
 
-      def provenance_payload(target, activity, checks)
+      def provenance_payload(target, activity, entities)
         {
           target_type: target.class.name,
           target_id: target.id.to_s,
           activity: activity,
           recorded: Time.current,
-          entities: Array(checks).map { |check| provenance_entity(check) }
+          entities: entities
         }
       end
 
       def provenance_entity(check)
         {
           id: check.id,
-          resource_type: check.resource_type,
-          status: check.status,
-          checked_at: check.checked_at,
-          coverage_start: check.coverage_start,
-          coverage_end: check.coverage_end,
-          renewal_date: check.renewal_date
+          resource_type: detach(check.resource_type),
+          status: detach(check.status),
+          checked_at: detach(check.checked_at),
+          coverage_start: detach(check.coverage_start),
+          coverage_end: detach(check.coverage_end),
+          renewal_date: detach(check.renewal_date)
         }
+      end
+
+      def detach(value)
+        value.duplicable? ? value.dup : value
       end
     end
   end

@@ -68,8 +68,9 @@ module Corvid
     # helpers, remittance processing) records when it first happened, so the
     # KPIs above still count the claim after its status moves on.
     before_save :stamp_rejection_and_denial_times, if: :will_save_change_to_status?
-    # Provenance waits for the outermost commit. A host transaction that
-    # rolls back must not have called the hook, and a hook that fails must
+    # Provenance waits for the outermost commit. The check payload and the
+    # decision's tenant are captured here; delivery runs after commit inside
+    # that tenant. A rollback never calls the hook, and a hook failure does
     # not undo the submission.
     before_save :schedule_submission_provenance
 
@@ -310,25 +311,21 @@ module Corvid
     end
 
     # Adapter status "error" can still mean the claim was sent: a
-    # claim_identifier was assigned. submitted_at by itself does not —
-    # a draft can be stamped with a time and then saved as error.
+    # claim_identifier was assigned. submitted_at by itself does not.
+    # A time stamp without an identifier is not proof the claim was sent.
     def sent_despite_error_status?
       status_in_database == "error" && claim_identifier_in_database.present?
     end
 
     # An unsent linked claim may gain claim_identifier or submitted_at
-    # only through save_through_submission_gate!. A save that also changes
-    # something else (status to error is allowed) keeps that change and
-    # drops the markers; a save that only sets a marker is rejected.
+    # only through save_through_submission_gate!. A plain save that writes
+    # either marker is rejected, whether or not it also changes other
+    # attributes. submit! and mark_submitted! are the only writers.
     def unsent_linked_claim_cannot_gain_sent_markers
       return if @submission_through_gate
       return unless linked_unsent_claim? && sent_marker_changing?
 
-      if sent_marker_only_change?
-        add_sent_marker_errors
-      else
-        restore_sent_markers
-      end
+      add_sent_marker_errors
     end
 
     def linked_unsent_claim?
@@ -339,26 +336,33 @@ module Corvid
       will_save_change_to_claim_identifier? || will_save_change_to_submitted_at?
     end
 
-    def sent_marker_only_change?
-      other_changes = changes_to_save.keys - %w[claim_identifier submitted_at updated_at]
-      other_changes.empty?
-    end
-
     def add_sent_marker_errors
       errors.add(:claim_identifier, SENT_MARKER_MESSAGE) if will_save_change_to_claim_identifier?
       errors.add(:submitted_at, SENT_MARKER_MESSAGE) if will_save_change_to_submitted_at?
-    end
-
-    def restore_sent_markers
-      self.claim_identifier = claim_identifier_in_database if will_save_change_to_claim_identifier?
-      self.submitted_at = submitted_at_in_database if will_save_change_to_submitted_at?
     end
 
     def schedule_submission_provenance
       return unless @submission_through_gate
       return if prc_referral.blank?
 
-      ActiveRecord.after_all_transactions_commit { record_submission_provenance }
+      entities = AlternateResourceReverification.snapshot_entities(
+        prc_referral.alternate_resource_checks.reload
+      )
+      tenant = Corvid::TenantContext.current_tenant_identifier
+      ActiveRecord.after_all_transactions_commit do
+        deliver_submission_provenance(entities, tenant)
+      end
+    end
+
+    def deliver_submission_provenance(entities, tenant)
+      return if prc_referral.blank?
+
+      AlternateResourceReverification.record!(
+        self,
+        activity: "CREATE",
+        entities: entities,
+        tenant: tenant
+      )
     end
 
     def save_through_submission_gate!(attributes)
@@ -445,16 +449,6 @@ module Corvid
 
     def exhausted_for_claim?(referral)
       AlternateResourceCheck.all_exhausted?(referral, date_of_service: service_date, as_of: Time.current)
-    end
-
-    def record_submission_provenance
-      return if prc_referral.blank?
-
-      AlternateResourceReverification.record!(
-        self,
-        activity: "CREATE",
-        checks: prc_referral.alternate_resource_checks.reload
-      )
     end
 
     # A claim that bills a PRC referral may only be submitted once that

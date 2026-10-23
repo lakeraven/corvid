@@ -18,8 +18,12 @@ module Corvid
 
     # CHS approval status codes for EHR sync.
     # Engine-owned mapping — no dependency on EHR-side constants.
+    # Deferred is absent here; a committed deferral syncs as CHS_STATUS_DEFAULT.
+    # Cancelled has no code and is not synced.
     CHS_STATUS_MAP = { "authorized" => "A", "denied" => "D" }.freeze
     CHS_STATUS_DEFAULT = "P"
+    # Authorize, deny, and defer only. In-progress states stay local.
+    EHR_SYNCED_STATUSES = %w[authorized denied deferred].freeze
 
     belongs_to :case, class_name: "Corvid::Case"
     has_one :eligibility_checklist, dependent: :destroy, class_name: "Corvid::EligibilityChecklist"
@@ -131,11 +135,12 @@ module Corvid
       end
     end
 
-    # Bang and non-bang AASM events both end in a save. Capture the new
-    # status here and publish it after the outermost commit: a later save
-    # in the same transaction hides earlier changes, and a callback that
-    # reads the in-memory status at commit time would see only the last one.
-    # A rolled-back savepoint drops the callback with it.
+    # Bang and non-bang AASM events both end in a save. Capture a committed
+    # authorize, deny, or defer here and publish it after the outermost
+    # commit. In-progress states are not synced. Cancelled has no CHS code
+    # and is not synced. Authorization provenance snapshots the checks and
+    # the tenant at this save; only delivery waits for commit. A rolled-back
+    # save drops the callback with it.
     before_save :remember_referral_status_transition
 
     def service_request
@@ -403,15 +408,38 @@ module Corvid
     def remember_referral_status_transition
       return unless will_save_change_to_status?
 
-      new_status = status
+      new_status = status.to_s
+      provenance_entities = authorization_provenance_entities if new_status == "authorized"
+      return unless ehr_synced_status?(new_status) || provenance_entities
+
+      schedule_committed_referral_status(new_status, provenance_entities)
+    end
+
+    def schedule_committed_referral_status(new_status, provenance_entities)
+      tenant = Corvid::TenantContext.current_tenant_identifier
       ActiveRecord.after_all_transactions_commit do
-        publish_committed_referral_status(new_status)
+        publish_committed_referral_status(new_status, provenance_entities, tenant)
       end
     end
 
-    def publish_committed_referral_status(new_status)
-      sync_status_to_ehr(new_status)
-      record_authorization_provenance if new_status == "authorized"
+    def publish_committed_referral_status(new_status, provenance_entities, tenant)
+      sync_status_to_ehr(new_status) if ehr_synced_status?(new_status)
+      return if provenance_entities.nil?
+
+      AlternateResourceReverification.record!(
+        self,
+        activity: "UPDATE",
+        entities: provenance_entities,
+        tenant: tenant
+      )
+    end
+
+    def ehr_synced_status?(status_value)
+      EHR_SYNCED_STATUSES.include?(status_value.to_s)
+    end
+
+    def authorization_provenance_entities
+      AlternateResourceReverification.snapshot_entities(alternate_resource_checks.reload)
     end
 
     def blocker_for(resource_type, check)
@@ -535,14 +563,6 @@ module Corvid
 
     def record_deferred_determination
       record_determination!(outcome: "deferred", decision_method: "automated")
-    end
-
-    def record_authorization_provenance
-      AlternateResourceReverification.record!(
-        self,
-        activity: "UPDATE",
-        checks: alternate_resource_checks.reload
-      )
     end
 
     def sync_status_to_ehr(status_value = status)
