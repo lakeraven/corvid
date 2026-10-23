@@ -21,7 +21,8 @@ Rake::TestTask.new(:test_models) do |t|
     "test/services/**/*_test.rb",
     "test/controllers/**/*_test.rb",
     "test/rulesets/**/*_test.rb",
-    "test/lib/tasks/**/*_test.rb"
+    "test/lib/tasks/**/*_test.rb",
+    "test/lib/corvid/**/*_test.rb"
   ]
   t.verbose = false
 end
