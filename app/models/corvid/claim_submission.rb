@@ -3,7 +3,8 @@
 module Corvid
   # Tracks 837P/I/D claims through lifecycle from draft to paid.
   # Ported from the predecessor app. Uses adapter pattern for clearinghouse
-  # communication — Clearinghouse is one implementation (in lakeraven-private).
+  # communication — a Clearinghouse adapter is one implementation, maintained
+  # outside this engine (vendor adapters live in private repos).
   class ClaimSubmission < ::ActiveRecord::Base
     self.table_name = "corvid_claim_submissions"
 
