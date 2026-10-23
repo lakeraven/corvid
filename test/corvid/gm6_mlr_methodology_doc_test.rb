@@ -16,24 +16,20 @@ class Gm6MlrMethodologyDocTest < Minitest::Test
     db:schema:load
   ].freeze
 
-  RAILS_TASK_PATTERN = %r{
-    (?:^|\s)
+  COMMAND_TASK_EXTRACTOR = %r{
+    (?:^|[\s;&|])
     (?:
       bin/rails |
-      bundle \s+ exec \s+ rails
+      bundle \s+ exec \s+ rails |
+      bundle \s+ exec \s+ rake |
+      rake
     )
     \s+
-    (?<task>[a-z][a-z0-9_:]*)
-    (?:\[[^\]]*\])?
-    (?=[\s#&|;]|$)
-  }ix
-
-  RAKE_TASK_PATTERN = %r{
-    (?:^|\s)
-    rake \s+
-    (?<task>[a-z][a-z0-9_:]*)
-    (?:\[[^\]]*\])?
-    (?=[\s#&|;]|$)
+    (?:
+      "(?<qtask>[^"]+)" |
+      '(?<sqtask>[^']+)' |
+      (?<utask>[a-z][a-z0-9_:]*)(?:\[[^\]]*\])?
+    )
   }ix
 
   DEMO_LINE_PATTERN = %r{
@@ -59,6 +55,7 @@ class Gm6MlrMethodologyDocTest < Minitest::Test
     (?:
       bin/rails |
       bundle \s+ exec \s+ rails |
+      bundle \s+ exec \s+ rake |
       rake
     )
     \s+
@@ -103,6 +100,56 @@ class Gm6MlrMethodologyDocTest < Minitest::Test
   def test_reproduce_section_warns_about_database_url
     assert_match(/DATABASE_URL/, reproduce_section_text,
                  "Reproduce section must warn that DATABASE_URL overrides the environment")
+  end
+
+  def test_reproduce_block_unsets_database_url_before_rails
+    offenders = reproduce_rails_lines_before_database_url_unset
+    assert_empty offenders,
+                 "Reproduce bash block must unset DATABASE_URL (or env -u) before bin/rails: " \
+                 "#{offenders.join(" | ")}"
+  end
+
+  def test_doc_commands_use_numeric_task_arguments_only
+    offenders = doc_all_shell_commands.select { |cmd| command_has_placeholder_bracket_args?(cmd) }
+    assert_empty offenders,
+                 "command spans must use numeric bracket args, not placeholders like [year]: " \
+                 "#{offenders.join(" | ")}"
+  end
+
+  def test_quoted_rails_task_names_are_extracted_for_definition_check
+    cmd = 'cd test/dummy && RAILS_ENV=development bin/rails "cms:nonexistent_task[2026]"'
+    undefined = tasks_from_command(cmd).reject { |task| task_defined?(task) }
+    refute_empty undefined, "quoted bin/rails task names must be checked for definition"
+    assert_includes undefined, "cms:nonexistent_task"
+  end
+
+  def test_bare_rake_from_repo_root_fails_reader_context_check
+    [
+      "rake cms:import",
+      "rake demo:mlr_savings"
+    ].each do |cmd|
+      refute runnable_from_reader_context?(cmd),
+             "bare rake from repo root must fail reader context: #{cmd}"
+    end
+  end
+
+  def test_bundle_exec_rake_spans_are_shell_commands_and_checked
+    spans = [
+      "RAILS_ENV=development bundle exec rake demo:mlr_savings",
+      "bundle exec rake cms:import[2026]"
+    ]
+    spans.each do |span|
+      assert_match INLINE_SHELL_COMMAND_PATTERN, span,
+                   "inline shell pattern must match bundle exec rake: #{span}"
+    end
+
+    refute runnable_from_reader_context?("bundle exec rake cms:import[2026]"),
+           "bundle exec rake without test/dummy must fail reader context"
+    undefined = tasks_from_command("bundle exec rake cms:totally_fake_task").reject do |task|
+      task_defined?(task)
+    end
+    refute_empty undefined, "bundle exec rake task names must be checked for definition"
+    assert_includes undefined, "cms:totally_fake_task"
   end
 
   def test_reproduce_block_runs_demo_in_development
@@ -204,10 +251,15 @@ class Gm6MlrMethodologyDocTest < Minitest::Test
 
   def tasks_from_command(command)
     tasks = []
-    [ RAILS_TASK_PATTERN, RAKE_TASK_PATTERN ].each do |pattern|
-      command.scan(pattern) { tasks << Regexp.last_match[:task] }
+    command.scan(COMMAND_TASK_EXTRACTOR) do
+      raw = Regexp.last_match[:qtask] || Regexp.last_match[:sqtask] || Regexp.last_match[:utask]
+      tasks << task_name_from_token(raw) if raw
     end
     tasks
+  end
+
+  def task_name_from_token(token)
+    token.sub(/\[.*\]\z/, "")
   end
 
   def runnable_from_reader_context?(command)
@@ -215,10 +267,9 @@ class Gm6MlrMethodologyDocTest < Minitest::Test
     return true if command.match?(/\Acd \s+ test\/dummy \s+ && \s+ bundle \s+ install\z/i)
     return true if command.match?(/\Acd \s+ test\/dummy \s+ && \s+ cd \s+\.\.\/\.\.\z/i)
 
-    return false if command.match?(/\brane\s+/i)
-
-    if command.match?(/\b(?:bin\/rails|bundle \s+ exec \s+ rails)\b/i) &&
-       !command.match?(/test\/dummy/i)
+    if command.match?(
+      /\b(?:bin\/rails|bundle \s+ exec \s+ rails|bundle \s+ exec \s+ rake|rake)\b/i
+    ) && !command.match?(/test\/dummy/i)
       return false
     end
 
@@ -236,6 +287,7 @@ class Gm6MlrMethodologyDocTest < Minitest::Test
         (?:
           bin/rails |
           bundle \s+ exec \s+ rails |
+          bundle \s+ exec \s+ rake |
           rake
         )
         \s+
@@ -280,6 +332,33 @@ class Gm6MlrMethodologyDocTest < Minitest::Test
     return false unless line.match?(%r{test/dummy\b}ix)
 
     true
+  end
+
+  def reproduce_rails_lines_before_database_url_unset
+    lines = reproduce_shell_lines
+    return [] if lines.empty?
+
+    database_url_cleared = false
+    offenders = []
+    lines.each do |line|
+      database_url_cleared = true if line_clears_database_url?(line)
+      next unless line.match?(/\b(?:bin\/rails|bundle \s+ exec \s+ rails)\b/i)
+
+      offenders << line unless database_url_cleared
+    end
+    offenders
+  end
+
+  def line_clears_database_url?(line)
+    line.match?(/\bunset\s+DATABASE_URL\b/i) ||
+      line.match?(/\benv\s+-u\s+DATABASE_URL\b/i)
+  end
+
+  def command_has_placeholder_bracket_args?(command)
+    command.scan(/\[([^\]]+)\]/) do
+      return true unless Regexp.last_match(1).match?(/^\d+$/)
+    end
+    false
   end
 
   def reproduce_bash_block
