@@ -42,6 +42,12 @@ class Gm6MlrMethodologyDocTest < Minitest::Test
     demo-mlr
   }ix
 
+  DUMMY_BUNDLE_INSTALL_PATTERN = %r{
+    test/dummy
+    .*?
+    \bbundle \s+ (?:check \s* \|\| \s*)? install \b
+  }ix
+
   def setup
     @doc = File.read(DOC)
     @defined_tasks = defined_rake_tasks
@@ -68,6 +74,25 @@ class Gm6MlrMethodologyDocTest < Minitest::Test
     bad = demo_lines.reject { |line| demo_line_runs_in_development?(line) }
     assert_empty bad,
                  "Reproduce demo must use RAILS_ENV=development or a bin/demo-* entry point: #{bad.join(" | ")}"
+  end
+
+  def test_reproduce_block_installs_dummy_gems_before_bin_rails
+    block = reproduce_bash_block
+    assert block, "Reproduce block must include a ```bash``` snippet"
+
+    offenders = []
+    dummy_gems_ready = false
+    reproduce_shell_lines.each do |line|
+      dummy_gems_ready = true if line.match?(DUMMY_BUNDLE_INSTALL_PATTERN)
+      next unless bin_rails_in_test_dummy?(line)
+      next if dummy_gems_ready
+
+      offenders << line
+    end
+
+    assert_empty offenders,
+                 "install test/dummy gems (bundle check || bundle install) before bin/rails there: " \
+                 "#{offenders.join(" | ")}"
   end
 
   private
@@ -115,7 +140,7 @@ class Gm6MlrMethodologyDocTest < Minitest::Test
 
   def tasks_from_command(command)
     tasks = []
-    [RAILS_TASK_PATTERN, RAKE_TASK_PATTERN].each do |pattern|
+    [ RAILS_TASK_PATTERN, RAKE_TASK_PATTERN ].each do |pattern|
       command.scan(pattern) { tasks << Regexp.last_match[:task] }
     end
     tasks
@@ -130,6 +155,20 @@ class Gm6MlrMethodologyDocTest < Minitest::Test
     return [] unless block
 
     shell_lines(block).select { |line| line.match?(DEMO_LINE_PATTERN) }
+  end
+
+  def reproduce_shell_lines
+    block = reproduce_bash_block
+    return [] unless block
+
+    shell_lines(block)
+  end
+
+  def bin_rails_in_test_dummy?(line)
+    return false unless line.match?(%r{\b(?:bin/rails|bundle \s+ exec \s+ rails)\b}ix)
+    return false unless line.match?(%r{test/dummy\b}ix)
+
+    true
   end
 
   def reproduce_bash_block
@@ -184,7 +223,7 @@ class Gm6MlrMethodologyDocTest < Minitest::Test
         full_name = if task_name.include?(":")
           task_name
         else
-          ([*namespaces, task_name].join(":"))
+          ([ *namespaces, task_name ].join(":"))
         end
         tasks << full_name
       end
