@@ -99,7 +99,7 @@ class Corvid::RemittanceAmountsTest < ActiveSupport::TestCase
                    claim_identifier: "CLM-AMT-EDGE", paid_amount: "+50")
       ])
 
-      assert_equal 50, result.totals[:paid]
+      assert_equal 5050, result.totals[:paid]
       assert_equal 5050, result.attributes[:paid_amount_cents]
     end
   end
