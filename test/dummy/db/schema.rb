@@ -577,7 +577,6 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_24_000003) do
     t.string "tenant_identifier", null: false
     t.string "payment_id", null: false
     t.date "paid_date"
-    t.string "check_identifier"
     t.bigint "amount_cents"
     t.string "currency_iso", limit: 3, default: "USD", null: false
     t.string "vendor_name"

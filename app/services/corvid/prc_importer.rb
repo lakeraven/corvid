@@ -241,7 +241,6 @@ module Corvid
             prc_obligation_id: oblig_pk,
             payment_id: p.payment_id,
             paid_date: p.paid_date,
-            check_identifier: p.check_identifier,
             amount_cents: to_cents(p.amount),
             currency_iso: "USD",
             vendor_name: p.vendor_name
