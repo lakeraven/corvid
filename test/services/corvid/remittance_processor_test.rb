@@ -1,5 +1,6 @@
 # frozen_string_literal: true
 
+require "minitest/mock"
 require "test_helper"
 
 class Corvid::RemittanceProcessorTest < ActiveSupport::TestCase
@@ -228,7 +229,215 @@ class Corvid::RemittanceProcessorTest < ActiveSupport::TestCase
     end
   end
 
+  # --- Issue #681: full remittance history, status ordering, amounts --------
+
+  class HistoryAdapter < Struct.new(:history, keyword_init: true)
+    def fetch_remittances(date_range: nil)
+      history
+    end
+  end
+
+  class UnknownHistoryAdapter
+    def fetch_remittances(date_range: nil)
+      nil
+    end
+  end
+
+  test "sums adapter history and batch for each claim per ReferralBillingReconciliation read" do
+    with_tenant(TENANT) do
+      claim = create_claim("CLM-R-HIST-1")
+      history = [
+        remittance(remittance_identifier: "REM-P1", payment_date: Date.new(2026, 10, 1),
+                   claim_identifier: "CLM-R-HIST-1", paid_amount: 250.0)
+      ]
+      batch = [
+        remittance(remittance_identifier: "REM-REV", payment_date: Date.new(2026, 10, 2),
+                   claim_identifier: "CLM-R-HIST-1", paid_amount: -250.0),
+        remittance(remittance_identifier: "REM-COR", payment_date: Date.new(2026, 10, 3),
+                   claim_identifier: "CLM-R-HIST-1", paid_amount: 200.0)
+      ]
+      adapter = HistoryAdapter.new(history: history)
+
+      call_processor(batch, adapter: adapter)
+
+      claim.reload
+      assert_equal 20_000, claim.paid_amount_cents
+      refute_equal(-5_000, claim.paid_amount_cents)
+    end
+  end
+
+  test "adapter history and batch amounts add for the same claim" do
+    with_tenant(TENANT) do
+      claim = create_claim("CLM-R-HIST-2")
+      adapter = HistoryAdapter.new(history: [
+        remittance(remittance_identifier: "REM-HIST", payment_date: Date.new(2026, 10, 1),
+                   claim_identifier: "CLM-R-HIST-2", paid_amount: 250.0)
+      ])
+
+      call_processor([
+        remittance(remittance_identifier: "REM-BATCH", payment_date: Date.new(2026, 10, 2),
+                   claim_identifier: "CLM-R-HIST-2", paid_amount: 50.0)
+      ], adapter: adapter)
+
+      claim.reload
+      assert_equal 30_000, claim.paid_amount_cents
+    end
+  end
+
+  test "unknown remittance history leaves batch claims unchanged and counts unknown" do
+    with_tenant(TENANT) do
+      claim = create_claim("CLM-R-UNK")
+      claim.update!(paid_amount_cents: 12_345, status: "accepted")
+
+      result = call_processor([
+        remittance(claim_identifier: "CLM-R-UNK", paid_amount: 99.0)
+      ], adapter: UnknownHistoryAdapter.new)
+
+      claim.reload
+      assert_equal 12_345, claim.paid_amount_cents
+      assert_equal "accepted", claim.status
+      assert result.is_a?(Struct) && result.members.include?(:unknown),
+        "Result must expose unknown count when remittance history is unknown"
+      assert_equal 1, result.unknown
+      assert_equal 0, result.paid
+    end
+  end
+
+  test "injected adapter is used instead of Corvid.adapter global" do
+    with_tenant(TENANT) do
+      create_claim("CLM-R-INJ")
+      recording = HistoryAdapter.new(history: [])
+      recording.define_singleton_method(:fetch_remittances) do |**|
+        @fetch_calls = (@fetch_calls || 0) + 1
+        history
+      end
+
+      Corvid.adapter.stub(:fetch_remittances, -> { raise "must not use global adapter" }) do
+        call_processor([
+          remittance(claim_identifier: "CLM-R-INJ", paid_amount: 1.0)
+        ], adapter: recording)
+      end
+
+      assert_equal 1, recording.instance_variable_get(:@fetch_calls)
+    end
+  end
+
+  test "claim line item with surrounding whitespace matches the trimmed claim" do
+    with_tenant(TENANT) do
+      claim = create_claim("CLM-R-WS")
+
+      result = Corvid::RemittanceProcessor.call([
+        remittance(claim_identifier: " CLM-R-WS ", paid_amount: 100.0)
+      ])
+
+      claim.reload
+      assert claim.paid?
+      assert_equal 10_000, claim.paid_amount_cents
+      assert_equal 1, result.paid
+    end
+  end
+
+  test "zero-paid line after a payment does not change paid status" do
+    with_tenant(TENANT) do
+      claim = create_claim("CLM-R-ZERO-STAT")
+
+      Corvid::RemittanceProcessor.call([
+        remittance(remittance_identifier: "REM-PAID", payment_date: Date.new(2026, 9, 1),
+                   claim_identifier: "CLM-R-ZERO-STAT", paid_amount: 500.0),
+        remittance(remittance_identifier: "REM-ZERO", payment_date: Date.new(2026, 10, 1),
+                   claim_identifier: "CLM-R-ZERO-STAT", paid_amount: 0.0)
+      ])
+
+      claim.reload
+      assert claim.paid?
+      assert_equal 50_000, claim.paid_amount_cents
+    end
+  end
+
+  test "undated denial after a dated payment decides status" do
+    with_tenant(TENANT) do
+      claim = create_claim("CLM-R-UND-DENY")
+
+      Corvid::RemittanceProcessor.call([
+        remittance(remittance_identifier: "REM-R1", payment_date: Date.new(2026, 10, 1),
+                   claim_identifier: "CLM-R-UND-DENY", paid_amount: 100.0),
+        remittance(remittance_identifier: "REM-R2", payment_date: nil,
+                   claim_identifier: "CLM-R-UND-DENY", paid_amount: 0, status: "denied",
+                   adjustment_codes: [ "CO-97" ])
+      ])
+
+      claim.reload
+      assert claim.denied?
+      assert_equal %w[CO-97], claim.denial_reason_codes
+    end
+  end
+
+  test "non-ISO payment_date is undated and sorts after ISO dated lines" do
+    with_tenant(TENANT) do
+      claim = create_claim("CLM-R-UND-DATE")
+
+      Corvid::RemittanceProcessor.call([
+        remittance(remittance_identifier: "REM-R1", payment_date: Date.new(2026, 10, 9),
+                   claim_identifier: "CLM-R-UND-DATE", paid_amount: 10.0),
+        remittance(remittance_identifier: "REM-R2", payment_date: "10/10/2026",
+                   claim_identifier: "CLM-R-UND-DATE", paid_amount: 0, status: "denied",
+                   adjustment_codes: [ "CO-45" ])
+      ])
+
+      claim.reload
+      assert claim.denied?
+    end
+  end
+
+  test "paid_date comes only from the latest dated line when a later line is undated" do
+    with_tenant(TENANT) do
+      claim = create_claim("CLM-R-PDATE-UND")
+
+      Corvid::RemittanceProcessor.call([
+        remittance(remittance_identifier: "REM-DATED", payment_date: Date.new(2026, 9, 1),
+                   claim_identifier: "CLM-R-PDATE-UND", paid_amount: 50.0),
+        remittance(remittance_identifier: "REM-UND-ADD", payment_date: nil,
+                   claim_identifier: "CLM-R-PDATE-UND", paid_amount: 10.0)
+      ])
+
+      claim.reload
+      assert_equal Date.new(2026, 9, 1), claim.paid_date
+      assert_equal 6_000, claim.paid_amount_cents
+    end
+  end
+
+  test "unparseable amount aborts the batch without writing any claim" do
+    with_tenant(TENANT) do
+      ok_claim = create_claim("CLM-R-AMT-OK")
+      create_claim("CLM-R-AMT-BAD")
+
+      error = assert_raises(ArgumentError) do
+        Corvid::RemittanceProcessor.call([
+          remittance(claim_identifier: "CLM-R-AMT-OK", paid_amount: 25.0),
+          remittance(claim_identifier: "CLM-R-AMT-BAD", paid_amount: "n/a")
+        ])
+      end
+
+      assert_match(/CLM-R-AMT-BAD/, error.message)
+      assert_match(/paid_amount/, error.message)
+      refute_match(/n\/a/, error.message)
+      refute_match(/CLM-R-AMT-OK/, error.message)
+
+      ok_claim.reload
+      assert_nil ok_claim.paid_amount_cents
+      assert_equal "accepted", ok_claim.status
+    end
+  end
+
   private
+
+  def call_processor(remittances, adapter: Corvid.adapter)
+    unless Corvid::RemittanceProcessor.method(:call).parameters.any? { |(_, name)| name == :adapter }
+      flunk "RemittanceProcessor.call must accept adapter: keyword (ADR 0005)"
+    end
+
+    Corvid::RemittanceProcessor.call(remittances, adapter: adapter)
+  end
 
   def create_claim(claim_identifier)
     Corvid::ClaimSubmission.create!(
