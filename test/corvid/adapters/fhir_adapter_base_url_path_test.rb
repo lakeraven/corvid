@@ -25,6 +25,30 @@ class Corvid::Adapters::FhirAdapterBaseUrlPathTest < Minitest::Test
     "https://fhir.vendor.example/fhir/R4"
   ].freeze
 
+  # Paths that servers normalize to "/" but pass the naive non-empty-path check.
+  ROOT_RESOLVING_BASE_URLS = [
+    "https://fhir.vendor.example/.",
+    "https://fhir.vendor.example/./",
+    "https://fhir.vendor.example/..",
+    "https://fhir.vendor.example/r4/..",
+    "https://fhir.vendor.example/%2e",
+    "https://fhir.vendor.example/%2E%2E",
+    "https://fhir.vendor.example/;x",
+    "https://fhir.vendor.example/r4%2Fx"
+  ].freeze
+
+  VALID_SEGMENT_BASE_URLS = [
+    "https://fhir.vendor.example/r4",
+    "/fhir/R4",
+    "/r4/",
+    "/fhir.v2/r4"
+  ].freeze
+
+  UNPARSEABLE_BASE_URLS = [
+    "\x00",
+    "http://[bad"
+  ].freeze
+
   def test_rejects_bare_https_base_url_without_credentials
     assert_rejects_unqualified_base("https://fhir.vendor.example")
   end
@@ -122,6 +146,48 @@ class Corvid::Adapters::FhirAdapterBaseUrlPathTest < Minitest::Test
     assert_unqualified_base_url_message(err.message)
   end
 
+  def test_rejects_root_resolving_base_url_without_credentials
+    ROOT_RESOLVING_BASE_URLS.each do |url|
+      assert_rejects_root_resolving_base(url)
+    end
+  end
+
+  def test_rejects_root_resolving_base_url_with_bearer_token
+    ROOT_RESOLVING_BASE_URLS.each do |url|
+      assert_rejects_root_resolving_base(url, bearer_token: "synthetic-token")
+    end
+  end
+
+  def test_unparseable_base_url_raises_argument_error_without_credentials
+    UNPARSEABLE_BASE_URLS.each do |url|
+      assert_unparseable_base_url_rejected(url)
+    end
+  end
+
+  def test_unparseable_base_url_raises_argument_error_with_bearer_token
+    UNPARSEABLE_BASE_URLS.each do |url|
+      assert_unparseable_base_url_rejected(url, bearer_token: "synthetic-token")
+    end
+  end
+
+  def test_accepts_path_qualified_bases_with_real_segments
+    VALID_SEGMENT_BASE_URLS.each do |url|
+      adapter = Corvid::Adapters::FhirAdapter.new(base_url: url)
+      refute_empty URI.parse(adapter.base_url).path.delete("/"),
+                   "accepted base_url must retain a non-empty path segment"
+    end
+  end
+
+  def test_preprod_checklist_mentions_path_qualified_fhir_base_url
+    doc_path = File.expand_path("../../../docs/preprod_to_prod_checklist.md", __dir__)
+    doc = File.read(doc_path)
+    near_fhir = doc.match(/FHIR[_ ]base(?:[_ ]URL)?|FHIR_BASE_URL/i)
+    assert near_fhir, "expected FHIR base URL guidance in preprod_to_prod_checklist.md"
+    window = doc[near_fhir.begin(0)..(near_fhir.end(0) + 200)]
+    assert_match(/path-qualified/i, window,
+                 "FHIR base URL guidance must mention path-qualified bases")
+  end
+
   private
 
   def assert_rejects_unqualified_base(base_url, **options)
@@ -129,6 +195,21 @@ class Corvid::Adapters::FhirAdapterBaseUrlPathTest < Minitest::Test
       Corvid::Adapters::FhirAdapter.new(base_url: base_url, **options)
     end
     assert_unqualified_base_url_message(err.message)
+  end
+
+  def assert_rejects_root_resolving_base(base_url, **options)
+    err = assert_raises(ArgumentError) do
+      Corvid::Adapters::FhirAdapter.new(base_url: base_url, **options)
+    end
+    assert_unqualified_base_url_message(err.message)
+  end
+
+  def assert_unparseable_base_url_rejected(base_url, **options)
+    err = assert_raises(ArgumentError) do
+      Corvid::Adapters::FhirAdapter.new(base_url: base_url, **options)
+    end
+    refute_instance_of Corvid::Adapters::FhirAdapter::InsecureTransportError, err,
+                       "unparseable base_url must fail closed at construction, not via transport checks"
   end
 
   def assert_unqualified_base_url_message(message)
