@@ -212,10 +212,12 @@ module Corvid
         # configured one, and it is the request-level check below that is
         # authoritative either way.
         #
-        # An empty path or "/" is rejected with or without credentials.
-        # Tokens and next links are scoped to this path; a bare host would
-        # cover every endpoint there. TLS, host, and credential checks below
-        # are unchanged and still run for a path-qualified base.
+        # A path with no real segment is rejected with or without
+        # credentials. Tokens and next links are scoped to this path; an
+        # empty path, a dot segment, a path parameter, or an encoded
+        # separator would cover or escape the host. An unparseable
+        # base_url fails closed here as well. TLS, host, and credential
+        # checks below still run for a path-qualified base.
         require_path_qualified_base_url!(@base_url)
         if bearer_token || token_source || preset_authorization_header?
           require_secure_transport!(@base_url)
@@ -987,21 +989,38 @@ module Corvid
       end
 
       # Bearer tokens and followed search next links are scoped to
-      # base_url's scheme, host, port, and path. A path with no segment
-      # (empty, or only slashes) covers every path on the host, so that
-      # base is rejected whether or not credentials are present. An
-      # unparseable URL is left alone here; require_secure_transport!
-      # still reports it when credentials are configured.
+      # base_url's scheme, host, port, and path. A path with no real
+      # segment is rejected whether or not credentials are present.
+      # Empty or slash-only paths fail that check directly. "." and ".."
+      # segments (including %2e/%2E), path parameters (";"), and encoded
+      # separators (%2F/%5C) are the same rule dot_segment_path? already
+      # applies to search next links: it percent-decodes %2e and calls
+      # forbidden_next_path? on the raw and decoded path. A segment that
+      # merely contains a dot (for example "fhir.v2") stays valid.
+      # An unparseable URL — URI::InvalidURIError, or a string URI.parse
+      # cannot handle — raises ArgumentError here with or without
+      # credentials. The message does not echo the URL; parser errors quote it.
       def require_path_qualified_base_url!(url)
-        uri = URI.parse(url.to_s)
-        return unless uri.path.to_s.delete("/").empty?
+        uri = parse_base_url!(url)
+        return unless uri.path.to_s.delete("/").empty? || dot_segment_path?(url.to_s)
 
         raise ArgumentError,
               "base_url must be path-qualified so bearer tokens and search " \
               "next links stay scoped to the FHIR base path, not the whole " \
               "host (for example https://fhir.vendor.example/r4)"
-      rescue URI::InvalidURIError
-        nil
+      end
+
+      # Fail closed. URI::InvalidURIError is the usual parse failure;
+      # some strings raise ArgumentError instead (a null byte, on a parser
+      # that rejects it before the URI check). Either one becomes
+      # ArgumentError. cause is cleared: the parser message quotes the URL,
+      # and Ruby would otherwise attach it to the new exception.
+      def parse_base_url!(url)
+        URI.parse(url.to_s)
+      rescue URI::InvalidURIError, ArgumentError
+        raise ArgumentError,
+              "base_url could not be parsed; FhirAdapter refuses an unparseable base URL",
+              cause: nil
       end
 
       # Reject any URL that would carry an Authorization header over a
