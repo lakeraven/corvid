@@ -50,6 +50,20 @@ class Corvid::PrcImporterTest < ActiveSupport::TestCase
     end
   end
 
+  test "imported payment stores report check value in check_identifier column" do
+    with_tenant(TENANT) do
+      Corvid::PrcImporter.import(SAMPLE, source_file: "test_export.prc")
+
+      pmt = Corvid::PrcPayment.find_by!(payment_id: "PMT-2009-000001")
+      assert_equal "CHK2009A", pmt.check_identifier
+
+      columns = Corvid::PrcPayment.column_names
+      refute_includes columns, "check_number",
+                      "PrcPayment must not expose the old PHI column name"
+      assert_includes columns, "check_identifier"
+    end
+  end
+
   # -- Malformed input -------------------------------------------------------
 
   test "raises MalformedExportError when the file has no header" do
@@ -282,7 +296,7 @@ class Corvid::PrcImporterTest < ActiveSupport::TestCase
       result = Corvid::PrcImporter.import(dup_export, source_file: "dup_p.prc")
 
       pmt = Corvid::PrcPayment.find_by(payment_id: "PMT-DUP")
-      assert_equal "CHK_SECOND", pmt.check_number,
+      assert_equal "CHK_SECOND", pmt.check_identifier,
                    "the second (corrected) payment row must win, not the first"
       assert_equal 200_00, pmt.amount_cents
 

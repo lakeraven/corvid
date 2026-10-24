@@ -48,7 +48,7 @@ class Corvid::PrcReportParserTest < ActiveSupport::TestCase
     assert_equal "OBL-2009-000123", first_payment.obligation_id
     assert_equal "PMT-2009-000001", first_payment.payment_id
     assert_equal Date.new(2009, 6, 15), first_payment.paid_date
-    assert_equal "CHK2009A", first_payment.check_number
+    assert_equal "CHK2009A", first_payment.check_identifier
     assert_equal 25000.00.to_d, first_payment.amount
     assert_equal "SEA_HOSPITAL", first_payment.vendor_name
   end
