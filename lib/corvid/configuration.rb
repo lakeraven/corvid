@@ -4,6 +4,9 @@ module Corvid
   # Engine configuration. Hosts wire this in an initializer:
   #
   #   Corvid.configure do |c|
+  #     # FHIR_BASE_URL must be path-qualified, for example
+  #     # https://fhir.vendor.example/r4. Bearer tokens and search next
+  #     # links are scoped to that base path.
   #     c.adapter = Corvid::Adapters::FhirAdapter.new(base_url: ENV["FHIR_BASE_URL"])
   #     c.phi_sanitizer = ->(msg) { PhiSanitizer.redact(msg) }
   #     c.on_provenance = ->(**attrs) { Provenance.create!(**attrs) }
