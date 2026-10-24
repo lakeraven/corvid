@@ -3,7 +3,7 @@
 require "minitest/autorun"
 require "uri"
 require "openssl"
-require "corvid"
+require "corvid/configuration"
 require "corvid/adapters/fhir_adapter"
 require "corvid/adapters/fhir_demo_adapter"
 require "corvid/auth/backend_services_client"
