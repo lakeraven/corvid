@@ -10,6 +10,11 @@ module Corvid
     TENANT = "tnt_test"
     AIAN_EVIDENCE = { "supports" => "aian_status", "ref" => "attestation:tok_test_680_aian" }.freeze
     DOS = Date.new(2026, 3, 1)
+    PHASE_IN_DOS = Date.new(2015, 6, 1)
+    PHASE_IN_REFUSAL_REASONS = [
+      FmapClassificationService::UNEVIDENCED_100,
+      FmapClassificationService::EXPANSION_STATE_NOT_CONFIGURED
+    ].freeze
 
     setup do
       FmapRuleLoader.load_defaults!
@@ -163,18 +168,7 @@ module Corvid
     end
 
     test "refused 100 percent expansion rule still names reachable IHS 638 tier" do
-      FmapRule.create!(
-        rule_key: "xb-test-expansion-phase-in-100",
-        jurisdiction: "XB",
-        category: "fmap_90_expansion",
-        fmap_percent: 100.0,
-        coverage_group: "expansion_adult",
-        statutory_citation: "Synthetic test citation for issue 680 gate round 2",
-        effective_on: Date.new(2014, 1, 1),
-        expires_on: Date.new(2016, 12, 31)
-      )
-
-      dos = Date.new(2015, 6, 1)
+      create_phase_in_expansion_rule!(jurisdiction: "XB", rule_key: "xb-test-expansion-phase-in-100")
 
       with_tenant(TENANT) do
         contract_638 = FacilityAuthority.create!(
@@ -185,7 +179,7 @@ module Corvid
         )
 
         result = FmapClassificationService.classify(
-          date_of_service: dos,
+          date_of_service: PHASE_IN_DOS,
           jurisdiction: "XB",
           facility_authority: contract_638,
           aian_verified: false,
@@ -241,6 +235,149 @@ module Corvid
       end
     end
 
+    test "gate round 3 F1 unevidenced 100 percent phase-in in XB stays undetermined not regular" do
+      create_phase_in_expansion_rule!(jurisdiction: "XB", rule_key: "xb-test-expansion-phase-in-100")
+
+      with_tenant(TENANT) do
+        contract_638 = FacilityAuthority.create!(
+          facility_identifier: "fac_test_680_638_gate_f1",
+          authority_type: "contract_638",
+          air_eligible: true,
+          effective_on: Date.new(2010, 1, 1)
+        )
+
+        result = FmapClassificationService.classify(
+          date_of_service: PHASE_IN_DOS,
+          jurisdiction: "XB",
+          facility_authority: contract_638,
+          aian_verified: true,
+          evidence_refs: [],
+          coverage_group: "expansion_adult"
+        )
+
+        assert result.undetermined?
+        refute_equal "fmap_regular", result.category
+        assert_nil result.fmap_percent
+        assert_includes PHASE_IN_REFUSAL_REASONS, result.determination_reason
+      end
+    end
+
+    test "gate round 3 F1 parallel XC phase-in row stays undetermined when state unregistered" do
+      create_phase_in_expansion_rule!(jurisdiction: "XC", rule_key: "xc-test-expansion-phase-in-100")
+
+      with_tenant(TENANT) do
+        refute Corvid::StateMedicaidRules.lookup("XC").configured?
+
+        contract_638 = FacilityAuthority.create!(
+          facility_identifier: "fac_test_680_638_gate_f1_xc",
+          authority_type: "contract_638",
+          air_eligible: true,
+          effective_on: Date.new(2010, 1, 1)
+        )
+
+        result = FmapClassificationService.classify(
+          date_of_service: PHASE_IN_DOS,
+          jurisdiction: "XC",
+          facility_authority: contract_638,
+          aian_verified: true,
+          evidence_refs: [],
+          coverage_group: "expansion_adult"
+        )
+
+        assert result.undetermined?
+        refute_equal "fmap_regular", result.category
+        assert_nil result.fmap_percent
+        assert_includes PHASE_IN_REFUSAL_REASONS, result.determination_reason
+      end
+    end
+
+    test "gate round 3 F1 classify! persists undetermined for XB phase-in with verified AIAN and no evidence" do
+      create_phase_in_expansion_rule!(jurisdiction: "XB", rule_key: "xb-test-expansion-phase-in-100")
+
+      with_tenant(TENANT) do
+        contract_638 = FacilityAuthority.create!(
+          facility_identifier: "fac_test_680_638_gate_f1_classify",
+          authority_type: "contract_638",
+          air_eligible: true,
+          effective_on: Date.new(2010, 1, 1)
+        )
+
+        determination = FmapClassificationService.classify!(
+          encounter_identifier: "enc_test_680_gate_f1_xb",
+          date_of_service: PHASE_IN_DOS,
+          jurisdiction: "XB",
+          coverage_group: "expansion_adult",
+          facility_authority: contract_638,
+          aian_verified: true,
+          evidence_refs: []
+        )
+
+        assert determination.persisted?
+        assert_equal FmapClassificationService::UNDETERMINED, determination.category
+        assert_includes PHASE_IN_REFUSAL_REASONS, determination.determination_reason
+        assert_nil determination.fmap_percent
+      end
+    end
+
+    test "gate round 3 F1 XB phase-in with AIAN evidence still reaches fmap_100_ihs_638" do
+      create_phase_in_expansion_rule!(jurisdiction: "XB", rule_key: "xb-test-expansion-phase-in-100")
+
+      with_tenant(TENANT) do
+        contract_638 = FacilityAuthority.create!(
+          facility_identifier: "fac_test_680_638_gate_f1_evidence",
+          authority_type: "contract_638",
+          air_eligible: true,
+          effective_on: Date.new(2010, 1, 1)
+        )
+
+        result = FmapClassificationService.classify(
+          date_of_service: PHASE_IN_DOS,
+          jurisdiction: "XB",
+          facility_authority: contract_638,
+          aian_verified: true,
+          evidence_refs: [ AIAN_EVIDENCE ],
+          coverage_group: "expansion_adult"
+        )
+
+        assert_equal "fmap_100_ihs_638", result.category
+      end
+    end
+
+    test "gate round 3 F2 phase-in jurisdiction variants stay undetermined not regular without authority" do
+      create_phase_in_expansion_rule!(jurisdiction: "XB", rule_key: "xb-test-expansion-phase-in-100")
+
+      [ "xb", " XB " ].each do |jurisdiction_input|
+        with_tenant(TENANT) do
+          result = FmapClassificationService.classify(
+            date_of_service: PHASE_IN_DOS,
+            jurisdiction: jurisdiction_input,
+            coverage_group: "expansion_adult",
+            aian_verified: false
+          )
+
+          assert result.undetermined?, "expected undetermined for jurisdiction #{jurisdiction_input.inspect}"
+          refute_equal "fmap_regular", result.category
+          assert_equal FmapClassificationService::EXPANSION_STATE_NOT_CONFIGURED, result.determination_reason
+        end
+      end
+    end
+
+    test "gate round 3 F2 classify! canonicalizes jurisdiction on persisted determination" do
+      with_tenant(TENANT) do
+        determination = FmapClassificationService.classify!(
+          encounter_identifier: "enc_test_680_gate_f2_xa_ws",
+          date_of_service: DOS,
+          jurisdiction: " xa ",
+          coverage_group: "expansion_adult",
+          aian_verified: false
+        )
+
+        assert determination.persisted?
+        assert_equal "XA", determination.jurisdiction
+        assert_equal "fmap_90_expansion", determination.category
+      end
+    end
+
     test "classification does not mutate StateMedicaidRules or FmapRule rows" do
       with_tenant(TENANT) do
         xb_entry = Corvid::StateMedicaidRules.lookup("XB")
@@ -257,6 +394,19 @@ module Corvid
     end
 
     private
+
+    def create_phase_in_expansion_rule!(jurisdiction:, rule_key:)
+      FmapRule.create!(
+        rule_key: rule_key,
+        jurisdiction: jurisdiction,
+        category: "fmap_90_expansion",
+        fmap_percent: 100.0,
+        coverage_group: "expansion_adult",
+        statutory_citation: "Synthetic test citation for issue 680 gate round 2",
+        effective_on: Date.new(2014, 1, 1),
+        expires_on: Date.new(2016, 12, 31)
+      )
+    end
 
     def classify_expansion(jurisdiction:, **overrides)
       FmapClassificationService.classify(
