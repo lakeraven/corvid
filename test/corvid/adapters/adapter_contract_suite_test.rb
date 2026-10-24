@@ -45,6 +45,12 @@ class Corvid::Adapters::AdapterContractSuiteTest < Minitest::Test
     end
   end
 
+  class StringAsOfAdapter < Corvid::Adapters::MockAdapter
+    def verify_eligibility(patient_identifier, resource_type)
+      super&.merge(as_of: "2026-10-01T12:00:00Z")
+    end
+  end
+
   # Answers from the first seeded coverage when resource_type is blank (contract violation).
   class VerifyEligibilityOnBlankResourceTypeAdapter < Corvid::Adapters::MockAdapter
     def verify_eligibility(patient_identifier, resource_type)
@@ -94,6 +100,10 @@ class Corvid::Adapters::AdapterContractSuiteTest < Minitest::Test
 
   def test_suite_rejects_a_string_renewal_date
     assert_contract_fails(StringRenewalDateAdapter, :verify_eligibility)
+  end
+
+  def test_suite_rejects_a_string_as_of
+    assert_contract_fails(StringAsOfAdapter, :verify_eligibility)
   end
 
   def test_suite_rejects_verify_eligibility_that_answers_on_blank_resource_type

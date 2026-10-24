@@ -871,7 +871,7 @@ module AdapterContractTests
       when :get_care_team
         assert_array_of(result, Corvid::CareTeamMemberReference)
       when :get_coverages
-        assert_instance_of Array, result
+        assert_get_coverages_shape(result)
       when :get_conditions
         assert_clinical_read_shape(result, Corvid::ConditionReference)
       when :get_medications
@@ -936,10 +936,28 @@ module AdapterContractTests
       assert_includes [ true, false ], value.success?
     end
 
+    def assert_get_coverages_shape(value)
+      assert_instance_of Array, value
+      value.each do |row|
+        assert_instance_of Hash, row
+        assert row.key?(:as_of), "get_coverages row must include :as_of"
+        assert_answer_as_of(row[:as_of], context: "get_coverages row")
+      end
+    end
+
+    def assert_answer_as_of(value, context:)
+      return if value.nil?
+
+      assert value.is_a?(Time) || value.is_a?(ActiveSupport::TimeWithZone),
+             "#{context} :as_of must be Time or ActiveSupport::TimeWithZone, got #{value.class}"
+    end
+
     def assert_verify_eligibility_shape(value)
       return if value.nil?
 
       assert_instance_of Hash, value
+      assert value.key?(:as_of), "verify_eligibility must include :as_of"
+      assert_answer_as_of(value[:as_of], context: "verify_eligibility")
       # base.rb: these dates are Date or nil when present.
       %i[coverage_start coverage_end renewal_date].each do |key|
         next unless value.key?(key)
