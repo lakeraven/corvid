@@ -162,6 +162,44 @@ module Corvid
       end
     end
 
+    test "refused 100 percent expansion rule still names reachable IHS 638 tier" do
+      FmapRule.create!(
+        rule_key: "xb-test-expansion-phase-in-100",
+        jurisdiction: "XB",
+        category: "fmap_90_expansion",
+        fmap_percent: 100.0,
+        coverage_group: "expansion_adult",
+        statutory_citation: "Synthetic test citation for issue 680 gate round 2",
+        effective_on: Date.new(2014, 1, 1),
+        expires_on: Date.new(2016, 12, 31)
+      )
+
+      dos = Date.new(2015, 6, 1)
+
+      with_tenant(TENANT) do
+        contract_638 = FacilityAuthority.create!(
+          facility_identifier: "fac_test_680_638_2015",
+          authority_type: "contract_638",
+          air_eligible: true,
+          effective_on: Date.new(2010, 1, 1)
+        )
+
+        result = FmapClassificationService.classify(
+          date_of_service: dos,
+          jurisdiction: "XB",
+          facility_authority: contract_638,
+          aian_verified: false,
+          evidence_refs: [],
+          coverage_group: "expansion_adult"
+        )
+
+        assert result.undetermined?
+        assert_equal FmapClassificationService::EXPANSION_STATE_NOT_CONFIGURED, result.determination_reason
+        assert_equal "fmap_100_ihs_638", result.best_available_category
+        assert_includes result.missing_evidence, "aian_attestation"
+      end
+    end
+
     test "expansion refusal with 638 authority still names reachable 100 percent tier" do
       with_tenant(TENANT) do
         result = FmapClassificationService.classify(
