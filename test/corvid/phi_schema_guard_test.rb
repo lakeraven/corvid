@@ -376,6 +376,63 @@ module Corvid
       refute confines_to_value_list?("status::text <> ALL (ARRAY['a'::character varying])", "status")
     end
 
+    # Owner decision on #591 (ADR 0002): a permit that rests on the column's
+    # values being bounded needs the DATABASE to bound them. Model validation
+    # alone is not enough — a direct insert, update_column or a later writer
+    # skips it. rule_key and rule_citations are bounded only by the model
+    # today, so they are not permitted until #704 adds the constraint.
+    def test_a_value_bound_permit_needs_a_database_constraint
+      refute permitted_by_convention?("rule_key", :string, "corvid_fmap_determinations"),
+        "rule_key is validated by the model only, not by a database constraint"
+      refute permitted_by_convention?("rule_citations", :jsonb, "corvid_fmap_determinations"),
+        "rule_citations is validated by the model only, not by a database constraint"
+
+      assert permitted_by_convention?("category", :string, "corvid_fmap_determinations"),
+        "a CHECK-bounded enum is still permitted"
+    end
+
+    # A foreign key bounds a column to the keys of another table, which is
+    # the bound #704 proposes for best_available_rule_key.
+    def test_a_foreign_key_is_a_database_bound
+      assert db_bounded?("corvid_case_programs", "case_id")
+      refute db_bounded?("corvid_fmap_determinations", "best_available_rule_key")
+    end
+
+    # Owner decision on #591: an open entry (unclassified or needs_decision)
+    # must say who owns it — an issue number or a deadline date. Otherwise it
+    # is a permanent allowlist entry with no one accountable for it.
+    def test_every_open_entry_is_tracked
+      assert_empty untracked_open_entries(exception_entries).map { |e| "#{e['table']}.#{e['column']}" },
+        "every unclassified or needs_decision entry needs an issue (\"#123\") or a remediate_by date"
+    end
+
+    def test_an_open_entry_needs_an_issue_or_a_deadline
+      entries = [
+        { "column" => "a", "classification" => "unclassified" },
+        { "column" => "b", "classification" => "needs_decision", "issue" => "704" },
+        { "column" => "c", "classification" => "unclassified", "issue" => "see #704 later" },
+        { "column" => "d", "classification" => "unclassified", "remediate_by" => "soon" },
+        { "column" => "e", "classification" => "unclassified", "blocked_on" => "the design" },
+        { "column" => "f", "classification" => "unclassified", "issue" => "#704" },
+        { "column" => "g", "classification" => "needs_decision", "remediate_by" => "2027-01-15" },
+        { "column" => "h", "classification" => "accepted_workflow_date" }
+      ]
+
+      assert_equal %w[a b c d e], untracked_open_entries(entries).map { |e| e["column"] }
+    end
+
+    # A deadline on an open entry is read like any other: once it passes,
+    # the entry fails, so a date cannot be used as a decoration.
+    def test_a_dated_open_entry_expires
+      entries = [
+        { "column" => "a", "classification" => "needs_decision", "remediate_by" => "2000-01-01" },
+        { "column" => "b", "classification" => "unclassified", "remediate_by" => "2000-01-01", "issue" => "#704" },
+        { "column" => "c", "classification" => "unclassified", "issue" => "#704" }
+      ]
+
+      assert_equal %w[a b], expired_entries(entries).map { |e| e["column"] }
+    end
+
     private
 
     def build_message(violations)
