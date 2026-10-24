@@ -26,15 +26,19 @@ class Corvid::MedicaidEligibilityGroupAsOfTest < ActiveSupport::TestCase
         coverage: stated_coverage("expansion_adult", as_of: AS_OF_NEWER),
         date_of_service: DOS
       )
-      result = @service.record!(
-        check,
-        coverage: stated_coverage("waiver_adult", as_of: AS_OF_OLDER),
-        date_of_service: DOS
-      )
+      log_io = capture_rails_warn_log do
+        result = @service.record!(
+          check,
+          coverage: stated_coverage("waiver_adult", as_of: AS_OF_OLDER),
+          date_of_service: DOS
+        )
 
-      assert_equal "expansion_adult", result
+        assert_equal "expansion_adult", result
+      end
+
       assert_group_fields(check, "expansion_adult", "eligibility_response")
       assert_equal AS_OF_NEWER, check.reload.eligibility_group_as_of
+      assert_no_unknown_answer_time_warning(log_io)
     end
   end
 
@@ -46,15 +50,19 @@ class Corvid::MedicaidEligibilityGroupAsOfTest < ActiveSupport::TestCase
         coverage: stated_coverage("expansion_adult", as_of: AS_OF_OLDER),
         date_of_service: DOS
       )
-      result = @service.record!(
-        check,
-        coverage: stated_coverage("waiver_adult", as_of: AS_OF_NEWER),
-        date_of_service: DOS
-      )
+      log_io = capture_rails_warn_log do
+        result = @service.record!(
+          check,
+          coverage: stated_coverage("waiver_adult", as_of: AS_OF_NEWER),
+          date_of_service: DOS
+        )
 
-      assert_equal "waiver_adult", result
+        assert_equal "waiver_adult", result
+      end
+
       assert_group_fields(check, "waiver_adult", "eligibility_response")
       assert_equal AS_OF_NEWER, check.reload.eligibility_group_as_of
+      assert_no_unknown_answer_time_warning(log_io)
     end
   end
 
@@ -67,15 +75,77 @@ class Corvid::MedicaidEligibilityGroupAsOfTest < ActiveSupport::TestCase
         coverage: stated_coverage("expansion_adult", as_of: shared),
         date_of_service: DOS
       )
-      result = @service.record!(
-        check,
-        coverage: stated_coverage("waiver_adult", as_of: shared),
-        date_of_service: DOS
-      )
+      log_io = capture_rails_warn_log do
+        result = @service.record!(
+          check,
+          coverage: stated_coverage("waiver_adult", as_of: shared),
+          date_of_service: DOS
+        )
 
-      assert_equal "waiver_adult", result
+        assert_equal "waiver_adult", result
+      end
+
       assert_group_fields(check, "waiver_adult", "eligibility_response")
       assert_equal shared, check.reload.eligibility_group_as_of
+      assert_no_unknown_answer_time_warning(log_io)
+    end
+  end
+
+  test "record! overwrites at equal microsecond precision when DB truncated stored sub-usec" do
+    with_tenant(TENANT) do
+      check = medicaid_check_for(patient_id: "pt_mcd_asof_009")
+      stored_as_of = utc_with_subsecond_nsec(2026, 10, 10, 12, 0, 1_900)
+      incoming_as_of = utc_with_subsecond_nsec(2026, 10, 10, 12, 0, 1_500)
+
+      @service.record!(
+        check,
+        coverage: stated_coverage("expansion_adult", as_of: stored_as_of),
+        date_of_service: DOS
+      )
+      assert_equal microsecond_floor(stored_as_of), check.reload.eligibility_group_as_of
+
+      log_io = capture_rails_warn_log do
+        result = @service.record!(
+          check,
+          coverage: stated_coverage("waiver_adult", as_of: incoming_as_of),
+          date_of_service: DOS
+        )
+        assert_equal "waiver_adult", result
+      end
+
+      check.reload
+      assert_group_fields(check, "waiver_adult", "eligibility_response")
+      assert_equal microsecond_floor(incoming_as_of), check.eligibility_group_as_of
+      assert_no_unknown_answer_time_warning(log_io)
+    end
+  end
+
+  test "record! keeps stated group when incoming as_of is older at microsecond precision" do
+    with_tenant(TENANT) do
+      check = medicaid_check_for(patient_id: "pt_mcd_asof_010")
+      stored_as_of = utc_with_subsecond_nsec(2026, 10, 10, 12, 0, 1_900)
+      incoming_as_of = utc_with_subsecond_nsec(2026, 10, 10, 12, 0, 500)
+
+      @service.record!(
+        check,
+        coverage: stated_coverage("expansion_adult", as_of: stored_as_of),
+        date_of_service: DOS
+      )
+      assert_equal microsecond_floor(stored_as_of), check.reload.eligibility_group_as_of
+
+      log_io = capture_rails_warn_log do
+        result = @service.record!(
+          check,
+          coverage: stated_coverage("waiver_adult", as_of: incoming_as_of),
+          date_of_service: DOS
+        )
+        assert_equal "expansion_adult", result
+      end
+
+      check.reload
+      assert_group_fields(check, "expansion_adult", "eligibility_response")
+      assert_equal microsecond_floor(stored_as_of), check.eligibility_group_as_of
+      assert_no_unknown_answer_time_warning(log_io)
     end
   end
 
@@ -372,5 +442,18 @@ class Corvid::MedicaidEligibilityGroupAsOfTest < ActiveSupport::TestCase
     assert_includes logged, message
     refute_includes logged, patient_id
     refute_match(/ref_[0-9a-f]+/i, logged)
+  end
+
+  def assert_no_unknown_answer_time_warning(log_io)
+    message = Corvid::MedicaidEligibilityGroupService::UNKNOWN_ANSWER_TIME_WARNING
+    refute_includes log_io.string, message
+  end
+
+  def utc_with_subsecond_nsec(year, month, day, hour, min, nsec)
+    Time.utc(year, month, day, hour, min, Rational(nsec, 1_000_000_000))
+  end
+
+  def microsecond_floor(time)
+    Time.utc(time.year, time.month, time.day, time.hour, time.min, time.sec, time.usec)
   end
 end

@@ -37,6 +37,41 @@ class Corvid::Adapters::FhirAdapterCoverageAsOfTest < Minitest::Test
     end
   end
 
+  INVALID_FHIR_INSTANTS = [
+    "2026-10-05T08:30:00",
+    "2026-02-30T00:00:00Z",
+    "2026-10-05T08:30:60Z",
+    "2026-10-05T24:00:00Z",
+    "2026-10-05",
+    "2026-10-05T08:30Z"
+  ].freeze
+
+  def test_verify_eligibility_as_of_nil_for_non_fhir_instants
+    INVALID_FHIR_INSTANTS.each_with_index do |last_updated, index|
+      bundle = medicaid_coverage_bundle(meta: { "lastUpdated" => last_updated })
+      @adapter.stub(:fhir_search, bundle) do
+        result = @adapter.verify_eligibility("pt_asof_invalid_#{index}", "medicaid")
+        assert_nil result[:as_of], "expected nil as_of for lastUpdated #{last_updated.inspect}"
+      end
+    end
+  end
+
+  def test_verify_eligibility_as_of_from_strict_fhir_instants
+    expected = {
+      "2026-10-05T08:30:00Z" => Time.utc(2026, 10, 5, 8, 30, 0),
+      "2026-10-05T08:30:00.123456Z" => Time.utc(2026, 10, 5, 8, 30, Rational(123_456, 1_000_000)),
+      "2026-10-05T02:30:00-06:00" => Time.utc(2026, 10, 5, 8, 30, 0)
+    }
+
+    expected.each_with_index do |(last_updated, want), index|
+      bundle = medicaid_coverage_bundle(meta: { "lastUpdated" => last_updated })
+      @adapter.stub(:fhir_search, bundle) do
+        result = @adapter.verify_eligibility("pt_asof_valid_#{index}", "medicaid")
+        assert_equal want, result[:as_of], "expected as_of for lastUpdated #{last_updated.inspect}"
+      end
+    end
+  end
+
   private
 
   def medicaid_coverage_bundle(meta: nil)
