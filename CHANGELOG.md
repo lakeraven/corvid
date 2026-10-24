@@ -47,6 +47,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `ActiveRecord::IrreversibleMigration` on `down` by design — re-adding columns
   that store patient names at rest should be a new decision with a new ADR, not
   a rollback. If you genuinely need them back, the manual path is `add_column`.
+- `corvid_prc_payments.check_number` and the `Corvid::PrcPayment#check_number`
+  attribute. The #591 PHI disclosure classifies a cheque number as patient
+  PHI, and nothing in Corvid read it. `Corvid::PrcImporter` no longer stores
+  it; `Corvid::PrcReportParser` still reads it into the in-memory `Payment`
+  struct. **Any data in the column is discarded when the migration runs.
+  Export it first if your host reads it.** Rolling back re-adds an empty
+  nullable column and cannot restore values. (#702)
 
 ### Changed
 - `Corvid::Case#display_name` no longer falls back to a stored name. It
