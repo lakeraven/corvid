@@ -42,7 +42,8 @@ module Corvid
         assert_nil result.rule_key
         assert_empty result.rule_citations
         assert_equal FmapClassificationService::EXPANSION_STATE_NOT_CONFIGURED, result.determination_reason
-        refute_equal "fmap_90_expansion", result.best_available_category
+        assert_nil result.best_available_category
+        refute result.misclassification_gap?
       end
     end
 
@@ -58,7 +59,8 @@ module Corvid
         assert_equal FmapClassificationService::EXPANSION_STATE_NOT_CONFIGURED, result.determination_reason
         refute_equal "fmap_90_expansion", result.category
         refute_equal "fmap_regular", result.category
-        refute_equal "fmap_90_expansion", result.best_available_category
+        assert_nil result.best_available_category
+        refute result.misclassification_gap?
       end
     end
 
@@ -105,6 +107,7 @@ module Corvid
 
         refute_equal "fmap_90_expansion", xb.category
         assert xb.undetermined?
+        assert_equal FmapClassificationService::UNEVIDENCED_100, xb.determination_reason
 
         xa = FmapClassificationService.classify(
           date_of_service: DOS,
@@ -137,6 +140,66 @@ module Corvid
         assert determination.persisted?
         assert_equal FmapClassificationService::UNDETERMINED, determination.category
         assert_equal FmapClassificationService::EXPANSION_STATE_NOT_CONFIGURED, determination.determination_reason
+        assert_nil determination.best_available_category
+        refute determination.misclassification_gap?
+        refute FmapDetermination.misclassified.where(id: determination.id).exists?
+      end
+    end
+
+    test "expansion refusal classify! in XC is not a misclassification finding" do
+      with_tenant(TENANT) do
+        determination = FmapClassificationService.classify!(
+          encounter_identifier: "enc_test_680_xc",
+          date_of_service: DOS,
+          jurisdiction: "XC",
+          coverage_group: "expansion_adult",
+          aian_verified: false
+        )
+
+        assert_nil determination.best_available_category
+        refute determination.misclassification_gap?
+        refute FmapDetermination.misclassified.where(id: determination.id).exists?
+      end
+    end
+
+    test "expansion refusal with 638 authority still names reachable 100 percent tier" do
+      with_tenant(TENANT) do
+        result = FmapClassificationService.classify(
+          date_of_service: DOS,
+          jurisdiction: "XB",
+          facility_authority: @contract_638,
+          aian_verified: false,
+          evidence_refs: [],
+          coverage_group: "expansion_adult"
+        )
+
+        assert result.undetermined?
+        assert_equal FmapClassificationService::EXPANSION_STATE_NOT_CONFIGURED, result.determination_reason
+        assert_equal "fmap_100_ihs_638", result.best_available_category
+        assert result.misclassification_gap?
+      end
+    end
+
+    test "any in-force rule scoped to expansion_adult is refused when the state is not expanded" do
+      FmapRule.create!(
+        rule_key: "xb-test-expansion-scoped",
+        jurisdiction: "XB",
+        category: "fmap_regular",
+        fmap_percent: 90.0,
+        coverage_group: "expansion_adult",
+        statutory_citation: "Synthetic test citation for issue 680",
+        effective_on: Date.new(2020, 1, 1)
+      )
+
+      with_tenant(TENANT) do
+        xb = classify_expansion(jurisdiction: "XB")
+
+        assert xb.undetermined?
+        assert_equal FmapClassificationService::EXPANSION_STATE_NOT_CONFIGURED, xb.determination_reason
+        assert_nil xb.fmap_percent
+
+        xa = classify_expansion(jurisdiction: "XA")
+        assert_equal 90.0, xa.fmap_percent
       end
     end
 
