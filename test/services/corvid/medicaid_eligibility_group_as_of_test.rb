@@ -260,6 +260,46 @@ class Corvid::MedicaidEligibilityGroupAsOfTest < ActiveSupport::TestCase
     end
   end
 
+  test "record! compares as_of under row lock when a newer answer commits before lock" do
+    with_tenant(TENANT) do
+      check = medicaid_check_for(patient_id: "pt_mcd_asof_interleave")
+      other = Corvid::MedicaidEligibilityGroupService.new(adapter: @adapter)
+      fired = false
+      orig_with_lock = Corvid::AlternateResourceCheck.instance_method(:with_lock)
+      target_id = check.id
+
+      Corvid::AlternateResourceCheck.define_method(:with_lock) do |*args, **kwargs, &block|
+        if id == target_id && !fired
+          fired = true
+          other.record!(
+            self,
+            coverage: {
+              state: "XA",
+              eligibility_group: "expansion_adult",
+              eligibility_group_source: "eligibility_response",
+              as_of: AS_OF_NEWER
+            },
+            date_of_service: DOS
+          )
+        end
+        orig_with_lock.bind(self).call(*args, **kwargs, &block)
+      end
+
+      begin
+        @service.record!(
+          check,
+          coverage: stated_coverage("waiver_adult", as_of: AS_OF_OLDER),
+          date_of_service: DOS
+        )
+      ensure
+        Corvid::AlternateResourceCheck.define_method(:with_lock, orig_with_lock)
+      end
+
+      assert_equal "expansion_adult", check.reload.eligibility_group
+      assert_equal AS_OF_NEWER, check.eligibility_group_as_of
+    end
+  end
+
   test "verify! keeps first stated group when second verify sees older get_coverages as_of" do
     with_tenant(TENANT) do
       register_patient!(patient_id: PATIENT_ID, dob: Date.new(1996, 6, 15))

@@ -43,6 +43,22 @@ class Corvid::AlternateResourceCheckEligibilityGroupAsOfTest < ActiveSupport::Te
     end
   end
 
+  test "database rejects eligibility_group_as_of with null eligibility_group_source" do
+    with_tenant(TENANT) do
+      assert check_constraint_exists?(ELIGIBILITY_GROUP_AS_OF_SOURCE_CHECK)
+
+      check = create_medicaid_check!
+      assert_nil check.reload.eligibility_group
+      assert_nil check.eligibility_group_source
+
+      assert_raises(ActiveRecord::StatementInvalid) do
+        Corvid::AlternateResourceCheck.transaction(requires_new: true) do
+          update_eligibility_group_as_of_only!(check, eligibility_group_as_of: Time.utc(2026, 10, 10, 12, 0, 0))
+        end
+      end
+    end
+  end
+
   test "model rejects staff_entry with eligibility_group_as_of" do
     with_tenant(TENANT) do
       check = build_medicaid_check
@@ -97,6 +113,16 @@ class Corvid::AlternateResourceCheckEligibilityGroupAsOfTest < ActiveSupport::Te
       LIMIT 1
     SQL
     ActiveRecord::Base.connection.select_value(sql).present?
+  end
+
+  def update_eligibility_group_as_of_only!(check, eligibility_group_as_of:)
+    conn = ActiveRecord::Base.connection
+    as_of_sql = eligibility_group_as_of.nil? ? "NULL" : conn.quote(eligibility_group_as_of)
+    conn.execute(<<~SQL.squish)
+      UPDATE corvid_alternate_resource_checks
+      SET eligibility_group_as_of = #{as_of_sql}
+      WHERE id = #{check.id}
+    SQL
   end
 
   def update_eligibility_group_as_of_columns!(

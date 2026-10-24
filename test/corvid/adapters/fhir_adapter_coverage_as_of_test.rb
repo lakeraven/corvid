@@ -20,6 +20,17 @@ class Corvid::Adapters::FhirAdapterCoverageAsOfTest < Minitest::Test
     end
   end
 
+  def test_verify_eligibility_non_hash_meta_yields_nil_as_of_and_eligible_from_status
+    [ "bogus", [] ].each_with_index do |meta, index|
+      bundle = medicaid_coverage_bundle(meta: meta)
+      @adapter.stub(:fhir_search, bundle) do
+        result = @adapter.verify_eligibility("pt_asof_non_hash_meta_#{index}", "medicaid")
+        assert_equal true, result[:eligible]
+        assert_nil result[:as_of]
+      end
+    end
+  end
+
   def test_verify_eligibility_as_of_nil_when_meta_missing
     bundle = medicaid_coverage_bundle
     @adapter.stub(:fhir_search, bundle) do
@@ -38,7 +49,10 @@ class Corvid::Adapters::FhirAdapterCoverageAsOfTest < Minitest::Test
   end
 
   INVALID_FHIR_INSTANTS = [
+    "0000-01-01T00:00:00Z",
     "2026-10-05T08:30:00",
+    "2026-10-05T08:30:00+14:01",
+    "2026-10-05T08:30:00+23:59",
     "2026-02-30T00:00:00Z",
     "2026-10-05T08:30:60Z",
     "2026-10-05T24:00:00Z",
@@ -60,7 +74,9 @@ class Corvid::Adapters::FhirAdapterCoverageAsOfTest < Minitest::Test
     expected = {
       "2026-10-05T08:30:00Z" => Time.utc(2026, 10, 5, 8, 30, 0),
       "2026-10-05T08:30:00.123456Z" => Time.utc(2026, 10, 5, 8, 30, Rational(123_456, 1_000_000)),
-      "2026-10-05T02:30:00-06:00" => Time.utc(2026, 10, 5, 8, 30, 0)
+      "2026-10-05T02:30:00-06:00" => Time.utc(2026, 10, 5, 8, 30, 0),
+      "2026-10-05T08:30:00+14:00" => Time.utc(2026, 10, 4, 18, 30, 0),
+      "2026-10-05T08:30:00-12:00" => Time.utc(2026, 10, 5, 20, 30, 0)
     }
 
     expected.each_with_index do |(last_updated, want), index|
