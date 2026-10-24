@@ -73,6 +73,21 @@ class Corvid::RemittanceAmountsTest < ActiveSupport::TestCase
     end
   end
 
+  test "Money currency matches claim currency_iso case-insensitively" do
+    with_tenant(TENANT) do
+      claim = create_claim("CLM-AMT-USD-LOW", currency_iso: "usd")
+
+      assert_equal "usd", claim.currency_iso
+
+      result = Corvid::RemittanceAmounts.call(claim: claim, remittances: [
+        remittance(claim_identifier: "CLM-AMT-USD-LOW", paid_amount: Money.from_amount(5, "USD"))
+      ])
+
+      assert_equal 500, result.totals[:paid]
+      assert_equal 500, result.attributes[:paid_amount_cents]
+    end
+  end
+
   test "Money in a foreign currency raises ArgumentError naming the claim and field" do
     with_tenant(TENANT) do
       claim = create_claim("CLM-AMT-FX")
@@ -123,7 +138,7 @@ class Corvid::RemittanceAmountsTest < ActiveSupport::TestCase
 
   private
 
-  def create_claim(claim_identifier)
+  def create_claim(claim_identifier, currency_iso: "USD")
     Corvid::ClaimSubmission.create!(
       patient_identifier: "pt_remit_amt",
       claim_type: "professional",
@@ -131,7 +146,8 @@ class Corvid::RemittanceAmountsTest < ActiveSupport::TestCase
       service_date: Date.current,
       status: "accepted",
       submitted_at: 2.days.ago,
-      billed_amount: 400.0
+      billed_amount: 400.0,
+      currency_iso: currency_iso
     )
   end
 

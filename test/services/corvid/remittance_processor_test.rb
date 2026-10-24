@@ -362,6 +362,89 @@ class Corvid::RemittanceProcessorTest < ActiveSupport::TestCase
     end
   end
 
+  test "when history and batch share a remittance_identifier the batch copy wins deduplication" do
+    with_tenant(TENANT) do
+      claim = create_claim("CLM-R-DEDUPE-X")
+      prior_denied_at = 3.days.ago.change(usec: 0)
+      claim.update!(
+        status: "appealed",
+        denial_reason_codes: %w[PR-100],
+        denied_at: prior_denied_at
+      )
+
+      history = [
+        remittance(remittance_identifier: "REM-X", payment_date: Date.new(2026, 10, 1),
+                   claim_identifier: "CLM-R-DEDUPE-X", paid_amount: 0, status: "denied",
+                   adjustment_codes: [ "CO-97" ])
+      ]
+      batch = [
+        remittance(remittance_identifier: "REM-X", payment_date: Date.new(2026, 10, 20),
+                   claim_identifier: "CLM-R-DEDUPE-X", paid_amount: 0,
+                   patient_responsibility: 10.0)
+      ]
+
+      result = call_processor(batch, adapter: HistoryAdapter.new(history: history))
+
+      claim.reload
+      assert_equal "appealed", claim.status
+      assert_equal %w[PR-100], claim.denial_reason_codes
+      assert_equal prior_denied_at, claim.denied_at
+      assert_equal 1000, claim.patient_responsibility_cents
+      assert_equal 1, result.updated
+      assert_equal 0, result.denied
+    end
+  end
+
+  test "batch remittance with extra line items replaces the history copy for deduplication" do
+    with_tenant(TENANT) do
+      claim_a = create_claim("CLM-R-DEDUPE-Y-A")
+      claim_b = create_claim("CLM-R-DEDUPE-Y-B")
+
+      history = [
+        remittance(remittance_identifier: "REM-Y", payment_date: Date.new(2026, 10, 1),
+                   claim_identifier: "CLM-R-DEDUPE-Y-A", paid_amount: 5.0)
+      ]
+      batch = [
+        {
+          remittance_identifier: "REM-Y",
+          payer_name: "Test Payer",
+          payment_date: Date.new(2026, 10, 2),
+          total_paid: 40.0,
+          line_items: [
+            { claim_identifier: "CLM-R-DEDUPE-Y-A", paid_amount: 20.0 },
+            { claim_identifier: "CLM-R-DEDUPE-Y-B", paid_amount: 20.0 }
+          ]
+        }
+      ]
+
+      result = call_processor(batch, adapter: HistoryAdapter.new(history: history))
+
+      claim_a.reload
+      claim_b.reload
+      assert_equal 2000, claim_a.paid_amount_cents
+      assert_equal 2000, claim_b.paid_amount_cents
+      assert_equal 2, result.paid
+    end
+  end
+
+  test "status follows payment_date order not remittance array order" do
+    with_tenant(TENANT) do
+      claim = create_claim("CLM-R-DATE-ORDER")
+
+      Corvid::RemittanceProcessor.call([
+        remittance(remittance_identifier: "REM-LATE-DENY", payment_date: Date.new(2026, 10, 5),
+                   claim_identifier: "CLM-R-DATE-ORDER", paid_amount: 0, status: "denied",
+                   adjustment_codes: [ "CO-45" ]),
+        remittance(remittance_identifier: "REM-EARLY-PAY", payment_date: Date.new(2026, 10, 1),
+                   claim_identifier: "CLM-R-DATE-ORDER", paid_amount: 400.0)
+      ])
+
+      claim.reload
+      assert claim.denied?
+      assert_equal %w[CO-45], claim.denial_reason_codes
+    end
+  end
+
   test "Money matching claim currency on processor and reconciliation paths" do
     with_tenant(TENANT) do
       referral = referral_for("R-MONEY-EQ")
