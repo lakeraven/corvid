@@ -43,11 +43,13 @@ module Corvid
   # A stated answer carries as_of, when the source produced it. Only a
   # Time or ActiveSupport::TimeWithZone is known. Anything else,
   # including a String, is unknown and is never taken as the current
-  # time. Under the lock, that answer replaces a stored stated answer
-  # when its as_of is equal or newer. An older known as_of leaves the
-  # stored group unwritten. When either time is unknown, the later
-  # write wins, the incoming as_of is stored (nil when unknown), and
-  # one fixed warning is logged. Inference and staff entry clear as_of.
+  # time. A known time is floored to microseconds before it is compared
+  # or stored, which is the precision the column keeps. Under the lock,
+  # that answer replaces a stored stated answer when its as_of is equal
+  # or newer at that precision. An older known as_of leaves the stored
+  # group unwritten. When either time is unknown, the later write wins,
+  # the incoming as_of is stored (nil when unknown), and one fixed
+  # warning is logged. Inference and staff entry clear as_of.
   #
   # The check's referral must be visible in the current tenant (ADR 0002)
   # or nothing is written. Staff entry raises one ArgumentError that
@@ -344,8 +346,12 @@ module Corvid
     end
 
     # A String is unknown. It is never parsed, so it cannot become now.
+    # A known time is floored to microseconds before the comparison and
+    # the store. Ordering is decided at the precision the column keeps.
     def answer_time(value)
-      value if value.is_a?(Time) || value.is_a?(ActiveSupport::TimeWithZone)
+      return unless value.is_a?(Time) || value.is_a?(ActiveSupport::TimeWithZone)
+
+      value.floor(6)
     end
 
     def stated_source(coverage)

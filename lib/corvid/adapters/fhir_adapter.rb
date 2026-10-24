@@ -104,6 +104,18 @@ module Corvid
         (?:-(?<month>#{FHIR_MONTH})(?:-(?<day>#{FHIR_DAY})(?:#{FHIR_TIME})?)?)?
         \z
       /x
+      # FHIR instant: YYYY-MM-DDThh:mm:ss(.fraction)? then Z or ±hh:mm.
+      # Ranges are not encoded here. Time.iso8601 rolls an impossible
+      # field forward, and the field round-trip rejects that.
+      FHIR_INSTANT = /
+        \A
+        (?<year>[0-9]{4})-(?<month>[0-9]{2})-(?<day>[0-9]{2})
+        T(?<hour>[0-9]{2}):(?<min>[0-9]{2}):(?<sec>[0-9]{2})
+        (?:\.[0-9]+)?
+        (?<offset>Z|[+-][0-9]{2}:[0-9]{2})
+        \z
+      /x
+      FHIR_INSTANT_CLOCK = %i[year month day hour min sec].freeze
       # FHIR R4 id. Checked before a Medication read so a bad id is not requested.
       FHIR_ID = /\A[A-Za-z0-9\-\.]{1,64}\z/
 
@@ -1437,14 +1449,45 @@ module Corvid
       end
 
       # Coverage.meta.lastUpdated is when the source produced the answer.
-      # Missing or unparseable is nil, never the current time.
+      # Only a FHIR instant is known. Anything else is nil, never now.
       def coverage_answer_as_of(coverage)
-        raw = coverage.dig("meta", "lastUpdated")
-        return if raw.nil?
+        fhir_instant_time(coverage.dig("meta", "lastUpdated"))
+      end
 
-        Time.iso8601(raw)
+      # Parse a FHIR instant and return it in UTC. The source fields are
+      # checked against the parsed clock in the source offset so a
+      # rollover (Feb 30, second 60, hour 24) is nil.
+      def fhir_instant_time(value)
+        match = fhir_instant_match(value)
+        return unless match
+
+        parsed = Time.iso8601(value)
+        return unless fhir_instant_round_trip?(parsed, match)
+
+        parsed.utc
       rescue ArgumentError, TypeError
         nil
+      end
+
+      def fhir_instant_match(value)
+        FHIR_INSTANT.match(value) if value.is_a?(String)
+      end
+
+      def fhir_instant_round_trip?(parsed, match)
+        zoned = fhir_instant_zoned(parsed, match[:offset])
+        fhir_instant_clock(zoned) == fhir_instant_clock_fields(match)
+      end
+
+      def fhir_instant_zoned(parsed, offset)
+        offset == "Z" ? parsed.utc : parsed.getlocal(offset)
+      end
+
+      def fhir_instant_clock(time)
+        [ time.year, time.month, time.day, time.hour, time.min, time.sec ]
+      end
+
+      def fhir_instant_clock_fields(match)
+        FHIR_INSTANT_CLOCK.map { |part| match[part].to_i }
       end
 
       def parse_date(value)
