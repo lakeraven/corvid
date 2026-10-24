@@ -211,6 +211,12 @@ module Corvid
         # Authorization header counts: it is a credential the same as a
         # configured one, and it is the request-level check below that is
         # authoritative either way.
+        #
+        # An empty path or "/" is rejected with or without credentials.
+        # Tokens and next links are scoped to this path; a bare host would
+        # cover every endpoint there. TLS, host, and credential checks below
+        # are unchanged and still run for a path-qualified base.
+        require_path_qualified_base_url!(@base_url)
         if bearer_token || token_source || preset_authorization_header?
           require_secure_transport!(@base_url)
         end
@@ -978,6 +984,24 @@ module Corvid
               "configured base_url origin and path"
       rescue URI::InvalidURIError
         raise CredentialScopeError, "FhirAdapter refuses to send credentials to an unparseable URL"
+      end
+
+      # Bearer tokens and followed search next links are scoped to
+      # base_url's scheme, host, port, and path. A path with no segment
+      # (empty, or only slashes) covers every path on the host, so that
+      # base is rejected whether or not credentials are present. An
+      # unparseable URL is left alone here; require_secure_transport!
+      # still reports it when credentials are configured.
+      def require_path_qualified_base_url!(url)
+        uri = URI.parse(url.to_s)
+        return unless uri.path.to_s.delete("/").empty?
+
+        raise ArgumentError,
+              "base_url must be path-qualified so bearer tokens and search " \
+              "next links stay scoped to the FHIR base path, not the whole " \
+              "host (for example https://fhir.vendor.example/r4)"
+      rescue URI::InvalidURIError
+        nil
       end
 
       # Reject any URL that would carry an Authorization header over a

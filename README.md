@@ -41,7 +41,11 @@ rails db:migrate
 ```ruby
 # config/initializers/corvid.rb
 Corvid.configure do |c|
-  # EHR adapter (REQUIRED in production)
+  # EHR adapter (REQUIRED in production).
+  # FHIR_BASE_URL must be path-qualified, for example
+  # https://fhir.vendor.example/r4. Bearer tokens and followed search
+  # next links are scoped to that base path. An empty path or "/" would
+  # cover every endpoint on the host, and FhirAdapter rejects it.
   c.adapter = Corvid::Adapters::FhirAdapter.new(
     base_url: ENV["FHIR_BASE_URL"]
   )
@@ -90,6 +94,10 @@ Host App (e.g. lakeraven-ehr, corvid-saas)
 | `Corvid::Adapters::MockAdapter` | Dev/test only — **not a security boundary** |
 | `Corvid::Adapters::FhirAdapter` | Generic FHIR R4 — works with any compliant server |
 | Vendor adapters | Implement `Corvid::Adapters::Base` for proprietary EHRs (private repos) |
+
+### FhirAdapter
+
+`Corvid::Adapters::FhirAdapter` talks to any conformant FHIR R4 server. Its `base_url` must be path-qualified, for example `https://fhir.vendor.example/r4`. Bearer tokens and followed search next links are scoped to that base path (scheme, host, port, and path). An empty path or `/` would let them reach every endpoint on the host, so `FhirAdapter.new` raises `ArgumentError` in that case. Operators set this as `FHIR_BASE_URL` (see Configuration).
 
 ### Adapter contract tests
 
