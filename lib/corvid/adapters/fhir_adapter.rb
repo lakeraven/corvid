@@ -5,6 +5,7 @@ require "json"
 require "uri"
 require "ipaddr"
 require "date"
+require "time"
 require "bigdecimal"
 require "openssl"
 require "zlib"
@@ -496,7 +497,8 @@ module Corvid
           payer_name: coverage.dig("payor", 0, "display"),
           policy_number: coverage["subscriberId"],
           coverage_start: parse_period_date(coverage.dig("period", "start"), :start),
-          coverage_end: parse_period_date(coverage.dig("period", "end"), :end)
+          coverage_end: parse_period_date(coverage.dig("period", "end"), :end),
+          as_of: coverage_answer_as_of(coverage)
         }
       end
 
@@ -1432,6 +1434,17 @@ module Corvid
 
         line = Array(address_hash["line"]).join(" ")
         [ line, address_hash["city"], address_hash["state"] ].reject { |s| s.nil? || s.empty? }.join(", ")
+      end
+
+      # Coverage.meta.lastUpdated is when the source produced the answer.
+      # Missing or unparseable is nil, never the current time.
+      def coverage_answer_as_of(coverage)
+        raw = coverage.dig("meta", "lastUpdated")
+        return if raw.nil?
+
+        Time.iso8601(raw)
+      rescue ArgumentError, TypeError
+        nil
       end
 
       def parse_date(value)
