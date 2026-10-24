@@ -16,12 +16,19 @@ module Corvid
   # Duplicate remittances and reversals are netted there, in integer cents,
   # the same rule ReferralBillingReconciliation uses.
   #
-  # Status comes from the latest status-setting line in that payment order,
-  # which is not always the latest line. A line sets status when it is
-  # marked "denied", or when its paid amount is a positive number of
-  # subunits. A denial records that line's CARC/RARC codes (adjustment_codes)
-  # through mark_denied!. A positive payment marks the claim paid. When no
-  # line sets status, only the amounts are written.
+  # Status comes from the latest status-setting line in that same payment
+  # order, chosen only from lines whose remittance is in this batch. An old
+  # denial or payment that exists only in the adapter history must not set
+  # status again: the app may have moved the claim since (for example to
+  # "appealed"). Membership is the dedupe key RemittanceAmounts uses: the
+  # remittance_identifier, or the whole remittance when it has none. A
+  # remittance present in both the history and the batch counts as the
+  # batch's. The batch should come from the same adapter as the history, so
+  # the dedupe keys match. A line sets status when it is marked "denied", or
+  # when its paid amount is a positive number of subunits. A denial records
+  # that line's CARC/RARC codes (adjustment_codes) through mark_denied!. A
+  # positive payment marks the claim paid. When no batch line sets status,
+  # only the amounts are written.
   #
   # The batch's writes share one ClaimSubmission transaction. A line that
   # cannot be parsed raises, and every claim in the batch stays as it was.
@@ -62,12 +69,12 @@ module Corvid
         return
       end
 
-      apply_batch(claims, history + batch, result)
+      apply_batch(claims, history + batch, batch_keys(batch), result)
     end
 
-    def apply_batch(claims, remittances, result)
+    def apply_batch(claims, remittances, keys, result)
       ClaimSubmission.transaction do
-        claims.each { |claim| tally(result, apply_claim(claim, remittances)) }
+        claims.each { |claim| tally(result, apply_claim(claim, remittances, keys)) }
       end
     end
 
@@ -95,15 +102,16 @@ module Corvid
       claim_identifier && ClaimSubmission.find_by(claim_identifier: claim_identifier)
     end
 
-    def apply_claim(claim, remittances)
+    def apply_claim(claim, remittances, keys)
       amounts = RemittanceAmounts.call(claim: claim, remittances: remittances)
-      apply_status(claim, amounts) if amounts
+      apply_status(claim, amounts, keys) if amounts
     end
 
-    # A later zero payment does not take back a paid status. An undated
-    # denial sorts after a dated payment and does.
-    def apply_status(claim, amounts)
-      line = status_line(claim, amounts.lines)
+    # A later zero payment in the batch does not take back a paid status.
+    # An undated denial sorts after a dated payment and does. Lines whose
+    # remittance is only in the adapter history do not set status.
+    def apply_status(claim, amounts, keys)
+      line = status_line(claim, amounts.lines, keys)
       return write_amounts(claim, amounts) unless line
       return deny_claim(claim, amounts, line) if denied?(line)
 
@@ -111,8 +119,18 @@ module Corvid
       :paid
     end
 
-    def status_line(claim, lines)
-      lines.reverse_each.find { |line| sets_status?(claim, line) }
+    def status_line(claim, lines, keys)
+      lines.reverse_each.find do |line|
+        keys.include?(line[:remittance_key]) && sets_status?(claim, line)
+      end
+    end
+
+    # Same dedupe key RemittanceAmounts uses, so a remittance that appears
+    # in the history and again in this batch is still this batch's.
+    def batch_keys(batch)
+      batch.each_with_object({}) do |remittance, keys|
+        keys[RemittanceAmounts.remittance_key(remittance)] = true
+      end
     end
 
     def sets_status?(claim, line)

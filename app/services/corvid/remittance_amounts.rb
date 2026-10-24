@@ -25,12 +25,15 @@ module Corvid
   # Money.from_amount rounds with that currency, so nothing here hardcodes
   # a factor of 100. An Integer or BigDecimal is taken as given, and a
   # Float is read through to_s so two binary fractions are not summed a
-  # cent short. A string is stripped; a blank one is not stated. Otherwise
-  # it may carry a leading "$", thousands commas, and a leading "-", and
-  # is then parsed with BigDecimal. Monetize reads a blank or a word such
-  # as a non-amount as zero, so it cannot refuse a value we cannot parse.
-  # Anything else raises ArgumentError naming the claim identifier and the
-  # field only (ADR 0003: no free text in the message).
+  # cent short. A Money whose currency matches the claim's currency_iso
+  # contributes its exact cents; a Money in any other currency raises. A
+  # string is stripped; a blank one is not stated. Otherwise it may carry
+  # an optional sign, an optional "$", thousands commas, and a decimal
+  # point with or without leading digits (".50", "+50"), and is then parsed
+  # with BigDecimal. Monetize reads a blank or a word such as a non-amount
+  # as zero, so it cannot refuse a value we cannot parse. Anything else
+  # raises ArgumentError naming the claim identifier and the field only
+  # (ADR 0003: no free text in the message).
   class RemittanceAmounts
     Result = Struct.new(:attributes, :totals, :latest_line, :lines, keyword_init: true)
 
@@ -41,18 +44,28 @@ module Corvid
     }.freeze
     private_constant :TOTAL_FIELDS
 
-    # Optional leading "$" / "-", then digits with thousands commas.
-    AMOUNT_STRING = /\A(?:-\$|\$-|-|\$)?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?\z/
+    # Optional sign, optional "$" (and "$" before a sign), thousands commas,
+    # digits optional before the decimal point.
+    AMOUNT_STRING = /\A(?:[+-]?\$?|\$[+-])(?:\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+(?:\.\d+)?|\.\d+)\z/
     private_constant :AMOUNT_STRING
 
     def self.call(claim:, remittances:)
       new.call(claim: claim, remittances: remittances)
     end
 
+    # remittance_identifier, or the whole remittance when it has none.
+    # RemittanceProcessor uses this to tell which lines belong to the batch.
+    def self.remittance_key(remittance)
+      remittance[:remittance_identifier].presence || remittance
+    end
+
     # Integer subunits for one reported amount (ADR 0004). nil and a blank
     # string count as zero toward a total; whether any line stated the
-    # field is separate.
+    # field is separate. A Money contributes its exact cents when its
+    # currency matches, and never a float conversion.
     def self.cents(value, currency_iso, claim_identifier: nil, field: nil)
+      return money_cents(value, currency_iso, claim_identifier, field) if value.is_a?(Money)
+
       decimal = decimal_for(value, claim_identifier, field)
       return 0 if decimal.nil?
 
@@ -79,6 +92,14 @@ module Corvid
     class << self
       private
 
+      def money_cents(value, currency_iso, claim_identifier, field)
+        unless value.currency.iso_code == currency_iso.to_s
+          raise ArgumentError, invalid_amount(field, claim_identifier)
+        end
+
+        value.cents
+      end
+
       def decimal_for(value, claim_identifier, field)
         case value
         when nil then nil
@@ -96,7 +117,7 @@ module Corvid
           raise ArgumentError, invalid_amount(field, claim_identifier)
         end
 
-        BigDecimal(stripped.delete(",").sub(/\A(-?)\$/, "\\1"))
+        BigDecimal(stripped.delete(",$"))
       end
 
       def invalid_amount(field, claim_identifier)
@@ -110,7 +131,9 @@ module Corvid
     # Array order breaks a tie on payment_date, so the last line is the latest.
     # A remittance returned twice counts once: by remittance_identifier, or
     # by its whole content when it has none, since counting a duplicate
-    # twice could settle a claim that is only partly paid.
+    # twice could settle a claim that is only partly paid. Each line carries
+    # :remittance_key, that same dedupe key, so a caller can tell which
+    # lines belong to one batch.
     # Reversals carry negative amounts, so a reversed payment and its
     # corrected replacement sum to the corrected figures.
     def matching_lines(claim, remittances)
@@ -123,15 +146,16 @@ module Corvid
     end
 
     def remittance_key(remittance)
-      remittance[:remittance_identifier].presence || remittance
+      self.class.remittance_key(remittance)
     end
 
     def lines_for(claim, remittances)
       remittances.flat_map do |remittance|
+        key = remittance_key(remittance)
         Array(remittance[:line_items]).filter_map do |line|
           next unless for_claim?(line, claim)
 
-          line.merge(payment_date: remittance[:payment_date])
+          line.merge(payment_date: remittance[:payment_date], remittance_key: key)
         end
       end
     end
