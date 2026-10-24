@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_10_22_000001) do
+ActiveRecord::Schema[8.1].define(version: 2026_10_24_000001) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
@@ -407,7 +407,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_22_000001) do
     t.check_constraint "category::text = ANY (ARRAY['fmap_100_ihs_638'::character varying, 'fmap_100_cca'::character varying, 'fmap_100_uio'::character varying, 'fmap_90_expansion'::character varying, 'fmap_regular'::character varying, 'non_medicaid'::character varying, 'undetermined'::character varying]::text[])", name: "corvid_fmap_determinations_category_check"
     t.check_constraint "coverage_group IS NULL OR (coverage_group::text = ANY (ARRAY['expansion_adult'::character varying, 'waiver_adult'::character varying, 'other'::character varying, 'unknown'::character varying]::text[]))", name: "corvid_fmap_determinations_coverage_group_check"
     t.check_constraint "category::text <> 'undetermined'::text OR rule_key IS NULL AND fmap_percent IS NULL AND determination_reason IS NOT NULL", name: "corvid_fmap_determinations_undetermined_check"
-    t.check_constraint "determination_reason IS NULL OR (determination_reason::text = ANY (ARRAY['no_rules_in_force'::character varying, 'no_matching_rule'::character varying, 'unevidenced_100_percent'::character varying]::text[]))", name: "corvid_fmap_determinations_reason_check"
+    t.check_constraint "determination_reason IS NULL OR (determination_reason::text = ANY (ARRAY['no_rules_in_force'::character varying, 'no_matching_rule'::character varying, 'unevidenced_100_percent'::character varying, 'expansion_state_not_configured'::character varying]::text[]))", name: "corvid_fmap_determinations_reason_check"
     t.check_constraint "received_through_basis IS NULL OR (received_through_basis::text = ANY (ARRAY['facility_authority'::character varying, 'cca'::character varying]::text[]))", name: "corvid_fmap_determinations_basis_check"
   end
 

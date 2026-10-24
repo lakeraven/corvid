@@ -8,7 +8,11 @@ module Corvid
   # silent inference: an unevidenced 100% is reported as a gap with the
   # missing evidence named, never granted, and an encounter no in-force
   # rule covers comes back UNDETERMINED with a reason — never a
-  # definitive category a CMS-64 run would read as settled.
+  # definitive category a CMS-64 run would read as settled. The
+  # expansion tier additionally requires StateMedicaidRules.lookup to
+  # show a configured expansion state; otherwise the result is
+  # undetermined, not regular FMAP, and regular FMAP is not reported
+  # as the best available tier for that refusal.
   class FmapClassificationService
     UNDETERMINED = "undetermined"
 
@@ -18,7 +22,10 @@ module Corvid
     NO_RULES_IN_FORCE = "no_rules_in_force"
     NO_MATCHING_RULE = "no_matching_rule"
     UNEVIDENCED_100 = "unevidenced_100_percent"
-    REASONS = [ NO_RULES_IN_FORCE, NO_MATCHING_RULE, UNEVIDENCED_100 ].freeze
+    # An expansion tier matched, but the jurisdiction is not a configured
+    # expansion state. Undetermined — never a silent drop to regular FMAP.
+    EXPANSION_STATE_NOT_CONFIGURED = "expansion_state_not_configured"
+    REASONS = [ NO_RULES_IN_FORCE, NO_MATCHING_RULE, UNEVIDENCED_100, EXPANSION_STATE_NOT_CONFIGURED ].freeze
 
     # Raised by classify! when the encounter already has a current
     # determination: correct it with FmapDetermination#supersede_with!.
@@ -49,9 +56,9 @@ module Corvid
                    aian_verified: false, received_through_basis: nil,
                    coverage_group: nil, billed_amount_cents: nil,
                    evidence_refs: [])
-        # The jurisdiction selects the state's rows; without one, federal
-        # rows alone would read as a complete answer.
-        raise ArgumentError, "jurisdiction is required" if jurisdiction.to_s.strip.empty?
+        # One code for the rule rows, the registry, and a persisted
+        # determination. Blank still refuses.
+        jurisdiction = canonical_jurisdiction(jurisdiction)
         check_coverage_group!(coverage_group)
         if received_through_basis.present? && !FmapRule::RECEIVED_THROUGH_BASES.include?(received_through_basis.to_s)
           raise ArgumentError, "received_through_basis is not recognized"
@@ -73,15 +80,24 @@ module Corvid
           return undetermined_result(NO_RULES_IN_FORCE, **context)
         end
 
+        # Separate registries. The expansion tier still matches on its
+        # coverage group; StateMedicaidRules.lookup says whether this
+        # jurisdiction may use it. Lookup canonicalizes case; the value
+        # above was stripped and upcased so the rule rows are asked for
+        # that same code.
+        expansion_open = expansion_state?(jurisdiction)
+
         matched = best_match(rules, authority_type: authority_type, aian_verified: aian_verified,
                                     basis: basis, coverage_group: coverage_group)
-        best = best_match(rules, authority_type: authority_type, aian_verified: true,
-                                 basis: basis, coverage_group: coverage_group)
+        best = best_match(lens_rules(rules, expansion_open), authority_type: authority_type, aian_verified: true,
+                                                             basis: basis, coverage_group: coverage_group)
 
         # The 100 percent tiers are the ones that move federal dollars,
         # so each of their requirements must rest on its own evidence.
         # Without it, fall back to the highest *evidenced* tier the same
-        # inputs support, or refuse — never grant.
+        # inputs support, or refuse — never grant. That fallback drops
+        # every hundred-percent row, including a 100 percent expansion
+        # phase-in; the gate below still sees the matching rule.
         actual = matched
         reason = nil
         if matched&.hundred_percent? &&
@@ -90,6 +106,18 @@ module Corvid
           actual = best_match(rules.reject(&:hundred_percent?), authority_type: authority_type,
                               aian_verified: aian_verified, basis: basis, coverage_group: coverage_group)
         end
+
+        # The refusal applies no tier, so the lens is not measured
+        # against the refused rule. Keep a non-expansion 100 percent
+        # tier more evidence could reach and drop a lower one. The gate
+        # itself clears the applied rule.
+        actual, reason = gate_expansion_tier(
+          actual, reason, expansion_open, rules,
+          authority_type: authority_type, aian_verified: aian_verified,
+          basis: basis, coverage_group: coverage_group,
+          evidence: evidence, backed: backed
+        )
+        best = best_after_expansion_refusal(best, reason)
 
         missing = missing_evidence(best, actual, aian_verified: aian_verified, basis: basis,
                                                  evidence: evidence, backed: backed, reason: reason)
@@ -130,7 +158,8 @@ module Corvid
           raise AlreadyDeterminedError, "encounter already has a current FMAP determination; supersede it instead"
         end
 
-        result = classify(evidence_refs: evidence_refs, **classify_opts)
+        jurisdiction = canonical_jurisdiction(classify_opts.fetch(:jurisdiction))
+        result = classify(evidence_refs: evidence_refs, **classify_opts, jurisdiction: jurisdiction)
         applied = result.facility_authority
 
         FmapDetermination.create!(
@@ -138,7 +167,7 @@ module Corvid
           person_identifier: person_identifier,
           facility_identifier: facility_identifier.presence || authority&.facility_identifier,
           date_of_service: classify_opts.fetch(:date_of_service),
-          jurisdiction: classify_opts.fetch(:jurisdiction),
+          jurisdiction: jurisdiction,
           category: result.category,
           fmap_percent: result.fmap_percent,
           rule_key: result.rule_key,
@@ -157,6 +186,16 @@ module Corvid
           claim_reference: claim_reference,
           determined_at: Time.current
         )
+      end
+
+      # A jurisdiction may use an expansion tier only when the registry
+      # has it configured and expanded. Shared with FmapDetermination.
+      # Read-only lookup: the registry is not written. configured? first,
+      # because an unregistered code is NotConfigured and has no expansion
+      # flag to assume. Fail closed.
+      def expansion_state?(jurisdiction)
+        entry = StateMedicaidRules.lookup(jurisdiction)
+        entry.configured? && entry.expanded? == true
       end
 
       private
@@ -219,6 +258,87 @@ module Corvid
           raise ArgumentError, "evidence_refs may only support #{FmapRule::CALLER_EVIDENCE_KINDS.join(', ')}"
         end
         evidence
+      end
+
+      # The best-available lens never names the expansion tier unless the
+      # jurisdiction is a configured expansion state. reject copies; the
+      # loaded rule rows are not mutated.
+      def lens_rules(rules, expansion_open)
+        return rules if expansion_open
+
+        rules.reject(&:expansion?)
+      end
+
+      # The expansion tier applies only in an expansion state. Elsewhere,
+      # if any in-force rule matching these inputs is an expansion tier,
+      # the only grantable result is an evidenced, non-expansion 100
+      # percent tier. Anything else is undetermined. The unevidenced-100
+      # fallback drops hundred-percent rows, so a phase-in never has to
+      # be the survivor for the refusal to hold. Keep UNEVIDENCED_100
+      # when that refusal already applied; otherwise the reason is
+      # EXPANSION_STATE_NOT_CONFIGURED. Never substitute regular FMAP.
+      # Expanded states are unchanged.
+      def gate_expansion_tier(actual, reason, expansion_open, rules,
+                              authority_type:, aian_verified:, basis:,
+                              coverage_group:, evidence:, backed:)
+        return [ actual, reason ] if expansion_open
+        return [ actual, reason ] if evidenced_non_expansion_hundred?(
+          actual, basis: basis, evidence: evidence, backed: backed
+        )
+
+        matched_expansion = expansion_rule_matched?(
+          rules, authority_type: authority_type, aian_verified: aian_verified,
+          basis: basis, coverage_group: coverage_group
+        )
+        return [ actual, reason ] unless matched_expansion || actual&.expansion?
+
+        [ nil, reason || EXPANSION_STATE_NOT_CONFIGURED ]
+      end
+
+      # Strip, then upcase. Rule rows match the jurisdiction string
+      # exactly; blank is refused because federal rows alone would
+      # read as a complete answer.
+      def canonical_jurisdiction(jurisdiction)
+        code = jurisdiction.to_s.strip.upcase
+        raise ArgumentError, "jurisdiction is required" if code.empty?
+
+        code
+      end
+
+      # The 100 percent tier a non-expansion state may still grant when
+      # an expansion rule also matched. It is not itself an expansion
+      # tier, and every requirement it names already has evidence.
+      def evidenced_non_expansion_hundred?(rule, basis:, evidence:, backed:)
+        return false unless rule&.hundred_percent?
+        return false if rule.expansion?
+
+        rule.unmet_evidence(received_through_basis: basis, evidence: evidence, authority_backed: backed).empty?
+      end
+
+      def expansion_rule_matched?(rules, authority_type:, aian_verified:, basis:, coverage_group:)
+        rules.any? { |rule|
+          rule.expansion? && rule.matches?(
+            facility_authority_type: authority_type,
+            aian_verified: aian_verified,
+            received_through_basis: basis,
+            coverage_group: coverage_group
+          )
+        }
+      end
+
+      # A refused expansion tier is not a misclassification down to a
+      # lower tier. The refusal applies no tier, so do not compare the
+      # candidate with the refused rule: a 100 percent phase-in row
+      # would hide a reachable IHS/638 tier at the same percent. Keep a
+      # best-available rule only when it is a non-expansion 100 percent
+      # tier more evidence could reach. Otherwise leave the lens blank
+      # so misclassification_gap? stays false. An unevidenced 100 percent
+      # keeps its own lens: that refusal is a different reason.
+      def best_after_expansion_refusal(best, reason)
+        return best unless reason == EXPANSION_STATE_NOT_CONFIGURED
+        return nil if best.nil? || best.expansion? || !best.hundred_percent?
+
+        best
       end
 
       def best_match(rules, authority_type:, aian_verified:, basis:, coverage_group:)

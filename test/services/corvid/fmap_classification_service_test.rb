@@ -76,7 +76,7 @@ module Corvid
       # Expansion-group encounter without AIAN evidence: 90 vs best 100.
       gap = FmapClassificationService.classify(
         date_of_service: Date.new(2026, 3, 1),
-        jurisdiction: "XB",
+        jurisdiction: "XA",
         facility_authority: @contract_638,
         aian_verified: false,
         coverage_group: "expansion_adult",
