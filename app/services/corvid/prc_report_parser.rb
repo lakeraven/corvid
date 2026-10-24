@@ -21,7 +21,7 @@ module Corvid
       keyword_init: true
     )
     Payment = Struct.new(
-      :obligation_id, :payment_id, :paid_date, :check_number,
+      :obligation_id, :payment_id, :paid_date, :check_identifier,
       :amount, :vendor_name,
       keyword_init: true
     )
@@ -90,7 +90,7 @@ module Corvid
           obligation_id: f[1],
           payment_id: f[2],
           paid_date: parse_yyyymmdd(f[3]),
-          check_number: f[4],
+          check_identifier: f[4],
           amount: f[5]&.to_d || 0.to_d,
           vendor_name: f[6]
         )
