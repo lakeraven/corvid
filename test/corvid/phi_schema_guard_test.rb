@@ -87,9 +87,10 @@ module Corvid
       when name.end_with?("_cents")                    then %i[integer bigint].include?(type)
       when name == "currency_iso"                      then type == :string
       when ENUM_COLUMNS.include?(name)
-        type == :string && bounded?(table, name)
+        type == :string && db_bounded?(table, name)
+      when DB_BOUNDED_COLUMNS.dig(table, name)
+        type == DB_BOUNDED_COLUMNS.dig(table, name) && db_bounded?(table, name)
       when PROVENANCE_COLUMNS[table]&.include?(name)   then type == :string
-      when PROVENANCE_JSONB_COLUMNS[table]&.include?(name) then type == :jsonb
       when polymorphic_type_column?(name, type, table) then true
       else false
       end
@@ -111,6 +112,15 @@ module Corvid
       constraints.any? { |c| confines_to_value_list?(c.expression.to_s, column) }
     rescue NotImplementedError
       false
+    end
+
+    # The database bounds a column if a CHECK confines it to a value list or
+    # a foreign key confines it to another table's keys. Model validation does
+    # not count (owner decision on #591, ADR 0002): a direct insert,
+    # update_column or a new writer skips it.
+    def db_bounded?(table, column)
+      bounded?(table, column) ||
+        ActiveRecord::Base.connection.foreign_keys(table).any? { |fk| fk.column == column }
     end
 
     # The cast is matched as a type name, not as any run of words, so
@@ -162,25 +172,23 @@ module Corvid
     # verification_snapshot_key_version names the host key the snapshot HMAC
     # was taken under (ADR 0008): host configuration. The model caps it at 64
     # characters; SnapshotFingerprint, its only writer, also restricts it to
-    # printable ASCII, but the model does not. On an FMAP determination, rule_key must name a rule of
-    # the global corvid_fmap_rules table in force on the date of service, or
-    # be blank when undetermined — the model checks both whenever the decided
-    # fields are written. (best_available_rule_key and jurisdiction on the
-    # same row are NOT validated that way, so they are disclosed instead.)
+    # printable ASCII, but the model does not.
     PROVENANCE_COLUMNS = {
       "corvid_prc_overpayment_analyses" => %w[analyzer_version rate_source rate_source_release],
       "corvid_cms_fee_schedule_releases" => %w[cms_release_tag],
       "corvid_tasks" => %w[milestone_key],
-      "corvid_prc_eligibility_decisions" => %w[verification_snapshot_hash verification_snapshot_key_version],
-      "corvid_fmap_determinations" => %w[rule_key]
+      "corvid_prc_eligibility_decisions" => %w[verification_snapshot_hash verification_snapshot_key_version]
     }.freeze
 
-    # Provenance held as jsonb. rule_citations is the applied rule's
-    # statutory citation; the model requires it to equal
-    # [rule.statutory_citation] whenever the decided fields are written, so
-    # it can only hold text copied from the shipped rule set.
-    PROVENANCE_JSONB_COLUMNS = {
-      "corvid_fmap_determinations" => %w[rule_citations]
+    # Columns permitted only because their values are bounded, and only once
+    # the DATABASE bounds them (db_bounded?) — model validation alone is not
+    # enough (owner decision on #591). On an FMAP determination, rule_key must
+    # name a corvid_fmap_rules row in force on the date of service and
+    # rule_citations must equal that rule's statutory citation, but only the
+    # model checks either today, so both are disclosed until #704 adds the
+    # constraint; the permit then applies without a further change here.
+    DB_BOUNDED_COLUMNS = {
+      "corvid_fmap_determinations" => { "rule_key" => :string, "rule_citations" => :jsonb }
     }.freeze
 
     # Workforce tenure, not a patient's dates. A care-team member is a
@@ -221,6 +229,7 @@ module Corvid
     ].freeze
 
     VALID_CLASSIFICATIONS = %w[patient_phi accepted_workflow_date needs_decision unclassified].freeze
+    OPEN_CLASSIFICATIONS = %w[needs_decision unclassified].freeze
 
     def test_no_undisclosed_phi_capable_columns
       exceptions = load_exceptions
@@ -298,7 +307,7 @@ module Corvid
     # on the day after the last date a public repo shows a missed promise
     # instead of a kept one.
     def test_exception_entries_are_honest
-      raw = YAML.load_file(EXCEPTIONS_FILE, permitted_classes: [ Date ]) || []
+      raw = exception_entries
 
       bad_class = raw.reject { |e| VALID_CLASSIFICATIONS.include?(e["classification"]) }
       assert_empty bad_class.map { |e| "#{e['table']}.#{e['column']}=#{e['classification']}" },
@@ -324,15 +333,7 @@ module Corvid
       assert_empty undated.map { |e| "#{e['table']}.#{e['column']}" },
         "a patient_phi entry needs a remediate_by date or a named blocked_on"
 
-      expired = raw.select do |e|
-        next false if %w[needs_decision unclassified].include?(e["classification"])
-        next false if e["classification"] == "accepted_workflow_date"
-        next false if e["remediate_by"].nil?
-        next false unless e["blocked_on"].to_s.strip.empty?
-
-        Date.parse(e["remediate_by"].to_s) < Date.current
-      end
-      assert_empty expired.map { |e| "#{e['table']}.#{e['column']} due #{e['remediate_by']}" },
+      assert_empty expired_entries(raw).map { |e| "#{e['table']}.#{e['column']} due #{e['remediate_by']}" },
         "remediate_by has passed — either remediate the column or re-date the entry deliberately"
     end
 
@@ -435,6 +436,42 @@ module Corvid
 
     private
 
+    def exception_entries
+      YAML.load_file(EXCEPTIONS_FILE, permitted_classes: [ Date ]) || []
+    end
+
+    # An open entry is tracked by an issue number ("#704", nothing else in
+    # the field) or a remediate_by that parses as a date. A free-text
+    # blocked_on names no owner and is not enough on its own.
+    def untracked_open_entries(entries)
+      entries.select do |e|
+        next false unless OPEN_CLASSIFICATIONS.include?(e["classification"])
+
+        !e["issue"].to_s.match?(/\A#\d+\z/) && remediate_by(e).nil?
+      end
+    end
+
+    # A remediate_by that has passed fails whatever the classification, and
+    # an issue reference does not suppress it: the issue is who owns the fix,
+    # the date is when it was promised. accepted_workflow_date entries carry
+    # no date, and a named blocked_on still defers a patient_phi date.
+    def expired_entries(entries)
+      entries.select do |e|
+        next false if e["classification"] == "accepted_workflow_date"
+        next false if e["remediate_by"].nil?
+        next false if e["classification"] == "patient_phi" && !e["blocked_on"].to_s.strip.empty?
+
+        due = remediate_by(e)
+        due.nil? || due < Date.current
+      end
+    end
+
+    def remediate_by(entry)
+      Date.iso8601(entry["remediate_by"].to_s)
+    rescue Date::Error
+      nil
+    end
+
     def build_message(violations)
       hard = violations.select { |v| v[:hard] }
       soft = violations.reject { |v| v[:hard] }
@@ -452,7 +489,7 @@ module Corvid
       end
       msg << "\nEither tokenize/drop the column, permit it by convention in this test "
       msg << "(reviewed as code), or disclose it in docs/phi-column-exceptions.yml with a "
-      msg << "classification and a real date."
+      msg << "classification and an issue number or a real date."
       msg
     end
 
