@@ -52,6 +52,13 @@ module Corvid
       category.to_s.start_with?("fmap_100") || fmap_percent == 100
     end
 
+    # The steady-state 90 percent expansion tier. Whether the
+    # jurisdiction has expanded is a StateMedicaidRules lookup, not a
+    # property of this row.
+    def expansion?
+      category == "fmap_90_expansion"
+    end
+
     def matches?(facility_authority_type:, aian_verified:, received_through_basis:, coverage_group: nil)
       return false if facility_authority_types.any? && !facility_authority_types.include?(facility_authority_type.to_s)
       return false if requires_aian && !aian_verified

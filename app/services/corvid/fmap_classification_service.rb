@@ -8,7 +8,10 @@ module Corvid
   # silent inference: an unevidenced 100% is reported as a gap with the
   # missing evidence named, never granted, and an encounter no in-force
   # rule covers comes back UNDETERMINED with a reason — never a
-  # definitive category a CMS-64 run would read as settled.
+  # definitive category a CMS-64 run would read as settled. The 90%
+  # expansion tier additionally requires StateMedicaidRules.lookup to
+  # show a configured expansion state; otherwise the result is
+  # undetermined, not regular FMAP.
   class FmapClassificationService
     UNDETERMINED = "undetermined"
 
@@ -18,7 +21,10 @@ module Corvid
     NO_RULES_IN_FORCE = "no_rules_in_force"
     NO_MATCHING_RULE = "no_matching_rule"
     UNEVIDENCED_100 = "unevidenced_100_percent"
-    REASONS = [ NO_RULES_IN_FORCE, NO_MATCHING_RULE, UNEVIDENCED_100 ].freeze
+    # The 90% tier matched, but the jurisdiction is not a configured
+    # expansion state. Undetermined — never a silent drop to regular FMAP.
+    EXPANSION_STATE_NOT_CONFIGURED = "expansion_state_not_configured"
+    REASONS = [ NO_RULES_IN_FORCE, NO_MATCHING_RULE, UNEVIDENCED_100, EXPANSION_STATE_NOT_CONFIGURED ].freeze
 
     # Raised by classify! when the encounter already has a current
     # determination: correct it with FmapDetermination#supersede_with!.
@@ -73,15 +79,22 @@ module Corvid
           return undetermined_result(NO_RULES_IN_FORCE, **context)
         end
 
+        # Separate registries. The expansion tier still matches on its
+        # coverage group; StateMedicaidRules.lookup says whether this
+        # jurisdiction may use it. Lookup canonicalizes case.
+        expansion_open = expansion_state?(jurisdiction)
+
         matched = best_match(rules, authority_type: authority_type, aian_verified: aian_verified,
                                     basis: basis, coverage_group: coverage_group)
-        best = best_match(rules, authority_type: authority_type, aian_verified: true,
-                                 basis: basis, coverage_group: coverage_group)
+        best = best_match(lens_rules(rules, expansion_open), authority_type: authority_type, aian_verified: true,
+                                                             basis: basis, coverage_group: coverage_group)
 
         # The 100 percent tiers are the ones that move federal dollars,
         # so each of their requirements must rest on its own evidence.
         # Without it, fall back to the highest *evidenced* tier the same
-        # inputs support, or refuse — never grant.
+        # inputs support, or refuse — never grant. The fallback is gated
+        # below: a 90 percent expansion tier in a non-expansion state is
+        # not that evidenced tier.
         actual = matched
         reason = nil
         if matched&.hundred_percent? &&
@@ -90,6 +103,8 @@ module Corvid
           actual = best_match(rules.reject(&:hundred_percent?), authority_type: authority_type,
                               aian_verified: aian_verified, basis: basis, coverage_group: coverage_group)
         end
+
+        actual, reason = gate_expansion_tier(actual, reason, expansion_open)
 
         missing = missing_evidence(best, actual, aian_verified: aian_verified, basis: basis,
                                                  evidence: evidence, backed: backed, reason: reason)
@@ -219,6 +234,35 @@ module Corvid
           raise ArgumentError, "evidence_refs may only support #{FmapRule::CALLER_EVIDENCE_KINDS.join(', ')}"
         end
         evidence
+      end
+
+      # configured? first: an unregistered code is NotConfigured and has
+      # no expansion flag to assume. Fail closed.
+      def expansion_state?(jurisdiction)
+        entry = StateMedicaidRules.lookup(jurisdiction)
+        entry.configured? && entry.expanded?
+      end
+
+      # The best-available lens never names the expansion tier unless the
+      # jurisdiction is a configured expansion state. reject copies; the
+      # loaded rule rows are not mutated.
+      def lens_rules(rules, expansion_open)
+        return rules if expansion_open
+
+        rules.reject(&:expansion?)
+      end
+
+      # The 90 tier is applied only in an expansion state. When it would
+      # have been the result, refuse it — do not substitute regular FMAP.
+      # An unevidenced 100 percent whose fallback is that tier stays
+      # undetermined and keeps UNEVIDENCED_100, so the evidence gap stays
+      # named; the fallback itself is not granted. A direct expansion
+      # match is undetermined because the state is not configured as
+      # expanded.
+      def gate_expansion_tier(actual, reason, expansion_open)
+        return [ actual, reason ] if expansion_open || !actual&.expansion?
+
+        [ nil, reason || EXPANSION_STATE_NOT_CONFIGURED ]
       end
 
       def best_match(rules, authority_type:, aian_verified:, basis:, coverage_group:)
