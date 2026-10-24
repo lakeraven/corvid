@@ -19,13 +19,6 @@ module Corvid
     # referral passed alongside it.
     class AssociationMismatch < StandardError; end
 
-    # Remittance line fields summed toward settlement, keyed by total name.
-    TOTAL_FIELDS = {
-      paid: :paid_amount, adjustment: :adjustment_amount,
-      patient_responsibility: :patient_responsibility, denied: :denied_amount
-    }.freeze
-    private_constant :TOTAL_FIELDS
-
     def self.reconcile!(referral:, claim:, adapter: Corvid.adapter)
       new(adapter: adapter).reconcile!(referral: referral, claim: claim)
     end
@@ -77,66 +70,20 @@ module Corvid
     # on each call, so reading the same remittances again never counts them
     # twice. A nil read is unknown, not "no remittances", and records nothing.
     # Returns whether any remittance line for the claim was applied.
+    # RemittanceAmounts owns the figures; status is decided here from those
+    # totals and the latest line.
     def apply_remittances!(claim)
       return false if claim.claim_identifier.blank?
 
       remittances = @adapter.fetch_remittances
       return false if remittances.nil?
 
-      lines = matching_lines(claim, remittances)
-      return false if lines.empty?
+      amounts = RemittanceAmounts.call(claim: claim, remittances: remittances)
+      return false if amounts.nil?
 
-      totals = totals_in_cents(lines, claim.currency_iso)
-      attrs = { paid_date: lines.last[:payment_date], status: resolved_status(claim, lines.last, totals) }
-      attrs[:paid_amount_cents] = totals[:paid] if stated?(lines, :paid_amount)
-      attrs[:patient_responsibility_cents] = totals[:patient_responsibility] if stated?(lines, :patient_responsibility)
-      # A denied amount is an adjustment in 835 terms (a CAS segment), so it
-      # is stored with the adjustments and #balance_due does not report the
-      # denied portion as still owed.
-      if stated?(lines, :adjustment_amount) || stated?(lines, :denied_amount)
-        attrs[:adjustment_amount_cents] = totals[:adjustment] + totals[:denied]
-      end
-
-      claim.update!(attrs)
+      status = resolved_status(claim, amounts.latest_line, amounts.totals)
+      claim.update!(amounts.attributes.merge(status: status))
       true
-    end
-
-    # Every line for the claim across all remittances, oldest payment first.
-    # A remittance returned twice counts once: by remittance_identifier, or
-    # by its whole content when it has none, since counting a duplicate
-    # twice could settle a claim that is only partly paid.
-    # Reversals carry negative amounts, so a reversed payment and its
-    # corrected replacement sum to the corrected figures.
-    def matching_lines(claim, remittances)
-      seen = Set.new
-      lines = remittances.each_with_object([]) do |remittance, out|
-        next unless seen.add?(remittance[:remittance_identifier].presence || remittance)
-
-        Array(remittance[:line_items]).each do |line|
-          next unless line[:claim_identifier] == claim.claim_identifier
-
-          out << line.merge(payment_date: remittance[:payment_date])
-        end
-      end
-      lines.sort_by.with_index { |line, i| [ line[:payment_date].to_s, i ] }
-    end
-
-    # Summed in integer subunits (ADR 0004): binary floats read
-    # $100.05 + $0.10 as a cent short of $100.15.
-    def totals_in_cents(lines, currency_iso)
-      TOTAL_FIELDS.transform_values do |field|
-        lines.sum { |line| cents(line[field], currency_iso) }
-      end
-    end
-
-    def cents(value, currency_iso)
-      return 0 if value.nil?
-
-      Money.from_amount(BigDecimal(value.to_s), currency_iso).cents
-    end
-
-    def stated?(lines, field)
-      lines.any? { |line| !line[field].nil? }
     end
 
     # The claim is settled only when the remittances account for what was
