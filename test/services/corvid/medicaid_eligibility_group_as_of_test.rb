@@ -260,6 +260,78 @@ class Corvid::MedicaidEligibilityGroupAsOfTest < ActiveSupport::TestCase
     end
   end
 
+  test "record! supersede inference clears eligibility_group_as_of after stated group with known as_of" do
+    with_tenant(TENANT) do
+      check = medicaid_check_for(patient_id: "pt_mcd_asof_011", dob: Date.new(1996, 6, 15))
+      @service.record!(
+        check,
+        coverage: stated_coverage("expansion_adult", as_of: AS_OF_NEWER),
+        date_of_service: DOS
+      )
+      check.reload
+      assert_equal AS_OF_NEWER, check.eligibility_group_as_of
+
+      pinned = stated_supersede_pin(check)
+      coverage = { state: "XA", plan_name: "TEST REGULAR PLAN", eligibility_group: nil }
+      result = @service.record!(
+        check,
+        coverage: coverage,
+        date_of_service: DOS,
+        supersede_stated: pinned
+      )
+
+      assert_equal "expansion_adult", result
+      assert_group_fields(check, "expansion_adult", "inferred")
+      assert_nil check.reload.eligibility_group_as_of
+    end
+  end
+
+  test "verify! supersede inference clears eligibility_group_as_of after stated group with known as_of" do
+    with_tenant(TENANT) do
+      register_patient!(patient_id: PATIENT_ID, dob: Date.new(1996, 6, 15))
+      @adapter.add_coverage(
+        PATIENT_ID,
+        coverage_type: "medicaid",
+        eligible: true,
+        state: "XA",
+        eligibility_group: "expansion_adult",
+        eligibility_group_source: "eligibility_response",
+        as_of: AS_OF_NEWER
+      )
+      check = create_medicaid_check!
+      stub_verify_eligibility!(eligible: true, policy_token: "TEST-POLICY-695")
+
+      assert check.verify!
+      check.reload
+      assert_equal "expansion_adult", check.eligibility_group
+      assert_equal AS_OF_NEWER, check.eligibility_group_as_of
+
+      reinfer_row = [
+        {
+          coverage_type: "medicaid",
+          eligible: true,
+          state: "XA",
+          eligibility_group: nil,
+          plan_name: "TEST REGULAR PLAN"
+        }
+      ]
+      sequencing = SequencingGetCoveragesAdapterDelegate.new(
+        @adapter,
+        patient_id: PATIENT_ID,
+        sequences: [ reinfer_row ]
+      )
+
+      travel_to Time.zone.local(2026, 6, 1, 10, 0, 0) do
+        with_adapter(sequencing) { assert check.verify! }
+      end
+      check.reload
+
+      assert_equal "expansion_adult", check.eligibility_group
+      assert_equal "inferred", check.eligibility_group_source
+      assert_nil check.eligibility_group_as_of
+    end
+  end
+
   test "record! compares as_of under row lock when a newer answer commits before lock" do
     with_tenant(TENANT) do
       check = medicaid_check_for(patient_id: "pt_mcd_asof_interleave")
@@ -391,6 +463,15 @@ class Corvid::MedicaidEligibilityGroupAsOfTest < ActiveSupport::TestCase
       eligibility_group: group,
       eligibility_group_source: source,
       as_of: as_of
+    }
+  end
+
+  def stated_supersede_pin(check)
+    check.reload
+    {
+      group: check.eligibility_group,
+      source: check.eligibility_group_source,
+      set_at: check.eligibility_group_set_at
     }
   end
 

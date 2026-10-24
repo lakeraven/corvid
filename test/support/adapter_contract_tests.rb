@@ -586,8 +586,11 @@ module AdapterContractTests
           assert_equal adapter.dereference(token), result[token],
                        "dereference_many must return the same record as dereference for #{token.inspect}"
         end
+      when :get_coverages
+        assert_get_coverages_answer_as_of_policy(seed)
       when :verify_eligibility
         assert_coverage_resource_type_guards(seed)
+        assert_verify_eligibility_answer_as_of_policy(seed)
       when :check_eligibility_detailed
         wrong_payer = adapter.check_eligibility_detailed(
           seed[:patient_identifier],
@@ -621,6 +624,69 @@ module AdapterContractTests
       display_name = adapter.find_patient(seed[:patient_identifier]).display_name
       assert_includes record.values, display_name,
                       "dereference(seeded patient) must return that patient's record"
+    end
+
+    def expected_coverage_answer_as_of(seed)
+      seed.fetch(:coverage_answer_as_of, nil)
+    end
+
+    def assert_coverage_answer_as_of_policy(seed)
+      assert_get_coverages_answer_as_of_policy(seed)
+      assert_verify_eligibility_answer_as_of_policy(seed)
+    end
+
+    def assert_get_coverages_answer_as_of_policy(seed)
+      adapter = contract_adapter
+      expected = expected_coverage_answer_as_of(seed)
+      patient = seed[:patient_identifier]
+      active_type = seed[:coverage_resource_type]
+      inactive_type = seed[:inactive_coverage_resource_type]
+
+      coverages = adapter.get_coverages(patient)
+      assert_instance_of Array, coverages
+      return if coverages.empty?
+
+      active_rows = coverages.select { |row| coverage_row_resource_type(row) == active_type.to_s }
+      refute_empty active_rows,
+                   "get_coverages must include a row for coverage_resource_type #{active_type.inspect}"
+      active_rows.each do |row|
+        assert_expected_answer_as_of(row[:as_of], expected,
+                                   "get_coverages active #{active_type.inspect} row must not invent an answer time")
+      end
+
+      inactive_rows = coverages.select { |row| coverage_row_resource_type(row) == inactive_type.to_s }
+      inactive_rows.each do |row|
+        assert_nil row[:as_of],
+                   "get_coverages inactive #{inactive_type.inspect} row must have nil :as_of when unset in seed"
+      end
+    end
+
+    def assert_verify_eligibility_answer_as_of_policy(seed)
+      adapter = contract_adapter
+      expected = expected_coverage_answer_as_of(seed)
+      patient = seed[:patient_identifier]
+      active_type = seed[:coverage_resource_type]
+      inactive_type = seed[:inactive_coverage_resource_type]
+
+      match = adapter.verify_eligibility(patient, active_type)
+      assert_instance_of Hash, match
+      assert_expected_answer_as_of(match[:as_of], expected,
+                                   "verify_eligibility(#{active_type.inspect}) must not invent an answer time")
+
+      inactive = adapter.verify_eligibility(patient, inactive_type)
+      assert_instance_of Hash, inactive
+      assert_nil inactive[:as_of],
+                 "verify_eligibility(#{inactive_type.inspect}) must have nil :as_of when unset in seed"
+    end
+
+    def coverage_row_resource_type(row)
+      if row.key?(:coverage_type)
+        row[:coverage_type].to_s
+      elsif row.key?(:resource_type)
+        row[:resource_type].to_s
+      else
+        row["coverage_type"] || row["resource_type"]
+      end.to_s
     end
 
     def assert_coverage_resource_type_guards(seed)
@@ -942,6 +1008,14 @@ module AdapterContractTests
         assert_instance_of Hash, row
         assert row.key?(:as_of), "get_coverages row must include :as_of"
         assert_answer_as_of(row[:as_of], context: "get_coverages row")
+      end
+    end
+
+    def assert_expected_answer_as_of(actual, expected, message)
+      if expected.nil?
+        assert_nil actual, message
+      else
+        assert_equal expected, actual, message
       end
     end
 

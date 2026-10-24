@@ -51,6 +51,21 @@ class Corvid::Adapters::AdapterContractSuiteTest < Minitest::Test
     end
   end
 
+  class NowAsOfAdapter < Corvid::Adapters::MockAdapter
+    def get_coverages(patient_identifier)
+      super(patient_identifier).map do |row|
+        row.merge(as_of: row[:as_of] || Time.now)
+      end
+    end
+
+    def verify_eligibility(patient_identifier, resource_type)
+      result = super(patient_identifier, resource_type)
+      return result unless result.is_a?(Hash)
+
+      result.merge(as_of: result[:as_of] || Time.now)
+    end
+  end
+
   # Answers from the first seeded coverage when resource_type is blank (contract violation).
   class VerifyEligibilityOnBlankResourceTypeAdapter < Corvid::Adapters::MockAdapter
     def verify_eligibility(patient_identifier, resource_type)
@@ -104,6 +119,11 @@ class Corvid::Adapters::AdapterContractSuiteTest < Minitest::Test
 
   def test_suite_rejects_a_string_as_of
     assert_contract_fails(StringAsOfAdapter, :verify_eligibility)
+  end
+
+  def test_suite_rejects_now_as_answer_time_when_timestamp_missing
+    assert_contract_fails(NowAsOfAdapter, :get_coverages)
+    assert_contract_fails(NowAsOfAdapter, :verify_eligibility)
   end
 
   def test_suite_rejects_verify_eligibility_that_answers_on_blank_resource_type
