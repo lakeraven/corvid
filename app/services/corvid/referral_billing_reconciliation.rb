@@ -12,6 +12,11 @@ module Corvid
   # rather than matched by identifier here. Trusting the two arguments
   # independently would let a paid claim for one referral be reported as
   # reconciled against a different referral's delivered-care record.
+  #
+  # Amounts and paid_date come from RemittanceAmounts. paid_date is the
+  # latest dated line and is omitted when no line is dated, so a read
+  # with no date does not clear one already stored. Status is decided
+  # here from the totals and the latest line.
   class ReferralBillingReconciliation
     Result = Struct.new(:referral_identifier, :status, :fulfilment_verified, :claim, keyword_init: true)
 
@@ -70,8 +75,9 @@ module Corvid
     # on each call, so reading the same remittances again never counts them
     # twice. A nil read is unknown, not "no remittances", and records nothing.
     # Returns whether any remittance line for the claim was applied.
-    # RemittanceAmounts owns the figures; status is decided here from those
-    # totals and the latest line.
+    # RemittanceAmounts owns the figures, including paid_date from the latest
+    # dated line only. Status is decided here from those totals and the
+    # latest line.
     def apply_remittances!(claim)
       return false if claim.claim_identifier.blank?
 

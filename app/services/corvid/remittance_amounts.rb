@@ -5,10 +5,34 @@ module Corvid
   #
   # RemittanceProcessor and ReferralBillingReconciliation both ask this,
   # so a later remittance adds to the claim instead of replacing what an
-  # earlier one paid. Status is the caller's decision: the totals and the
-  # latest line are returned with the attributes to write.
+  # earlier one paid. Status is the caller's decision: the totals, the
+  # lines in payment order, and the latest line are returned with the
+  # attributes to write.
+  #
+  # A line belongs to the claim when its claim_identifier, stripped, is
+  # the claim's. payment_date orders those lines. A Date, a Time (its
+  # calendar date), or an ISO-8601 date string (Date.iso8601) is dated.
+  # Anything else, including nil, is undated. Dated lines come first, by
+  # date, with array order breaking a tie. Undated lines follow, still in
+  # array order. The latest line is the last one in that order.
+  #
+  # paid_date is written only from the latest dated line. When no line is
+  # dated the attribute is omitted, so an undated line does not clear a
+  # date already stored. ReferralBillingReconciliation writes these
+  # attributes unchanged.
+  #
+  # Amounts are integer subunits of the row's currency (ADR 0004).
+  # Money.from_amount rounds with that currency, so nothing here hardcodes
+  # a factor of 100. An Integer or BigDecimal is taken as given, and a
+  # Float is read through to_s so two binary fractions are not summed a
+  # cent short. A string is stripped; a blank one is not stated. Otherwise
+  # it may carry a leading "$", thousands commas, and a leading "-", and
+  # is then parsed with BigDecimal. Monetize reads a blank or a word such
+  # as a non-amount as zero, so it cannot refuse a value we cannot parse.
+  # Anything else raises ArgumentError naming the claim identifier and the
+  # field only (ADR 0003: no free text in the message).
   class RemittanceAmounts
-    Result = Struct.new(:attributes, :totals, :latest_line, keyword_init: true)
+    Result = Struct.new(:attributes, :totals, :latest_line, :lines, keyword_init: true)
 
     # Remittance line fields summed toward settlement, keyed by total name.
     TOTAL_FIELDS = {
@@ -17,8 +41,24 @@ module Corvid
     }.freeze
     private_constant :TOTAL_FIELDS
 
+    # Optional leading "$" / "-", then digits with thousands commas.
+    AMOUNT_STRING = /\A(?:-\$|\$-|-|\$)?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?\z/
+    private_constant :AMOUNT_STRING
+
     def self.call(claim:, remittances:)
       new.call(claim: claim, remittances: remittances)
+    end
+
+    # Integer subunits for one reported amount (ADR 0004). nil and a blank
+    # string count as zero toward a total; whether any line stated the
+    # field is separate.
+    def self.cents(value, currency_iso, claim_identifier: nil, field: nil)
+      decimal = decimal_for(value, claim_identifier, field)
+      return 0 if decimal.nil?
+
+      Money.from_amount(decimal, currency_iso).cents
+    rescue ArgumentError
+      raise ArgumentError, invalid_amount(field, claim_identifier)
     end
 
     # nil when no line for the claim survives deduplication, so the caller
@@ -27,20 +67,41 @@ module Corvid
       lines = matching_lines(claim, remittances)
       return if lines.empty?
 
-      totals = totals_in_cents(lines, claim.currency_iso)
+      totals = totals_in_cents(lines, claim)
       Result.new(
         attributes: attributes_for(lines, totals),
         totals: totals,
-        latest_line: lines.last
+        latest_line: lines.last,
+        lines: lines
       )
     end
 
-    # Integer subunits for one reported amount (ADR 0004). nil counts as
-    # zero toward a total; whether any line stated the field is separate.
-    def self.cents(value, currency_iso)
-      return 0 if value.nil?
+    class << self
+      private
 
-      Money.from_amount(BigDecimal(value.to_s), currency_iso).cents
+      def decimal_for(value, claim_identifier, field)
+        case value
+        when nil then nil
+        when String then decimal_from_string(value, claim_identifier, field)
+        when Float then BigDecimal(value.to_s)
+        when Integer, BigDecimal then BigDecimal(value)
+        else raise ArgumentError, invalid_amount(field, claim_identifier)
+        end
+      end
+
+      def decimal_from_string(value, claim_identifier, field)
+        stripped = value.strip
+        return nil if stripped.empty?
+        unless stripped.match?(AMOUNT_STRING)
+          raise ArgumentError, invalid_amount(field, claim_identifier)
+        end
+
+        BigDecimal(stripped.delete(",").sub(/\A(-?)\$/, "\\1"))
+      end
+
+      def invalid_amount(field, claim_identifier)
+        "invalid #{field} for claim #{claim_identifier}"
+      end
     end
 
     private
@@ -53,37 +114,94 @@ module Corvid
     # Reversals carry negative amounts, so a reversed payment and its
     # corrected replacement sum to the corrected figures.
     def matching_lines(claim, remittances)
-      seen = Set.new
-      lines = remittances.each_with_object([]) do |remittance, out|
-        next unless seen.add?(remittance[:remittance_identifier].presence || remittance)
-
-        Array(remittance[:line_items]).each do |line|
-          next unless line[:claim_identifier] == claim.claim_identifier
-
-          out << line.merge(payment_date: remittance[:payment_date])
-        end
-      end
-      lines.sort_by.with_index { |line, i| [ line[:payment_date].to_s, i ] }
+      ordered(lines_for(claim, unique_remittances(remittances)))
     end
 
-    # Summed in integer subunits (ADR 0004): binary floats read
-    # $100.05 + $0.10 as a cent short of $100.15.
-    def totals_in_cents(lines, currency_iso)
-      TOTAL_FIELDS.transform_values do |field|
-        lines.sum { |line| self.class.cents(line[field], currency_iso) }
+    def unique_remittances(remittances)
+      seen = Set.new
+      remittances.select { |remittance| seen.add?(remittance_key(remittance)) }
+    end
+
+    def remittance_key(remittance)
+      remittance[:remittance_identifier].presence || remittance
+    end
+
+    def lines_for(claim, remittances)
+      remittances.flat_map do |remittance|
+        Array(remittance[:line_items]).filter_map do |line|
+          next unless for_claim?(line, claim)
+
+          line.merge(payment_date: remittance[:payment_date])
+        end
+      end
+    end
+
+    # Surrounding whitespace is not part of the identifier. A blank name
+    # matches no claim, including one whose identifier is NULL.
+    def for_claim?(line, claim)
+      identifier = line[:claim_identifier].to_s.strip
+      identifier.present? && identifier == claim.claim_identifier.to_s.strip
+    end
+
+    def ordered(lines)
+      lines.sort_by.with_index { |line, index| sort_key(line, index) }
+    end
+
+    # Dated lines sort by the date, then by the position they arrived in.
+    # Undated lines sort after every dated line, still in arrival order.
+    def sort_key(line, index)
+      date = payment_on(line[:payment_date])
+      date ? [ 0, date, index ] : [ 1, index ]
+    end
+
+    # Date.iso8601 is the only string form that counts. A US-style date
+    # string is undated and sorts after the dated lines. A Time contributes
+    # its calendar date, so the time of day cannot reorder the line or shift
+    # paid_date when the column stores a date.
+    def payment_on(value)
+      case value
+      when Time then value.to_date
+      when Date then value.to_date
+      when String then Date.iso8601(value)
+      end
+    rescue Date::Error
+      nil
+    end
+
+    def totals_in_cents(lines, claim)
+      TOTAL_FIELDS.transform_values { |field| sum_field(lines, claim, field) }
+    end
+
+    def sum_field(lines, claim, field)
+      lines.sum do |line|
+        self.class.cents(
+          line[field], claim.currency_iso,
+          claim_identifier: claim.claim_identifier, field: field
+        )
       end
     end
 
     def stated?(lines, field)
-      lines.any? { |line| !line[field].nil? }
+      lines.any? { |line| stated_value?(line[field]) }
     end
 
-    # paid_date is the latest line. A field no line states is omitted, so
-    # the stored value is left alone. A denied amount is an adjustment in
-    # 835 terms (a CAS segment), so it is stored with the adjustments and
-    # #balance_due does not report the denied portion as still owed.
+    # A blank string states nothing. Nil states nothing. Zero states zero.
+    def stated_value?(value)
+      case value
+      when nil then false
+      when String then !value.strip.empty?
+      else true
+      end
+    end
+
+    # A field no line states is omitted, so the stored value is left alone.
+    # A denied amount is an adjustment in 835 terms (a CAS segment), so it
+    # is stored with the adjustments and #balance_due does not report the
+    # denied portion as still owed.
     def attributes_for(lines, totals)
-      attrs = { paid_date: lines.last[:payment_date] }
+      attrs = {}
+      date = paid_on(lines)
+      attrs[:paid_date] = date if date
       attrs[:paid_amount_cents] = totals[:paid] if stated?(lines, :paid_amount)
       if stated?(lines, :patient_responsibility)
         attrs[:patient_responsibility_cents] = totals[:patient_responsibility]
@@ -92,6 +210,14 @@ module Corvid
         attrs[:adjustment_amount_cents] = totals[:adjustment] + totals[:denied]
       end
       attrs
+    end
+
+    def paid_on(lines)
+      lines.reverse_each do |line|
+        date = payment_on(line[:payment_date])
+        return date if date
+      end
+      nil
     end
   end
 end
