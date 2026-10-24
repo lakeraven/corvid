@@ -14,12 +14,34 @@ class AllowExpansionStateReasonOnCorvidFmapDeterminations < ActiveRecord::Migrat
   end
 
   def down
-    # The prior list cannot store expansion_state_not_configured.
-    # Remove those rows before rolling back; the reason is not rewritten.
+    # The prior list cannot store expansion_state_not_configured, or any
+    # other reason added after it. Check before touching the constraint:
+    # replacing it raises a raw check violation while such rows exist.
+    # Do not delete or rewrite them; refuse the rollback instead.
+    held = determination_reasons_outside(PRIOR_REASONS)
+    if held.any?
+      raise ActiveRecord::IrreversibleMigration,
+        "corvid_fmap_determinations rows hold determination_reason #{held.join(', ')}; " \
+        "the prior check cannot store that reason, so this migration is irreversible. " \
+        "Rows were not deleted or rewritten."
+    end
+
     replace_reason_check(PRIOR_REASONS)
   end
 
   private
+
+  def determination_reasons_outside(allowed)
+    table = connection.quote_table_name("corvid_fmap_determinations")
+    listed = allowed.map { |reason| connection.quote(reason) }.join(", ")
+    connection.select_values(<<~SQL.squish)
+      SELECT DISTINCT determination_reason
+      FROM #{table}
+      WHERE determination_reason IS NOT NULL
+        AND determination_reason NOT IN (#{listed})
+      ORDER BY determination_reason
+    SQL
+  end
 
   def replace_reason_check(reasons)
     remove_check_constraint :corvid_fmap_determinations, name: "corvid_fmap_determinations_reason_check"

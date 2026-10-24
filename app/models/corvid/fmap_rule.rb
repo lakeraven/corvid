@@ -9,13 +9,19 @@ module Corvid
   class FmapRule < ::ActiveRecord::Base
     self.table_name = "corvid_fmap_rules"
 
-    CATEGORIES = %w[
-      fmap_100_ihs_638
-      fmap_100_cca
-      fmap_100_uio
-      fmap_90_expansion
-      fmap_regular
-      non_medicaid
+    # The expansion tier is this category, or any rule scoped to the
+    # expansion adult group (StateMedicaidRules vocabulary) under another
+    # category. Both have to go through the same gate.
+    EXPANSION_CATEGORY = "fmap_90_expansion"
+    EXPANSION_COVERAGE_GROUP = "expansion_adult"
+
+    CATEGORIES = [
+      "fmap_100_ihs_638",
+      "fmap_100_cca",
+      "fmap_100_uio",
+      EXPANSION_CATEGORY,
+      "fmap_regular",
+      "non_medicaid"
     ].freeze
 
     validates :rule_key, presence: true, uniqueness: true
@@ -52,11 +58,14 @@ module Corvid
       category.to_s.start_with?("fmap_100") || fmap_percent == 100
     end
 
-    # The steady-state 90 percent expansion tier. Whether the
-    # jurisdiction has expanded is a StateMedicaidRules lookup, not a
-    # property of this row.
+    # The expansion tier: the 90 percent category, or a rule scoped to
+    # the expansion adult group under any category. Classification, its
+    # best-available lens, and FmapDetermination all gate on this, so a
+    # group-scoped rule cannot skip the expansion-state check by wearing
+    # another category. Whether the jurisdiction has expanded is a
+    # StateMedicaidRules lookup, not a property of this row.
     def expansion?
-      category == "fmap_90_expansion"
+      category == EXPANSION_CATEGORY || self[:coverage_group] == EXPANSION_COVERAGE_GROUP
     end
 
     def matches?(facility_authority_type:, aian_verified:, received_through_basis:, coverage_group: nil)
