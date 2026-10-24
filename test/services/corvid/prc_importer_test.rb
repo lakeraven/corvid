@@ -50,17 +50,28 @@ class Corvid::PrcImporterTest < ActiveSupport::TestCase
     end
   end
 
-  test "imported payment stores report check value in check_identifier column" do
+  test "imported payments do not persist cheque values from the PRC export" do
     with_tenant(TENANT) do
       Corvid::PrcImporter.import(SAMPLE, source_file: "test_export.prc")
 
-      pmt = Corvid::PrcPayment.find_by!(payment_id: "PMT-2009-000001")
-      assert_equal "CHK2009A", pmt.check_identifier
-
       columns = Corvid::PrcPayment.column_names
       refute_includes columns, "check_number",
-                      "PrcPayment must not expose the old PHI column name"
-      assert_includes columns, "check_identifier"
+                      "check_number was removed because its value is patient PHI"
+      refute_includes columns, "check_identifier",
+                      "renaming the column would still persist PHI"
+
+      cheque_tokens = %w[CHK2009A CHK2009B CHK2009C]
+      Corvid::PrcPayment.find_each do |payment|
+        payment.attributes.each_value do |value|
+          next if value.nil?
+
+          str = value.to_s
+          cheque_tokens.each do |token|
+            refute_equal token, str,
+                         "cheque value #{token} must not be stored on PrcPayment"
+          end
+        end
+      end
     end
   end
 
@@ -296,7 +307,7 @@ class Corvid::PrcImporterTest < ActiveSupport::TestCase
       result = Corvid::PrcImporter.import(dup_export, source_file: "dup_p.prc")
 
       pmt = Corvid::PrcPayment.find_by(payment_id: "PMT-DUP")
-      assert_equal "CHK_SECOND", pmt.check_identifier,
+      assert_equal Date.new(2009, 5, 19), pmt.paid_date,
                    "the second (corrected) payment row must win, not the first"
       assert_equal 200_00, pmt.amount_cents
 
