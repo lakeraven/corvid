@@ -4,12 +4,15 @@ module Corvid
   # Applies 835 remittances to the claims they settle.
   #
   # The adapter is injected (ADR 0005) and read once per call. For each
-  # claim the batch names, amounts are summed over that history together
-  # with the batch. RemittanceAmounts deduplicates, so a remittance that
-  # appears in both is counted once. A nil read is unknown, not an empty
-  # history: nothing is written for the batch's claims, they are counted
-  # as unknown, and the batch is never applied on its own. A batch of only
-  # the new lines would understate the claim, or go negative on a reversal.
+  # claim the batch names, amounts are summed over the batch together with
+  # that history. The batch is listed first. RemittanceAmounts keeps the
+  # first copy of each dedupe key, so the batch's copy of a remittance
+  # wins and a duplicate is counted once. Lines stay ordered by payment
+  # date; the merged array order breaks a tie, and that order is stable.
+  # A nil read is unknown, not an empty history: nothing is written for
+  # the batch's claims, they are counted as unknown, and the batch is
+  # never applied on its own. A batch of only the new lines would
+  # understate the claim, or go negative on a reversal.
   #
   # Amounts are written once per claim, from RemittanceAmounts, over every
   # line for that claim. The last line does not replace an earlier payment.
@@ -61,7 +64,10 @@ module Corvid
     private
 
     # One fetch for the whole call. Nil is unknown: leave the claims alone
-    # and do not fall back to summing the batch by itself.
+    # and do not fall back to summing the batch by itself. Batch is
+    # concatenated first so its copy wins the first-copy dedupe in
+    # RemittanceAmounts. Payment date still orders lines; array order
+    # only breaks a tie, and listing the batch first keeps that tie stable.
     def apply_with_history(claims, batch, result)
       history = @adapter.fetch_remittances
       if history.nil?
@@ -69,7 +75,7 @@ module Corvid
         return
       end
 
-      apply_batch(claims, history + batch, batch_keys(batch), result)
+      apply_batch(claims, batch + history, batch_keys(batch), result)
     end
 
     def apply_batch(claims, remittances, keys, result)

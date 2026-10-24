@@ -26,7 +26,10 @@ module Corvid
   # a factor of 100. An Integer or BigDecimal is taken as given, and a
   # Float is read through to_s so two binary fractions are not summed a
   # cent short. A Money whose currency matches the claim's currency_iso
-  # contributes its exact cents; a Money in any other currency raises. A
+  # contributes its exact cents. The match is
+  # Money::Currency.wrap(currency_iso) == value.currency, so "usd" and
+  # "USD" are the same currency. A Money in any other currency raises, and
+  # so does a nil or unknown currency_iso, as the same ArgumentError. A
   # string is stripped; a blank one is not stated. Otherwise it may carry
   # an optional sign, an optional "$", thousands commas, and a decimal
   # point with or without leading digits (".50", "+50"), and is then parsed
@@ -61,8 +64,9 @@ module Corvid
 
     # Integer subunits for one reported amount (ADR 0004). nil and a blank
     # string count as zero toward a total; whether any line stated the
-    # field is separate. A Money contributes its exact cents when its
-    # currency matches, and never a float conversion.
+    # field is separate. A Money contributes its exact cents when
+    # Money::Currency.wrap(currency_iso) equals its currency, and never a
+    # float conversion. A nil or unknown currency_iso raises ArgumentError.
     def self.cents(value, currency_iso, claim_identifier: nil, field: nil)
       return money_cents(value, currency_iso, claim_identifier, field) if value.is_a?(Money)
 
@@ -93,11 +97,13 @@ module Corvid
       private
 
       def money_cents(value, currency_iso, claim_identifier, field)
-        unless value.currency.iso_code == currency_iso.to_s
+        unless Money::Currency.wrap(currency_iso) == value.currency
           raise ArgumentError, invalid_amount(field, claim_identifier)
         end
 
         value.cents
+      rescue Money::Currency::UnknownCurrency
+        raise ArgumentError, invalid_amount(field, claim_identifier)
       end
 
       def decimal_for(value, claim_identifier, field)
@@ -129,11 +135,12 @@ module Corvid
 
     # Every line for the claim across all remittances, oldest payment first.
     # Array order breaks a tie on payment_date, so the last line is the latest.
-    # A remittance returned twice counts once: by remittance_identifier, or
-    # by its whole content when it has none, since counting a duplicate
-    # twice could settle a claim that is only partly paid. Each line carries
-    # :remittance_key, that same dedupe key, so a caller can tell which
-    # lines belong to one batch.
+    # A remittance returned twice counts once, and the first copy is kept:
+    # by remittance_identifier, or by its whole content when it has none,
+    # since counting a duplicate twice could settle a claim that is only
+    # partly paid. Callers that prefer one copy pass it first. Each line
+    # carries :remittance_key, that same dedupe key, so a caller can tell
+    # which lines belong to one batch.
     # Reversals carry negative amounts, so a reversed payment and its
     # corrected replacement sum to the corrected figures.
     def matching_lines(claim, remittances)
