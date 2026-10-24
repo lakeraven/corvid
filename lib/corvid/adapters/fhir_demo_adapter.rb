@@ -9,13 +9,16 @@ module Corvid
     #
     # It IS the generic FhirAdapter — every read goes through the real
     # FhirAdapter FHIR-R4 parsing code (find_patient, verify_eligibility,
-    # verify_tribal_enrollment, list_claims, ...). The ONLY thing overridden
-    # is the HTTP transport: instead of issuing `net/http` calls, the REST
-    # primitives (`fhir_read`, `fhir_search`, `fhir_create`, `fhir_update`)
-    # serve and store resources in an in-memory FHIR store. That keeps the
-    # demo self-contained (no live FHIR server) while proving the exact same
-    # stock-FHIR code path a production deployment runs against any
-    # conformant FHIR R4 server. Writes (create_referral, update_referral)
+    # verify_tribal_enrollment, list_claims, ...). A failed search stays
+    # nil on those list reads, and a blank patient identifier is unknown
+    # on list_referrals, list_claims, and get_care_team. The ONLY thing
+    # overridden is the HTTP transport: instead of issuing `net/http`
+    # calls, the REST primitives (`fhir_read`, `fhir_search`,
+    # `fhir_create`, `fhir_update`) serve and store resources in an
+    # in-memory FHIR store. That keeps the demo self-contained (no live
+    # FHIR server) while proving the exact same stock-FHIR code path a
+    # production deployment runs against any conformant FHIR R4 server.
+    # Writes (create_referral, update_referral)
     # land in that store, so later reads see them.
     #
     # The store is a plain array of FHIR resource hashes (as a real server

@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "test_helper"
+require "minitest/mock"
 
 class Corvid::MedicaidEligibilityGroupServiceTest < ActiveSupport::TestCase
   include ActiveSupport::Testing::TimeHelpers
@@ -1472,6 +1473,110 @@ class Corvid::MedicaidEligibilityGroupServiceTest < ActiveSupport::TestCase
 
       assert_equal "other", result
       assert_group_fields(check, "other", "staff_entry")
+    end
+  end
+
+  test "record! with supersede_stated infers over prior stated group when coverage does not state a real group" do
+    with_tenant(TENANT) do
+      check = medicaid_check_for(patient_id: "pt_mcd_670_sup_001", dob: Date.new(1996, 6, 15))
+      stated = {
+        state: "XA",
+        eligibility_group: "expansion_adult",
+        eligibility_group_source: "eligibility_response"
+      }
+      @service.record!(check, coverage: stated, date_of_service: DOS)
+      assert_group_fields(check, "expansion_adult", "eligibility_response")
+
+      coverage = { state: "XA", plan_name: "TEST REGULAR PLAN", eligibility_group: nil }
+      result = @service.record!(check, coverage: coverage, date_of_service: DOS, supersede_stated: true)
+
+      assert_equal "expansion_adult", result
+      assert_group_fields(check, "expansion_adult", "inferred")
+    end
+  end
+
+  test "record! with supersede_stated does not overwrite newer stated group written during find_patient" do
+    with_tenant(TENANT) do
+      check = medicaid_check_for(patient_id: "pt_mcd_670_race_001", dob: Date.new(1996, 6, 15))
+      stated = {
+        state: "XA",
+        eligibility_group: "expansion_adult",
+        eligibility_group_source: "eligibility_response"
+      }
+      @service.record!(check, coverage: stated, date_of_service: DOS)
+      assert_group_fields(check, "expansion_adult", "eligibility_response")
+
+      inner_service = Corvid::MedicaidEligibilityGroupService.new(adapter: @adapter)
+      racing = RaceSimulatingAdapterDelegate.new(
+        @adapter,
+        on_first_find_patient: lambda {
+          inner_service.record!(
+            check,
+            coverage: {
+              state: "XA",
+              eligibility_group: "waiver_adult",
+              eligibility_group_source: "state_case_data"
+            },
+            date_of_service: DOS
+          )
+        }
+      )
+      service = Corvid::MedicaidEligibilityGroupService.new(adapter: racing)
+
+      result = service.record!(
+        check,
+        coverage: {},
+        date_of_service: DOS,
+        supersede_stated: true
+      )
+
+      assert_equal "waiver_adult", result
+      assert_group_fields(check, "waiver_adult", "state_case_data")
+    end
+  end
+
+  test "record! with supersede_stated does not overwrite newer stated group written during StateMedicaidRules.lookup" do
+    with_tenant(TENANT) do
+      check = medicaid_check_for(patient_id: "pt_mcd_670_race_002", dob: Date.new(1996, 6, 15))
+      stated = {
+        state: "XA",
+        eligibility_group: "expansion_adult",
+        eligibility_group_source: "eligibility_response"
+      }
+      @service.record!(check, coverage: stated, date_of_service: DOS)
+      assert_group_fields(check, "expansion_adult", "eligibility_response")
+
+      inner_service = Corvid::MedicaidEligibilityGroupService.new(adapter: @adapter)
+      lookup = Corvid::StateMedicaidRules.method(:lookup)
+      first_lookup = true
+      concurrent_lookup = lambda do |state|
+        if first_lookup
+          first_lookup = false
+          inner_service.record!(
+            check,
+            coverage: {
+              state: "XA",
+              eligibility_group: "waiver_adult",
+              eligibility_group_source: "state_case_data"
+            },
+            date_of_service: DOS
+          )
+        end
+        lookup.call(state)
+      end
+
+      result = nil
+      Corvid::StateMedicaidRules.stub(:lookup, concurrent_lookup) do
+        result = @service.record!(
+          check,
+          coverage: { state: "XA", plan_name: "TEST REGULAR PLAN" },
+          date_of_service: DOS,
+          supersede_stated: true
+        )
+      end
+
+      assert_equal "waiver_adult", result
+      assert_group_fields(check, "waiver_adult", "state_case_data")
     end
   end
 

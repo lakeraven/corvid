@@ -104,6 +104,11 @@ class Corvid::Adapters::BaseTest < Minitest::Test
     assert_nil @adapter.get_medications("pt_test_001")
   end
 
+  def test_list_claims_defaults_to_nil_like_clinical_reads
+    assert_nil @adapter.list_claims("pt_test_001"),
+               "Base#list_claims must default to nil (unknown) like get_conditions/get_medications"
+  end
+
   def test_get_coverages_defaults_to_empty
     assert_equal [], @adapter.get_coverages("pt_test")
   end
