@@ -60,6 +60,50 @@ class Corvid::RemittanceAmountsTest < ActiveSupport::TestCase
     end
   end
 
+  test "Money in the claim currency is summed in cents" do
+    with_tenant(TENANT) do
+      claim = create_claim("CLM-AMT-MNY")
+
+      result = Corvid::RemittanceAmounts.call(claim: claim, remittances: [
+        remittance(claim_identifier: "CLM-AMT-MNY", paid_amount: Money.from_amount(50, "USD"))
+      ])
+
+      assert_equal 5000, result.totals[:paid]
+      assert_equal 5000, result.attributes[:paid_amount_cents]
+    end
+  end
+
+  test "Money in a foreign currency raises ArgumentError naming the claim and field" do
+    with_tenant(TENANT) do
+      claim = create_claim("CLM-AMT-FX")
+
+      error = assert_raises(ArgumentError) do
+        Corvid::RemittanceAmounts.call(claim: claim, remittances: [
+          remittance(claim_identifier: "CLM-AMT-FX", paid_amount: Money.from_amount(50, "EUR"))
+        ])
+      end
+
+      assert_match(/CLM-AMT-FX/, error.message)
+      assert_match(/paid_amount/, error.message)
+    end
+  end
+
+  test "leading-decimal and plus-prefixed amount strings parse to cents" do
+    with_tenant(TENANT) do
+      claim = create_claim("CLM-AMT-EDGE")
+
+      result = Corvid::RemittanceAmounts.call(claim: claim, remittances: [
+        remittance(remittance_identifier: "REM-DOT", claim_identifier: "CLM-AMT-EDGE",
+                   paid_amount: ".50"),
+        remittance(remittance_identifier: "REM-PLUS", payment_date: Date.new(2026, 10, 2),
+                   claim_identifier: "CLM-AMT-EDGE", paid_amount: "+50")
+      ])
+
+      assert_equal 50, result.totals[:paid]
+      assert_equal 5050, result.attributes[:paid_amount_cents]
+    end
+  end
+
   test "ISO-8601 string payment_date orders with Date and Time values" do
     with_tenant(TENANT) do
       claim = create_claim("CLM-AMT-ORDER")

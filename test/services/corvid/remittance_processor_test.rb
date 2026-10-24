@@ -284,6 +284,126 @@ class Corvid::RemittanceProcessorTest < ActiveSupport::TestCase
     end
   end
 
+  test "batch status ignores adapter-history denials when the batch line does not set status" do
+    with_tenant(TENANT) do
+      claim = create_claim("CLM-R-S1-DENY-HIST")
+      prior_denied_at = 3.days.ago.change(usec: 0)
+      claim.update!(
+        status: "appealed",
+        denial_reason_codes: %w[PR-100],
+        denied_at: prior_denied_at
+      )
+
+      history = [
+        remittance(remittance_identifier: "REM-R1", payment_date: Date.new(2026, 10, 1),
+                   claim_identifier: "CLM-R-S1-DENY-HIST", paid_amount: 0, status: "denied",
+                   adjustment_codes: [ "CO-97" ])
+      ]
+      batch = [
+        remittance(remittance_identifier: "REM-R2", payment_date: Date.new(2026, 10, 20),
+                   claim_identifier: "CLM-R-S1-DENY-HIST", paid_amount: 0,
+                   patient_responsibility: 10.0)
+      ]
+
+      result = call_processor(batch, adapter: HistoryAdapter.new(history: history))
+
+      claim.reload
+      assert_equal "appealed", claim.status
+      assert_equal %w[PR-100], claim.denial_reason_codes
+      assert_equal prior_denied_at, claim.denied_at
+      assert_equal 1, result.updated
+      assert_equal 0, result.denied
+      assert_equal 1000, claim.patient_responsibility_cents
+    end
+  end
+
+  test "batch status ignores adapter-history payments when the batch line does not set status" do
+    with_tenant(TENANT) do
+      claim = create_claim("CLM-R-S1-PAID-HIST")
+      claim.update!(status: "accepted")
+
+      history = [
+        remittance(remittance_identifier: "REM-R1", payment_date: Date.new(2026, 10, 1),
+                   claim_identifier: "CLM-R-S1-PAID-HIST", paid_amount: 250.0)
+      ]
+      batch = [
+        remittance(remittance_identifier: "REM-R2", payment_date: Date.new(2026, 10, 2),
+                   claim_identifier: "CLM-R-S1-PAID-HIST", paid_amount: 0, adjustment_amount: 5.0)
+      ]
+
+      result = call_processor(batch, adapter: HistoryAdapter.new(history: history))
+
+      claim.reload
+      assert_equal "accepted", claim.status
+      assert_equal 25_000, claim.paid_amount_cents
+      assert_equal 500, claim.adjustment_amount_cents
+      assert_equal 0, result.paid
+      assert_equal 0, result.denied
+    end
+  end
+
+  test "a remittance in history and batch still sets status from the batch contribution" do
+    with_tenant(TENANT) do
+      claim = create_claim("CLM-R-S1-REM-X")
+      line = remittance(remittance_identifier: "REM-X", payment_date: Date.new(2026, 10, 1),
+                        claim_identifier: "CLM-R-S1-REM-X", paid_amount: 0, status: "denied",
+                        adjustment_codes: [ "CO-50" ])
+
+      result = call_processor(
+        [ line.deep_dup ],
+        adapter: HistoryAdapter.new(history: [ line ])
+      )
+
+      claim.reload
+      assert claim.denied?
+      assert_equal %w[CO-50], claim.denial_reason_codes
+      assert_equal 1, result.denied
+      assert_equal 0, result.updated
+    end
+  end
+
+  test "Money matching claim currency on processor and reconciliation paths" do
+    with_tenant(TENANT) do
+      referral = referral_for("R-MONEY-EQ")
+      claim = accepted_claim_for_referral("CLM-R-MONEY-EQ", referral, billed: 500.0)
+      remittances = [
+        remittance(remittance_identifier: "REM-MNY", claim_identifier: claim.claim_identifier,
+                   paid_amount: Money.from_amount(50, "USD"))
+      ]
+
+      Corvid::RemittanceProcessor.call(remittances)
+      processor_cents = claim.reload.paid_amount_cents
+
+      claim.update!(paid_amount_cents: nil, paid_date: nil, status: "accepted")
+      reconcile_against(claim, remittances)
+
+      assert_equal 5000, processor_cents
+      assert_equal 5000, claim.reload.paid_amount_cents
+    end
+  end
+
+  test "foreign currency Money on a line aborts the batch without writing any claim" do
+    with_tenant(TENANT) do
+      ok_claim = create_claim("CLM-R-MNY-OK")
+      create_claim("CLM-R-MNY-BAD")
+
+      error = assert_raises(ArgumentError) do
+        Corvid::RemittanceProcessor.call([
+          remittance(claim_identifier: "CLM-R-MNY-OK", paid_amount: 25.0),
+          remittance(claim_identifier: "CLM-R-MNY-BAD",
+                     paid_amount: Money.from_amount(50, "EUR"))
+        ])
+      end
+
+      assert_match(/CLM-R-MNY-BAD/, error.message)
+      assert_match(/paid_amount/, error.message)
+
+      ok_claim.reload
+      assert_nil ok_claim.paid_amount_cents
+      assert_equal "accepted", ok_claim.status
+    end
+  end
+
   test "unknown remittance history leaves batch claims unchanged and counts unknown" do
     with_tenant(TENANT) do
       claim = create_claim("CLM-R-UNK")
