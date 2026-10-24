@@ -105,12 +105,12 @@ module Corvid
                               aian_verified: aian_verified, basis: basis, coverage_group: coverage_group)
         end
 
-        # The tier we are about to refuse, so the lens can keep a higher
+        # The refusal applies no tier, so the lens is not measured
+        # against the refused rule. Keep a non-expansion 100 percent
         # tier more evidence could reach and drop a lower one. The gate
         # itself clears the applied rule.
-        refused_expansion = actual if !expansion_open && actual&.expansion?
         actual, reason = gate_expansion_tier(actual, reason, expansion_open)
-        best = best_after_expansion_refusal(best, refused_expansion, reason)
+        best = best_after_expansion_refusal(best, reason)
 
         missing = missing_evidence(best, actual, aian_verified: aian_verified, basis: basis,
                                                  evidence: evidence, backed: backed, reason: reason)
@@ -275,30 +275,18 @@ module Corvid
       end
 
       # A refused expansion tier is not a misclassification down to a
-      # lower tier. Keep a best-available rule only when it sits strictly
-      # above the tier we refused (in practice a 100 percent tier more
-      # evidence could reach). Otherwise leave the lens blank so
-      # misclassification_gap? stays false. An unevidenced 100 percent
+      # lower tier. The refusal applies no tier, so do not compare the
+      # candidate with the refused rule: a 100 percent phase-in row
+      # would hide a reachable IHS/638 tier at the same percent. Keep a
+      # best-available rule only when it is a non-expansion 100 percent
+      # tier more evidence could reach. Otherwise leave the lens blank
+      # so misclassification_gap? stays false. An unevidenced 100 percent
       # keeps its own lens: that refusal is a different reason.
-      def best_after_expansion_refusal(best, refused, reason)
+      def best_after_expansion_refusal(best, reason)
         return best unless reason == EXPANSION_STATE_NOT_CONFIGURED
-        return nil if best.nil? || refused.nil? || best.expansion?
-        return nil unless tier_above?(best, refused)
+        return nil if best.nil? || best.expansion? || !best.hundred_percent?
 
         best
-      end
-
-      # Fail closed when either percent is missing, unless the candidate
-      # is a 100 percent tier and the refused rule is not: that tier is
-      # above the expansion floor even if a percent was left unset.
-      def tier_above?(candidate, floor)
-        return false if candidate.nil? || floor.nil?
-
-        high = candidate.fmap_percent
-        low = floor.fmap_percent
-        return high > low if !high.nil? && !low.nil?
-
-        candidate.hundred_percent? && !floor.hundred_percent?
       end
 
       def best_match(rules, authority_type:, aian_verified:, basis:, coverage_group:)
