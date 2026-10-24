@@ -20,7 +20,7 @@ class AddEligibilityGroupAsOfToCorvidAlternateResourceChecks < ActiveRecord::Mig
   private
 
   def as_of_sql
-    "eligibility_group_as_of IS NULL OR eligibility_group_source IN (#{quoted(STATED_SOURCES)})"
+    "eligibility_group_as_of IS NULL OR (eligibility_group_source IS NOT NULL AND eligibility_group_source IN (#{quoted(STATED_SOURCES)}))"
   end
 
   def quoted(values)

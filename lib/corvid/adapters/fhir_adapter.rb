@@ -105,14 +105,16 @@ module Corvid
         \z
       /x
       # FHIR instant: YYYY-MM-DDThh:mm:ss(.fraction)? then Z or ±hh:mm.
-      # Ranges are not encoded here. Time.iso8601 rolls an impossible
-      # field forward, and the field round-trip rejects that.
+      # Year 0000 is not a FHIR year. The offset is Z or within ±14:00:
+      # hours 00-13 with minutes 00-59, or exactly 14:00. Calendar ranges
+      # are not encoded here. Time.iso8601 rolls an impossible field
+      # forward, and the field round-trip rejects that.
       FHIR_INSTANT = /
         \A
-        (?<year>[0-9]{4})-(?<month>[0-9]{2})-(?<day>[0-9]{2})
+        (?<year>#{FHIR_YEAR})-(?<month>[0-9]{2})-(?<day>[0-9]{2})
         T(?<hour>[0-9]{2}):(?<min>[0-9]{2}):(?<sec>[0-9]{2})
         (?:\.[0-9]+)?
-        (?<offset>Z|[+-][0-9]{2}:[0-9]{2})
+        (?<offset>Z|[+-](?:(?:0[0-9]|1[0-3]):[0-5][0-9]|14:00))
         \z
       /x
       FHIR_INSTANT_CLOCK = %i[year month day hour min sec].freeze
@@ -1449,9 +1451,13 @@ module Corvid
       end
 
       # Coverage.meta.lastUpdated is when the source produced the answer.
-      # Only a FHIR instant is known. Anything else is nil, never now.
+      # Only a FHIR instant is known. A non-Hash meta, or anything that
+      # is not an instant, is nil, never now.
       def coverage_answer_as_of(coverage)
-        fhir_instant_time(coverage.dig("meta", "lastUpdated"))
+        meta = coverage["meta"]
+        return unless meta.is_a?(Hash)
+
+        fhir_instant_time(meta["lastUpdated"])
       end
 
       # Parse a FHIR instant and return it in UTC. The source fields are
