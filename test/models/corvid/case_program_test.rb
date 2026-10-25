@@ -45,6 +45,24 @@ class Corvid::CaseProgramTest < ActiveSupport::TestCase
     Corvid::ProgramRegistry.reset!
   end
 
+  test "program_name returns program_code when registry entry is missing" do
+    with_tenant(TENANT) do
+      cp = create_case_program(program_code: "tb")
+      cp.update_column(:program_code, "ghost_code")
+      assert_equal "ghost_code", cp.reload.program_name
+    end
+  end
+
+  test "program_name strips surrounding whitespace from registry display_name" do
+    Corvid::ProgramRegistry.register("padded_dn_prog", display_name: "  Padded Label  ", milestones: [])
+    with_tenant(TENANT) do
+      cp = create_case_program(program_code: "padded_dn_prog")
+      assert_equal "Padded Label", cp.program_name
+    end
+  ensure
+    Corvid::ProgramRegistry.reset!
+  end
+
   test "program_name column is not stored on corvid_case_programs" do
     refute_includes Corvid::CaseProgram.column_names, "program_name"
   end
