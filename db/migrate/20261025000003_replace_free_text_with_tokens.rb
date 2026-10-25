@@ -19,6 +19,10 @@ class ReplaceFreeTextWithTokens < ActiveRecord::Migration[8.1]
   ASSIGNED_REVIEWER_CHECK = "corvid_prc_referrals_assigned_reviewer_check"
 
   ACTIVITY_CODES = %w[submitted_via_fhir_pas assigned_to_reviewer].freeze
+  # Literal kinds for the evidence CHECK. A replay must not follow a later
+  # change to the model list, or the rebuilt constraint would differ from
+  # the one this migration shipped.
+  EVIDENCE_SUPPORTS_KINDS = %w[aian_status].freeze
   SUBMITTED_CODE = "submitted_via_fhir_pas"
   ASSIGNED_CODE = "assigned_to_reviewer"
   SUBMITTED_TEXT = "Submitted via FHIR PAS"
@@ -159,9 +163,9 @@ class ReplaceFreeTextWithTokens < ActiveRecord::Migration[8.1]
     [ supports_kind_jsonpath, ref_token_jsonpath, exact_evidence_keys_jsonpath ].join(" && ")
   end
 
-  # Kinds match FmapRule::CALLER_EVIDENCE_KINDS and are jsonpath string literals.
+  # Kinds are jsonpath string literals taken from EVIDENCE_SUPPORTS_KINDS.
   def supports_kind_jsonpath
-    match = Corvid::FmapRule::CALLER_EVIDENCE_KINDS.map { |kind| "@.value == \"#{kind}\"" }.join(" || ")
+    match = EVIDENCE_SUPPORTS_KINDS.map { |kind| "@.value == \"#{kind}\"" }.join(" || ")
     "exists(@.keyvalue() ? (@.key == \"supports\" && @.value.type() == \"string\" && (#{match})))"
   end
 

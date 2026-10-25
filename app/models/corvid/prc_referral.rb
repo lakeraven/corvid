@@ -42,9 +42,9 @@ module Corvid
     validates :referral_identifier, uniqueness: { scope: [ :tenant_identifier, :facility_identifier ] }
 
     # String enum (ADR 0002), stored as text and constrained by a CHECK.
-    # The type is declared so the model can load while the column is absent
-    # (ReplaceFreeTextWithTokens#down). Display text never includes
-    # reviewer_identifier (ADR 0003).
+    # reviewer_identifier is always validated through its attribute reader.
+    # A partial load raises and is rejected instead of skipping the check.
+    # Display text never includes reviewer_identifier (ADR 0003).
     CURRENT_ACTIVITY_LABELS = {
       "submitted_via_fhir_pas" => "Submitted via FHIR PAS",
       "assigned_to_reviewer" => "Assigned to reviewer"
@@ -56,8 +56,7 @@ module Corvid
       assigned_to_reviewer: "assigned_to_reviewer"
     }, validate: { allow_nil: true }
 
-    validates :reviewer_identifier, presence: true, if: :reviewer_required?
-    validate :reviewer_identifier_is_opaque_token, if: :reviewer_identifier_column?
+    validate :reviewer_identifier_is_opaque_token
 
     # Referrals for a given patient. Joins the parent Case since the
     # patient_identifier lives there (the referral is case-scoped).
@@ -395,19 +394,20 @@ module Corvid
 
     private
 
-    def reviewer_identifier_column?
-      has_attribute?(:reviewer_identifier)
-    end
-
     def reviewer_required?
-      reviewer_identifier_column? && current_activity_code == "assigned_to_reviewer"
+      current_activity_code == "assigned_to_reviewer"
     end
 
+    # The attribute reader raises when the column was not loaded. Recording
+    # that as an error fails closed: a partial load must not look like a nil
+    # reviewer and skip the token check. Messages do not include the value.
     def reviewer_identifier_is_opaque_token
-      value = self[:reviewer_identifier]
-      return if value.nil?
-      return if OpaqueToken.valid?(value)
+      value = reviewer_identifier
+      errors.add(:reviewer_identifier, :blank) if reviewer_required? && value.blank?
+      return if value.nil? || OpaqueToken.valid?(value)
 
+      errors.add(:reviewer_identifier, "must be an opaque token")
+    rescue ActiveModel::MissingAttributeError
       errors.add(:reviewer_identifier, "must be an opaque token")
     end
 
