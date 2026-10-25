@@ -181,6 +181,15 @@ module Corvid
       end
     end
 
+    test "FmapDetermination model rejects lowercase jurisdiction before the database" do
+      with_tenant(TENANT) do
+        determination = create_fmap_determination!
+        determination.jurisdiction = "ny"
+        refute determination.valid?
+        assert determination.errors[:jurisdiction].present?
+      end
+    end
+
     test "corvid_fmap_determinations.missing_evidence rejects arrays with unknown elements" do
       with_tenant(TENANT) do
         determination = create_fmap_determination!
@@ -214,6 +223,21 @@ module Corvid
         determination.missing_evidence = [ "bogus_evidence" ]
         refute determination.valid?
         assert determination.errors[:missing_evidence].present?
+      end
+    end
+
+    test "FmapDetermination model rejects missing_evidence jsonb scalar before the database" do
+      with_tenant(TENANT) do
+        determination = create_fmap_determination!
+        determination.missing_evidence = "evidence_refs"
+        refute determination.valid?
+        assert determination.errors[:missing_evidence].present?
+      end
+    end
+
+    test "FmapClassificationService.missing_evidence_term rejects unknown terms" do
+      assert_raises(ArgumentError) do
+        FmapClassificationService.missing_evidence_term(:not_a_term)
       end
     end
 

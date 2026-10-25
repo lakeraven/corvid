@@ -225,6 +225,72 @@ module Corvid
       end
     end
 
+    test "migrate up counts unknown rule keys without echoing key values" do
+      migration = require_constraints_migration!
+      FmapRuleLoader.load_defaults! if defined?(FmapRuleLoader)
+
+      specs = [
+        {
+          factory: :fmap_determination,
+          column: "best_available_rule_key",
+          apply_violation: ->(record, bad_key) { record.update_columns(best_available_rule_key: bad_key) },
+          clear_violation: ->(record) { record.update_columns(best_available_rule_key: nil) }
+        },
+        {
+          factory: :fmap_determination_with_rule,
+          column: "rule_key",
+          apply_violation: ->(record, bad_key) { record.update_columns(rule_key: bad_key) },
+          clear_violation: ->(record) { record.update_columns(rule_key: "us-regular") }
+        }
+      ]
+
+      specs.each do |spec|
+        bad_key = "no-such-rule-#{SecureRandom.hex(3)}"
+        record = nil
+
+        ActiveRecord::Migration.suppress_messages { migration.migrate(:down) }
+
+        begin
+          with_tenant(TENANT) do
+            record = build_factory_record!(spec[:factory])
+            spec[:apply_violation].call(record, bad_key)
+          end
+
+          error = assert_raises(ActiveRecord::StatementInvalid) do
+            ActiveRecord::Migration.suppress_messages { migration.migrate(:up) }
+          end
+
+          message = error.message
+          assert_match(/corvid_fmap_determinations/, message)
+          assert_match(/#{spec[:column]}/, message)
+          assert_match(/1 violating row/, message)
+          refute_includes message, bad_key
+        ensure
+          with_tenant(TENANT) do
+            if record&.persisted?
+              record.reload
+              spec[:clear_violation].call(record)
+            end
+          end
+          ActiveRecord::Migration.suppress_messages { migration.migrate(:up) }
+          reset_column_information
+        end
+      end
+    end
+
+    test "migration vocabulary constants match application writers" do
+      require_constraints_migration!
+      assert_equal PrcReferral::PRIORITY_SYSTEMS, AddDbConstraintsForUnboundedEnumColumns::PRIORITY_SYSTEMS
+      assert_equal PrcEligibilityDecision::PROVIDER_CONFIDENCES,
+                   AddDbConstraintsForUnboundedEnumColumns::PROVIDER_CONFIDENCES
+      assert_equal PrcOverpaymentAnalysis::PAYMENT_SYSTEMS,
+                   AddDbConstraintsForUnboundedEnumColumns::PAYMENT_SYSTEMS
+      assert_equal PrcOverpaymentAnalysis::RECOVERY_CONFIDENCES,
+                   AddDbConstraintsForUnboundedEnumColumns::RECOVERY_CONFIDENCES
+      assert_equal FmapClassificationService::MISSING_EVIDENCE,
+                   AddDbConstraintsForUnboundedEnumColumns::MISSING_EVIDENCE
+    end
+
     private
 
     def constraints_migration_paths
