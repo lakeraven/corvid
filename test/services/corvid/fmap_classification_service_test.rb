@@ -4,7 +4,7 @@ require "test_helper"
 
 module Corvid
   class FmapClassificationServiceTest < ActiveSupport::TestCase
-    AIAN_EVIDENCE = { "supports" => "aian_status", "ref" => "attestation:tok_example_aian" }.freeze
+    AIAN_EVIDENCE = { "supports" => "aian_status", "ref" => "at_01HK8B7Z9XCQVG3F8N5K0R4MWB" }.freeze
 
     setup do
       Corvid::TenantContext.current_tenant_identifier = "tnt_example"
@@ -153,7 +153,7 @@ module Corvid
         facility_authority: @uio,
         aian_verified: true,
         evidence_refs: [ AIAN_EVIDENCE ],
-        claim_reference: "clm_example_1"
+        claim_identifier: "cl_01HK8B7Z9XCQVG3F8N5K0R4MWC"
       )
 
       determination.category = "non_medicaid"

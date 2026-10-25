@@ -8,7 +8,7 @@ module Corvid
   # cites the rule it applied, a 100 percent row rests on the rule's own
   # evidence, and a correction chain has exactly one current row.
   class FmapDeterminationTest < ActiveSupport::TestCase
-    AIAN_EVIDENCE = { "supports" => "aian_status", "ref" => "attestation:tok_example_aian" }.freeze
+    AIAN_EVIDENCE = { "supports" => "aian_status", "ref" => "at_01HK8B7Z9XCQVG3F8N5K0R4MWB" }.freeze
 
     setup do
       Corvid::TenantContext.current_tenant_identifier = "tnt_example"
@@ -20,7 +20,7 @@ module Corvid
       )
     end
 
-    def arpa_determination(claim_reference: nil, encounter_identifier: "enc_example_20")
+    def arpa_determination(claim_identifier: nil, encounter_identifier: "enc_example_20")
       FmapClassificationService.classify!(
         encounter_identifier: encounter_identifier,
         date_of_service: Date.new(2022, 6, 1),
@@ -28,7 +28,7 @@ module Corvid
         facility_authority: @uio,
         aian_verified: true,
         evidence_refs: [ AIAN_EVIDENCE ],
-        claim_reference: claim_reference
+        claim_identifier: claim_identifier
       )
     end
 

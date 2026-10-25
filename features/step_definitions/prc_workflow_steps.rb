@@ -2,6 +2,10 @@
 
 # PRC workflow step definitions (ported from the predecessor app)
 
+REVIEWER_IEN_TOKENS = {
+  "456" => "rv_01HK8B7Z9XCQVG3F8N5K0R4MWD"
+}.freeze
+
 Given("a service request in {string} workflow state") do |state|
   case state
   when "submitted"
@@ -84,7 +88,15 @@ When("the request workflow state changes to {string}") do |state|
 end
 
 When("I assign reviewer with IEN {string}") do |ien|
-  @referral.update!(current_activity: "Assigned to reviewer #{ien}")
+  assert_includes Corvid::PrcReferral.column_names, "current_activity_code"
+  assert_includes Corvid::PrcReferral.column_names, "reviewer_identifier"
+  token = REVIEWER_IEN_TOKENS.fetch(ien) do
+    raise KeyError, "no synthetic reviewer token mapped for IEN #{ien}"
+  end
+  @referral.update!(
+    current_activity_code: "assigned_to_reviewer",
+    reviewer_identifier: token
+  )
 end
 
 Then("the service request status should be {string}") do |status|
@@ -135,11 +147,17 @@ Then("the request should be flagged as overdue") do
 end
 
 Then("the request should show assigned reviewer IEN {string}") do |ien|
-  assert_includes @referral.current_activity, ien
+  assert_includes Corvid::PrcReferral.column_names, "reviewer_identifier"
+  expected = REVIEWER_IEN_TOKENS.fetch(ien)
+  @referral.reload
+  assert_equal expected, @referral.reviewer_identifier
+  assert_equal "Assigned to reviewer", @referral.current_activity
 end
 
 Then("the status history should record the assignment") do
-  refute_nil @referral.current_activity
+  assert_includes Corvid::PrcReferral.column_names, "current_activity_code"
+  @referral.reload
+  assert @referral.current_activity_code.present?
 end
 
 Then("the authorization should be expired") do
