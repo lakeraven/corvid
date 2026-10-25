@@ -10,6 +10,8 @@ module Corvid
     CLAIM_TOKEN = "cl_01HK8B7Z9XCQVG3F8N5K0R4MWC"
     SUBMITTED_VIA_FHIR_TEXT = "Submitted via FHIR PAS"
     ASSIGNED_REVIEWER_TEXT = "Assigned to reviewer 12345"
+    REVIEWER_TOKEN = "rv_01HK8B7Z9XCQVG3F8N5K0R4MWD"
+    MIGRATION_ABORT_PREFIX = "refusing to replace free text with tokens: "
 
     setup do
       Corvid::TenantContext.current_tenant_identifier = TENANT
@@ -102,6 +104,99 @@ module Corvid
       ensure_up!
     end
 
+    test "F1 up aborts when evidence_refs have free-text supports with a token ref" do
+      determination_id = nil
+      with_migration_down do
+        determination_id = insert_down_state_determination!
+        bad_refs = [ { "supports" => "TEST,PATIENT 001", "ref" => AIAN_EVIDENCE.fetch("ref") } ]
+        FmapDetermination.find(determination_id).update_columns(evidence_refs: bad_refs)
+      end
+
+      error = assert_raises(StandardError) { migrate_tokens!(:up) }
+      refute_includes error.message, "TEST,PATIENT 001"
+      assert_match(/1 row\(s\) with a non-token evidence ref/, error.message)
+
+      with_migration_down do
+        refs = FmapDetermination.find(determination_id).evidence_refs
+        assert_equal "TEST,PATIENT 001", refs.first["supports"]
+      end
+    ensure
+      cleanup_determination!(determination_id)
+      ensure_up!
+    end
+
+    test "F1 up aborts when evidence_refs carry an extra key with counts only" do
+      determination_id = nil
+      with_migration_down do
+        determination_id = insert_down_state_determination!
+        bad_refs = [ AIAN_EVIDENCE.merge("note" => "synthetic-note") ]
+        FmapDetermination.find(determination_id).update_columns(evidence_refs: bad_refs)
+      end
+
+      error = assert_raises(StandardError) { migrate_tokens!(:up) }
+      refute_includes error.message, "synthetic-note"
+      assert_match(/1 row\(s\) with a non-token evidence ref/, error.message)
+    ensure
+      cleanup_determination!(determination_id)
+      ensure_up!
+    end
+
+    test "M5 up abort message states exact non-token claim_reference counts" do
+      determination_ids = []
+      with_migration_down do
+        2.times do |index|
+          determination_ids << insert_down_state_determination!(claim_reference: "clm_mig_bad_#{index}")
+        end
+      end
+
+      error = assert_raises(StandardError) { migrate_tokens!(:up) }
+      assert_equal(
+        "#{MIGRATION_ABORT_PREFIX}2 non-token claim_reference row(s), 0 row(s) with a non-token evidence ref",
+        error.message
+      )
+    ensure
+      determination_ids.each { |id| cleanup_determination!(id) }
+      ensure_up!
+    end
+
+    test "M6 up drops unmapped current_activity variants without mapping them" do
+      [
+        "submitted via fhir pas",
+        "Submitted via FHIR PAS ",
+        "FHIR something"
+      ].each do |activity_text|
+        referral_id = nil
+        with_migration_down do
+          referral_id = insert_down_state_referral!(current_activity: activity_text)
+        end
+
+        migrate_tokens!(:up)
+        row = PrcReferral.find(referral_id)
+        assert_nil row.current_activity_code, "expected NULL code for #{activity_text.inspect}"
+        assert_nil row.reviewer_identifier
+      ensure
+        cleanup_referral!(referral_id)
+        ensure_up!
+      end
+    end
+
+    test "M12 down restores exact display text for mapped activity codes" do
+      submitted_id = insert_up_state_referral!(current_activity_code: "submitted_via_fhir_pas", reviewer_identifier: nil)
+      assigned_id = insert_up_state_referral!(
+        current_activity_code: "assigned_to_reviewer",
+        reviewer_identifier: REVIEWER_TOKEN
+      )
+
+      migrate_tokens!(:down)
+
+      assert_equal SUBMITTED_VIA_FHIR_TEXT, PrcReferral.find(submitted_id).read_attribute(:current_activity)
+      assert_equal "Assigned to reviewer", PrcReferral.find(assigned_id).read_attribute(:current_activity)
+    ensure
+      cleanup_referral!(submitted_id)
+      cleanup_referral!(assigned_id)
+      ensure_up!
+    end
+
     test "up aborts when evidence_refs contain a non-token ref with counts only" do
       determination_id = nil
       bad_ref = "attestation:tok_example_aian"
@@ -161,6 +256,18 @@ module Corvid
 
     def prc_columns
       PrcReferral.connection.columns(:corvid_prc_referrals).map(&:name)
+    end
+
+    def insert_up_state_referral!(current_activity_code:, reviewer_identifier:)
+      kase = Case.create!(patient_identifier: "pt_mig_up_#{SecureRandom.hex(2)}", facility_identifier: FACILITY)
+      referral = PrcReferral.create!(
+        case: kase,
+        referral_identifier: "rf_mig_up_#{SecureRandom.hex(3)}",
+        facility_identifier: FACILITY,
+        current_activity_code: current_activity_code,
+        reviewer_identifier: reviewer_identifier
+      )
+      referral.id
     end
 
     def insert_down_state_referral!(current_activity:)

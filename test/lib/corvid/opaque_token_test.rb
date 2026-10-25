@@ -29,6 +29,18 @@ module Corvid
       refute OpaqueToken.valid?(:pt_01HK8B7Z9XCQVG3F8N5K0R4MWB)
     end
 
+    test "M7 trailing newline after a valid token is not an opaque token" do
+      assert_opaque_token_implemented!
+      refute OpaqueToken.valid?("#{ADR_EXAMPLE}\n")
+    end
+
+    test "M8 a prefix or leading space before a valid token is not an opaque token" do
+      assert_opaque_token_implemented!
+      refute OpaqueToken.valid?("1#{ADR_EXAMPLE}")
+      refute OpaqueToken.valid?("-#{ADR_EXAMPLE}")
+      refute OpaqueToken.valid?(" #{ADR_EXAMPLE}")
+    end
+
     test "a ULID containing Crockford-forbidden letters is not an opaque token" do
       assert_opaque_token_implemented!
       refute OpaqueToken.valid?("pt_01HK8B7Z9XCQVG3F8N5K0R4MWI")

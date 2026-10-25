@@ -178,6 +178,18 @@ module Corvid
       assert determination.errors[:evidence_refs].any?
     end
 
+    test "M9 the database rejects claim_identifier longer than a token via update_columns" do
+      assert_opaque_token_implemented!
+      row = classified_determination
+      too_long = "#{CLAIM_TOKEN}x"
+      assert_raises(ActiveRecord::StatementInvalid, ActiveRecord::CheckViolation) do
+        FmapDetermination.transaction(requires_new: true) do
+          row.update_columns(claim_identifier: too_long)
+        end
+      end
+      assert_nil row.reload.read_attribute(:claim_identifier)
+    end
+
     test "the database rejects evidence_refs containing a non-token ref via update_columns" do
       assert_opaque_token_implemented!
       row = classified_determination

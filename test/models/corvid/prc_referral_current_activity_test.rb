@@ -33,6 +33,16 @@ module Corvid
       refute_includes referral.current_activity, "456"
     end
 
+    test "M3 assigned_to_reviewer with a non-token reviewer_identifier is invalid at the model" do
+      assert_activity_codes_implemented!
+      referral = build_referral(
+        current_activity_code: "assigned_to_reviewer",
+        reviewer_identifier: "reviewer-synthetic-001"
+      )
+      refute referral.valid?
+      assert_includes referral.errors[:reviewer_identifier], "must be an opaque token"
+    end
+
     test "reviewer_identifier is required when the code is assigned_to_reviewer" do
       assert_activity_codes_implemented!
       referral = build_referral(
@@ -70,6 +80,20 @@ module Corvid
         end
       end
       assert_equal "submitted_via_fhir_pas", referral.reload.current_activity_code
+    end
+
+    test "M10 the database rejects assigned_to_reviewer with a NULL reviewer_identifier via update_columns" do
+      assert_activity_codes_implemented!
+      referral = create_referral!(
+        current_activity_code: "assigned_to_reviewer",
+        reviewer_identifier: REVIEWER_TOKEN
+      )
+      assert_raises(ActiveRecord::StatementInvalid, ActiveRecord::CheckViolation) do
+        PrcReferral.transaction(requires_new: true) do
+          referral.update_columns(reviewer_identifier: nil)
+        end
+      end
+      assert_equal REVIEWER_TOKEN, referral.reload.reviewer_identifier
     end
 
     test "the database rejects a non-token reviewer_identifier via update_columns" do
