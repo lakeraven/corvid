@@ -29,6 +29,6 @@ Feature: FMAP classification (rules-as-data, by date of service)
     And the missing evidence includes "evidence_refs"
 
   Scenario: A claimed determination is immutable and corrections append
-    When an encounter at "fac_uio_example" with date of service "2022-06-01" is classified and referenced by claim "clm_example_1"
+    When an encounter at "fac_uio_example" with date of service "2022-06-01" is classified and referenced by claim "cl_01HK8B7Z9XCQVG3F8N5K0R4MWC"
     Then editing the determination is rejected as immutable
     And superseding it appends a correction linked from the original

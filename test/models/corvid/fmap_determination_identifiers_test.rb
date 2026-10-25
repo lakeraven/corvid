@@ -49,7 +49,20 @@ module Corvid
 
     test "a non-token claim_identifier makes the model invalid" do
       assert_opaque_token_implemented!
-      determination = classified_determination(claim_identifier: BAD_CLAIM)
+      rule = FmapRule.find_by!(rule_key: "us-arpa-9815-uio-100")
+      determination = FmapDetermination.new(
+        encounter_identifier: "enc_bad_claim_model",
+        date_of_service: Date.new(2022, 6, 1),
+        jurisdiction: "XA",
+        determined_at: Time.current,
+        category: rule.category,
+        rule_key: rule.rule_key,
+        fmap_percent: rule.fmap_percent,
+        rule_citations: [ rule.statutory_citation ],
+        aian_verified: true,
+        evidence_refs: [ AIAN_EVIDENCE ],
+        claim_identifier: BAD_CLAIM
+      )
       refute determination.valid?
       assert determination.errors[:claim_identifier].any?
       determination.errors[:claim_identifier].each do |message|

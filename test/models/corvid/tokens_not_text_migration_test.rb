@@ -106,10 +106,9 @@ module Corvid
       determination_id = nil
       bad_ref = "attestation:tok_example_aian"
       with_migration_down do
-        determination_id = insert_down_state_determination!(
-          claim_reference: nil,
-          evidence_refs: [ AIAN_EVIDENCE, { "supports" => "aian_status", "ref" => bad_ref } ]
-        )
+        determination_id = insert_down_state_determination!
+        bad_refs = [ AIAN_EVIDENCE, { "supports" => "aian_status", "ref" => bad_ref } ]
+        FmapDetermination.find(determination_id).update_columns(evidence_refs: bad_refs)
       end
 
       error = assert_raises(StandardError) { migrate_tokens!(:up) }
@@ -175,22 +174,18 @@ module Corvid
       referral.id
     end
 
-    def insert_down_state_determination!(claim_reference:, evidence_refs: [ AIAN_EVIDENCE ])
-      rule = FmapRule.find_by!(rule_key: "us-arpa-9815-uio-100")
+    def insert_down_state_determination!(claim_reference: nil)
       row = FmapDetermination.create!(
         tenant_identifier: TENANT,
         encounter_identifier: "enc_mig_#{SecureRandom.hex(3)}",
         date_of_service: Date.new(2022, 6, 1),
         jurisdiction: "XA",
         determined_at: Time.current,
-        category: rule.category,
-        rule_key: rule.rule_key,
-        fmap_percent: rule.fmap_percent,
-        rule_citations: [ rule.statutory_citation ],
-        aian_verified: true,
-        evidence_refs: evidence_refs
+        category: FmapClassificationService::UNDETERMINED,
+        determination_reason: FmapClassificationService::NO_RULES_IN_FORCE,
+        evidence_refs: []
       )
-      row.update_columns(claim_reference: claim_reference)
+      row.update_columns(claim_reference: claim_reference) unless claim_reference.nil?
       row.id
     end
 
@@ -200,8 +195,9 @@ module Corvid
       referral = PrcReferral.unscoped.find_by(id: referral_id)
       return if referral.nil?
 
-      Case.unscoped.where(id: referral.case_id).delete_all
+      case_id = referral.case_id
       referral.delete
+      Case.unscoped.where(id: case_id).delete_all
     end
 
     def cleanup_determination!(determination_id)
