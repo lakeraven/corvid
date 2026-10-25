@@ -87,14 +87,14 @@ module Corvid
       ActiveRecord::Migration.suppress_messages do
         AddDbConstraintsForUnboundedEnumColumns.new.migrate(:up)
       end
-      reset_column_information!
+      reset_column_information
     end
 
-    def reset_column_information!
+    def reset_column_information
       [
         Case, PrcReferral, PrcEligibilityDecision, PrcObligation, PrcOverpaymentAnalysis,
         CareTeamMember, ClaimSubmission, FmapDetermination
-      ].each(&:reset_column_information!)
+      ].each(&:reset_column_information)
     end
 
     def assert_db_rejects_update(record, attrs)

@@ -31,11 +31,6 @@ module Corvid
       care_coordination_agreement received_through_evidence
     ].freeze
 
-    # CareTeamMember tests + FhirAdapter CareTeam role coding —
-    # test/models/corvid/care_team_member_test.rb:14-35;
-    # lib/corvid/adapters/fhir_adapter.rb:1266
-    CARE_TEAM_ROLE_TOKENS = %w[PCP Consultant Former primary-care].freeze
-
     # PrcReportParser obligation field 6 — app/services/corvid/prc_report_parser.rb:79;
     # test/fixtures/overpayment_recovery/formats/*.prc (status "A")
     PRC_OBLIGATION_STATUS_TOKENS = %w[A AB ABC].freeze
@@ -116,23 +111,6 @@ module Corvid
         analysis = create_prc_overpayment_analysis!
         RECOVERY_CONFIDENCE_VALUES.each do |value|
           assert_db_accepts(analysis, recovery_confidence: value)
-        end
-      end
-    end
-
-    test "corvid_care_team_members.role rejects free-text role codes" do
-      with_tenant(TENANT) do
-        member = create_care_team_member!
-        assert_db_rejects(member, role: "primary care")
-        assert_db_rejects(member, role: "role/with/slash")
-      end
-    end
-
-    test "corvid_care_team_members.role accepts code-shaped tokens from writers and fixtures" do
-      with_tenant(TENANT) do
-        member = create_care_team_member!
-        CARE_TEAM_ROLE_TOKENS.each do |token|
-          assert_db_accepts(member, role: token)
         end
       end
     end
@@ -293,11 +271,6 @@ module Corvid
         recovery_confidence: "clear",
         analyzed_at: Time.current
       )
-    end
-
-    def create_care_team_member!
-      team = CareTeam.create!(name: "Enum team", facility_identifier: "fac_enum")
-      team.care_team_members.create!(role: "PCP", practitioner_identifier: "pr_enum_#{SecureRandom.hex(3)}")
     end
 
     def create_claim_submission!

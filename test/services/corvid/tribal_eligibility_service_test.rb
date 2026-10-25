@@ -195,6 +195,9 @@ class Corvid::TribalEligibilityServiceTest < ActiveSupport::TestCase
 
     refute decision.eligible?
     assert_includes decision.reason_codes, :provider_unavailable_fail_closed
+    assert_nil decision.provider_confidence
+    row = Corvid::PrcEligibilityDecision.find(decision.decision_id)
+    assert_nil row.provider_confidence
   end
 
   test "decide denies when adapter returns confidence :VERIFIED symbol" do
@@ -208,6 +211,9 @@ class Corvid::TribalEligibilityServiceTest < ActiveSupport::TestCase
 
     refute decision.eligible?
     assert_includes decision.reason_codes, :provider_unavailable_fail_closed
+    assert_nil decision.provider_confidence
+    row = Corvid::PrcEligibilityDecision.find(decision.decision_id)
+    assert_nil row.provider_confidence
   end
 
   test "decide denies when adapter returns nil confidence" do
@@ -234,6 +240,8 @@ class Corvid::TribalEligibilityServiceTest < ActiveSupport::TestCase
 
     refute decision.eligible?
     assert_includes decision.reason_codes, :provider_unavailable_fail_closed
+    row = Corvid::PrcEligibilityDecision.find(decision.decision_id)
+    assert_nil row.provider_confidence
   end
 
   test "decide denies enrolled person with blank tribe_code when facility has contracted tribe" do
