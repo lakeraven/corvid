@@ -69,10 +69,10 @@ module Corvid
     validate :cites_applied_rule, if: :decision_changed?
     validate :evidence_backs_hundred_percent, if: :decision_changed?
     validate :authority_is_own_facilitys, if: :decision_changed?
-    # Not a decision field. Checked whenever the key itself is written, so
-    # an unknown key fails here instead of the foreign key, which aborts
-    # the caller's transaction. An unchanged key is left alone so a later
-    # edit to rule data cannot block appending a correction.
+    # Not a decision field. The check runs when the key is written, so an
+    # unknown key fails here instead of the foreign key, which aborts the
+    # caller's transaction. The foreign key prevents a stored key from
+    # disappearing.
     validate :cites_best_available_rule, if: :best_available_rule_key_written?
 
     scope :current, -> { where(superseded_by_id: nil) }
@@ -139,9 +139,13 @@ module Corvid
       new_record? || DECISION_FIELDS.any? { |field| will_save_change_to_attribute?(field) }
     end
 
+    # The check runs when the key is written. Nil stays valid; any other
+    # value, including a blank string, must name a stored rule. The foreign
+    # key prevents a stored key from disappearing.
     def best_available_rule_key_written?
-      best_available_rule_key.present? &&
-        (new_record? || will_save_change_to_best_available_rule_key?)
+      return false if best_available_rule_key.nil?
+
+      new_record? || will_save_change_to_best_available_rule_key?
     end
 
     def applied_rule

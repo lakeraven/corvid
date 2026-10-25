@@ -68,6 +68,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `corvid_prc_obligations.status` is left unconstrained (owner decision
   pending). The migration counts existing violating rows and aborts without
   updating or coercing them when any row would fail a new constraint.
+  Deployments that ran `FhirAdapter` before #665 may have
+  `corvid_prc_eligibility_decisions.provider_confidence` values outside
+  `verified`, `stale`, and `unavailable`, and the migration will then abort
+  with a count. List the offending values before migrating:
+
+      SELECT DISTINCT provider_confidence
+      FROM corvid_prc_eligibility_decisions
+      WHERE provider_confidence IS NOT NULL
+        AND provider_confidence NOT IN ('verified', 'stale', 'unavailable')
+
+  Decide whether to null them (these are audit rows) before re-running.
   `FmapClassificationService.classify!` now raises `RecordInvalid` for a
   jurisdiction that is not two upper-case letters (for example 'ak'), where
   it used to persist a federal-only row.
