@@ -5,6 +5,10 @@ require "test_helper"
 class Corvid::CaseProgramDropProgramNameMigrationTest < ActiveSupport::TestCase
   TENANT = "tnt_cp_drop_name_mig"
 
+  def unmapped_program_names_error
+    RemoveProgramNameFromCorvidCasePrograms::UnmappedProgramNames
+  end
+
   def migration_paths
     Dir[
       Rails.root.join("db/migrate/*_remove_program_name_from_corvid_case_programs.rb").to_s,
@@ -87,6 +91,28 @@ class Corvid::CaseProgramDropProgramNameMigrationTest < ActiveSupport::TestCase
     enrollment
   end
 
+  def store_program_name!(enrollment, program_name)
+    enrollment.reload
+    enrollment.update_columns(program_name: program_name)
+  end
+
+  def refute_message_includes_row_ids!(message, *rows)
+    rows.each do |row|
+      id = row.id.to_s
+      refute_includes message, id, "expected message not to include row id #{id}"
+      refute_match(/\b#{id}\b/, message, "expected message not to include row id #{id} as a token")
+    end
+  end
+
+  def assert_raises_unmapped!(*rows)
+    error = assert_raises(unmapped_program_names_error) do
+      ActiveRecord::Migration.suppress_messages { migration.migrate(:up) }
+    end
+    Corvid::CaseProgram.reset_column_information
+    refute_message_includes_row_ids!(error.message, *rows)
+    error
+  end
+
   test "down backfills program_name from registry and up drops the column" do
     require_migration!
 
@@ -144,7 +170,82 @@ class Corvid::CaseProgramDropProgramNameMigrationTest < ActiveSupport::TestCase
     end
   end
 
-  test "up raises when stored program_name differs from registry-derived name" do
+  test "up accepts label written by ProgramTemplateService display_name.presence rule" do
+    require_migration!
+
+    code = "access_nl_hist_mig"
+    label = "ACCESS Example Program\n"
+    Corvid::ProgramRegistry.register(code, display_name: label, milestones: [])
+
+    enrollment = create_enrollment!(program_code: code)
+
+    restored_up = false
+    begin
+      migrate_down!
+      store_program_name!(enrollment, label)
+
+      refute ENV.key?("CORVID_DISCARD_PROGRAM_NAMES"),
+             "expected CORVID_DISCARD_PROGRAM_NAMES to be unset"
+
+      migrate_up!
+      restored_up = true
+
+      refute_includes Corvid::CaseProgram.column_names, "program_name"
+    ensure
+      Corvid::ProgramRegistry.reset!
+      restore_schema_up!(restored_up)
+    end
+  end
+
+  test "up accepts label written by migration 20260506 display_name || program_code rule for padded display_name" do
+    require_migration!
+
+    code = "padded_hist_mig"
+    display_name = "  Padded  "
+    Corvid::ProgramRegistry.register(code, display_name: display_name, milestones: [])
+
+    enrollment = create_enrollment!(program_code: code)
+
+    restored_up = false
+    begin
+      migrate_down!
+      store_program_name!(enrollment, display_name)
+
+      migrate_up!
+      restored_up = true
+
+      refute_includes Corvid::CaseProgram.column_names, "program_name"
+    ensure
+      Corvid::ProgramRegistry.reset!
+      restore_schema_up!(restored_up)
+    end
+  end
+
+  test "up accepts label written by migration 20260506 rule for whitespace-only display_name" do
+    require_migration!
+
+    code = "ws_only_hist_mig"
+    display_name = "   "
+    Corvid::ProgramRegistry.register(code, display_name: display_name, milestones: [])
+
+    enrollment = create_enrollment!(program_code: code)
+
+    restored_up = false
+    begin
+      migrate_down!
+      store_program_name!(enrollment, display_name)
+
+      migrate_up!
+      restored_up = true
+
+      refute_includes Corvid::CaseProgram.column_names, "program_name"
+    ensure
+      Corvid::ProgramRegistry.reset!
+      restore_schema_up!(restored_up)
+    end
+  end
+
+  test "up raises when stored program_name differs from every historical and registry-derived name" do
     require_migration!
 
     enrollment = create_enrollment!(program_code: "tb")
@@ -152,23 +253,17 @@ class Corvid::CaseProgramDropProgramNameMigrationTest < ActiveSupport::TestCase
     restored_up = false
     begin
       migrate_down!
-      enrollment.reload
-      enrollment.update_column(:program_name, "Legacy Custom Label")
+      store_program_name!(enrollment, "Legacy Custom Label")
 
-      error = assert_raises(StandardError) do
-        ActiveRecord::Migration.suppress_messages { migration.migrate(:up) }
-      end
-      Corvid::CaseProgram.reset_column_information
+      assert_raises_unmapped!(enrollment)
 
-      assert_match(/\d+/, error.message)
-      refute_includes error.message, "Legacy Custom Label"
       assert_includes Corvid::CaseProgram.column_names, "program_name"
     ensure
       restore_schema_up!(restored_up)
     end
   end
 
-  test "up proceeds when CORVID_DISCARD_PROGRAM_NAMES is set despite mismatched names" do
+  test "up proceeds when CORVID_DISCARD_PROGRAM_NAMES is 1 despite mismatched names" do
     require_migration!
 
     enrollment = create_enrollment!(program_code: "tb")
@@ -177,8 +272,7 @@ class Corvid::CaseProgramDropProgramNameMigrationTest < ActiveSupport::TestCase
     previous = ENV["CORVID_DISCARD_PROGRAM_NAMES"]
     begin
       migrate_down!
-      enrollment.reload
-      enrollment.update_column(:program_name, "Legacy Custom Label")
+      store_program_name!(enrollment, "Legacy Custom Label")
 
       ENV["CORVID_DISCARD_PROGRAM_NAMES"] = "1"
       migrate_up!
@@ -191,8 +285,51 @@ class Corvid::CaseProgramDropProgramNameMigrationTest < ActiveSupport::TestCase
     end
   end
 
-  test "up raises when program_code is not registered" do
+  test "up still raises on custom label when CORVID_DISCARD_PROGRAM_NAMES is 0" do
     require_migration!
+
+    enrollment = create_enrollment!(program_code: "tb")
+
+    restored_up = false
+    previous = ENV["CORVID_DISCARD_PROGRAM_NAMES"]
+    begin
+      migrate_down!
+      store_program_name!(enrollment, "Legacy Custom Label")
+
+      ENV["CORVID_DISCARD_PROGRAM_NAMES"] = "0"
+      assert_raises_unmapped!(enrollment)
+      assert_includes Corvid::CaseProgram.column_names, "program_name"
+    ensure
+      ENV["CORVID_DISCARD_PROGRAM_NAMES"] = previous
+      restore_schema_up!(restored_up)
+    end
+  end
+
+  test "up still raises on custom label when CORVID_DISCARD_PROGRAM_NAMES is true" do
+    require_migration!
+
+    enrollment = create_enrollment!(program_code: "tb")
+
+    restored_up = false
+    previous = ENV["CORVID_DISCARD_PROGRAM_NAMES"]
+    begin
+      migrate_down!
+      store_program_name!(enrollment, "Legacy Custom Label")
+
+      ENV["CORVID_DISCARD_PROGRAM_NAMES"] = "true"
+      assert_raises_unmapped!(enrollment)
+      assert_includes Corvid::CaseProgram.column_names, "program_name"
+    ensure
+      ENV["CORVID_DISCARD_PROGRAM_NAMES"] = previous
+      restore_schema_up!(restored_up)
+    end
+  end
+
+  test "up raises when program_code is not registered even if stored label equals the code" do
+    require_migration!
+
+    unregistered_code = "unreg_label_eq_code_mig"
+    refute Corvid::ProgramRegistry.exists?(unregistered_code)
 
     enrollment = create_enrollment!(program_code: "tb")
 
@@ -200,15 +337,10 @@ class Corvid::CaseProgramDropProgramNameMigrationTest < ActiveSupport::TestCase
     begin
       migrate_down!
       enrollment.reload
-      enrollment.update_column(:program_code, "unregistered_code")
+      enrollment.update_columns(program_code: unregistered_code, program_name: unregistered_code)
 
-      error = assert_raises(StandardError) do
-        ActiveRecord::Migration.suppress_messages { migration.migrate(:up) }
-      end
-      Corvid::CaseProgram.reset_column_information
+      assert_raises_unmapped!(enrollment)
 
-      assert_match(/\d+/, error.message)
-      refute_includes error.message, "unregistered_code"
       assert_includes Corvid::CaseProgram.column_names, "program_name"
     ensure
       restore_schema_up!(restored_up)
