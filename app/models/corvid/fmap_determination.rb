@@ -76,16 +76,7 @@ module Corvid
     }
     scope :for_encounter, ->(identifier) { where(encounter_identifier: identifier) }
 
-    # A check violation aborts the surrounding Postgres transaction. The
-    # savepoint lets a caller rescue CheckViolation and keep going. The
-    # exception still propagates with Postgres's own DETAIL.
-    def self.upsert_all(...)
-      transaction(requires_new: true) { super }
-    end
-
     def claimed?
-      return false unless has_attribute?(:claim_identifier)
-
       claim_identifier.present?
     end
 
@@ -238,9 +229,7 @@ module Corvid
     end
 
     def claim_identifier_is_opaque_token
-      return unless has_attribute?(:claim_identifier)
-
-      value = self[:claim_identifier]
+      value = claim_identifier
       return if value.nil?
       return if OpaqueToken.valid?(value)
 
@@ -250,14 +239,17 @@ module Corvid
     # Each element is exactly { "supports" => kind, "ref" => token }:
     # kind in FmapRule::CALLER_EVIDENCE_KINDS, ref an opaque token.
     # Messages name the contract and do not include the stored value.
-    # Blank refs are not stored: FmapRule.normalize_evidence drops them
-    # before classify persists. An empty array is the absence of evidence.
+    # A non-array is rejected. One non-token ref rejects the list even
+    # when another entry is valid. An empty array is no evidence.
     def evidence_refs_are_opaque_tokens
-      return if evidence_refs.nil? || (evidence_refs.is_a?(Array) && evidence_refs.empty?)
+      return if evidence_refs.is_a?(Array) && evidence_refs.empty?
+      unless evidence_refs.is_a?(Array)
+        add_evidence_entry_contract_error(nil)
+        return
+      end
 
-      entries = evidence_refs.is_a?(Array) ? evidence_refs : nil
-      add_evidence_entry_contract_error(entries)
-      add_evidence_supports_kind_error(entries)
+      add_evidence_entry_contract_error(evidence_refs)
+      add_evidence_supports_kind_error(evidence_refs)
     end
 
     def add_evidence_entry_contract_error(entries)
@@ -296,7 +288,7 @@ module Corvid
     end
 
     def immutable_once_claimed
-      return unless persisted? && has_attribute?(:claim_identifier)
+      return unless persisted?
       return unless claim_identifier_was.present?
 
       illegal = changes.keys - %w[superseded_by_id updated_at]
