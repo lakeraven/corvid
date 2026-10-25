@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_10_22_000001) do
+ActiveRecord::Schema[8.1].define(version: 2026_10_25_000003) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
@@ -376,7 +376,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_22_000001) do
     t.string "best_available_category"
     t.string "best_available_rule_key"
     t.string "category", null: false
-    t.string "claim_reference"
+    t.string "claim_identifier"
     t.string "coverage_group"
     t.datetime "created_at", null: false
     t.date "date_of_service", null: false
@@ -402,13 +402,15 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_22_000001) do
     t.index ["superseded_by_id"], name: "idx_corvid_fmap_determinations_superseded_by", unique: true, where: "(superseded_by_id IS NOT NULL)"
     t.index ["tenant_identifier", "date_of_service"], name: "idx_corvid_fmap_determinations_tenant_dos"
     t.index ["tenant_identifier", "encounter_identifier"], name: "idx_corvid_fmap_determinations_tenant_encounter"
-    t.check_constraint "authority_type IS NULL OR (authority_type::text = ANY (ARRAY['ihs_direct'::character varying, 'contract_638'::character varying, 'compact_638'::character varying, 'uio'::character varying, 'fqhc'::character varying, 'other'::character varying]::text[]))", name: "corvid_fmap_determinations_authority_type_check"
-    t.check_constraint "best_available_category IS NULL OR (best_available_category::text = ANY (ARRAY['fmap_100_ihs_638'::character varying, 'fmap_100_cca'::character varying, 'fmap_100_uio'::character varying, 'fmap_90_expansion'::character varying, 'fmap_regular'::character varying, 'non_medicaid'::character varying]::text[]))", name: "corvid_fmap_determinations_best_category_check"
-    t.check_constraint "category::text = ANY (ARRAY['fmap_100_ihs_638'::character varying, 'fmap_100_cca'::character varying, 'fmap_100_uio'::character varying, 'fmap_90_expansion'::character varying, 'fmap_regular'::character varying, 'non_medicaid'::character varying, 'undetermined'::character varying]::text[])", name: "corvid_fmap_determinations_category_check"
-    t.check_constraint "coverage_group IS NULL OR (coverage_group::text = ANY (ARRAY['expansion_adult'::character varying, 'waiver_adult'::character varying, 'other'::character varying, 'unknown'::character varying]::text[]))", name: "corvid_fmap_determinations_coverage_group_check"
+    t.check_constraint "NOT jsonb_path_exists(evidence_refs, '$[*]?(!(@.\"ref\".type() == \"string\" && @.\"ref\" like_regex \"^[a-z]{2,4}_[0-9A-HJKMNP-TV-Z]{26}$\"))'::jsonpath)", name: "corvid_fmap_determinations_evidence_refs_check"
+    t.check_constraint "authority_type IS NULL OR (authority_type::text = ANY (ARRAY['ihs_direct'::character varying::text, 'contract_638'::character varying::text, 'compact_638'::character varying::text, 'uio'::character varying::text, 'fqhc'::character varying::text, 'other'::character varying::text]))", name: "corvid_fmap_determinations_authority_type_check"
+    t.check_constraint "best_available_category IS NULL OR (best_available_category::text = ANY (ARRAY['fmap_100_ihs_638'::character varying::text, 'fmap_100_cca'::character varying::text, 'fmap_100_uio'::character varying::text, 'fmap_90_expansion'::character varying::text, 'fmap_regular'::character varying::text, 'non_medicaid'::character varying::text]))", name: "corvid_fmap_determinations_best_category_check"
     t.check_constraint "category::text <> 'undetermined'::text OR rule_key IS NULL AND fmap_percent IS NULL AND determination_reason IS NOT NULL", name: "corvid_fmap_determinations_undetermined_check"
-    t.check_constraint "determination_reason IS NULL OR (determination_reason::text = ANY (ARRAY['no_rules_in_force'::character varying, 'no_matching_rule'::character varying, 'unevidenced_100_percent'::character varying]::text[]))", name: "corvid_fmap_determinations_reason_check"
-    t.check_constraint "received_through_basis IS NULL OR (received_through_basis::text = ANY (ARRAY['facility_authority'::character varying, 'cca'::character varying]::text[]))", name: "corvid_fmap_determinations_basis_check"
+    t.check_constraint "category::text = ANY (ARRAY['fmap_100_ihs_638'::character varying::text, 'fmap_100_cca'::character varying::text, 'fmap_100_uio'::character varying::text, 'fmap_90_expansion'::character varying::text, 'fmap_regular'::character varying::text, 'non_medicaid'::character varying::text, 'undetermined'::character varying::text])", name: "corvid_fmap_determinations_category_check"
+    t.check_constraint "claim_identifier IS NULL OR claim_identifier::text ~ '^[a-z]{2,4}_[0-9A-HJKMNP-TV-Z]{26}$'::text", name: "corvid_fmap_determinations_claim_identifier_check"
+    t.check_constraint "coverage_group IS NULL OR (coverage_group::text = ANY (ARRAY['expansion_adult'::character varying::text, 'waiver_adult'::character varying::text, 'other'::character varying::text, 'unknown'::character varying::text]))", name: "corvid_fmap_determinations_coverage_group_check"
+    t.check_constraint "determination_reason IS NULL OR (determination_reason::text = ANY (ARRAY['no_rules_in_force'::character varying::text, 'no_matching_rule'::character varying::text, 'unevidenced_100_percent'::character varying::text]))", name: "corvid_fmap_determinations_reason_check"
+    t.check_constraint "received_through_basis IS NULL OR (received_through_basis::text = ANY (ARRAY['facility_authority'::character varying::text, 'cca'::character varying::text]))", name: "corvid_fmap_determinations_basis_check"
   end
 
   create_table "corvid_fmap_rules", force: :cascade do |t|
@@ -593,7 +595,6 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_22_000001) do
     t.bigint "case_id", null: false
     t.string "referral_identifier", null: false
     t.string "status", default: "draft", null: false
-    t.string "current_activity"
     t.string "authorization_number"
     t.integer "medical_priority"
     t.string "priority_system"
@@ -618,10 +619,15 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_22_000001) do
     t.datetime "management_rejected_at"
     t.string "management_rejected_by_identifier"
     t.string "management_rejection_reason_token"
+    t.string "current_activity_code"
+    t.string "reviewer_identifier"
     t.index ["case_id"], name: "index_corvid_prc_referrals_on_case_id"
     t.index ["tenant_identifier", "facility_identifier", "referral_identifier"], name: "idx_corvid_prc_referrals_tenant_referral", unique: true
     t.index ["tenant_identifier", "status"], name: "index_corvid_prc_referrals_on_tenant_identifier_and_status"
-    t.check_constraint "status::text = ANY (ARRAY['draft'::character varying, 'submitted'::character varying, 'eligibility_review'::character varying, 'management_approval'::character varying, 'alternate_resource_review'::character varying, 'priority_assignment'::character varying, 'committee_review'::character varying, 'exception_review'::character varying, 'authorized'::character varying, 'denied'::character varying, 'deferred'::character varying, 'cancelled'::character varying]::text[])", name: "corvid_prc_referrals_status_check"
+    t.check_constraint "current_activity_code IS NULL OR (current_activity_code::text = ANY (ARRAY['submitted_via_fhir_pas'::character varying, 'assigned_to_reviewer'::character varying]::text[]))", name: "corvid_prc_referrals_current_activity_code_check"
+    t.check_constraint "current_activity_code::text IS DISTINCT FROM 'assigned_to_reviewer'::text OR reviewer_identifier IS NOT NULL", name: "corvid_prc_referrals_assigned_reviewer_check"
+    t.check_constraint "reviewer_identifier IS NULL OR reviewer_identifier::text ~ '^[a-z]{2,4}_[0-9A-HJKMNP-TV-Z]{26}$'::text", name: "corvid_prc_referrals_reviewer_identifier_check"
+    t.check_constraint "status::text = ANY (ARRAY['draft'::character varying::text, 'submitted'::character varying::text, 'eligibility_review'::character varying::text, 'management_approval'::character varying::text, 'alternate_resource_review'::character varying::text, 'priority_assignment'::character varying::text, 'committee_review'::character varying::text, 'exception_review'::character varying::text, 'authorized'::character varying::text, 'denied'::character varying::text, 'deferred'::character varying::text, 'cancelled'::character varying::text])", name: "corvid_prc_referrals_status_check"
   end
 
   create_table "corvid_referral_fulfilment_reports", force: :cascade do |t|

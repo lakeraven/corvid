@@ -57,6 +57,10 @@ module Corvid
     validates :authority_type, inclusion: { in: FacilityAuthority::AUTHORITY_TYPES }, allow_nil: true
     validates :coverage_group, inclusion: { in: FmapClassificationService::COVERAGE_GROUPS }, allow_nil: true
     validates :determination_reason, inclusion: { in: FmapClassificationService::REASONS }, allow_nil: true
+    # ADR 0003 §4: a claim reference is an opaque token, never free text.
+    # The message does not include the value.
+    validate :claim_identifier_is_opaque_token
+    validate :evidence_refs_are_opaque_tokens
     validate :immutable_once_claimed
     validate :supersession_is_final
     # Checked when the decided fields are written, not when only the
@@ -73,7 +77,9 @@ module Corvid
     scope :for_encounter, ->(identifier) { where(encounter_identifier: identifier) }
 
     def claimed?
-      claim_reference.present?
+      return false unless has_attribute?(:claim_identifier)
+
+      claim_identifier.present?
     end
 
     def misclassification_gap?
@@ -224,14 +230,41 @@ module Corvid
       errors.add(:superseded_by_id, "cannot change once set")
     end
 
+    def claim_identifier_is_opaque_token
+      return unless has_attribute?(:claim_identifier)
+
+      value = self[:claim_identifier]
+      return if value.nil?
+      return if OpaqueToken.valid?(value)
+
+      errors.add(:claim_identifier, "must be an opaque token")
+    end
+
+    # Every stored ref is a token string. Blank refs are not stored:
+    # FmapRule.normalize_evidence drops them before classify persists.
+    def evidence_refs_are_opaque_tokens
+      return if evidence_refs.blank?
+      return if Array(evidence_refs).all? { |entry| opaque_evidence_ref?(entry) }
+
+      errors.add(:evidence_refs, "must reference opaque tokens")
+    end
+
+    def opaque_evidence_ref?(entry)
+      return false unless entry.is_a?(Hash)
+
+      OpaqueToken.valid?(entry["ref"] || entry[:ref])
+    end
+
     def immutable_once_claimed
-      return unless persisted? && claim_reference_was.present?
+      return unless persisted? && has_attribute?(:claim_identifier)
+      return unless claim_identifier_was.present?
+
       illegal = changes.keys - %w[superseded_by_id updated_at]
       return if illegal.empty?
+
       errors.add(
         :base,
-        "determination is immutable once referenced by a claim " \
-        "(#{claim_reference_was}); corrections must append via supersede_with!"
+        "determination is immutable once referenced by a claim; corrections must append via supersede_with!"
       )
     end
   end

@@ -69,7 +69,7 @@ module Corvid
           referral_identifier: referral_id,
           estimated_cost: estimated_cost,
           facility_identifier: kase.facility_identifier,
-          current_activity: "Submitted via FHIR PAS"
+          current_activity_code: "submitted_via_fhir_pas"
         )
         referral.submit!
 

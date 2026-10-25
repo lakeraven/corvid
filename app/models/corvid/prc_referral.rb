@@ -41,6 +41,24 @@ module Corvid
     validates :referral_identifier, presence: true
     validates :referral_identifier, uniqueness: { scope: [ :tenant_identifier, :facility_identifier ] }
 
+    # String enum (ADR 0002), stored as text and constrained by a CHECK.
+    # The type is declared so the model can load while the column is absent
+    # (ReplaceFreeTextWithTokens#down). Display text never includes
+    # reviewer_identifier (ADR 0003).
+    CURRENT_ACTIVITY_LABELS = {
+      "submitted_via_fhir_pas" => "Submitted via FHIR PAS",
+      "assigned_to_reviewer" => "Assigned to reviewer"
+    }.freeze
+
+    attribute :current_activity_code, :string
+    enum :current_activity_code, {
+      submitted_via_fhir_pas: "submitted_via_fhir_pas",
+      assigned_to_reviewer: "assigned_to_reviewer"
+    }, validate: { allow_nil: true }
+
+    validates :reviewer_identifier, presence: true, if: :reviewer_required?
+    validate :reviewer_identifier_is_opaque_token, if: :reviewer_identifier_column?
+
     # Referrals for a given patient. Joins the parent Case since the
     # patient_identifier lives there (the referral is case-scoped).
     # Eager-loads the case so callers iterating referrals don't N+1.
@@ -125,6 +143,12 @@ module Corvid
                              committee_review exception_review],
                     to: :cancelled
       end
+    end
+
+    # Derived display. Nil when there is no code. Never interpolates
+    # reviewer_identifier (ADR 0003).
+    def current_activity
+      CURRENT_ACTIVITY_LABELS[current_activity_code]
     end
 
     def service_request
@@ -370,6 +394,22 @@ module Corvid
     end
 
     private
+
+    def reviewer_identifier_column?
+      has_attribute?(:reviewer_identifier)
+    end
+
+    def reviewer_required?
+      reviewer_identifier_column? && current_activity_code == "assigned_to_reviewer"
+    end
+
+    def reviewer_identifier_is_opaque_token
+      value = self[:reviewer_identifier]
+      return if value.nil?
+      return if OpaqueToken.valid?(value)
+
+      errors.add(:reviewer_identifier, "must be an opaque token")
+    end
 
     def blocker_for(resource_type, check)
       return "#{resource_type}: not checked" if check.nil?

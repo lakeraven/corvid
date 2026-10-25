@@ -8,6 +8,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed (breaking)
+- `corvid_fmap_determinations.claim_reference` is renamed to `claim_identifier`
+  (ADR 0001). `FmapDetermination#claim_identifier` and
+  `FmapClassificationService.classify!(claim_identifier:)` replace
+  `claim_reference`. When present, the value must be an opaque token
+  (`Corvid::OpaqueToken::FORMAT`, ADR 0003 §4), checked on the model and by
+  a CHECK. The immutability error no longer includes the token.
+- Each `evidence_refs` entry's `ref` must be an opaque token.
+  `FmapClassificationService.classify` and `classify!` raise `ArgumentError`
+  before storing a non-token ref, and that message does not include the
+  value. A CHECK rejects any element whose `ref` is not a token string.
+  Blank refs are still dropped by `FmapRule.normalize_evidence` and are not
+  stored.
+- `corvid_prc_referrals.current_activity` free text is replaced by the string
+  enum `current_activity_code` (`submitted_via_fhir_pas`,
+  `assigned_to_reviewer`) and `reviewer_identifier` (an opaque token, required
+  when the code is `assigned_to_reviewer`). `PrcReferral#current_activity` is
+  derived display text ("Submitted via FHIR PAS" / "Assigned to reviewer")
+  and does not include the reviewer token. The migration maps only the exact
+  engine literal `Submitted via FHIR PAS` to `submitted_via_fhir_pas`. Every
+  other `current_activity` value is dropped and is not parsed.
+- `ReplaceFreeTextWithTokens#up` aborts, before changing the schema, when any
+  `claim_reference` or `evidence_refs` ref is not a token. The error reports
+  row counts only and does not include the stored values.
 - Claim rejections and denials are now separate. A rejection is a front-end
   refusal before adjudication (999 / 277CA); a denial is the payer's
   adjudicated decision on the 835. `Corvid::ClaimSubmission.rejected` and
