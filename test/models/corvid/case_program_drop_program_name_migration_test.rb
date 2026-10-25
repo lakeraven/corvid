@@ -32,6 +32,19 @@ class Corvid::CaseProgramDropProgramNameMigrationTest < ActiveSupport::TestCase
   setup do
     require_migration!
     ensure_post_migration_schema!
+    restart_case_programs_id_sequence!
+  end
+
+  def restart_case_programs_id_sequence!
+    conn = ActiveRecord::Base.connection
+    seq = conn.select_value(
+      ActiveRecord::Base.sanitize_sql_array(
+        [ "SELECT pg_get_serial_sequence(?, ?)", "corvid_case_programs", "id" ]
+      )
+    )
+    flunk "expected serial sequence for corvid_case_programs.id" if seq.blank?
+
+    conn.execute("ALTER SEQUENCE #{seq} RESTART WITH 900001")
   end
 
   def ensure_post_migration_schema!
@@ -104,12 +117,21 @@ class Corvid::CaseProgramDropProgramNameMigrationTest < ActiveSupport::TestCase
     end
   end
 
-  def assert_raises_unmapped!(*rows)
+  def assert_raises_unmapped!(*rows, expected_mismatched:, expected_unregistered:)
     error = assert_raises(unmapped_program_names_error) do
       ActiveRecord::Migration.suppress_messages { migration.migrate(:up) }
     end
     Corvid::CaseProgram.reset_column_information
-    refute_message_includes_row_ids!(error.message, *rows)
+    message = error.message
+    refute_message_includes_row_ids!(message, *rows)
+    assert_includes message, "#{expected_mismatched} stored label(s)"
+    assert_includes message, "#{expected_unregistered} program code(s)"
+    rows.each do |row|
+      row.reload
+      label = raw_program_name(row.id)
+      refute_includes message, label.to_s if label.present?
+      refute_includes message, row.program_code.to_s
+    end
     error
   end
 
@@ -255,7 +277,7 @@ class Corvid::CaseProgramDropProgramNameMigrationTest < ActiveSupport::TestCase
       migrate_down!
       store_program_name!(enrollment, "Legacy Custom Label")
 
-      assert_raises_unmapped!(enrollment)
+      assert_raises_unmapped!(enrollment, expected_mismatched: 1, expected_unregistered: 0)
 
       assert_includes Corvid::CaseProgram.column_names, "program_name"
     ensure
@@ -297,7 +319,7 @@ class Corvid::CaseProgramDropProgramNameMigrationTest < ActiveSupport::TestCase
       store_program_name!(enrollment, "Legacy Custom Label")
 
       ENV["CORVID_DISCARD_PROGRAM_NAMES"] = "0"
-      assert_raises_unmapped!(enrollment)
+      assert_raises_unmapped!(enrollment, expected_mismatched: 1, expected_unregistered: 0)
       assert_includes Corvid::CaseProgram.column_names, "program_name"
     ensure
       ENV["CORVID_DISCARD_PROGRAM_NAMES"] = previous
@@ -317,7 +339,7 @@ class Corvid::CaseProgramDropProgramNameMigrationTest < ActiveSupport::TestCase
       store_program_name!(enrollment, "Legacy Custom Label")
 
       ENV["CORVID_DISCARD_PROGRAM_NAMES"] = "true"
-      assert_raises_unmapped!(enrollment)
+      assert_raises_unmapped!(enrollment, expected_mismatched: 1, expected_unregistered: 0)
       assert_includes Corvid::CaseProgram.column_names, "program_name"
     ensure
       ENV["CORVID_DISCARD_PROGRAM_NAMES"] = previous
@@ -339,7 +361,7 @@ class Corvid::CaseProgramDropProgramNameMigrationTest < ActiveSupport::TestCase
       enrollment.reload
       enrollment.update_columns(program_code: unregistered_code, program_name: unregistered_code)
 
-      assert_raises_unmapped!(enrollment)
+      assert_raises_unmapped!(enrollment, expected_mismatched: 0, expected_unregistered: 1)
 
       assert_includes Corvid::CaseProgram.column_names, "program_name"
     ensure
