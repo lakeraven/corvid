@@ -113,7 +113,7 @@ end
 Then("the eligibility checklist should have management approval by {string}") do |manager_id|
   @checklist.reload
   assert @checklist.management_approved
-  assert_equal manager_id, @checklist.management_approved_by
+  assert_equal manager_id, @checklist.management_approved_identifier
 end
 
 Then("the eligibility checklist should be complete") do

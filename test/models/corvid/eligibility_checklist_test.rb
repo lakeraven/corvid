@@ -137,7 +137,7 @@ class Corvid::EligibilityChecklistTest < ActiveSupport::TestCase
 
       assert checklist.application_complete
       assert_not_nil checklist.application_completed_at
-      assert_equal "pr_mgr_001", checklist.application_completed_by
+      assert_equal "pr_mgr_001", checklist.application_completed_identifier
     end
   end
 
@@ -148,7 +148,7 @@ class Corvid::EligibilityChecklistTest < ActiveSupport::TestCase
 
       assert checklist.management_approved
       assert_not_nil checklist.management_approved_at
-      assert_equal "pr_mgr_001", checklist.management_approved_by
+      assert_equal "pr_mgr_001", checklist.management_approved_identifier
     end
   end
 
