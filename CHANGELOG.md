@@ -49,24 +49,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a rollback. If you genuinely need them back, the manual path is `add_column`.
 - `corvid_cases.closure_reason`. Nothing in the engine read or wrote it.
   `down` adds the nullable string column back; any previous values are gone.
+- `corvid_claim_submissions.provider_type`. Nothing in the engine wrote it,
+  and a token check would still have accepted PHI-shaped values. `down` adds
+  the nullable string column back; any previous values are gone.
 
 ### Changed
-- Postgres CHECK constraints and one foreign key now bound columns that
+- Postgres CHECK constraints and foreign keys now bound columns that
   accepted any string. Value lists: `corvid_prc_referrals.priority_system`
   (`corvid_v1`), `corvid_prc_eligibility_decisions.provider_confidence`
   (`verified`, `stale`, `unavailable`),
   `corvid_prc_overpayment_analyses.payment_system` (`pfs`, `ipps`, `asc`,
   `opps`) and `recovery_confidence` (`clear`, `stub_estimate`,
   `no_rate_for_year`, `unmapped_procedure`, `unmapped_facility`,
-  `missing_service_date`). Shape checks:
-  `corvid_claim_submissions.provider_type` (code token),
-  `corvid_prc_obligations.status` (one to three uppercase letters),
-  `corvid_fmap_determinations.jurisdiction` (two uppercase letters), and
-  `missing_evidence` (a jsonb array drawn from the six-term evidence
-  vocabulary). `best_available_rule_key` references
-  `corvid_fmap_rules.rule_key`. Nullable columns still allow NULL. The
-  migration counts existing violating rows and aborts without updating or
-  coercing them when any row would fail a new constraint.
+  `missing_service_date`). `corvid_fmap_determinations.jurisdiction` is two
+  uppercase letters, and `missing_evidence` is a jsonb array drawn from the
+  six-term evidence vocabulary. `best_available_rule_key` and `rule_key`
+  reference `corvid_fmap_rules.rule_key`. Nullable columns still allow NULL.
+  `corvid_prc_obligations.status` is left unconstrained (owner decision
+  pending). The migration counts existing violating rows and aborts without
+  updating or coercing them when any row would fail a new constraint.
+- `Corvid::TribalEligibilityService` now returns and persists a nil
+  `provider_confidence` for out-of-contract adapter confidence. This is an
+  API output change.
 - `Corvid::Case#display_name` no longer falls back to a stored name. It
   resolves through `Corvid.adapter` for the duration of the call and returns
   `"Unknown Patient"` when the patient cannot be resolved. A host without vault

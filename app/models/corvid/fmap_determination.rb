@@ -45,8 +45,12 @@ module Corvid
 
     validates :encounter_identifier, presence: true
     validates :date_of_service, presence: true
-    validates :jurisdiction, presence: true
+    # Two uppercase letters. Same shape as corvid_fmap_determinations_jurisdiction_check.
+    validates :jurisdiction, presence: true, format: { with: /\A[A-Z]{2}\z/ }
     validates :determined_at, presence: true
+    # FmapClassificationService::MISSING_EVIDENCE. Same set as
+    # corvid_fmap_determinations_missing_evidence_check.
+    validate :missing_evidence_in_vocabulary
     # "undetermined" is a determination outcome, not a statutory rule
     # category: it records that no in-force rule applied, or that a 100
     # percent tier was refused for want of evidence.
@@ -222,6 +226,14 @@ module Corvid
     def supersession_is_final
       return unless persisted? && superseded_by_id_was.present? && will_save_change_to_superseded_by_id?
       errors.add(:superseded_by_id, "cannot change once set")
+    end
+
+    def missing_evidence_in_vocabulary
+      gaps = missing_evidence
+      vocabulary = FmapClassificationService::MISSING_EVIDENCE
+      return if gaps.is_a?(Array) && gaps.all? { |item| vocabulary.include?(item) }
+
+      errors.add(:missing_evidence, "must be a list drawn from the evidence vocabulary")
     end
 
     def immutable_once_claimed

@@ -216,7 +216,6 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_25_000002) do
     t.datetime "last_checked_at"
     t.string "denial_reason_token"
     t.string "provider_identifier"
-    t.string "provider_type"
     t.datetime "created_at", null: false
     t.datetime "updated_at", null: false
     t.bigint "prc_referral_id"
@@ -229,7 +228,6 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_25_000002) do
     t.index ["tenant_identifier", "patient_identifier"], name: "idx_on_tenant_identifier_patient_identifier_0a950bd516"
     t.index ["tenant_identifier", "status"], name: "index_corvid_claim_submissions_on_tenant_identifier_and_status"
     t.check_constraint "claim_type::text = ANY (ARRAY['professional'::character varying, 'institutional'::character varying, 'dental'::character varying]::text[])", name: "corvid_claim_submissions_type_check"
-    t.check_constraint "provider_type IS NULL OR provider_type::text ~ '^[A-Za-z0-9][A-Za-z0-9_.:-]{0,63}$'::text", name: "corvid_claim_submissions_provider_type_check"
     t.check_constraint "status::text = ANY (ARRAY['draft'::character varying, 'submitted'::character varying, 'accepted'::character varying, 'rejected'::character varying, 'paid'::character varying, 'denied'::character varying, 'appealed'::character varying, 'error'::character varying]::text[])", name: "corvid_claim_submissions_status_check"
   end
 
@@ -553,7 +551,6 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_25_000002) do
     t.index ["tenant_identifier", "obligation_id"], name: "idx_corvid_prc_obligations_tenant_oblig", unique: true
     t.index ["tenant_identifier", "service_date"], name: "idx_on_tenant_identifier_service_date_6d2dcaef53"
     t.index ["tenant_identifier", "vendor_id"], name: "idx_on_tenant_identifier_vendor_id_08d803412f"
-    t.check_constraint "status IS NULL OR status::text ~ '^[A-Z]{1,3}$'::text", name: "corvid_prc_obligations_status_check"
   end
 
   create_table "corvid_prc_overpayment_analyses", force: :cascade do |t|
@@ -696,6 +693,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_25_000002) do
   add_foreign_key "corvid_fmap_determinations", "corvid_facility_authorities", column: "facility_authority_id"
   add_foreign_key "corvid_fmap_determinations", "corvid_fmap_determinations", column: "superseded_by_id"
   add_foreign_key "corvid_fmap_determinations", "corvid_fmap_rules", column: "best_available_rule_key", primary_key: "rule_key"
+  add_foreign_key "corvid_fmap_determinations", "corvid_fmap_rules", column: "rule_key", primary_key: "rule_key"
   add_foreign_key "corvid_prc_overpayment_analyses", "corvid_prc_obligations", column: "prc_obligation_id"
   add_foreign_key "corvid_prc_payments", "corvid_prc_obligations", column: "prc_obligation_id"
   add_foreign_key "corvid_prc_referrals", "corvid_cases", column: "case_id"
