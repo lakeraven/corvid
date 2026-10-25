@@ -41,13 +41,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `corvid_case_programs.program_name`. Issue #591 classified the column as
   patient PHI, and it duplicated `program_code`, which is NOT NULL, unique
   per case, and validated against `Corvid::ProgramRegistry`.
-  `Corvid::CaseProgram#program_name` is now derived from the registry
-  display name, or `program_code` when the entry is missing or the display
-  name is blank. Passing `program_name:` raises
-  `ActiveModel::UnknownAttributeError`. **Stored labels that differ from
-  the registry display name are discarded when the migration runs. Export
-  them first.** A rollback re-adds the column and backfills it from the
-  registry with the same rule.
+  `Corvid::CaseProgram#program_name` is now derived from the stripped registry
+  display name. An unregistered code, or a missing or blank display name,
+  makes the derived name the raw code. `#as_json` no longer includes
+  `program_name`, and `where(program_name:)` no longer works. Passing
+  `program_name:` raises `ActiveModel::UnknownAttributeError`. `up` raises
+  `RemoveProgramNameFromCorvidCasePrograms::UnmappedProgramNames` with the
+  count of stored labels that differ and the count of unregistered codes.
+  Export first, or set `CORVID_DISCARD_PROGRAM_NAMES=1` to drop the column
+  anyway. A rollback re-adds the column and backfills it with the same rule.
 - `corvid_cases.patient_name_cached` and `corvid_cases.patient_dob_cached`,
   and `Corvid::Case#cache_patient_data!` which was their only writer. ADR 0003
   states no `corvid_*` table stores a patient name or date of birth; these were
