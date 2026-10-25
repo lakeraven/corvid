@@ -7,6 +7,7 @@ module Corvid
   class FmapDeterminationIdentifiersTest < ActiveSupport::TestCase
     AIAN_EVIDENCE = { "supports" => "aian_status", "ref" => "at_01HK8B7Z9XCQVG3F8N5K0R4MWB" }.freeze
     CLAIM_TOKEN = "cl_01HK8B7Z9XCQVG3F8N5K0R4MWC"
+    VALID_ULID_BODY = "01HK8B7Z9XCQVG3F8N5K0R4MWB"
     BAD_CLAIM = "clm_example_1"
     BAD_EVIDENCE_REF = "attestation:tok_example_aian"
 
@@ -232,7 +233,48 @@ module Corvid
       assert_equal [ AIAN_EVIDENCE ], row.reload.evidence_refs
     end
 
+    test "P4 OpaqueToken rejects a lowercase ULID body after a valid prefix" do
+      assert_opaque_token_implemented!
+      refute OpaqueToken.valid?("ab_#{VALID_ULID_BODY.downcase}")
+    end
+
+    test "P2 database CHECK rejects malformed claim_identifier anchors on normal schema" do
+      assert_opaque_token_implemented!
+      row = classified_determination
+      malformed_claim_anchor_tokens.each do |bad_claim|
+        assert_raises(ActiveRecord::StatementInvalid, ActiveRecord::CheckViolation) do
+          FmapDetermination.transaction(requires_new: true) do
+            row.update_columns(claim_identifier: bad_claim)
+          end
+        end
+        assert_nil row.reload.read_attribute(:claim_identifier)
+      end
+    end
+
+    test "P6 unclaimed determination can be claimed and is immutable afterwards" do
+      assert_opaque_token_implemented!
+      determination = classified_determination
+      assert_nil determination.claim_identifier
+
+      determination.update!(claim_identifier: CLAIM_TOKEN)
+      assert_equal CLAIM_TOKEN, determination.reload.claim_identifier
+
+      determination.category = FmapClassificationService::UNDETERMINED
+      assert_raises(ActiveRecord::RecordInvalid) { determination.save! }
+      assert_equal CLAIM_TOKEN, determination.reload.claim_identifier
+    end
+
     private
+
+    def malformed_claim_anchor_tokens
+      body = VALID_ULID_BODY
+      [
+        "free text ab_#{body}",
+        "abcde_#{body}",
+        "AB_#{body}",
+        "ab_#{body.downcase}"
+      ]
+    end
 
     def assert_opaque_token_implemented!
       assert defined?(OpaqueToken), "Corvid::OpaqueToken must be implemented"

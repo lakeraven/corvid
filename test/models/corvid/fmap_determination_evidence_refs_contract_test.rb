@@ -8,6 +8,7 @@ module Corvid
   class FmapDeterminationEvidenceRefsContractTest < ActiveSupport::TestCase
     TENANT = "tnt_evidence_contract"
     TOKEN = "at_01HK8B7Z9XCQVG3F8N5K0R4MWB"
+    VALID_ULID_BODY = "01HK8B7Z9XCQVG3F8N5K0R4MWB"
     VALID_ENTRY = { "supports" => "aian_status", "ref" => TOKEN }.freeze
     BAD_REF = "attestation:tok_example_aian"
     FREE_TEXT_REF = "TEST,PATIENT 001"
@@ -206,6 +207,37 @@ module Corvid
       assert_includes determination.errors[:evidence_refs], ENTRY_CONTRACT_ERROR
     end
 
+    test "P5 non-100 determination rejects a valid token ref with an unsupported supports kind" do
+      rule = FmapRule.find_by!(rule_key: "us-regular")
+      determination = FmapDetermination.new(
+        encounter_identifier: "enc_p5_regular",
+        date_of_service: Date.new(2022, 6, 1),
+        jurisdiction: "XA",
+        determined_at: Time.current,
+        category: rule.category,
+        rule_key: rule.rule_key,
+        fmap_percent: rule.fmap_percent,
+        rule_citations: [ rule.statutory_citation ],
+        aian_verified: false,
+        evidence_refs: [ VALID_ENTRY, { "supports" => "other", "ref" => TOKEN } ]
+      )
+      refute determination.valid?
+      assert_includes determination.errors[:evidence_refs], SUPPORTS_KIND_ERROR
+    end
+
+    test "P2 database CHECK rejects malformed evidence ref anchors on normal schema" do
+      row = classified_determination
+      malformed_evidence_ref_anchors.each do |bad_ref|
+        bad_refs = [ VALID_ENTRY, { "supports" => "aian_status", "ref" => bad_ref } ]
+        assert_raises(ActiveRecord::StatementInvalid, ActiveRecord::CheckViolation) do
+          FmapDetermination.transaction(requires_new: true) do
+            row.update_columns(evidence_refs: bad_refs)
+          end
+        end
+        assert_equal [ VALID_ENTRY ], row.reload.evidence_refs
+      end
+    end
+
     test "M2 undetermined determination rejects a non-token ref with the entry contract validation message" do
       determination = FmapDetermination.new(
         encounter_identifier: "enc_m2_undetermined",
@@ -224,6 +256,16 @@ module Corvid
     end
 
     private
+
+    def malformed_evidence_ref_anchors
+      body = VALID_ULID_BODY
+      [
+        "free text ab_#{body}",
+        "abcde_#{body}",
+        "AB_#{body}",
+        "ab_#{body.downcase}"
+      ]
+    end
 
     def build_hundred_percent_determination(**attrs)
       rule = FmapRule.find_by!(rule_key: "us-arpa-9815-uio-100")

@@ -11,6 +11,7 @@ module Corvid
     SUBMITTED_VIA_FHIR_TEXT = "Submitted via FHIR PAS"
     ASSIGNED_REVIEWER_TEXT = "Assigned to reviewer 12345"
     REVIEWER_TOKEN = "rv_01HK8B7Z9XCQVG3F8N5K0R4MWD"
+    VALID_ULID_BODY = "01HK8B7Z9XCQVG3F8N5K0R4MWB"
     MIGRATION_ABORT_PREFIX = "refusing to replace free text with tokens: "
     BAD_REVIEWER = "reviewer-synthetic-mig"
 
@@ -216,6 +217,66 @@ module Corvid
       ensure_up!
     end
 
+    test "P2 replayed CHECK constraints reject malformed token anchors after down then up" do
+      determination_id = nil
+      referral_id = nil
+      migrate_tokens!(:down)
+      migrate_tokens!(:up)
+
+      determination_id = insert_up_state_determination!
+      row = FmapDetermination.find(determination_id)
+
+      malformed_token_anchors.each do |bad_claim|
+        assert_check_violation { row.update_columns(claim_identifier: bad_claim) }
+        assert_nil row.reload.claim_identifier
+      end
+
+      malformed_token_anchors.each do |bad_ref|
+        bad_refs = [ AIAN_EVIDENCE.merge("ref" => bad_ref) ]
+        assert_check_violation { row.update_columns(evidence_refs: bad_refs) }
+        assert_equal [], row.reload.evidence_refs
+      end
+
+      referral_id = insert_up_state_referral!(
+        current_activity_code: "assigned_to_reviewer",
+        reviewer_identifier: REVIEWER_TOKEN
+      )
+      referral = PrcReferral.find(referral_id)
+
+      malformed_token_anchors.each do |bad_reviewer|
+        assert_check_violation { referral.update_columns(reviewer_identifier: bad_reviewer) }
+        assert_equal REVIEWER_TOKEN, referral.reload.reviewer_identifier
+      end
+    ensure
+      cleanup_determination!(determination_id)
+      cleanup_referral!(referral_id)
+      ensure_up!
+    end
+
+    test "P3 replayed CHECK rejects unknown current_activity_code via raw SQL" do
+      referral_id = nil
+      migrate_tokens!(:down)
+      migrate_tokens!(:up)
+
+      referral_id = insert_up_state_referral!(
+        current_activity_code: "submitted_via_fhir_pas",
+        reviewer_identifier: nil
+      )
+      assert_raises(ActiveRecord::StatementInvalid, ActiveRecord::CheckViolation) do
+        PrcReferral.transaction(requires_new: true) do
+          db_connection.exec_update(<<~SQL)
+            UPDATE corvid_prc_referrals
+            SET current_activity_code = 'unknown_code'
+            WHERE id = #{referral_id.to_i}
+          SQL
+        end
+      end
+      assert_equal "submitted_via_fhir_pas", PrcReferral.find(referral_id).current_activity_code
+    ensure
+      cleanup_referral!(referral_id)
+      ensure_up!
+    end
+
     test "G4 migration CHECK constraints reject malformed token columns after down then up" do
       determination_id = nil
       referral_id = nil
@@ -333,6 +394,16 @@ module Corvid
           yield
         end
       end
+    end
+
+    def malformed_token_anchors
+      body = VALID_ULID_BODY
+      [
+        "free text ab_#{body}",
+        "abcde_#{body}",
+        "AB_#{body}",
+        "ab_#{body.downcase}"
+      ]
     end
 
     def insert_up_state_determination!
