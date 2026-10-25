@@ -17,8 +17,13 @@ module Corvid
     # Mirrors the migration's check constraint.
     API_NAMES = %w[pas patient_access provider_access payer_to_payer].freeze
 
+    # Mirrors the migration's check constraint.
+    ENDPOINTS = %w[submit read search covered_services documentation].freeze
+
     validates :api_name, presence: true, inclusion: { in: API_NAMES }
-    validates :endpoint, presence: true
+    # The message is a fixed string so a rejected path is not echoed.
+    validates :endpoint, presence: true,
+      inclusion: { in: ENDPOINTS, message: "is not an allowed endpoint" }
     validates :called_at, presence: true
 
     scope :for_api, ->(name) { where(api_name: name) }
