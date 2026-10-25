@@ -31,10 +31,6 @@ module Corvid
       care_coordination_agreement received_through_evidence
     ].freeze
 
-    # PrcReportParser obligation field 6 — app/services/corvid/prc_report_parser.rb:79;
-    # test/fixtures/overpayment_recovery/formats/*.prc (status "A")
-    PRC_OBLIGATION_STATUS_TOKENS = %w[A AB ABC].freeze
-
     setup do
       FmapRuleLoader.load_defaults! if defined?(FmapRuleLoader)
     end
@@ -42,6 +38,11 @@ module Corvid
     test "Corvid::Case.column_names excludes closure_reason" do
       refute_includes Corvid::Case.column_names, "closure_reason",
                        "closure_reason is unused (no readers/writers) and should be dropped (#704)"
+    end
+
+    test "ClaimSubmission.column_names excludes provider_type" do
+      refute_includes ClaimSubmission.column_names, "provider_type",
+                       "provider_type is unused (no writers) and should be dropped (#704)"
     end
 
     test "corvid_prc_referrals.priority_system rejects out-of-vocabulary values" do
@@ -59,6 +60,15 @@ module Corvid
           assert_db_accepts(referral, priority_system: value)
         end
         assert_db_accepts(referral, priority_system: nil)
+      end
+    end
+
+    test "PrcReferral model rejects out-of-vocabulary priority_system before the database" do
+      with_tenant(TENANT) do
+        referral = create_prc_referral!
+        referral.priority_system = "legacy_v2"
+        refute referral.valid?
+        assert_includes referral.errors[:priority_system], "is not included in the list"
       end
     end
 
@@ -80,6 +90,15 @@ module Corvid
       end
     end
 
+    test "PrcEligibilityDecision model rejects out-of-vocabulary provider_confidence before the database" do
+      with_tenant(TENANT) do
+        row = create_prc_eligibility_decision!
+        row.provider_confidence = "guesswork"
+        refute row.valid?
+        assert_includes row.errors[:provider_confidence], "is not included in the list"
+      end
+    end
+
     test "corvid_prc_overpayment_analyses.payment_system rejects out-of-vocabulary values" do
       with_tenant(TENANT) do
         analysis = create_prc_overpayment_analysis!
@@ -95,6 +114,15 @@ module Corvid
           assert_db_accepts(analysis, payment_system: value)
         end
         assert_db_accepts(analysis, payment_system: nil)
+      end
+    end
+
+    test "PrcOverpaymentAnalysis model rejects out-of-vocabulary payment_system before the database" do
+      with_tenant(TENANT) do
+        analysis = create_prc_overpayment_analysis!
+        analysis.payment_system = "medicare_part_b"
+        refute analysis.valid?
+        assert_includes analysis.errors[:payment_system], "is not included in the list"
       end
     end
 
@@ -115,39 +143,12 @@ module Corvid
       end
     end
 
-    test "corvid_prc_obligations.status rejects free-text report status codes" do
+    test "PrcOverpaymentAnalysis model rejects out-of-vocabulary recovery_confidence before the database" do
       with_tenant(TENANT) do
-        obligation = create_prc_obligation!
-        assert_db_rejects(obligation, status: "active")
-        assert_db_rejects(obligation, status: "ABCD")
-      end
-    end
-
-    test "corvid_prc_obligations.status accepts parser-shaped codes and NULL" do
-      with_tenant(TENANT) do
-        obligation = create_prc_obligation!
-        PRC_OBLIGATION_STATUS_TOKENS.each do |token|
-          assert_db_accepts(obligation, status: token)
-        end
-        assert_db_accepts(obligation, status: nil)
-      end
-    end
-
-    test "corvid_claim_submissions.provider_type rejects free-text tokens" do
-      with_tenant(TENANT) do
-        claim = create_claim_submission!
-        assert_db_rejects(claim, provider_type: "unknown provider")
-        assert_db_rejects(claim, provider_type: "x/y")
-      end
-    end
-
-    test "corvid_claim_submissions.provider_type accepts code-shaped tokens and NULL" do
-      with_tenant(TENANT) do
-        claim = create_claim_submission!
-        %w[PCP institutional rendering].each do |token|
-          assert_db_accepts(claim, provider_type: token)
-        end
-        assert_db_accepts(claim, provider_type: nil)
+        analysis = create_prc_overpayment_analysis!
+        analysis.recovery_confidence = "maybe"
+        refute analysis.valid?
+        assert_includes analysis.errors[:recovery_confidence], "is not included in the list"
       end
     end
 
@@ -157,6 +158,8 @@ module Corvid
         assert_db_rejects(determination, jurisdiction: "usa")
         assert_db_rejects(determination, jurisdiction: "12")
         assert_db_rejects(determination, jurisdiction: "X")
+        assert_db_rejects(determination, jurisdiction: "NYC")
+        assert_db_rejects(determination, jurisdiction: "ny")
       end
     end
 
@@ -169,11 +172,28 @@ module Corvid
       end
     end
 
+    test "FmapDetermination model rejects invalid jurisdiction format before the database" do
+      with_tenant(TENANT) do
+        determination = create_fmap_determination!
+        determination.jurisdiction = "NYC"
+        refute determination.valid?
+        assert determination.errors[:jurisdiction].present?
+      end
+    end
+
     test "corvid_fmap_determinations.missing_evidence rejects arrays with unknown elements" do
       with_tenant(TENANT) do
         determination = create_fmap_determination!
         assert_db_rejects(determination, missing_evidence: [ "bogus_evidence" ])
         assert_db_rejects(determination, missing_evidence: %w[aian_attestation not_in_vocab])
+      end
+    end
+
+    test "corvid_fmap_determinations.missing_evidence rejects jsonb scalars and objects" do
+      with_tenant(TENANT) do
+        determination = create_fmap_determination!
+        assert_db_rejects(determination, missing_evidence: "evidence_refs")
+        assert_db_rejects(determination, missing_evidence: { "evidence_refs" => true })
       end
     end
 
@@ -185,6 +205,15 @@ module Corvid
           assert_db_accepts(determination, missing_evidence: [ item ])
         end
         assert_db_accepts(determination, missing_evidence: MISSING_EVIDENCE_VOCABULARY)
+      end
+    end
+
+    test "FmapDetermination model rejects missing_evidence elements outside vocabulary before the database" do
+      with_tenant(TENANT) do
+        determination = create_fmap_determination!
+        determination.missing_evidence = [ "bogus_evidence" ]
+        refute determination.valid?
+        assert determination.errors[:missing_evidence].present?
       end
     end
 
@@ -200,6 +229,23 @@ module Corvid
         determination = create_fmap_determination!
         assert_db_accepts(determination, best_available_rule_key: "us-regular")
         assert_db_accepts(determination, best_available_rule_key: nil)
+      end
+    end
+
+    test "corvid_fmap_determinations.rule_key rejects unknown rule keys" do
+      with_tenant(TENANT) do
+        determination = create_fmap_determination_with_rule!
+        assert_db_rejects(determination, rule_key: "no-such-rule-key")
+      end
+    end
+
+    test "corvid_fmap_determinations.rule_key accepts shipped rule keys and NULL" do
+      with_tenant(TENANT) do
+        determination = create_fmap_determination!
+        assert_db_accepts(determination, rule_key: nil)
+
+        determination_with_rule = create_fmap_determination_with_rule!
+        assert_db_accepts(determination_with_rule, rule_key: "us-regular")
       end
     end
 
@@ -254,31 +300,18 @@ module Corvid
       )
     end
 
-    def create_prc_obligation!
-      PrcObligation.create!(
+    def create_prc_overpayment_analysis!
+      ob = PrcObligation.create!(
         facility_identifier: "fac_enum",
         obligation_id: "OBL-ENUM-#{SecureRandom.hex(4)}",
         imported_at: Time.current,
         billed_amount_cents: 10_000
       )
-    end
-
-    def create_prc_overpayment_analysis!
-      ob = create_prc_obligation!
       PrcOverpaymentAnalysis.create!(
         prc_obligation: ob,
         analyzer_version: "phase_1.5",
         recovery_confidence: "clear",
         analyzed_at: Time.current
-      )
-    end
-
-    def create_claim_submission!
-      ClaimSubmission.create!(
-        patient_identifier: "pt_claim_#{SecureRandom.hex(3)}",
-        claim_type: "professional",
-        service_date: Date.current,
-        billed_amount: 100.0
       )
     end
 
@@ -289,6 +322,20 @@ module Corvid
         jurisdiction: "XA",
         category: "undetermined",
         determination_reason: FmapClassificationService::NO_RULES_IN_FORCE,
+        determined_at: Time.current
+      )
+    end
+
+    def create_fmap_determination_with_rule!
+      rule = FmapRule.find_by!(rule_key: "us-regular")
+      FmapDetermination.create!(
+        encounter_identifier: "enc_enum_rule_#{SecureRandom.hex(4)}",
+        date_of_service: Date.new(2022, 6, 1),
+        jurisdiction: "US",
+        category: "fmap_regular",
+        rule_key: rule.rule_key,
+        fmap_percent: rule.fmap_percent,
+        rule_citations: [ rule.statutory_citation ],
         determined_at: Time.current
       )
     end

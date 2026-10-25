@@ -530,6 +530,22 @@ class Corvid::TribalEligibilityServiceTest < ActiveSupport::TestCase
     assert_equal "verified", row.provider_confidence
   end
 
+  test "decide persists unavailable provider_confidence when adapter returns unavailable with canonical enrolled true" do
+    seed_verified_enrollment_baseline("pt_unavail_persist", confidence: :unavailable)
+
+    decision = Corvid::TribalEligibilityService.decide(
+      person_identifier: "pt_unavail_persist",
+      facility: @facility,
+      tenant_identifier: TENANT
+    )
+
+    refute decision.eligible?
+    assert_includes decision.reason_codes, :provider_unavailable_fail_closed
+    assert_equal "unavailable", decision.provider_confidence
+    row = Corvid::PrcEligibilityDecision.find(decision.decision_id)
+    assert_equal "unavailable", row.provider_confidence
+  end
+
   # ---- Would-be false negative (stale data must not deny on its own) --------
 
   test "decide approves stale-but-otherwise-eligible enrollment with informational warning" do

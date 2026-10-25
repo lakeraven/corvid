@@ -50,6 +50,38 @@ class Corvid::PrcImporterTest < ActiveSupport::TestCase
     end
   end
 
+  test "imports obligation when O-record status field is empty" do
+    export = <<~PRC
+      H^PRC_EXPORT^SEA^20090506^1
+      O^OBL-STATUS-EMPTY^DFN000456^VEND00987^HIP_REPLACE_THR^20090504^^65000.00^42000.00^23000.00^0.00^2009
+      T^1^0^0^65000.00^0.00
+    PRC
+
+    with_tenant(TENANT) do
+      result = Corvid::PrcImporter.import(export, source_file: "empty_status.prc")
+
+      assert_equal 1, result[:obligations_imported]
+      obligation = Corvid::PrcObligation.find_by!(obligation_id: "OBL-STATUS-EMPTY")
+      assert_equal "", obligation.status
+    end
+  end
+
+  test "imports obligation when O-record status is OPEN" do
+    export = <<~PRC
+      H^PRC_EXPORT^SEA^20090506^1
+      O^OBL-STATUS-OPEN^DFN000456^VEND00987^HIP_REPLACE_THR^20090504^OPEN^65000.00^42000.00^23000.00^0.00^2009
+      T^1^0^0^65000.00^0.00
+    PRC
+
+    with_tenant(TENANT) do
+      result = Corvid::PrcImporter.import(export, source_file: "open_status.prc")
+
+      assert_equal 1, result[:obligations_imported]
+      obligation = Corvid::PrcObligation.find_by!(obligation_id: "OBL-STATUS-OPEN")
+      assert_equal "OPEN", obligation.status
+    end
+  end
+
   # -- Malformed input -------------------------------------------------------
 
   test "raises MalformedExportError when the file has no header" do
