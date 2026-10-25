@@ -10,6 +10,7 @@ module Corvid
     TOKEN = "at_01HK8B7Z9XCQVG3F8N5K0R4MWB"
     VALID_ENTRY = { "supports" => "aian_status", "ref" => TOKEN }.freeze
     BAD_REF = "attestation:tok_example_aian"
+    FREE_TEXT_REF = "TEST,PATIENT 001"
     FREE_TEXT_SUPPORTS = "TEST,PATIENT 001"
     CALLER_KINDS = FmapRule::CALLER_EVIDENCE_KINDS
 
@@ -83,9 +84,11 @@ module Corvid
 
     test "F1 database rejects malformed evidence_refs via insert_all" do
       assert_raises(ActiveRecord::StatementInvalid, ActiveRecord::CheckViolation) do
-        FmapDetermination.insert_all(
-          [ bulk_determination_row(evidence_refs: [ VALID_ENTRY.merge("note" => "synthetic-note") ]) ]
-        )
+        FmapDetermination.transaction(requires_new: true) do
+          FmapDetermination.insert_all(
+            [ bulk_determination_row(evidence_refs: [ VALID_ENTRY.merge("note" => "synthetic-note") ]) ]
+          )
+        end
       end
     end
 
@@ -93,10 +96,12 @@ module Corvid
       row = classified_determination
       bad = [ VALID_ENTRY.merge("note" => "synthetic-note") ]
       assert_raises(ActiveRecord::StatementInvalid, ActiveRecord::CheckViolation) do
-        FmapDetermination.upsert_all(
-          [ row.attributes.merge("evidence_refs" => bad, "updated_at" => Time.current) ],
-          unique_by: :id
-        )
+        FmapDetermination.transaction(requires_new: true) do
+          FmapDetermination.upsert_all(
+            [ row.attributes.merge("evidence_refs" => bad, "updated_at" => Time.current) ],
+            unique_by: :id
+          )
+        end
       end
       assert_equal [ VALID_ENTRY ], row.reload.evidence_refs
     end
@@ -161,6 +166,44 @@ module Corvid
         refute_includes message, "100 percent"
         refute_match(/lacks .+ for rule/, message)
       end
+    end
+
+    test "G3 model rejects a bare Hash for evidence_refs" do
+      determination = build_hundred_percent_determination(evidence_refs: VALID_ENTRY)
+      refute determination.valid?
+      assert_includes determination.errors[:evidence_refs], ENTRY_CONTRACT_ERROR
+    end
+
+    test "G3 undetermined determination rejects mixed valid and non-token ref entries" do
+      determination = FmapDetermination.new(
+        encounter_identifier: "enc_g3_undetermined",
+        date_of_service: Date.new(2022, 6, 1),
+        jurisdiction: "XA",
+        determined_at: Time.current,
+        category: FmapClassificationService::UNDETERMINED,
+        determination_reason: FmapClassificationService::NO_RULES_IN_FORCE,
+        evidence_refs: [ VALID_ENTRY, { "supports" => "aian_status", "ref" => FREE_TEXT_REF } ]
+      )
+      refute determination.valid?
+      assert_includes determination.errors[:evidence_refs], ENTRY_CONTRACT_ERROR
+    end
+
+    test "G3 regular determination rejects mixed valid and non-token ref entries" do
+      rule = FmapRule.find_by!(rule_key: "us-regular")
+      determination = FmapDetermination.new(
+        encounter_identifier: "enc_g3_regular",
+        date_of_service: Date.new(2022, 6, 1),
+        jurisdiction: "XA",
+        determined_at: Time.current,
+        category: rule.category,
+        rule_key: rule.rule_key,
+        fmap_percent: rule.fmap_percent,
+        rule_citations: [ rule.statutory_citation ],
+        aian_verified: false,
+        evidence_refs: [ VALID_ENTRY, { "supports" => "aian_status", "ref" => FREE_TEXT_REF } ]
+      )
+      refute determination.valid?
+      assert_includes determination.errors[:evidence_refs], ENTRY_CONTRACT_ERROR
     end
 
     test "M2 undetermined determination rejects a non-token ref with the entry contract validation message" do

@@ -5,6 +5,7 @@ require "test_helper"
 module Corvid
   class OpaqueTokenTest < ActiveSupport::TestCase
     ADR_EXAMPLE = "pt_01HK8B7Z9XCQVG3F8N5K0R4MWB"
+    ULID_BODY = "01HK8B7Z9XCQVG3F8N5K0R4MWB"
 
     test "ADR 0003 prefixed ULID examples are valid opaque tokens" do
       assert_opaque_token_implemented!
@@ -39,6 +40,15 @@ module Corvid
       refute OpaqueToken.valid?("1#{ADR_EXAMPLE}")
       refute OpaqueToken.valid?("-#{ADR_EXAMPLE}")
       refute OpaqueToken.valid?(" #{ADR_EXAMPLE}")
+      refute OpaqueToken.valid?("Jane Doe\n#{ADR_EXAMPLE}")
+    end
+
+    test "invalid prefix length, casing, or ULID body length are not opaque tokens" do
+      assert_opaque_token_implemented!
+      refute OpaqueToken.valid?("p_#{ULID_BODY}")
+      refute OpaqueToken.valid?("abcde_#{ULID_BODY}")
+      refute OpaqueToken.valid?("PT_#{ULID_BODY}")
+      refute OpaqueToken.valid?("pt_#{ULID_BODY}X")
     end
 
     test "a ULID containing Crockford-forbidden letters is not an opaque token" do

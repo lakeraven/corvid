@@ -47,6 +47,36 @@ module Corvid
       end
     end
 
+    test "G3 an empty claim_identifier makes the model invalid" do
+      assert_opaque_token_implemented!
+      rule = FmapRule.find_by!(rule_key: "us-arpa-9815-uio-100")
+      determination = FmapDetermination.new(
+        encounter_identifier: "enc_empty_claim_model",
+        date_of_service: Date.new(2022, 6, 1),
+        jurisdiction: "XA",
+        determined_at: Time.current,
+        category: rule.category,
+        rule_key: rule.rule_key,
+        fmap_percent: rule.fmap_percent,
+        rule_citations: [ rule.statutory_citation ],
+        aian_verified: true,
+        evidence_refs: [ AIAN_EVIDENCE ],
+        claim_identifier: ""
+      )
+      refute determination.valid?
+      assert_includes determination.errors[:claim_identifier], "must be an opaque token"
+    end
+
+    test "G3 a claimed row cannot be un-claimed via update!" do
+      assert_opaque_token_implemented!
+      determination = classified_determination(claim_identifier: CLAIM_TOKEN)
+      error = assert_raises(ActiveRecord::RecordInvalid) do
+        determination.update!(claim_identifier: nil)
+      end
+      assert error.record.errors[:base].any?
+      assert_equal CLAIM_TOKEN, determination.reload.claim_identifier
+    end
+
     test "a non-token claim_identifier makes the model invalid" do
       assert_opaque_token_implemented!
       rule = FmapRule.find_by!(rule_key: "us-arpa-9815-uio-100")
