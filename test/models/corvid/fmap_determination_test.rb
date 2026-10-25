@@ -130,6 +130,24 @@ module Corvid
       end
     end
 
+    test "an empty best_available_rule_key is a validation error" do
+      determination = FmapDetermination.new(
+        **base_attrs,
+        category: "undetermined",
+        determination_reason: FmapClassificationService::NO_RULES_IN_FORCE,
+        best_available_rule_key: ""
+      )
+      refute determination.valid?
+      assert determination.errors[:best_available_rule_key].any?
+    end
+
+    test "supersede_with! rejects an empty best_available_rule_key" do
+      original = arpa_determination
+      assert_raises(ActiveRecord::RecordInvalid) do
+        original.supersede_with!(best_available_rule_key: "")
+      end
+    end
+
     test "nil and shipped rule keys are valid for best_available_rule_key" do
       undetermined = {
         **base_attrs,
