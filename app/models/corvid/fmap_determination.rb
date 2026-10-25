@@ -76,6 +76,13 @@ module Corvid
     }
     scope :for_encounter, ->(identifier) { where(encounter_identifier: identifier) }
 
+    # A check violation aborts the surrounding Postgres transaction. The
+    # savepoint lets a caller rescue CheckViolation and keep going. The
+    # exception still propagates with Postgres's own DETAIL.
+    def self.upsert_all(...)
+      transaction(requires_new: true) { super }
+    end
+
     def claimed?
       return false unless has_attribute?(:claim_identifier)
 
@@ -240,19 +247,52 @@ module Corvid
       errors.add(:claim_identifier, "must be an opaque token")
     end
 
-    # Every stored ref is a token string. Blank refs are not stored:
-    # FmapRule.normalize_evidence drops them before classify persists.
+    # Each element is exactly { "supports" => kind, "ref" => token }:
+    # kind in FmapRule::CALLER_EVIDENCE_KINDS, ref an opaque token.
+    # Messages name the contract and do not include the stored value.
+    # Blank refs are not stored: FmapRule.normalize_evidence drops them
+    # before classify persists. An empty array is the absence of evidence.
     def evidence_refs_are_opaque_tokens
-      return if evidence_refs.blank?
-      return if Array(evidence_refs).all? { |entry| opaque_evidence_ref?(entry) }
+      return if evidence_refs.nil? || (evidence_refs.is_a?(Array) && evidence_refs.empty?)
 
-      errors.add(:evidence_refs, "must reference opaque tokens")
+      entries = evidence_refs.is_a?(Array) ? evidence_refs : nil
+      add_evidence_entry_contract_error(entries)
+      add_evidence_supports_kind_error(entries)
     end
 
-    def opaque_evidence_ref?(entry)
+    def add_evidence_entry_contract_error(entries)
+      return if entries&.all? { |entry| evidence_entry_contract?(entry) }
+
+      errors.add(:evidence_refs, 'must be { "supports" => kind, "ref" => token } entries')
+    end
+
+    def add_evidence_supports_kind_error(entries)
+      return unless entries&.any? { |entry| evidence_supports_rejected?(entry) }
+
+      errors.add(:evidence_refs, "may only support #{FmapRule::CALLER_EVIDENCE_KINDS.join(', ')}")
+    end
+
+    def evidence_entry_contract?(entry)
+      evidence_entry_keys?(entry) && OpaqueToken.valid?(evidence_entry_value(entry, "ref"))
+    end
+
+    def evidence_entry_keys?(entry)
       return false unless entry.is_a?(Hash)
 
-      OpaqueToken.valid?(entry["ref"] || entry[:ref])
+      entry.keys.map(&:to_s).sort == %w[ref supports]
+    end
+
+    def evidence_supports_rejected?(entry)
+      return false unless entry.is_a?(Hash)
+      return false unless entry.key?("supports") || entry.key?(:supports)
+
+      !FmapRule::CALLER_EVIDENCE_KINDS.include?(evidence_entry_value(entry, "supports"))
+    end
+
+    def evidence_entry_value(entry, key)
+      return entry[key] if entry.key?(key)
+
+      entry[key.to_sym] if entry.key?(key.to_sym)
     end
 
     def immutable_once_claimed

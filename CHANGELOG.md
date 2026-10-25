@@ -14,12 +14,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `claim_reference`. When present, the value must be an opaque token
   (`Corvid::OpaqueToken::FORMAT`, ADR 0003 §4), checked on the model and by
   a CHECK. The immutability error no longer includes the token.
-- Each `evidence_refs` entry's `ref` must be an opaque token.
-  `FmapClassificationService.classify` and `classify!` raise `ArgumentError`
-  before storing a non-token ref, and that message does not include the
-  value. A CHECK rejects any element whose `ref` is not a token string.
-  Blank refs are still dropped by `FmapRule.normalize_evidence` and are not
-  stored.
+- Each `evidence_refs` element must be an object with exactly the keys
+  `supports` and `ref`: `supports` is one of `FmapRule::CALLER_EVIDENCE_KINDS`
+  and `ref` is an opaque token. The model reports that contract without
+  including the stored value. `FmapClassificationService.classify` and
+  `classify!` raise `ArgumentError` before storing a non-token ref, and that
+  message does not include the value. The CHECK requires a JSON array of
+  those objects, so a bare object, a nested array, or a non-string `ref` is
+  rejected. Blank refs are still dropped by `FmapRule.normalize_evidence`
+  and are not stored.
 - `corvid_prc_referrals.current_activity` free text is replaced by the string
   enum `current_activity_code` (`submitted_via_fhir_pas`,
   `assigned_to_reviewer`) and `reviewer_identifier` (an opaque token, required
@@ -29,8 +32,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   engine literal `Submitted via FHIR PAS` to `submitted_via_fhir_pas`. Every
   other `current_activity` value is dropped and is not parsed.
 - `ReplaceFreeTextWithTokens#up` aborts, before changing the schema, when any
-  `claim_reference` or `evidence_refs` ref is not a token. The error reports
-  row counts only and does not include the stored values.
+  `claim_reference` is not a token or any `evidence_refs` value is not an
+  array of `{ supports, ref }` entries. The error reports row counts only
+  and does not include the stored values.
+- The model and `FmapClassificationService` never echo stored values. The
+  database backstop's CHECK-violation detail can: Postgres includes the
+  failing row when a write bypasses validations (`update_columns`,
+  `insert_all`, `upsert_all`). Callers should not log raw
+  `ActiveRecord::CheckViolation` messages.
 - Claim rejections and denials are now separate. A rejection is a front-end
   refusal before adjudication (999 / 277CA); a denial is the payer's
   adjudicated decision on the 835. `Corvid::ClaimSubmission.rejected` and

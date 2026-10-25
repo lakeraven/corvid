@@ -2,15 +2,15 @@
 
 # ADR 0001: claim_reference becomes claim_identifier.
 # ADR 0002: string enums and token columns are CHECK-constrained.
-# ADR 0003 §4: no free text at rest. up counts non-token values and
-# aborts with those counts only — the message never includes a stored value.
+# ADR 0003 §4: no free text at rest. up counts rows that still hold free
+# text and aborts with those counts only — the message never includes a
+# stored value. Each evidence_refs element must be an object whose only
+# keys are supports (a caller evidence kind) and ref (a token).
 # current_activity is not parsed. Only the engine literal
 # "Submitted via FHIR PAS" is mapped; every other value is dropped.
 class ReplaceFreeTextWithTokens < ActiveRecord::Migration[8.1]
   # Postgres form of Corvid::OpaqueToken::FORMAT (ADR 0003 §4).
   TOKEN_PATTERN = "^[a-z]{2,4}_[0-9A-HJKMNP-TV-Z]{26}$"
-  # True when an evidence_refs element ref is not a token string.
-  BAD_EVIDENCE_REF = %q{$[*] ? (!(@.ref.type() == "string" && @.ref like_regex "^[a-z]{2,4}_[0-9A-HJKMNP-TV-Z]{26}$"))}
 
   CLAIM_CHECK = "corvid_fmap_determinations_claim_identifier_check"
   EVIDENCE_CHECK = "corvid_fmap_determinations_evidence_refs_check"
@@ -44,7 +44,7 @@ class ReplaceFreeTextWithTokens < ActiveRecord::Migration[8.1]
 
   def refuse_non_token_rows!
     claim_count = non_token_claim_count
-    evidence_count = non_token_evidence_count
+    evidence_count = malformed_evidence_count
     return if claim_count.zero? && evidence_count.zero?
 
     raise "refusing to replace free text with tokens: " \
@@ -61,11 +61,11 @@ class ReplaceFreeTextWithTokens < ActiveRecord::Migration[8.1]
     SQL
   end
 
-  def non_token_evidence_count
+  def malformed_evidence_count
     select_value(<<~SQL).to_i
       SELECT COUNT(*)
       FROM corvid_fmap_determinations
-      WHERE jsonb_path_exists(evidence_refs, #{quote(BAD_EVIDENCE_REF)})
+      WHERE NOT (#{evidence_refs_check_sql})
     SQL
   end
 
@@ -139,8 +139,39 @@ class ReplaceFreeTextWithTokens < ActiveRecord::Migration[8.1]
     "claim_identifier IS NULL OR claim_identifier ~ #{quote(TOKEN_PATTERN)}"
   end
 
+  # Lax jsonpath wraps a non-array, so the array type is required explicitly.
+  # strict $[*] does not unwrap a nested array. A CHECK cannot use a subquery.
   def evidence_refs_check_sql
-    "NOT jsonb_path_exists(evidence_refs, #{quote(BAD_EVIDENCE_REF)})"
+    <<~SQL.squish
+      CASE
+        WHEN jsonb_typeof(evidence_refs) IS DISTINCT FROM 'array' THEN false
+        WHEN jsonb_path_exists(evidence_refs, #{quote(bad_evidence_ref_path)}) THEN false
+        ELSE true
+      END
+    SQL
+  end
+
+  def bad_evidence_ref_path
+    "strict $[*] ? (@.type() != \"object\" || !(#{valid_evidence_object_jsonpath}))"
+  end
+
+  def valid_evidence_object_jsonpath
+    [ supports_kind_jsonpath, ref_token_jsonpath, exact_evidence_keys_jsonpath ].join(" && ")
+  end
+
+  # Kinds match FmapRule::CALLER_EVIDENCE_KINDS and are jsonpath string literals.
+  def supports_kind_jsonpath
+    match = Corvid::FmapRule::CALLER_EVIDENCE_KINDS.map { |kind| "@.value == \"#{kind}\"" }.join(" || ")
+    "exists(@.keyvalue() ? (@.key == \"supports\" && @.value.type() == \"string\" && (#{match})))"
+  end
+
+  def ref_token_jsonpath
+    "exists(@.keyvalue() ? (@.key == \"ref\" && @.value.type() == \"string\" && " \
+      "@.value like_regex \"#{TOKEN_PATTERN}\"))"
+  end
+
+  def exact_evidence_keys_jsonpath
+    "!exists(@.keyvalue() ? (@.key != \"supports\" && @.key != \"ref\"))"
   end
 
   def activity_code_check_sql
