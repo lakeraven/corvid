@@ -9,12 +9,15 @@ class Corvid::BoundEndpointAndRenameChecklistIdentifiersMigrationTest < ActiveSu
 
   setup do
     @migration = load_bound_endpoint_migration
+    @migrated_down = false
   end
 
   teardown do
     if @migration
       delete_api_call_logs!
-      migrate_silent(:up)
+      if @migrated_down && checklist_by_columns_present?
+        migrate_silent(:up)
+      end
       Corvid::ApiCallLog.reset_column_information
       Corvid::EligibilityChecklist.reset_column_information
     end
@@ -22,7 +25,6 @@ class Corvid::BoundEndpointAndRenameChecklistIdentifiersMigrationTest < ActiveSu
 
   test "down then up round-trips checklist identifier columns and endpoint check" do
     assert_migration_file!
-    migrate_silent(:up)
     checklist = create_checklist_row!
     set_checklist_by_values!(checklist, application_completed_by: "pr_round_a", management_approved_by: "pr_round_b")
 
@@ -74,16 +76,18 @@ class Corvid::BoundEndpointAndRenameChecklistIdentifiersMigrationTest < ActiveSu
     Corvid::ApiCallLog.reset_column_information
     assert endpoint_check_constraint_exists?
 
-    log = Corvid::ApiCallLog.create!(
-      tenant_identifier: TENANT,
-      api_name: "pas",
-      endpoint: "submit",
-      called_at: Time.current
-    )
+    with_tenant(TENANT) do
+      log = Corvid::ApiCallLog.create!(
+        tenant_identifier: TENANT,
+        api_name: "pas",
+        endpoint: "submit",
+        called_at: Time.current
+      )
 
-    assert_raises(ActiveRecord::CheckViolation) do
-      Corvid::ApiCallLog.transaction(requires_new: true) do
-        log.update_columns(endpoint: BAD_ENDPOINT)
+      assert_raises(ActiveRecord::CheckViolation) do
+        Corvid::ApiCallLog.transaction(requires_new: true) do
+          log.update_columns(endpoint: BAD_ENDPOINT)
+        end
       end
     end
   end
@@ -108,6 +112,10 @@ class Corvid::BoundEndpointAndRenameChecklistIdentifiersMigrationTest < ActiveSu
   def migrate_silent(direction)
     ActiveRecord::Migration.suppress_messages do
       @migration.migrate(direction)
+    end
+    case direction
+    when :down then @migrated_down = true
+    when :up then @migrated_down = false
     end
   end
 
