@@ -9,16 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed (breaking)
 - `corvid_eligibility_checklists.application_completed_by` and
-  `management_approved_by` are renamed to `application_completed_identifier`
-  and `management_approved_identifier`. They hold a practitioner identifier
+  `management_approved_by` are renamed to `application_completed_by_identifier`
+  and `management_approved_by_identifier`. They hold a practitioner identifier
   (ADR 0001). `verify_item!` and `EligibilityChecklistService.approve!` still
   take `by:`.
-- `corvid_api_call_logs.endpoint` accepts only the CMS PAS route names
-  `submit`, `read`, `search`, `covered_services`, and `documentation`.
-  `Corvid::ApiCallLog::ENDPOINTS` mirrors the check constraint. The migration
-  counts rows outside that list and raises with the count, changing nothing,
-  until those rows are gone. A rejected value is not written into the error
-  or the metrics log.
 - Claim rejections and denials are now separate. A rejection is a front-end
   refusal before adjudication (999 / 277CA); a denial is the payer's
   adjudicated decision on the 835. `Corvid::ClaimSubmission.rejected` and

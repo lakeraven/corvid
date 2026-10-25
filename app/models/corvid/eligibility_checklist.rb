@@ -33,13 +33,13 @@ module Corvid
 
     # Item metadata: boolean field -> timestamp field, source/by field
     ITEM_FIELDS = {
-      application_complete:          { at: :application_completed_at,          by: :application_completed_identifier },
+      application_complete:          { at: :application_completed_at,          by: :application_completed_by_identifier },
       identity_verified:             { at: :identity_verified_at,              source: :identity_verification_source },
       insurance_verified:            { at: :insurance_verified_at,             source: :insurance_verification_source },
       residency_verified:            { at: :residency_verified_at,             source: :residency_verification_source },
       enrollment_verified:           { at: :enrollment_verified_at,            source: :enrollment_verification_source },
       clinical_necessity_documented: { at: :clinical_necessity_documented_at,  source: :clinical_necessity_documentation_source },
-      management_approved:           { at: :management_approved_at,            by: :management_approved_identifier }
+      management_approved:           { at: :management_approved_at,            by: :management_approved_by_identifier }
     }.freeze
 
     def complete?
@@ -88,7 +88,7 @@ module Corvid
 
     # Reset the management-approval marker without touching other items.
     def clear_management_approval!
-      update!(management_approved: false, management_approved_at: nil, management_approved_identifier: nil)
+      update!(management_approved: false, management_approved_at: nil, management_approved_by_identifier: nil)
     end
 
     private
