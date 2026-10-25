@@ -68,6 +68,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `corvid_prc_obligations.status` is left unconstrained (owner decision
   pending). The migration counts existing violating rows and aborts without
   updating or coercing them when any row would fail a new constraint.
+  `FmapClassificationService.classify!` now raises `RecordInvalid` for a
+  jurisdiction that is not two upper-case letters (for example 'ak'), where
+  it used to persist a federal-only row.
 - `Corvid::TribalEligibilityService` now returns and persists a nil
   `provider_confidence` for out-of-contract adapter confidence. This is an
   API output change.

@@ -69,6 +69,11 @@ module Corvid
     validate :cites_applied_rule, if: :decision_changed?
     validate :evidence_backs_hundred_percent, if: :decision_changed?
     validate :authority_is_own_facilitys, if: :decision_changed?
+    # Not a decision field. Checked whenever the key itself is written, so
+    # an unknown key fails here instead of the foreign key, which aborts
+    # the caller's transaction. An unchanged key is left alone so a later
+    # edit to rule data cannot block appending a correction.
+    validate :cites_best_available_rule, if: :best_available_rule_key_written?
 
     scope :current, -> { where(superseded_by_id: nil) }
     scope :misclassified, -> {
@@ -134,6 +139,11 @@ module Corvid
       new_record? || DECISION_FIELDS.any? { |field| will_save_change_to_attribute?(field) }
     end
 
+    def best_available_rule_key_written?
+      best_available_rule_key.present? &&
+        (new_record? || will_save_change_to_best_available_rule_key?)
+    end
+
     def applied_rule
       return nil if rule_key.blank?
       @applied_rule = nil if @applied_rule&.rule_key != rule_key
@@ -169,6 +179,14 @@ module Corvid
       in_force = date_of_service && jurisdiction &&
                  FmapRule.in_force_on(date_of_service).for_jurisdiction(jurisdiction).exists?(rule.id)
       errors.add(:rule_key, "must be in force for the jurisdiction on the date of service") unless in_force
+    end
+
+    # A present best-available key names a stored FMAP rule. Existence
+    # only: classification may cite a rule it did not apply.
+    def cites_best_available_rule
+      return if FmapRule.find_by(rule_key: best_available_rule_key)
+
+      errors.add(:best_available_rule_key, "must name an existing FMAP rule")
     end
 
     # Backstop for the service rule: a persisted 100 percent
