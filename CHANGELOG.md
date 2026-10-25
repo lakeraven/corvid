@@ -47,8 +47,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `ActiveRecord::IrreversibleMigration` on `down` by design — re-adding columns
   that store patient names at rest should be a new decision with a new ADR, not
   a rollback. If you genuinely need them back, the manual path is `add_column`.
+- `corvid_cases.closure_reason`. Nothing in the engine read or wrote it.
+  `down` adds the nullable string column back; any previous values are gone.
 
 ### Changed
+- Postgres CHECK constraints and one foreign key now bound columns that
+  accepted any string. Value lists: `corvid_prc_referrals.priority_system`
+  (`corvid_v1`), `corvid_prc_eligibility_decisions.provider_confidence`
+  (`verified`, `stale`, `unavailable`),
+  `corvid_prc_overpayment_analyses.payment_system` (`pfs`, `ipps`, `asc`,
+  `opps`) and `recovery_confidence` (`clear`, `stub_estimate`,
+  `no_rate_for_year`, `unmapped_procedure`, `unmapped_facility`,
+  `missing_service_date`). Shape checks:
+  `corvid_claim_submissions.provider_type` (code token),
+  `corvid_prc_obligations.status` (one to three uppercase letters),
+  `corvid_fmap_determinations.jurisdiction` (two uppercase letters), and
+  `missing_evidence` (a jsonb array drawn from the six-term evidence
+  vocabulary). `best_available_rule_key` references
+  `corvid_fmap_rules.rule_key`. Nullable columns still allow NULL. The
+  migration counts existing violating rows and aborts without updating or
+  coercing them when any row would fail a new constraint.
 - `Corvid::Case#display_name` no longer falls back to a stored name. It
   resolves through `Corvid.adapter` for the duration of the call and returns
   `"Unknown Patient"` when the patient cannot be resolved. A host without vault
