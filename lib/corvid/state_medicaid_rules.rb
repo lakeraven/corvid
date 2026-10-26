@@ -157,6 +157,15 @@ module Corvid
         @entries = {}
       end
 
+      # Own characters of a String (including a subclass), or Symbol#name.
+      # Anything else is not a code and comes back nil. String#to_s can be
+      # overridden and would alias another state. Lookup still fails closed
+      # for those values; this only exposes the read lookup already uses.
+      def state_code_characters(state_code)
+        return state_code.name if state_code.is_a?(Symbol)
+        String.new(state_code) if state_code.is_a?(String)
+      end
+
       private
 
       def entries
@@ -305,11 +314,6 @@ module Corvid
         return unless STATE_CODE.match?(raw)
 
         raw.upcase(:ascii).encode(Encoding::UTF_8).freeze
-      end
-
-      def state_code_characters(state_code)
-        return state_code.name if state_code.is_a?(Symbol)
-        String.new(state_code) if state_code.is_a?(String)
       end
 
       # A malformed string is copied later; a symbol follows that string.

@@ -72,9 +72,9 @@ module Corvid
                    coverage_group: nil, billed_amount_cents: nil,
                    evidence_refs: [])
         # One code for the rule rows, the registry, and a persisted
-        # determination. Blank still refuses. A value that is not two
-        # ASCII letters comes back nil and is refused below, before any
-        # rule lookup.
+        # determination. Blank still refuses. A non-String, non-Symbol,
+        # or a value that is not two ASCII letters, comes back nil and
+        # is refused below, before any rule lookup.
         jurisdiction = canonical_jurisdiction(jurisdiction)
         check_coverage_group!(coverage_group)
         if received_through_basis.present? && !FmapRule::RECEIVED_THROUGH_BASES.include?(received_through_basis.to_s)
@@ -326,13 +326,22 @@ module Corvid
 
       # Leading and trailing ASCII whitespace only, then two ASCII
       # letters (StateMedicaidRules::STATE_CODE) and upcase(:ascii).
-      # Unicode spaces stay in the string, and the letters are checked
-      # before upcase, so a full Unicode upcase cannot turn a lookalike
-      # into a configured state. Blank is refused because federal rows
-      # alone would read as a complete answer. Any other value is not a
-      # code and comes back nil; the raw characters are not returned.
+      # Characters come from StateMedicaidRules.state_code_characters:
+      # Symbol#name, or String.new for a String (including a subclass).
+      # to_s is never called. Anything else is not a code and comes back
+      # nil. Unicode spaces stay in the string, and the letters are
+      # checked before upcase, so a full Unicode upcase cannot turn a
+      # lookalike into a configured state. Nil, and a String or Symbol
+      # that is empty after the strip, is refused: federal rows alone
+      # would read as a complete answer. The raw characters are not
+      # returned, and neither is the caller's value.
       def canonical_jurisdiction(jurisdiction)
-        code = strip_ascii_whitespace(jurisdiction)
+        raise ArgumentError, "jurisdiction is required" if jurisdiction.nil?
+
+        raw = StateMedicaidRules.state_code_characters(jurisdiction)
+        return if raw.nil?
+
+        code = strip_ascii_whitespace(raw)
         raise ArgumentError, "jurisdiction is required" if code.empty?
         return unless two_ascii_letters?(code)
 
@@ -342,12 +351,11 @@ module Corvid
       # ASCII space, tab, newline, vertical tab, form feed, and carriage
       # return. Unicode spaces are left in place so they cannot disappear
       # into a two-letter code. An unreadable encoding is left as-is and
-      # fails the letter check.
+      # fails the letter check. value is already the code's own characters.
       def strip_ascii_whitespace(value)
-        text = value.to_s
-        return text unless text.valid_encoding? && text.encoding.ascii_compatible?
+        return value unless value.valid_encoding? && value.encoding.ascii_compatible?
 
-        text.gsub(/\A[ \t\r\n\f\v]+|[ \t\r\n\f\v]+\z/, "")
+        value.gsub(/\A[ \t\r\n\f\v]+|[ \t\r\n\f\v]+\z/, "")
       end
 
       # StateMedicaidRules::STATE_CODE, and only a readable string. A bad
