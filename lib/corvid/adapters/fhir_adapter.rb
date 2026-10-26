@@ -827,7 +827,7 @@ module Corvid
       end
 
       def merge_search_pages(pages)
-        entries = pages.flat_map { |page| bundle_entries(page) }
+        entries = pages.flat_map { |page| page_entries(page) }
         return if total_mismatch?(pages.first, entries)
         return if duplicate_match_entries?(entries)
 
@@ -891,7 +891,10 @@ module Corvid
         entry.nil? || entry.is_a?(Array)
       end
 
-      def bundle_entries(page)
+      # Search pagination. Always an Array: a missing, null, or non-Array
+      # entry is an empty page. A non-Array entry never reaches
+      # merge_search_pages; acceptable_entries? rejects that page first.
+      def page_entries(page)
         entries = page["entry"]
         entries.is_a?(Array) ? entries : []
       end
@@ -1333,7 +1336,7 @@ module Corvid
       end
 
       def match_resources(bundle, resource_type)
-        entries = bundle_entries(bundle)
+        entries = clinical_bundle_entries(bundle)
         return nil if entries.nil?
 
         entries.each_with_object([]) do |entry, resources|
@@ -1604,7 +1607,10 @@ module Corvid
         entry.is_a?(Hash) && entry_search_state(entry) == :malformed
       end
 
-      def bundle_entries(bundle)
+      # Clinical reads. A missing or null entry is no rows. A present entry
+      # that is not an Array is unknown (nil); callers treat that nil as the
+      # search not answering.
+      def clinical_bundle_entries(bundle)
         entries = bundle["entry"]
         return [] if entries.nil?
         return nil unless entries.is_a?(Array)
@@ -1690,7 +1696,7 @@ module Corvid
       # Conditions ------------------------------------------------------------
 
       def map_condition_entries(bundle, patient_identifier)
-        entries = bundle_entries(bundle)
+        entries = clinical_bundle_entries(bundle)
         return nil if entries.nil?
 
         entries.each_with_object([]) do |entry, results|
@@ -2027,7 +2033,7 @@ module Corvid
       # Medications -----------------------------------------------------------
 
       def map_medication_entries(bundle, patient_identifier)
-        entries = bundle_entries(bundle)
+        entries = clinical_bundle_entries(bundle)
         return nil if entries.nil?
 
         collected = partition_medication_entries(entries)
