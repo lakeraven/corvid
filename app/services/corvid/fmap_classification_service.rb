@@ -27,6 +27,21 @@ module Corvid
     EXPANSION_STATE_NOT_CONFIGURED = "expansion_state_not_configured"
     REASONS = [ NO_RULES_IN_FORCE, NO_MATCHING_RULE, UNEVIDENCED_100, EXPANSION_STATE_NOT_CONFIGURED ].freeze
 
+    # Persisted on FmapDetermination.missing_evidence. #missing_evidence and
+    # FmapRule#unmet_evidence are the only writers, and both take terms from
+    # this list so the two cannot drift.
+    MISSING_EVIDENCE = %w[
+      evidence_refs aian_attestation received_through_basis aian_status_evidence
+      care_coordination_agreement received_through_evidence
+    ].freeze
+
+    def self.missing_evidence_term(term)
+      found = MISSING_EVIDENCE.find { |item| item == term.to_s }
+      raise ArgumentError, "unknown missing evidence #{term.inspect}" unless found
+
+      found
+    end
+
     # Raised by classify! when the encounter already has a current
     # determination: correct it with FmapDetermination#supersede_with!.
     class AlreadyDeterminedError < StandardError; end
@@ -359,11 +374,15 @@ module Corvid
       # best rule's requirements still lacks.
       def missing_evidence(best, actual, aian_verified:, basis:, evidence:, backed:, reason:)
         missing = []
-        missing << "evidence_refs" if reason == UNEVIDENCED_100 && evidence.empty?
+        if reason == UNEVIDENCED_100 && evidence.empty?
+          missing << missing_evidence_term(:evidence_refs)
+        end
         return missing if best.nil? || best == actual
 
-        missing << "aian_attestation" if best.requires_aian && !aian_verified
-        missing << "received_through_basis" if best.requires_received_through && basis.blank?
+        missing << missing_evidence_term(:aian_attestation) if best.requires_aian && !aian_verified
+        if best.requires_received_through && basis.blank?
+          missing << missing_evidence_term(:received_through_basis)
+        end
         missing.concat(best.unmet_evidence(received_through_basis: basis, evidence: evidence, authority_backed: backed))
         missing.uniq
       end

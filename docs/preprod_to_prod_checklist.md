@@ -58,6 +58,7 @@ Before the first production-like deployment, this list must be true:
 - [ ] Recovery-letter language reviewed and approved
 - [ ] Backup + DR procedures documented
 - [ ] Customer-visible error surfaces documented (what an operator sees when an import fails)
+- [ ] FHIR base URL (`FHIR_BASE_URL` / `base_url`) must be path-qualified, e.g. `https://fhir.vendor.example/r4`, because bearer tokens and search next links are scoped to that path
 
 ## Related
 
