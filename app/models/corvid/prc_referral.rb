@@ -69,9 +69,11 @@ module Corvid
       # Runs after a transition is chosen and before it is saved, for both
       # bang events and non-bang events later saved with save!. Creating a
       # row already in a terminal status, or update!(status:), is not an
-      # event and does not mark a publication. reload, restore_attributes,
-      # and any other write that leaves status matching the database drop
-      # the mark so a later plain status write cannot publish it.
+      # event and does not mark a publication. The mark is kept only while
+      # the change is still the AASM one: status differs from the database,
+      # equals the marked state, and no status rewrite has replaced it.
+      # update_columns and update_column drop it when they write status.
+      # reload, restore_attributes, and dup drop it too.
       after_all_transitions :mark_pending_referral_publication
 
       event :submit do
@@ -148,14 +150,18 @@ module Corvid
       end
     end
 
-    # The AASM callback marks authorize, deny, or defer. The mark stays
-    # until the transaction that holds this save commits. That commit
-    # publishes once, inside the tenant captured here. A plain status
-    # write never marks a publication. In-progress states are not synced.
-    # Cancelled has no CHS code and is not synced. Authorization provenance
-    # snapshots the checks at this save. Rollback does not publish; it puts
-    # the mark back so a later save of the same transition publishes once.
-    before_save :remember_referral_status_transition
+    # The AASM callback marks authorize, deny, or defer. before_save
+    # captures that mark, the tenant, and the provenance snapshot while
+    # the change is still unsaved. after_save registers the commit and
+    # rollback pair, and it runs only after the row is persisted, so a
+    # later before_save that aborts does not leave a sync registered on
+    # an outer transaction. Commit publishes once, inside the captured
+    # tenant. A plain status write never marks a publication. In-progress
+    # states are not synced. Cancelled has no CHS code and is not synced.
+    # Rollback does not publish; it puts the mark back so a later save
+    # of the same transition publishes once.
+    before_save :capture_referral_publication
+    after_save :register_referral_publication
 
     def service_request
       @service_request ||= Corvid.adapter.find_referral(referral_identifier) if referral_identifier.present?
@@ -417,20 +423,42 @@ module Corvid
       mark_denied! if may_mark_denied?
     end
 
-    # A direct status write is not an AASM event. If it is not the marked
-    # transition still waiting to be saved, the mark cannot survive it.
+    # A direct status write is not an AASM event. The write that lands
+    # on the marked state is the AASM change. A later write that leaves
+    # that state is a rewrite, and the mark cannot survive it. Assigning
+    # the marked state again, with no rewrite in between, is still that
+    # transition.
     def status=(value)
+      note_referral_status_rewrite(value)
       super
       discard_pending_referral_publication_unless_current
     end
 
     def write_attribute(attr_name, value)
+      note_referral_status_rewrite(value) if attr_name.to_s == "status"
       super
       discard_pending_referral_publication_unless_current if attr_name.to_s == "status"
     end
 
+    # update_column calls update_columns. Both skip status= and
+    # write_attribute, so a status write here drops the mark itself.
+    # Otherwise a later update!(status:) would publish the stale event.
+    def update_columns(attributes)
+      wrote_status = attributes.key?(:status) || attributes.key?("status")
+      result = super
+      drop_referral_publication_mark if wrote_status
+      result
+    end
+
     def reload(...)
-      super.tap { @pending_referral_publication = nil }
+      super.tap { reset_referral_publication_mark }
+    end
+
+    # dup copies instance variables, including a mark left by an unsaved
+    # event. The copy is a new row and must not publish that event.
+    def initialize_dup(other)
+      super
+      reset_referral_publication_mark
     end
 
     def restore_attributes(...)
@@ -440,39 +468,98 @@ module Corvid
 
     private
 
-    def remember_referral_status_transition
+    def capture_referral_publication
       discard_pending_referral_publication_unless_current
       pending = @pending_referral_publication
+      @referral_publication_to_register = nil
       return if pending.nil?
-      return unless will_save_change_to_status?
 
-      @pending_referral_publication = nil
-      hold_referral_publication(pending)
+      @referral_publication_to_register = referral_publication_payload(pending)
     end
 
-    # The pair is registered on the transaction that holds this save.
+    def register_referral_publication
+      captured = @referral_publication_to_register
+      @referral_publication_to_register = nil
+      return if captured.nil?
+
+      pending, provenance_entities, tenant = captured
+      @pending_referral_publication = nil
+      return unless status.to_s == pending
+
+      hold_referral_publication(pending, provenance_entities, tenant)
+    end
+
+    def referral_publication_payload(pending)
+      entities = authorization_provenance_entities if pending == "authorized"
+      [ pending, entities, Corvid::TenantContext.current_tenant_identifier ]
+    end
+
+    # Registered from after_save on the transaction that holds this save.
     # Commit publishes. Rollback puts the mark back and does not publish.
     # A committed savepoint carries both callbacks to its parent, so the
     # publish waits for the outermost commit and a rolled-back savepoint
     # never reaches it.
-    def hold_referral_publication(pending)
+    def hold_referral_publication(pending, provenance_entities, tenant)
       transaction = self.class.current_transaction
-      transaction.after_rollback { @pending_referral_publication = pending }
+      transaction.after_rollback { restore_pending_referral_publication(pending) }
       return unless status.to_s == pending
 
-      provenance_entities = authorization_provenance_entities if pending == "authorized"
-      tenant = Corvid::TenantContext.current_tenant_identifier
       transaction.after_commit do
         publish_committed_referral_status(pending, provenance_entities, tenant)
       end
     end
 
+    def restore_pending_referral_publication(pending)
+      @pending_referral_publication = pending
+      @referral_status_rewritten_since_mark = false
+    end
+
+    # Kept only for an AASM change that is still the one about to be
+    # saved: status differs from the database, equals the marked state,
+    # and no rewrite has replaced that change.
     def discard_pending_referral_publication_unless_current
-      pending = @pending_referral_publication
-      return if pending.nil?
-      return if will_save_change_to_status? && status.to_s == pending
+      return if referral_publication_still_pending?
 
       @pending_referral_publication = nil
+    end
+
+    def referral_publication_still_pending?
+      pending = @pending_referral_publication
+      return false if pending.nil? || @referral_status_rewritten_since_mark
+
+      status.to_s == pending && status.to_s != status_in_database.to_s
+    end
+
+    # The write that first lands on the marked state is the AASM change.
+    # A later write that changes status again is a rewrite. Assigning the
+    # same value leaves the mark, so a rolled-back save can be saved again.
+    def note_referral_status_rewrite(value)
+      pending = @pending_referral_publication
+      return if pending.nil?
+
+      new_status = value.to_s
+      return if status.to_s == new_status
+      return if establishing_referral_publication?(new_status)
+
+      @referral_status_rewritten_since_mark = true
+    end
+
+    def establishing_referral_publication?(new_status)
+      status.to_s != @pending_referral_publication &&
+        new_status == @pending_referral_publication &&
+        !@referral_status_rewritten_since_mark
+    end
+
+    def drop_referral_publication_mark
+      @pending_referral_publication = nil
+      @referral_publication_to_register = nil
+      @referral_status_rewritten_since_mark = true
+    end
+
+    def reset_referral_publication_mark
+      @pending_referral_publication = nil
+      @referral_publication_to_register = nil
+      @referral_status_rewritten_since_mark = false
     end
 
     # Latest transition wins. In-flight and cancelled transitions clear a
@@ -480,6 +567,7 @@ module Corvid
     # defer are published.
     def mark_pending_referral_publication
       new_status = aasm.to_state.to_s
+      @referral_status_rewritten_since_mark = false
       @pending_referral_publication = ehr_synced_status?(new_status) ? new_status : nil
       true
     end

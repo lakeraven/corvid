@@ -29,6 +29,14 @@ module Corvid
     # The stored prc_referral_id counts as linked even when this save
     # clears the association. A plain save also cannot attach a claim
     # that already carries sent markers or a sent status to a referral.
+    # An already-sent unlinked claim is not resolved when referral_identifier
+    # is unchanged. For that skip, stored claim_identifier, stored
+    # submitted_at, or a stored sent status counts, including submitted_at
+    # on an error row, so a referral entered later does not block
+    # check_status!, payment, remittance, or a plain edit. Changing
+    # referral_identifier still
+    # resolves and is refused. Assigning prc_referral is refused the
+    # same way. Unsent claims and new rows still resolve a blank link.
     # submit! and mark_submitted! are the only paths that write those
     # markers or enter "submitted" from an unsent row, and they re-run
     # the gates. check_status! may record "submitted" on a claim that was
@@ -67,6 +75,10 @@ module Corvid
     # Resolving only a blank link left an edited claim pointing at the
     # referral it used to name: #submit! checked that one's authorization
     # while #to_claim_data sent the new identifier to the payer.
+    # A blank link on a claim that is already sent is not one of those
+    # changes. Resolving it would attach a referral created later, and
+    # the ungated-sent guard would then reject a save that never touched
+    # the referral. referral_identifier still recomputes that link.
     before_validation :resolve_prc_referral_from_identifier,
       if: :referral_link_inputs_changed?
 
@@ -438,21 +450,41 @@ module Corvid
       @submission_through_gate = false
     end
 
-    # Link this claim to the referral it bills, but only where that link is
-    # unambiguous. PrcReferral scopes uniqueness to [tenant, facility], and
-    # PostgreSQL treats NULLs as distinct in a unique index, so several
-    # referrals can share a tenant and identifier while facility_identifier is
-    # NULL. Taking the first row back would attach a claim to an arbitrary
-    # one — another patient's referral. Where more than one matches, the claim
-    # stays unlinked and #submit! refuses it rather than billing against a
-    # referral nobody chose.
+    # Recompute when the identifier, facility, or patient changes, and
+    # when an unsent claim's link is still blank. An already-sent claim
+    # with no link stays unlinked unless referral_identifier changes:
+    # a blank prc_referral_id is not an edit. Stored claim_identifier,
+    # stored submitted_at, or a stored sent status means already sent,
+    # including submitted_at on an error row. Assigning prc_referral is
+    # left in place for the ungated-sent guard. A new row still resolves,
+    # and submit! / mark_submitted! link through the gate.
     def referral_link_inputs_changed?
       return false if referral_identifier.blank?
+      return will_save_change_to_referral_identifier? if unlinked_claim_already_sent?
 
-      prc_referral_id.blank? ||
-        will_save_change_to_referral_identifier? ||
+      prc_referral_id.blank? || referral_link_fields_changed?
+    end
+
+    def referral_link_fields_changed?
+      will_save_change_to_referral_identifier? ||
         will_save_change_to_facility_identifier? ||
         will_save_change_to_patient_identifier?
+    end
+
+    def unlinked_claim_already_sent?
+      prc_referral_id.blank? && sent_claim_stored?
+    end
+
+    # Distinct from the status-move rule, where submitted_at alone does
+    # not make an error row sent. Here a stored submitted_at is enough
+    # to leave the claim unlinked, because attaching it would fail the
+    # ungated-sent guard.
+    def sent_claim_stored?
+      return false if new_record?
+
+      claim_identifier_in_database.present? ||
+        submitted_at_in_database.present? ||
+        SENT_STATUSES.include?(status_in_database)
     end
 
     # Link this claim to the referral it bills, but only where that link is
