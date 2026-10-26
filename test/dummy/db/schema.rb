@@ -156,7 +156,6 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_25_000004) do
     t.string "tenant_identifier", null: false
     t.string "facility_identifier"
     t.bigint "case_id", null: false
-    t.string "program_name", null: false
     t.string "program_code", null: false
     t.string "enrollment_status", default: "active", null: false
     t.date "enrollment_date", null: false
@@ -577,7 +576,6 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_25_000004) do
     t.string "tenant_identifier", null: false
     t.string "payment_id", null: false
     t.date "paid_date"
-    t.string "check_number"
     t.bigint "amount_cents"
     t.string "currency_iso", limit: 3, default: "USD", null: false
     t.string "vendor_name"

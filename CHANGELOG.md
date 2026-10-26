@@ -43,6 +43,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `payment_rate`.
 
 ### Removed
+- `corvid_case_programs.program_name`. Issue #591 classified the column as
+  patient PHI, and it duplicated `program_code`, which is NOT NULL, unique
+  per case, and validated against `Corvid::ProgramRegistry`.
+  `Corvid::CaseProgram#program_name` is now derived from the stripped registry
+  display name. An unregistered code, or a missing or blank display name,
+  makes the derived name the raw code. `#as_json` no longer includes
+  `program_name`, and `where(program_name:)` no longer works. Passing
+  `program_name:` raises `ActiveModel::UnknownAttributeError`. `up` counts a
+  stored label as drifted only when it equals none of the three historical
+  forms for its code: stripped
+  (`display_name.to_s.strip.presence || program_code`), presence
+  (`display_name.presence || program_code`), and raw
+  (`display_name || program_code`). It raises
+  `RemoveProgramNameFromCorvidCasePrograms::UnmappedProgramNames` with that
+  count and the count of unregistered codes. Export first, or set
+  `CORVID_DISCARD_PROGRAM_NAMES=1` to drop the column anyway. A rollback
+  re-adds the column and backfills it with the stripped rule.
 - `corvid_cases.patient_name_cached` and `corvid_cases.patient_dob_cached`,
   and `Corvid::Case#cache_patient_data!` which was their only writer. ADR 0003
   states no `corvid_*` table stores a patient name or date of birth; these were
@@ -52,6 +69,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `ActiveRecord::IrreversibleMigration` on `down` by design — re-adding columns
   that store patient names at rest should be a new decision with a new ADR, not
   a rollback. If you genuinely need them back, the manual path is `add_column`.
+- `corvid_prc_payments.check_number` and the `Corvid::PrcPayment#check_number`
+  attribute. The #591 PHI disclosure classifies a cheque number as patient
+  PHI, and nothing in Corvid read it. `Corvid::PrcImporter` no longer stores
+  it; `Corvid::PrcReportParser` still reads it into the in-memory `Payment`
+  struct. **Any data in the column is discarded when the migration runs.
+  Export it first if your host reads it.** Rolling back re-adds an empty
+  nullable column and cannot restore values. (#702)
 
 ### Changed
 - `Corvid::Case#display_name` no longer falls back to a stored name. It
