@@ -8,6 +8,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed (breaking)
+- `corvid_eligibility_checklists.application_completed_by` and
+  `management_approved_by` are renamed to `application_completed_by_identifier`
+  and `management_approved_by_identifier`. They hold a practitioner identifier
+  (ADR 0001). `verify_item!` and `EligibilityChecklistService.approve!` still
+  take `by:`.
 - Claim rejections and denials are now separate. A rejection is a front-end
   refusal before adjudication (999 / 277CA); a denial is the payer's
   adjudicated decision on the 835. `Corvid::ClaimSubmission.rejected` and
@@ -38,6 +43,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `payment_rate`.
 
 ### Removed
+- `corvid_case_programs.program_name`. Issue #591 classified the column as
+  patient PHI, and it duplicated `program_code`, which is NOT NULL, unique
+  per case, and validated against `Corvid::ProgramRegistry`.
+  `Corvid::CaseProgram#program_name` is now derived from the stripped registry
+  display name. An unregistered code, or a missing or blank display name,
+  makes the derived name the raw code. `#as_json` no longer includes
+  `program_name`, and `where(program_name:)` no longer works. Passing
+  `program_name:` raises `ActiveModel::UnknownAttributeError`. `up` counts a
+  stored label as drifted only when it equals none of the three historical
+  forms for its code: stripped
+  (`display_name.to_s.strip.presence || program_code`), presence
+  (`display_name.presence || program_code`), and raw
+  (`display_name || program_code`). It raises
+  `RemoveProgramNameFromCorvidCasePrograms::UnmappedProgramNames` with that
+  count and the count of unregistered codes. Export first, or set
+  `CORVID_DISCARD_PROGRAM_NAMES=1` to drop the column anyway. A rollback
+  re-adds the column and backfills it with the stripped rule.
 - `corvid_cases.patient_name_cached` and `corvid_cases.patient_dob_cached`,
   and `Corvid::Case#cache_patient_data!` which was their only writer. ADR 0003
   states no `corvid_*` table stores a patient name or date of birth; these were
@@ -52,6 +74,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `corvid_claim_submissions.provider_type`. Nothing in the engine wrote it,
   and a token check would still have accepted PHI-shaped values. `down` adds
   the nullable string column back; any previous values are gone.
+- `corvid_prc_payments.check_number` and the `Corvid::PrcPayment#check_number`
+  attribute. The #591 PHI disclosure classifies a cheque number as patient
+  PHI, and nothing in Corvid read it. `Corvid::PrcImporter` no longer stores
+  it; `Corvid::PrcReportParser` still reads it into the in-memory `Payment`
+  struct. **Any data in the column is discarded when the migration runs.
+  Export it first if your host reads it.** Rolling back re-adds an empty
+  nullable column and cannot restore values. (#702)
 
 ### Changed
 - Postgres CHECK constraints and foreign keys now bound columns that

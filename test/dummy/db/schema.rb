@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_10_25_000002) do
+ActiveRecord::Schema[8.1].define(version: 2026_10_25_000004) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
@@ -156,7 +156,6 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_25_000002) do
     t.string "tenant_identifier", null: false
     t.string "facility_identifier"
     t.bigint "case_id", null: false
-    t.string "program_name", null: false
     t.string "program_code", null: false
     t.string "enrollment_status", default: "active", null: false
     t.date "enrollment_date", null: false
@@ -294,7 +293,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_25_000002) do
     t.bigint "prc_referral_id", null: false
     t.boolean "application_complete", default: false, null: false
     t.datetime "application_completed_at"
-    t.string "application_completed_by"
+    t.string "application_completed_by_identifier"
     t.boolean "identity_verified", default: false, null: false
     t.datetime "identity_verified_at"
     t.string "identity_verification_source"
@@ -312,7 +311,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_25_000002) do
     t.string "clinical_necessity_documentation_source"
     t.boolean "management_approved", default: false, null: false
     t.datetime "management_approved_at"
-    t.string "management_approved_by"
+    t.string "management_approved_by_identifier"
     t.datetime "created_at", null: false
     t.datetime "updated_at", null: false
     t.index ["prc_referral_id"], name: "idx_corvid_elig_checklists_referral_unique", unique: true
@@ -580,7 +579,6 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_25_000002) do
     t.string "tenant_identifier", null: false
     t.string "payment_id", null: false
     t.date "paid_date"
-    t.string "check_number"
     t.bigint "amount_cents"
     t.string "currency_iso", limit: 3, default: "USD", null: false
     t.string "vendor_name"

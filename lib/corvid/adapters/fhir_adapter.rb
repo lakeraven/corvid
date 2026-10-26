@@ -211,6 +211,14 @@ module Corvid
         # Authorization header counts: it is a credential the same as a
         # configured one, and it is the request-level check below that is
         # authoritative either way.
+        #
+        # A path with no real segment is rejected with or without
+        # credentials. Tokens and next links are scoped to this path; an
+        # empty path, a dot segment, a path parameter, or an encoded
+        # separator would cover or escape the host. An unparseable
+        # base_url fails closed here as well. TLS, host, and credential
+        # checks below still run for a path-qualified base.
+        require_path_qualified_base_url!(@base_url)
         if bearer_token || token_source || preset_authorization_header?
           require_secure_transport!(@base_url)
         end
@@ -819,7 +827,7 @@ module Corvid
       end
 
       def merge_search_pages(pages)
-        entries = pages.flat_map { |page| bundle_entries(page) }
+        entries = pages.flat_map { |page| page_entries(page) }
         return if total_mismatch?(pages.first, entries)
         return if duplicate_match_entries?(entries)
 
@@ -883,7 +891,10 @@ module Corvid
         entry.nil? || entry.is_a?(Array)
       end
 
-      def bundle_entries(page)
+      # Search pagination. Always an Array: a missing, null, or non-Array
+      # entry is an empty page. A non-Array entry never reaches
+      # merge_search_pages; acceptable_entries? rejects that page first.
+      def page_entries(page)
         entries = page["entry"]
         entries.is_a?(Array) ? entries : []
       end
@@ -978,6 +989,41 @@ module Corvid
               "configured base_url origin and path"
       rescue URI::InvalidURIError
         raise CredentialScopeError, "FhirAdapter refuses to send credentials to an unparseable URL"
+      end
+
+      # Bearer tokens and followed search next links are scoped to
+      # base_url's scheme, host, port, and path. A path with no real
+      # segment is rejected whether or not credentials are present.
+      # Empty or slash-only paths fail that check directly. "." and ".."
+      # segments (including %2e/%2E), path parameters (";"), and encoded
+      # separators (%2F/%5C) are the same rule dot_segment_path? already
+      # applies to search next links: it percent-decodes %2e and calls
+      # forbidden_next_path? on the raw and decoded path. A segment that
+      # merely contains a dot (for example "fhir.v2") stays valid.
+      # An unparseable URL — URI::InvalidURIError, or a string URI.parse
+      # cannot handle — raises ArgumentError here with or without
+      # credentials. The message does not echo the URL; parser errors quote it.
+      def require_path_qualified_base_url!(url)
+        uri = parse_base_url!(url)
+        return unless uri.path.to_s.delete("/").empty? || dot_segment_path?(url.to_s)
+
+        raise ArgumentError,
+              "base_url must be path-qualified so bearer tokens and search " \
+              "next links stay scoped to the FHIR base path, not the whole " \
+              "host (for example https://fhir.vendor.example/r4)"
+      end
+
+      # Fail closed. URI::InvalidURIError is the usual parse failure;
+      # some strings raise ArgumentError instead (a null byte, on a parser
+      # that rejects it before the URI check). Either one becomes
+      # ArgumentError. cause is cleared: the parser message quotes the URL,
+      # and Ruby would otherwise attach it to the new exception.
+      def parse_base_url!(url)
+        URI.parse(url.to_s)
+      rescue URI::InvalidURIError, ArgumentError
+        raise ArgumentError,
+              "base_url could not be parsed; FhirAdapter refuses an unparseable base URL",
+              cause: nil
       end
 
       # Reject any URL that would carry an Authorization header over a
@@ -1290,7 +1336,7 @@ module Corvid
       end
 
       def match_resources(bundle, resource_type)
-        entries = bundle_entries(bundle)
+        entries = clinical_bundle_entries(bundle)
         return nil if entries.nil?
 
         entries.each_with_object([]) do |entry, resources|
@@ -1561,7 +1607,10 @@ module Corvid
         entry.is_a?(Hash) && entry_search_state(entry) == :malformed
       end
 
-      def bundle_entries(bundle)
+      # Clinical reads. A missing or null entry is no rows. A present entry
+      # that is not an Array is unknown (nil); callers treat that nil as the
+      # search not answering.
+      def clinical_bundle_entries(bundle)
         entries = bundle["entry"]
         return [] if entries.nil?
         return nil unless entries.is_a?(Array)
@@ -1647,7 +1696,7 @@ module Corvid
       # Conditions ------------------------------------------------------------
 
       def map_condition_entries(bundle, patient_identifier)
-        entries = bundle_entries(bundle)
+        entries = clinical_bundle_entries(bundle)
         return nil if entries.nil?
 
         entries.each_with_object([]) do |entry, results|
@@ -1984,7 +2033,7 @@ module Corvid
       # Medications -----------------------------------------------------------
 
       def map_medication_entries(bundle, patient_identifier)
-        entries = bundle_entries(bundle)
+        entries = clinical_bundle_entries(bundle)
         return nil if entries.nil?
 
         collected = partition_medication_entries(entries)

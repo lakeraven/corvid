@@ -35,7 +35,6 @@ When("I try to create a case with program type {string}") do |program_code|
   kase = Corvid::Case.create!(patient_identifier: "pt_invalid")
   @attempted_case_program = Corvid::CaseProgram.new(
     case: kase,
-    program_name: program_code,
     program_code: program_code,
     enrollment_date: Date.current
   )

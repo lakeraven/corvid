@@ -82,6 +82,33 @@ class Corvid::PrcImporterTest < ActiveSupport::TestCase
     end
   end
 
+  test "imported payments do not persist cheque values from the PRC export" do
+    cheque_strings = cheque_strings_from_prc(SAMPLE)
+    assert cheque_strings.any?,
+           "fixture must include cheque values so this guard is meaningful"
+
+    with_tenant(TENANT) do
+      logs = capture_rails_logs do
+        result = Corvid::PrcImporter.import(SAMPLE, source_file: "test_export.prc")
+        assert_operator result[:payments_imported], :>=, 1
+        assert_operator Corvid::PrcPayment.count, :>=, 1
+      end
+
+      columns = Corvid::PrcPayment.column_names
+      refute_includes columns, "check_number",
+                      "check_number was removed because its value is patient PHI"
+      refute_includes columns, "check_identifier",
+                      "renaming the column would still persist PHI"
+
+      refute_cheque_strings_in_persisted_rows(cheque_strings)
+
+      cheque_strings.each do |cheque|
+        refute_includes logs, cheque,
+                        "cheque value #{cheque} must not appear in import logs"
+      end
+    end
+  end
+
   # -- Malformed input -------------------------------------------------------
 
   test "raises MalformedExportError when the file has no header" do
@@ -314,7 +341,7 @@ class Corvid::PrcImporterTest < ActiveSupport::TestCase
       result = Corvid::PrcImporter.import(dup_export, source_file: "dup_p.prc")
 
       pmt = Corvid::PrcPayment.find_by(payment_id: "PMT-DUP")
-      assert_equal "CHK_SECOND", pmt.check_number,
+      assert_equal Date.new(2009, 5, 19), pmt.paid_date,
                    "the second (corrected) payment row must win, not the first"
       assert_equal 200_00, pmt.amount_cents
 
@@ -519,6 +546,38 @@ class Corvid::PrcImporterTest < ActiveSupport::TestCase
     captured.string
   ensure
     Rails.logger = original_logger if original_logger
+  end
+
+  # Capture all Rails.logger output for the duration of the block.
+  def capture_rails_logs
+    captured = StringIO.new
+    original_logger = Rails.logger
+    Rails.logger = ActiveSupport::Logger.new(captured)
+    yield
+    captured.string
+  ensure
+    Rails.logger = original_logger if original_logger
+  end
+
+  def cheque_strings_from_prc(export_string)
+    report = Corvid::PrcReportParser.parse(export_string)
+    report.payments.filter_map(&:check_number).reject(&:empty?).uniq
+  end
+
+  def refute_cheque_strings_in_persisted_rows(cheque_strings)
+    [ Corvid::PrcPayment, Corvid::PrcObligation ].each do |model|
+      model.find_each do |row|
+        row.attributes.each_value do |value|
+          next if value.nil?
+
+          str = value.to_s
+          cheque_strings.each do |cheque|
+            refute_includes str, cheque,
+                            "#{model.name} must not persist or embed cheque value #{cheque}"
+          end
+        end
+      end
+    end
   end
 
   def seed_pfs_for_office_visit
