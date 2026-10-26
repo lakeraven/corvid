@@ -26,6 +26,9 @@ module Corvid
     # cannot move a PRC-linked claim from an unsent status into a sent
     # status, cannot set status to "submitted" from any status, and cannot
     # write claim_identifier or submitted_at on an unsent linked claim.
+    # The stored prc_referral_id counts as linked even when this save
+    # clears the association. A plain save also cannot attach a claim
+    # that already carries sent markers or a sent status to a referral.
     # submit! and mark_submitted! are the only paths that write those
     # markers or enter "submitted" from an unsent row, and they re-run
     # the gates. check_status! may record "submitted" on a claim that was
@@ -71,14 +74,18 @@ module Corvid
     # helpers, remittance processing) records when it first happened, so the
     # KPIs above still count the claim after its status moves on.
     before_save :stamp_rejection_and_denial_times, if: :will_save_change_to_status?
-    # Provenance waits for the outermost commit. The check payload and the
-    # decision's tenant are captured here; delivery runs after commit inside
-    # that tenant. A rollback never calls the hook, and a hook failure does
-    # not undo the submission.
+    # Provenance is registered on the transaction that holds this save.
+    # The check payload and the decision's tenant are captured here;
+    # delivery runs when that transaction commits, inside the captured
+    # tenant. A rolled-back savepoint drops the callback even if an outer
+    # transaction commits. A hook failure does not undo the submission.
+    # The gate flag is not a publication mark: a later plain save does
+    # not publish a submission that rolled back.
     before_save :schedule_submission_provenance
 
     validate :submission_status_requires_gate, on: :update
     validate :unsent_linked_claim_cannot_gain_sent_markers, on: :update
+    validate :cannot_attach_ungated_sent_claim, on: :update
 
     scope :by_status, ->(status) { where(status: status) }
     scope :pending, -> { where(status: %w[submitted accepted]) }
@@ -281,13 +288,15 @@ module Corvid
 
     # PRC-linked claims: a plain save cannot enter "submitted" from any
     # stored status, and cannot leave an unsent row — draft, or error
-    # without a claim_identifier — for a sent status. submit! and
-    # mark_submitted! are the gated writers. An error that already has a
-    # claim_identifier was sent; check_status!, payment, or remittance
-    # may move it, including back to "submitted". Moves between sent
-    # statuses stay open whether or not submitted_at was stamped.
-    # Creating a row already sent is a historical import and is not
-    # validated here.
+    # without a claim_identifier — for a sent status. The link is the
+    # resolved prc_referral_id or the one still stored on the row, so
+    # unlinking in the same save does not step around the gate. submit!
+    # and mark_submitted! are the gated writers. An error that already
+    # has a claim_identifier was sent; check_status!, payment, or
+    # remittance may move it, including back to "submitted". Moves
+    # between sent statuses stay open whether or not submitted_at was
+    # stamped. Creating a row already sent is a historical import and
+    # is not validated here.
     def submission_status_requires_gate
       return if @submission_through_gate || status_poll_of_sent_claim?
       return unless guarded_status_transition?
@@ -310,7 +319,7 @@ module Corvid
     end
 
     def guarded_status_transition?
-      prc_referral_id.present? && will_save_change_to_status? && submission_transition_blocked?
+      linked_prc_claim? && will_save_change_to_status? && submission_transition_blocked?
     end
 
     def submission_transition_blocked?
@@ -338,7 +347,9 @@ module Corvid
     # An unsent linked claim may gain claim_identifier or submitted_at
     # only through save_through_submission_gate!. A plain save that writes
     # either marker is rejected, whether or not it also changes other
-    # attributes. submit! and mark_submitted! are the only writers.
+    # attributes. Editing referral_identifier can clear prc_referral_id
+    # before validation; the stored link still counts. submit! and
+    # mark_submitted! are the only writers.
     def unsent_linked_claim_cannot_gain_sent_markers
       return if @submission_through_gate
       return unless linked_unsent_claim? && sent_marker_changing?
@@ -347,7 +358,42 @@ module Corvid
     end
 
     def linked_unsent_claim?
-      prc_referral_id.present? && unsent_status_in_database?
+      linked_prc_claim? && unsent_status_in_database?
+    end
+
+    # The resolved id is the link this save would store. The database id
+    # is the link the row already has. An unlink leaves only the latter.
+    def linked_prc_claim?
+      prc_referral_id.present? || prc_referral_id_in_database.present?
+    end
+
+    # Attaching a referral to a claim that already carries sent markers
+    # or a sent status would put a sent bill on whatever referral the
+    # identifier names, including a draft. submit! and mark_submitted!
+    # may link while they pass the gates. A plain save may not.
+    def cannot_attach_ungated_sent_claim
+      return if @submission_through_gate
+      return unless attaching_prc_referral?
+      return unless ungated_sent_claim?
+
+      add_ungated_link_errors
+    end
+
+    def attaching_prc_referral?
+      will_save_change_to_prc_referral_id? && prc_referral_id.present? &&
+        prc_referral_id != prc_referral_id_in_database
+    end
+
+    def ungated_sent_claim?
+      claim_identifier.present? || submitted_at.present? || SENT_STATUSES.include?(status)
+    end
+
+    def add_ungated_link_errors
+      errors.add(:claim_identifier, SENT_MARKER_MESSAGE) if claim_identifier.present?
+      errors.add(:submitted_at, SENT_MARKER_MESSAGE) if submitted_at.present?
+      return unless SENT_STATUSES.include?(status)
+
+      errors.add(:status, "must be submitted with submit! or mark_submitted!")
     end
 
     def sent_marker_changing?
@@ -367,7 +413,9 @@ module Corvid
         prc_referral.alternate_resource_checks.reload
       )
       tenant = Corvid::TenantContext.current_tenant_identifier
-      ActiveRecord.after_all_transactions_commit do
+      # Same transaction as the save. Commit delivers once. Rollback drops
+      # the callback, so a later plain save cannot publish this submission.
+      self.class.current_transaction.after_commit do
         deliver_submission_provenance(entities, tenant)
       end
     end
