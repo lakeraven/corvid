@@ -38,6 +38,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `payment_rate`.
 
 ### Removed
+- `corvid_case_programs.program_name`. Issue #591 classified the column as
+  patient PHI, and it duplicated `program_code`, which is NOT NULL, unique
+  per case, and validated against `Corvid::ProgramRegistry`.
+  `Corvid::CaseProgram#program_name` is now derived from the stripped registry
+  display name. An unregistered code, or a missing or blank display name,
+  makes the derived name the raw code. `#as_json` no longer includes
+  `program_name`, and `where(program_name:)` no longer works. Passing
+  `program_name:` raises `ActiveModel::UnknownAttributeError`. `up` counts a
+  stored label as drifted only when it equals none of the three historical
+  forms for its code: stripped
+  (`display_name.to_s.strip.presence || program_code`), presence
+  (`display_name.presence || program_code`), and raw
+  (`display_name || program_code`). It raises
+  `RemoveProgramNameFromCorvidCasePrograms::UnmappedProgramNames` with that
+  count and the count of unregistered codes. Export first, or set
+  `CORVID_DISCARD_PROGRAM_NAMES=1` to drop the column anyway. A rollback
+  re-adds the column and backfills it with the stripped rule.
 - `corvid_cases.patient_name_cached` and `corvid_cases.patient_dob_cached`,
   and `Corvid::Case#cache_patient_data!` which was their only writer. ADR 0003
   states no `corvid_*` table stores a patient name or date of birth; these were
