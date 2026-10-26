@@ -64,7 +64,7 @@ class Corvid::FhirReferenceTest < ActiveSupport::TestCase
   end
 
   test "id_from rejects ids that violate FHIR id syntax after ASCII whitespace strip" do
-    assert_nil Corvid::FhirReference.id_from("Patient/pt_x")
+    assert_nil Corvid::FhirReference.id_from("Patient/abc_def")
     assert_nil Corvid::FhirReference.id_from("Patient/pt-x?_format=json")
     assert_nil Corvid::FhirReference.id_from("Patient/pt-x#frag")
     assert_nil Corvid::FhirReference.id_from("Patient/%20")

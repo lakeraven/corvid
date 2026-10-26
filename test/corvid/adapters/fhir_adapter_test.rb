@@ -221,6 +221,7 @@ class Corvid::Adapters::FhirAdapterTest < Minitest::Test
   def test_list_claims_patient_identifier_nil_when_patient_reference_id_empty
     bundle = {
       "resourceType" => "Bundle",
+      "type" => "searchset",
       "entry" => [ { "resource" => {
         "resourceType" => "Claim",
         "id" => "clm_pt_blank_ref",
@@ -241,6 +242,7 @@ class Corvid::Adapters::FhirAdapterTest < Minitest::Test
   def test_list_claims_patient_identifier_nil_when_patient_reference_id_whitespace
     bundle = {
       "resourceType" => "Bundle",
+      "type" => "searchset",
       "entry" => [ { "resource" => {
         "resourceType" => "Claim",
         "id" => "clm_pt_ws_ref",
@@ -297,6 +299,7 @@ class Corvid::Adapters::FhirAdapterTest < Minitest::Test
   def test_list_claims_patient_identifier_from_absolute_patient_under_base_url
     bundle = {
       "resourceType" => "Bundle",
+      "type" => "searchset",
       "entry" => [ { "resource" => {
         "resourceType" => "Claim",
         "id" => "clm_pt_base_url",
@@ -317,6 +320,7 @@ class Corvid::Adapters::FhirAdapterTest < Minitest::Test
   def test_list_claims_patient_identifier_nil_for_foreign_absolute_patient_url
     bundle = {
       "resourceType" => "Bundle",
+      "type" => "searchset",
       "entry" => [ { "resource" => {
         "resourceType" => "Claim",
         "id" => "clm_pt_foreign",
@@ -374,7 +378,7 @@ class Corvid::Adapters::FhirAdapterTest < Minitest::Test
       [ { "member" => { "reference" => "Practitioner/pr-ct-001" }, "role" => [ { "coding" => [ { "code" => "doctor" } ] } ] } ]
     )
     @adapter.stub(:fhir_search, bundle) do
-      member = @adapter.get_care_team("pt_ct_001").first
+      member = @adapter.get_care_team("pt-ct-001").first
       assert_equal "pr-ct-001", member.practitioner_identifier
     end
   end
@@ -384,7 +388,7 @@ class Corvid::Adapters::FhirAdapterTest < Minitest::Test
       [ { "member" => { "reference" => "Practitioner/" }, "role" => [ { "coding" => [ { "code" => "doctor" } ] } ] } ]
     )
     @adapter.stub(:fhir_search, bundle) do
-      member = @adapter.get_care_team("pt_ct_blank").first
+      member = @adapter.get_care_team("pt-ct-blank").first
       assert_nil member.practitioner_identifier
     end
   end
@@ -394,7 +398,7 @@ class Corvid::Adapters::FhirAdapterTest < Minitest::Test
       [ { "member" => { "reference" => "Practitioner/ " }, "role" => [ { "coding" => [ { "code" => "doctor" } ] } ] } ]
     )
     @adapter.stub(:fhir_search, bundle) do
-      member = @adapter.get_care_team("pt_ct_ws").first
+      member = @adapter.get_care_team("pt-ct-ws").first
       assert_nil member.practitioner_identifier
     end
   end
@@ -2508,6 +2512,7 @@ class Corvid::Adapters::FhirAdapterTest < Minitest::Test
   def care_team_search_bundle(participants)
     {
       "resourceType" => "Bundle",
+      "type" => "searchset",
       "entry" => [ {
         "resource" => {
           "resourceType" => "CareTeam",

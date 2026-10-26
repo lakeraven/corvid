@@ -31,4 +31,12 @@ class Corvid::Adapters::EnrollmentDemoAdapterTest < Minitest::Test
     assert_nil result[:enrolled]
     assert_equal :unavailable, result[:confidence]
   end
+
+  def test_seeded_prc_manager_practitioner_id_is_valid_for_fhir_reference_lookup
+    practitioner_id = "pr-demo-001"
+    practitioner = @adapter.find_practitioner(practitioner_id)
+    assert practitioner, "expected seeded PRC manager at #{practitioner_id}"
+    assert_equal practitioner_id,
+                 Corvid::FhirReference.id_from("Practitioner/#{practitioner_id}", type: "Practitioner")
+  end
 end

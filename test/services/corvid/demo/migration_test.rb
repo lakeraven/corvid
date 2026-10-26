@@ -9,6 +9,7 @@ require "test_helper"
 # reaches the target. Uses the in-process StubMigrationTarget so it runs offline.
 class Corvid::Demo::MigrationTest < ActiveSupport::TestCase
   TENANT = "tnt_broken_rock_demo_test"
+  LEGACY_HERO_IDS = %w[pt_broken_rock_hero_1 pt_broken_rock_hero_2].freeze
 
   setup do
     Corvid.configure { |c| c.adapter = Corvid::Adapters::MockAdapter.new }
@@ -55,6 +56,55 @@ class Corvid::Demo::MigrationTest < ActiveSupport::TestCase
     with_tenant(TENANT) do
       assert_equal 0,
                    Corvid::Case.where(patient_identifier: Corvid::Demo::Migration::HEROES.keys).count
+    end
+  end
+
+  test "reset! removes legacy underscore Broken Rock hero cases alongside current heroes" do
+    with_tenant(TENANT) do
+      LEGACY_HERO_IDS.each do |patient_ref|
+        Corvid::Case.find_or_create_by!(
+          tenant_identifier: TENANT,
+          facility_identifier: Corvid::Demo::Migration::FACILITY,
+          patient_identifier: patient_ref
+        ) do |c|
+          c.status = "active"
+          c.lifecycle_status = "intake"
+          c.intake_at = Time.current
+        end
+      end
+      Corvid::Demo::Migration.seed!(tenant: TENANT)
+      assert_equal 4, Corvid::Case.where(patient_identifier: LEGACY_HERO_IDS + Corvid::Demo::Migration::HEROES.keys).count
+    end
+
+    Corvid::Demo::Migration.reset!(tenant: TENANT)
+    with_tenant(TENANT) do
+      assert_equal 0, Corvid::Case.where(patient_identifier: LEGACY_HERO_IDS + Corvid::Demo::Migration::HEROES.keys).count
+    end
+  end
+
+  test "reset then seed after a legacy-only database leaves exactly the current hero pair" do
+    with_tenant(TENANT) do
+      LEGACY_HERO_IDS.each do |patient_ref|
+        Corvid::Case.find_or_create_by!(
+          tenant_identifier: TENANT,
+          facility_identifier: Corvid::Demo::Migration::FACILITY,
+          patient_identifier: patient_ref
+        ) do |c|
+          c.status = "active"
+          c.lifecycle_status = "intake"
+          c.intake_at = Time.current
+        end
+      end
+    end
+
+    Corvid::Demo::Migration.reset!(tenant: TENANT)
+    Corvid::Demo::Migration.seed!(tenant: TENANT)
+    with_tenant(TENANT) do
+      assert_equal 2, Corvid::Case.where(patient_identifier: Corvid::Demo::Migration::HEROES.keys).count
+      LEGACY_HERO_IDS.each do |legacy_id|
+        refute Corvid::Case.exists?(patient_identifier: legacy_id),
+               "expected legacy hero #{legacy_id} to be removed"
+      end
     end
   end
 end

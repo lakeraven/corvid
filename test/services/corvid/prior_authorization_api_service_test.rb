@@ -416,6 +416,20 @@ class Corvid::PriorAuthorizationApiServiceTest < ActiveSupport::TestCase
     end
   end
 
+  test "submit_from_claim accepts Corvid pt_ vault token in Patient reference" do
+    token = "pt_01HK8B7Z9XCQVG3F8N5K0R4MWB"
+    with_tenant(TENANT) do
+      Corvid::TenantContext.current_facility_identifier = FACILITY
+      Corvid::PriorAuthorizationApiService.submit_from_claim(
+        build_fhir_claim(patient: { reference: "Patient/#{token}" })
+      )
+      referral = Corvid::PrcReferral.order(created_at: :desc).first
+      assert_equal token, referral.case.patient_identifier
+    ensure
+      Corvid::TenantContext.reset!
+    end
+  end
+
   test "submit_from_claim rejects Claim when patient reference has type only" do
     assert_submit_rejects_invalid_patient(patient: { reference: "Patient" })
   end
@@ -704,6 +718,99 @@ class Corvid::PriorAuthorizationApiServiceTest < ActiveSupport::TestCase
       referral = Corvid::PrcReferral.order(created_at: :desc).first
       stored = Corvid.adapter.find_referral(referral.referral_identifier)
       assert_equal "pr-pa-dup-same", stored.requesting_provider_identifier
+    ensure
+      Corvid::TenantContext.reset!
+    end
+  end
+
+  test "submit_from_claim rejects Claim when patient element has conflicting inner reference keys" do
+    with_tenant(TENANT) do
+      Corvid::TenantContext.current_facility_identifier = FACILITY
+      referral_count = Corvid::PrcReferral.count
+      claim = build_fhir_claim(
+        patient: { reference: "Patient/pt-pa-inner-a", "reference" => "Patient/pt-pa-inner-b" }
+      )
+
+      error = assert_raises(ArgumentError) do
+        Corvid::PriorAuthorizationApiService.submit_from_claim(claim)
+      end
+      assert_patient_reference_error(error)
+      refute_match(/pt-pa-inner-a/, error.message)
+      refute_match(/pt-pa-inner-b/, error.message)
+      assert_equal referral_count, Corvid::PrcReferral.count
+    ensure
+      Corvid::TenantContext.reset!
+    end
+  end
+
+  test "submit_from_claim accepts Claim when patient element repeats the same reference under both keys" do
+    with_tenant(TENANT) do
+      Corvid::TenantContext.current_facility_identifier = FACILITY
+      claim = build_fhir_claim(
+        patient: { reference: "Patient/pt-pa-inner-same", "reference" => "Patient/pt-pa-inner-same" }
+      )
+      Corvid::PriorAuthorizationApiService.submit_from_claim(claim)
+      referral = Corvid::PrcReferral.order(created_at: :desc).first
+      assert_equal "pt-pa-inner-same", referral.case.patient_identifier
+    ensure
+      Corvid::TenantContext.reset!
+    end
+  end
+
+  test "submit_from_claim stores nil provider when provider element has conflicting inner reference keys" do
+    with_tenant(TENANT) do
+      Corvid::TenantContext.current_facility_identifier = FACILITY
+      claim = build_fhir_claim(
+        patient: { reference: "Patient/pt-pa-prov-inner" },
+        provider: { reference: "Practitioner/pr-pa-inner-a", "reference" => "Practitioner/pr-pa-inner-b" }
+      )
+      Corvid::PriorAuthorizationApiService.submit_from_claim(claim)
+      referral = Corvid::PrcReferral.order(created_at: :desc).first
+      stored = Corvid.adapter.find_referral(referral.referral_identifier)
+      assert_equal "pt-pa-prov-inner", referral.case.patient_identifier
+      assert_nil stored.requesting_provider_identifier
+    ensure
+      Corvid::TenantContext.reset!
+    end
+  end
+
+  test "submit_from_claim records MRI from raw Parameters with nested productOrService text" do
+    with_tenant(TENANT) do
+      Corvid::TenantContext.current_facility_identifier = FACILITY
+      claim = ActionController::Parameters.new(
+        resourceType: "Claim",
+        status: "active",
+        use: "preauthorization",
+        patient: { reference: "Patient/pt-pa-params-mri-text" },
+        provider: { reference: "Practitioner/pr-pa-unit-001" },
+        total: { value: 2500, currency: "USD" },
+        item: [ { productOrService: { text: "MRI" } } ]
+      )
+      Corvid::PriorAuthorizationApiService.submit_from_claim(claim)
+      referral = Corvid::PrcReferral.order(created_at: :desc).first
+      stored = Corvid.adapter.find_referral(referral.referral_identifier)
+      assert_equal "MRI", stored.service_requested
+    ensure
+      Corvid::TenantContext.reset!
+    end
+  end
+
+  test "submit_from_claim records MRI from permitted Parameters with nested productOrService coding display" do
+    with_tenant(TENANT) do
+      Corvid::TenantContext.current_facility_identifier = FACILITY
+      claim = ActionController::Parameters.new(
+        resourceType: "Claim",
+        status: "active",
+        use: "preauthorization",
+        patient: { reference: "Patient/pt-pa-params-mri-code" },
+        provider: { reference: "Practitioner/pr-pa-unit-001" },
+        total: { value: 2500, currency: "USD" },
+        item: [ { productOrService: { coding: [ { display: "MRI" } ] } } ]
+      ).permit!
+      Corvid::PriorAuthorizationApiService.submit_from_claim(claim)
+      referral = Corvid::PrcReferral.order(created_at: :desc).first
+      stored = Corvid.adapter.find_referral(referral.referral_identifier)
+      assert_equal "MRI", stored.service_requested
     ensure
       Corvid::TenantContext.reset!
     end

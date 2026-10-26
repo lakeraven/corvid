@@ -85,13 +85,13 @@ class Corvid::Adapters::EnrollmentDemoAdapterContractTest < Minitest::Test
       urgent: false,
       chs_approval_status: "P",
       service_requested: "TEST,CONTRACT SERVICE",
-      requesting_provider_identifier: "pr_demo_001"
+      requesting_provider_identifier: "pr-demo-001"
     )
     adapter.add_care_team(
       "pt-demo-enrolled",
       [
         {
-          practitioner_identifier: "pr_demo_001",
+          practitioner_identifier: "pr-demo-001",
           role: "practitioner",
           name: "DEMO CARE TEAM",
           status: "active"
@@ -131,7 +131,7 @@ class Corvid::Adapters::EnrollmentDemoAdapterContractTest < Minitest::Test
       patient_identifier_tribal_no_confidence: "pt_contract_002",
       unknown_patient_identifier: "pt_contract_unknown",
       patient_search_query: "ENROLLED",
-      practitioner_identifier: "pr_demo_001",
+      practitioner_identifier: "pr-demo-001",
       unknown_practitioner_identifier: "pr_contract_unknown",
       practitioner_search_query: "PRC MANAGER",
       referral_identifier: "rf_contract_001",
