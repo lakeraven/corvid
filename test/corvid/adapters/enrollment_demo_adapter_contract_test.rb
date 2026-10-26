@@ -17,6 +17,13 @@ class Corvid::Adapters::EnrollmentDemoAdapterContractTest < Minitest::Test
     {}
   end
 
+  IN_MEMORY_NO_FAILED_SEARCH_REASON =
+    "in-memory adapter has no transport layer whose search can fail (nil unknown)".freeze
+
+  def contract_declined_list_read_failed_search
+    AdapterContractTests::LIST_SEARCH_READS.index_with { IN_MEMORY_NO_FAILED_SEARCH_REASON }
+  end
+
   def contract_seed!
     adapter = contract_adapter
     adapter.reset!

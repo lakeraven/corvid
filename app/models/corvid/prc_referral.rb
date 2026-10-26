@@ -41,6 +41,11 @@ module Corvid
     validates :referral_identifier, presence: true
     validates :referral_identifier, uniqueness: { scope: [ :tenant_identifier, :facility_identifier ] }
 
+    # MedicalPriorityService writes only this. Null until a priority is assigned.
+    # Same set as corvid_prc_referrals_priority_system_check (ADR 0002).
+    PRIORITY_SYSTEMS = %w[corvid_v1].freeze
+    validates :priority_system, inclusion: { in: PRIORITY_SYSTEMS }, allow_nil: true
+
     # Referrals for a given patient. Joins the parent Case since the
     # patient_identifier lives there (the referral is case-scoped).
     # Eager-loads the case so callers iterating referrals don't N+1.
@@ -49,7 +54,9 @@ module Corvid
         .where(corvid_cases: { patient_identifier: patient_identifier })
     }
 
-    aasm column: :status, whiny_transitions: false do
+    # whiny_persistence pinned: aasm 6 flipped its default to true, which would
+    # make a bang event on an invalid record raise instead of returning false.
+    aasm column: :status, whiny_transitions: false, whiny_persistence: false do
       state :draft, initial: true
       state :submitted, :eligibility_review, :management_approval, :alternate_resource_review
       state :priority_assignment, :committee_review, :exception_review

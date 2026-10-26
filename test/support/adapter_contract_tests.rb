@@ -44,6 +44,19 @@ module AdapterContractTests
     dereference_tokens
   ].freeze
 
+  LIST_SEARCH_READS = %i[
+    search_patients
+    search_practitioners
+    list_referrals
+    list_claims
+    get_care_team
+  ].freeze
+
+  # Stub transport on the contract adapter instance so list/search reads see a failed search.
+  FHIR_SIMULATE_FAILED_LIST_SEARCH = lambda do |adapter|
+    adapter.define_singleton_method(:fhir_search) { |*_args, **_kwargs| nil }
+  end
+
   # Seed keys that used to switch seeded checks off. A seed that still
   # sends one is rejected: list the method in contract_unsupported instead.
   RETIRED_SEED_FLAGS = %i[care_team_seeded claims_listable obligation_seeded].freeze
@@ -53,6 +66,16 @@ module AdapterContractTests
   RECORDED_PAYMENT_AMOUNT = 1.0
 
   REFUND_SUCCESS_STATUSES = %w[refunded succeeded].freeze
+
+  # verify_eligibility must not answer from an arbitrary coverage when the
+  # requested resource type is missing or blank (ADR 0005).
+  BLANK_VERIFY_ELIGIBILITY_RESOURCE_TYPES = [
+    nil,
+    "",
+    "   ",
+    "\t \n",
+    :""
+  ].freeze
 
   NO_IDENTIFIER_METHODS = %i[
     fetch_remittances
@@ -221,9 +244,14 @@ module AdapterContractTests
       {}
     end
 
+    def contract_declined_list_read_failed_search
+      {}
+    end
+
     def validate_contract_hooks!
       validate_contract_unsupported!
       validate_contract_fail_closed_stubs!
+      validate_contract_declined_list_read_failed_search!
     end
 
     def validate_required_seed_keys!(seed)
@@ -277,6 +305,25 @@ module AdapterContractTests
       @contract_fail_closed_stubs_validated = true
     end
 
+    def validate_contract_declined_list_read_failed_search!
+      return if @contract_declined_list_read_failed_search_validated
+
+      base_methods = Corvid::Adapters::Base.public_instance_methods(false)
+      declined = contract_declined_list_read_failed_search
+      assert declined.is_a?(Hash), "contract_declined_list_read_failed_search must be a Hash"
+
+      declined.each do |method_name, reason|
+        assert AdapterContractTests::LIST_SEARCH_READS.include?(method_name),
+               "contract_declined_list_read_failed_search key #{method_name.inspect} must be a list/search read"
+        assert base_methods.include?(method_name),
+               "contract_declined_list_read_failed_search key #{method_name.inspect} is not a Base public method"
+        assert reason.is_a?(String) && !reason.strip.empty?,
+               "contract_declined_list_read_failed_search[#{method_name.inspect}] must be a non-empty String reason"
+      end
+
+      @contract_declined_list_read_failed_search_validated = true
+    end
+
     def contract_call_args(method_name, seed)
       builder = AdapterContractTests::CONTRACT_CALLS[method_name]
       flunk("add a CONTRACT_CALLS entry for #{method_name}") unless builder
@@ -310,6 +357,7 @@ module AdapterContractTests
       end
       assert_seeded_data_for_method(method_name, seed)
       assert_unknown_identifier_behavior(method_name, seed)
+      assert_list_read_failed_search_unknown(method_name, seed) if LIST_SEARCH_READS.include?(method_name)
     end
 
     def assert_fail_closed_stub_seeded_outcome(method_name, result)
@@ -577,6 +625,14 @@ module AdapterContractTests
 
     def assert_coverage_resource_type_guards(seed)
       adapter = contract_adapter
+
+      AdapterContractTests::BLANK_VERIFY_ELIGIBILITY_RESOURCE_TYPES.each do |blank_type|
+        result = adapter.verify_eligibility(seed[:patient_identifier], blank_type)
+        assert_nil result,
+                   "verify_eligibility(#{blank_type.inspect}) must be nil (undetermined), " \
+                   "never a coverage answer, got #{result.inspect}"
+      end
+
       match = adapter.verify_eligibility(seed[:patient_identifier], seed[:coverage_resource_type])
       assert_instance_of Hash, match
       assert_equal true, match[:eligible],
@@ -598,6 +654,35 @@ module AdapterContractTests
       assert_instance_of Hash, result
       refute_equal true, result[:eligible],
                    "verify_eligibility(wrong resource type) must not return eligible: true"
+    end
+
+    def assert_list_read_failed_search_unknown(method_name, seed)
+      return if contract_declined_list_read_failed_search.key?(method_name)
+
+      simulator = seed[:simulate_failed_list_search]
+      unless simulator.is_a?(Proc)
+        flunk("contract seed must provide simulate_failed_list_search proc for #{method_name}, " \
+              "or list the method in contract_declined_list_read_failed_search with a reason")
+      end
+
+      adapter = contract_adapter
+      simulator.call(adapter)
+
+      case method_name
+      when :search_patients
+        query = seed[:patient_search_query]
+        result = adapter.search_patients(query)
+      when :search_practitioners
+        query = seed[:practitioner_search_query]
+        result = adapter.search_practitioners(query)
+      when :list_referrals, :list_claims, :get_care_team
+        result = adapter.public_send(method_name, seed[:patient_identifier])
+      else
+        flunk("no failed-search unknown assertion for #{method_name}")
+      end
+
+      assert_nil result,
+                 "#{method_name} must be nil (unknown) when underlying search fails, got #{result.inspect}"
     end
 
     def assert_unknown_identifier_behavior(method_name, seed)

@@ -64,7 +64,8 @@ class Corvid::Adapters::FhirDemoAdapterContractTest < Minitest::Test
       coverage_resource_type: "medicaid",
       other_resource_type: "medicare_a",
       inactive_coverage_resource_type: "va_benefits",
-      dereference_tokens: %w[pt-contract-001]
+      dereference_tokens: %w[pt-contract-001],
+      simulate_failed_list_search: AdapterContractTests::FHIR_SIMULATE_FAILED_LIST_SEARCH
     }
   end
 

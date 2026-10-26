@@ -7,11 +7,11 @@ class Corvid::CaseProgramTest < ActiveSupport::TestCase
 
   # -- Creation ---------------------------------------------------------------
 
-  test "creates with case and program_name" do
+  test "creates with case and derives program_name from registry" do
     with_tenant(TENANT) do
       cp = create_case_program
       assert cp.persisted?
-      assert_equal "IHS CHS", cp.program_name
+      assert_equal "Tuberculosis", cp.program_name
     end
   end
 
@@ -24,17 +24,63 @@ class Corvid::CaseProgramTest < ActiveSupport::TestCase
 
   # -- Validations -----------------------------------------------------------
 
-  test "requires program_name" do
+  test "program_name is derived from ProgramRegistry for program_code" do
     with_tenant(TENANT) do
-      cp = Corvid::CaseProgram.new(case: create_case, program_name: nil, program_code: "tb")
-      refute cp.valid?
-      assert cp.errors[:program_name].any?
+      cp = create_case_program(program_code: "tb")
+      assert_equal "Tuberculosis", cp.program_name
+    end
+  end
+
+  test "program_name returns program_code when registry display_name is blank" do
+    Corvid::ProgramRegistry.register("blank_dn_prog", display_name: "", milestones: [])
+    with_tenant(TENANT) do
+      cp = Corvid::CaseProgram.create!(
+        case: create_case,
+        program_code: "blank_dn_prog",
+        enrollment_date: Date.current
+      )
+      assert_equal "blank_dn_prog", cp.program_name
+    end
+  ensure
+    Corvid::ProgramRegistry.reset!
+  end
+
+  test "program_name returns program_code when registry entry is missing" do
+    with_tenant(TENANT) do
+      cp = create_case_program(program_code: "tb")
+      cp.update_column(:program_code, "ghost_code")
+      assert_equal "ghost_code", cp.reload.program_name
+    end
+  end
+
+  test "program_name strips surrounding whitespace from registry display_name" do
+    Corvid::ProgramRegistry.register("padded_dn_prog", display_name: "  Padded Label  ", milestones: [])
+    with_tenant(TENANT) do
+      cp = create_case_program(program_code: "padded_dn_prog")
+      assert_equal "Padded Label", cp.program_name
+    end
+  ensure
+    Corvid::ProgramRegistry.reset!
+  end
+
+  test "program_name column is not stored on corvid_case_programs" do
+    refute_includes Corvid::CaseProgram.column_names, "program_name"
+  end
+
+  test "reject program_name as unknown attribute" do
+    with_tenant(TENANT) do
+      assert_raises(ActiveModel::UnknownAttributeError) do
+        Corvid::CaseProgram.new(
+          case: create_case, program_name: "Tuberculosis",
+          program_code: "tb", enrollment_date: Date.current
+        )
+      end
     end
   end
 
   test "requires program_code" do
     with_tenant(TENANT) do
-      cp = Corvid::CaseProgram.new(case: create_case, program_name: "IHS CHS", program_code: nil)
+      cp = Corvid::CaseProgram.new(case: create_case, program_code: nil)
       refute cp.valid?
       assert cp.errors[:program_code].any?
     end
@@ -44,7 +90,7 @@ class Corvid::CaseProgramTest < ActiveSupport::TestCase
     with_tenant(TENANT) do
       assert_raises(ArgumentError) do
         Corvid::CaseProgram.new(
-          case: create_case, program_name: "IHS CHS",
+          case: create_case,
           program_code: "tb", enrollment_status: "bogus"
         )
       end
@@ -54,7 +100,7 @@ class Corvid::CaseProgramTest < ActiveSupport::TestCase
   test "requires enrollment_date" do
     with_tenant(TENANT) do
       cp = Corvid::CaseProgram.new(
-        case: create_case, program_name: "Medicare", program_code: "hep_b",
+        case: create_case, program_code: "hep_b",
         enrollment_date: nil
       )
       refute cp.valid?
@@ -66,11 +112,11 @@ class Corvid::CaseProgramTest < ActiveSupport::TestCase
     with_tenant(TENANT) do
       kase = create_case
       Corvid::CaseProgram.create!(
-        case: kase, program_name: "IHS CHS", program_code: "tb",
+        case: kase, program_code: "tb",
         enrollment_date: Date.current
       )
       dup = Corvid::CaseProgram.new(
-        case: kase, program_name: "IHS CHS", program_code: "tb",
+        case: kase, program_code: "tb",
         enrollment_date: Date.current
       )
       refute dup.valid?
@@ -82,8 +128,8 @@ class Corvid::CaseProgramTest < ActiveSupport::TestCase
     with_tenant(TENANT) do
       c1 = create_case
       c2 = create_case
-      Corvid::CaseProgram.create!(case: c1, program_name: "CHS", program_code: "tb", enrollment_date: Date.current)
-      cp2 = Corvid::CaseProgram.new(case: c2, program_name: "CHS", program_code: "tb", enrollment_date: Date.current)
+      Corvid::CaseProgram.create!(case: c1, program_code: "tb", enrollment_date: Date.current)
+      cp2 = Corvid::CaseProgram.new(case: c2, program_code: "tb", enrollment_date: Date.current)
       assert cp2.valid?
     end
   end
@@ -91,7 +137,7 @@ class Corvid::CaseProgramTest < ActiveSupport::TestCase
   test "disenrollment_date must be on or after enrollment_date" do
     with_tenant(TENANT) do
       cp = Corvid::CaseProgram.new(
-        case: create_case, program_name: "Medicare", program_code: "hep_b",
+        case: create_case, program_code: "hep_b",
         enrollment_date: Date.current, disenrollment_date: 1.day.ago.to_date
       )
       refute cp.valid?
@@ -102,7 +148,7 @@ class Corvid::CaseProgramTest < ActiveSupport::TestCase
   test "disenrollment_date on enrollment_date is valid" do
     with_tenant(TENANT) do
       cp = Corvid::CaseProgram.new(
-        case: create_case, program_name: "Medicare", program_code: "hep_b",
+        case: create_case, program_code: "hep_b",
         enrollment_date: Date.current, disenrollment_date: Date.current
       )
       assert cp.valid?
@@ -223,7 +269,7 @@ class Corvid::CaseProgramTest < ActiveSupport::TestCase
   test "program_code validates against ProgramRegistry" do
     with_tenant(TENANT) do
       cp = Corvid::CaseProgram.new(
-        case: create_case, program_name: "Bogus", program_code: "not_a_program",
+        case: create_case, program_code: "not_a_program",
         enrollment_date: Date.current
       )
       refute cp.valid?
@@ -236,7 +282,7 @@ class Corvid::CaseProgramTest < ActiveSupport::TestCase
     Corvid::ProgramRegistry.register("custom_test_program", display_name: "Custom Test", milestones: [])
     with_tenant(TENANT) do
       cp = Corvid::CaseProgram.new(
-        case: create_case, program_name: "Custom Test", program_code: "custom_test_program",
+        case: create_case, program_code: "custom_test_program",
         enrollment_date: Date.current
       )
       assert cp.valid?, "expected case_program with registered program to be valid: #{cp.errors.full_messages.inspect}"
@@ -249,11 +295,27 @@ class Corvid::CaseProgramTest < ActiveSupport::TestCase
     %w[immunization sti tb neonatal lead hep_b communicable_disease].each do |code|
       with_tenant(TENANT) do
         cp = Corvid::CaseProgram.new(
-          case: create_case, program_name: code.titleize, program_code: code,
+          case: create_case, program_code: code,
           enrollment_date: Date.current
         )
         assert cp.valid?, "expected built-in program #{code} to validate: #{cp.errors.full_messages.inspect}"
       end
+    end
+  end
+
+  # -- PHI: display name is not persisted ------------------------------------
+
+  test "raw row does not store registry display name for program_name" do
+    with_tenant(TENANT) do
+      cp = create_case_program(program_code: "tb")
+      assert_equal "Tuberculosis", cp.program_name
+
+      sql = ActiveRecord::Base.sanitize_sql_array(
+        [ "SELECT * FROM corvid_case_programs WHERE id = ?", cp.id ]
+      )
+      row = ActiveRecord::Base.connection.select_one(sql)
+      refute row.values.include?("Tuberculosis"),
+             "expected no column to persist display name Tuberculosis, got row: #{row.inspect}"
     end
   end
 
@@ -289,10 +351,9 @@ class Corvid::CaseProgramTest < ActiveSupport::TestCase
     )
   end
 
-  def create_case_program(program_name: "IHS CHS", program_code: "tb", enrollment_status: "active", **attrs)
+  def create_case_program(program_code: "tb", enrollment_status: "active", **attrs)
     Corvid::CaseProgram.create!(
       case: attrs.delete(:case) || create_case,
-      program_name: program_name,
       program_code: program_code,
       enrollment_status: enrollment_status,
       enrollment_date: attrs.delete(:enrollment_date) || Date.current,

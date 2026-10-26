@@ -133,6 +133,8 @@ module Corvid
       end
 
       def list_referrals(patient_identifier)
+        return nil if blank_patient_identifier?(patient_identifier)
+
         @referrals.filter_map do |id, attrs|
           next unless attrs[:patient_identifier] == patient_identifier.to_s
 
@@ -289,6 +291,8 @@ module Corvid
       # ----------------------------------------------------------------------
 
       def get_care_team(patient_identifier)
+        return nil if blank_patient_identifier?(patient_identifier)
+
         members = @care_teams[patient_identifier.to_s] || []
         members.map do |attrs|
           Corvid::CareTeamMemberReference.new(
@@ -503,6 +507,8 @@ module Corvid
       end
 
       def list_claims(patient_identifier)
+        return nil if blank_patient_identifier?(patient_identifier)
+
         copied_references(@claim_lines[patient_identifier.to_s])
       end
 
@@ -543,14 +549,16 @@ module Corvid
       # (coverage_type, or resource_type when coverage_type is absent) for a
       # type, payer_identifier for a payer. A payer or plan name that
       # happens to spell the requested word is not a match, and a request
-      # that matches nothing is unknown. Never substitute a different
-      # coverage. The most recently recorded match wins.
+      # that matches nothing is unknown. A nil, empty, or whitespace-only
+      # request is unknown and does not fall back to the first coverage.
+      # Never substitute a different coverage. The most recently recorded
+      # match wins.
       def coverage_for(patient_identifier, requested, field)
         coverages = @coverages[patient_identifier.to_s]
         return nil if coverages.nil? || coverages.empty?
 
         needle = requested.to_s.downcase
-        return coverages.first if needle.empty?
+        return nil if needle.strip.empty?
 
         coverages.reverse.find { |coverage| coverage_field(coverage, field).to_s.downcase == needle }
       end

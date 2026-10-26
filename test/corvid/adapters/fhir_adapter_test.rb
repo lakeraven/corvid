@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "minitest/autorun"
+require "minitest/mock"
 require "json"
 require "net/http"
 require "net/protocol"
@@ -94,6 +95,7 @@ class Corvid::Adapters::FhirAdapterTest < Minitest::Test
   def test_list_claims_skips_blank_provider_identifier_value_for_reference_id
     bundle = {
       "resourceType" => "Bundle",
+      "type" => "searchset",
       "entry" => [ { "resource" => {
         "resourceType" => "Claim",
         "id" => "clm_pr_blank_id",
@@ -118,6 +120,7 @@ class Corvid::Adapters::FhirAdapterTest < Minitest::Test
   def test_list_claims_skips_blank_provider_reference_for_display
     bundle = {
       "resourceType" => "Bundle",
+      "type" => "searchset",
       "entry" => [ { "resource" => {
         "resourceType" => "Claim",
         "id" => "clm_pr_blank_ref",
@@ -170,6 +173,7 @@ class Corvid::Adapters::FhirAdapterTest < Minitest::Test
   def test_list_claims_procedure_display_nil_when_all_label_fallbacks_blank
     bundle = {
       "resourceType" => "Bundle",
+      "type" => "searchset",
       "entry" => [ { "resource" => {
         "resourceType" => "Claim",
         "id" => "clm_all_blank_disp",
@@ -426,6 +430,7 @@ class Corvid::Adapters::FhirAdapterTest < Minitest::Test
   def test_list_claims_falls_back_procedure_display_from_product_or_service_text
     bundle = {
       "resourceType" => "Bundle",
+      "type" => "searchset",
       "entry" => [ { "resource" => {
         "resourceType" => "Claim",
         "id" => "clm_blank_disp",
@@ -482,6 +487,7 @@ class Corvid::Adapters::FhirAdapterTest < Minitest::Test
     # for the procedure_code, not blindly take index 0.
     bundle = {
       "resourceType" => "Bundle",
+      "type" => "searchset",
       "entry" => [ { "resource" => {
         "resourceType" => "Claim",
         "id" => "clm_1",
@@ -506,6 +512,7 @@ class Corvid::Adapters::FhirAdapterTest < Minitest::Test
   def test_list_claims_selects_hcpcs_coding_over_non_billing_first
     bundle = {
       "resourceType" => "Bundle",
+      "type" => "searchset",
       "entry" => [ { "resource" => {
         "resourceType" => "Claim",
         "id" => "clm_2",
@@ -528,6 +535,7 @@ class Corvid::Adapters::FhirAdapterTest < Minitest::Test
   def test_list_claims_falls_back_to_first_coding_when_no_billing_system
     bundle = {
       "resourceType" => "Bundle",
+      "type" => "searchset",
       "entry" => [ { "resource" => {
         "resourceType" => "Claim",
         "id" => "clm_3",
@@ -547,6 +555,7 @@ class Corvid::Adapters::FhirAdapterTest < Minitest::Test
   def test_list_claims_flags_present_but_unparseable_amount
     bundle = {
       "resourceType" => "Bundle",
+      "type" => "searchset",
       "entry" => [ { "resource" => {
         "resourceType" => "Claim",
         "id" => "clm_4",
@@ -572,6 +581,7 @@ class Corvid::Adapters::FhirAdapterTest < Minitest::Test
   def test_list_claims_absent_amount_is_legit_nil_without_error
     bundle = {
       "resourceType" => "Bundle",
+      "type" => "searchset",
       "entry" => [ { "resource" => {
         "resourceType" => "Claim",
         "id" => "clm_5",
@@ -592,6 +602,7 @@ class Corvid::Adapters::FhirAdapterTest < Minitest::Test
   def test_list_claims_serviced_date_from_period_when_serviced_date_blank
     bundle = {
       "resourceType" => "Bundle",
+      "type" => "searchset",
       "entry" => [ { "resource" => {
         "resourceType" => "Claim",
         "id" => "clm_blank_serviced_date",
@@ -2126,6 +2137,44 @@ class Corvid::Adapters::FhirAdapterTest < Minitest::Test
     }
   end
 
+  def multi_type_coverage_bundle
+    {
+      "resourceType" => "Bundle",
+      "entry" => [
+        {
+          "resource" => {
+            "resourceType" => "Coverage",
+            "id" => "cov_test_medicare",
+            "status" => "active",
+            "type" => { "coding" => [ { "code" => "MCRSC" } ] },
+            "payor" => [ { "display" => "TEST MEDICARE PAYER" } ]
+          }
+        },
+        {
+          "resource" => {
+            "resourceType" => "Coverage",
+            "id" => "cov_test_medicaid",
+            "status" => "active",
+            "type" => { "coding" => [ { "code" => "MCDSC" } ] },
+            "payor" => [ { "display" => "TEST MEDICAID PAYER" } ]
+          }
+        }
+      ]
+    }
+  end
+
+  def test_verify_eligibility_with_a_blank_resource_type_is_undetermined
+    @adapter.stub(:fhir_search, multi_type_coverage_bundle) do
+      [ nil, "", "   ", "\t \n", :"" ].each do |resource_type|
+        assert_nil @adapter.verify_eligibility("pt_test_001", resource_type),
+                   "resource_type #{resource_type.inspect} must not answer from arbitrary coverage"
+      end
+
+      assert_equal true, @adapter.verify_eligibility("pt_test_001", "medicaid")[:eligible]
+      assert_equal true, @adapter.verify_eligibility("pt_test_001", "medicare_a")[:eligible]
+    end
+  end
+
   def eligibility_for_period(period)
     @adapter.stub(:fhir_search, coverage_bundle(period)) do
       @adapter.verify_eligibility("pt-test-001", "medicaid")
@@ -2474,6 +2523,7 @@ class Corvid::Adapters::FhirAdapterTest < Minitest::Test
   def list_claim_with_provider(provider)
     bundle = {
       "resourceType" => "Bundle",
+      "type" => "searchset",
       "entry" => [ { "resource" => {
         "resourceType" => "Claim",
         "id" => "clm_pr_helper",

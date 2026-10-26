@@ -90,7 +90,7 @@ class Corvid::ProgramCaseAuditServiceTest < ActiveSupport::TestCase
       patient_identifier: patient_identifier, facility_identifier: facility_identifier
     )
     Corvid::CaseProgram.create!(
-      case: kase, program_name: program_code.titleize,
+      case: kase,
       program_code: program_code, enrollment_date: Date.current
     )
     kase
