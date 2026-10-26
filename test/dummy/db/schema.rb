@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_10_23_000002) do
+ActiveRecord::Schema[8.1].define(version: 2026_10_25_000004) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
@@ -163,7 +163,6 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_23_000002) do
     t.string "tenant_identifier", null: false
     t.string "facility_identifier"
     t.bigint "case_id", null: false
-    t.string "program_name", null: false
     t.string "program_code", null: false
     t.string "enrollment_status", default: "active", null: false
     t.date "enrollment_date", null: false
@@ -189,7 +188,6 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_23_000002) do
     t.string "program_data_token"
     t.datetime "intake_at"
     t.datetime "closed_at"
-    t.string "closure_reason"
     t.datetime "created_at", null: false
     t.datetime "updated_at", null: false
     t.index ["care_team_id"], name: "index_corvid_cases_on_care_team_id"
@@ -224,7 +222,6 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_23_000002) do
     t.datetime "last_checked_at"
     t.string "denial_reason_token"
     t.string "provider_identifier"
-    t.string "provider_type"
     t.datetime "created_at", null: false
     t.datetime "updated_at", null: false
     t.bigint "prc_referral_id"
@@ -307,7 +304,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_23_000002) do
     t.bigint "prc_referral_id", null: false
     t.boolean "application_complete", default: false, null: false
     t.datetime "application_completed_at"
-    t.string "application_completed_by"
+    t.string "application_completed_by_identifier"
     t.boolean "identity_verified", default: false, null: false
     t.datetime "identity_verified_at"
     t.string "identity_verification_source"
@@ -325,7 +322,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_23_000002) do
     t.string "clinical_necessity_documentation_source"
     t.boolean "management_approved", default: false, null: false
     t.datetime "management_approved_at"
-    t.string "management_approved_by"
+    t.string "management_approved_by_identifier"
     t.datetime "created_at", null: false
     t.datetime "updated_at", null: false
     t.index ["prc_referral_id"], name: "idx_corvid_elig_checklists_referral_unique", unique: true
@@ -419,6 +416,8 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_23_000002) do
     t.check_constraint "coverage_group IS NULL OR (coverage_group::text = ANY (ARRAY['expansion_adult'::character varying, 'waiver_adult'::character varying, 'other'::character varying, 'unknown'::character varying]::text[]))", name: "corvid_fmap_determinations_coverage_group_check"
     t.check_constraint "category::text <> 'undetermined'::text OR rule_key IS NULL AND fmap_percent IS NULL AND determination_reason IS NOT NULL", name: "corvid_fmap_determinations_undetermined_check"
     t.check_constraint "determination_reason IS NULL OR (determination_reason::text = ANY (ARRAY['no_rules_in_force'::character varying, 'no_matching_rule'::character varying, 'unevidenced_100_percent'::character varying]::text[]))", name: "corvid_fmap_determinations_reason_check"
+    t.check_constraint "jsonb_typeof(missing_evidence) = 'array'::text AND missing_evidence <@ '[\"evidence_refs\", \"aian_attestation\", \"received_through_basis\", \"aian_status_evidence\", \"care_coordination_agreement\", \"received_through_evidence\"]'::jsonb", name: "corvid_fmap_determinations_missing_evidence_check"
+    t.check_constraint "jurisdiction::text ~ '^[A-Z]{2}$'::text", name: "corvid_fmap_determinations_jurisdiction_check"
     t.check_constraint "received_through_basis IS NULL OR (received_through_basis::text = ANY (ARRAY['facility_authority'::character varying, 'cca'::character varying]::text[]))", name: "corvid_fmap_determinations_basis_check"
   end
 
@@ -536,6 +535,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_23_000002) do
     t.index ["tenant_identifier", "decided_at"], name: "idx_corvid_prc_eligibility_decisions_tenant_decided_at"
     t.index ["tenant_identifier", "facility_identifier", "decided_at"], name: "idx_corvid_prc_elig_decisions_tenant_facility_decided"
     t.index ["tenant_identifier", "person_identifier", "decided_at"], name: "idx_corvid_prc_elig_decisions_tenant_person_decided"
+    t.check_constraint "provider_confidence IS NULL OR (provider_confidence::text = ANY (ARRAY['verified'::character varying, 'stale'::character varying, 'unavailable'::character varying]::text[]))", name: "corvid_prc_eligibility_decisions_provider_confidence_check"
   end
 
   create_table "corvid_prc_obligations", force: :cascade do |t|
@@ -581,6 +581,8 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_23_000002) do
     t.index ["prc_obligation_id", "analyzed_at"], name: "idx_corvid_prc_overpay_oblig_time"
     t.index ["prc_obligation_id"], name: "idx_corvid_prc_overpay_oblig"
     t.index ["tenant_identifier", "recovery_confidence"], name: "idx_corvid_prc_overpay_confidence"
+    t.check_constraint "payment_system IS NULL OR (payment_system::text = ANY (ARRAY['pfs'::character varying, 'ipps'::character varying, 'asc'::character varying, 'opps'::character varying]::text[]))", name: "corvid_prc_overpayment_analyses_payment_system_check"
+    t.check_constraint "recovery_confidence::text = ANY (ARRAY['clear'::character varying, 'stub_estimate'::character varying, 'no_rate_for_year'::character varying, 'unmapped_procedure'::character varying, 'unmapped_facility'::character varying, 'missing_service_date'::character varying]::text[])", name: "corvid_prc_overpayment_analyses_recovery_confidence_check"
   end
 
   create_table "corvid_prc_payments", force: :cascade do |t|
@@ -588,7 +590,6 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_23_000002) do
     t.string "tenant_identifier", null: false
     t.string "payment_id", null: false
     t.date "paid_date"
-    t.string "check_number"
     t.bigint "amount_cents"
     t.string "currency_iso", limit: 3, default: "USD", null: false
     t.string "vendor_name"
@@ -632,6 +633,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_23_000002) do
     t.index ["case_id"], name: "index_corvid_prc_referrals_on_case_id"
     t.index ["tenant_identifier", "facility_identifier", "referral_identifier"], name: "idx_corvid_prc_referrals_tenant_referral", unique: true
     t.index ["tenant_identifier", "status"], name: "index_corvid_prc_referrals_on_tenant_identifier_and_status"
+    t.check_constraint "priority_system IS NULL OR priority_system::text = 'corvid_v1'::text", name: "corvid_prc_referrals_priority_system_check"
     t.check_constraint "status::text = ANY (ARRAY['draft'::character varying, 'submitted'::character varying, 'eligibility_review'::character varying, 'management_approval'::character varying, 'alternate_resource_review'::character varying, 'priority_assignment'::character varying, 'committee_review'::character varying, 'exception_review'::character varying, 'authorized'::character varying, 'denied'::character varying, 'deferred'::character varying, 'cancelled'::character varying]::text[])", name: "corvid_prc_referrals_status_check"
   end
 
@@ -699,6 +701,8 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_23_000002) do
   add_foreign_key "corvid_eligibility_checklists", "corvid_prc_referrals", column: "prc_referral_id"
   add_foreign_key "corvid_fmap_determinations", "corvid_facility_authorities", column: "facility_authority_id"
   add_foreign_key "corvid_fmap_determinations", "corvid_fmap_determinations", column: "superseded_by_id"
+  add_foreign_key "corvid_fmap_determinations", "corvid_fmap_rules", column: "best_available_rule_key", primary_key: "rule_key"
+  add_foreign_key "corvid_fmap_determinations", "corvid_fmap_rules", column: "rule_key", primary_key: "rule_key"
   add_foreign_key "corvid_prc_overpayment_analyses", "corvid_prc_obligations", column: "prc_obligation_id"
   add_foreign_key "corvid_prc_payments", "corvid_prc_obligations", column: "prc_obligation_id"
   add_foreign_key "corvid_prc_referrals", "corvid_cases", column: "case_id"

@@ -35,6 +35,19 @@ module Corvid
       eligibility_response state_case_data registration staff_entry inferred
     ].freeze
 
+    # A coverage states a group only with one of these. "unknown" is not
+    # a statement, and neither is a missing or unrecognised value.
+    REAL_STATED_GROUPS = (ELIGIBILITY_GROUPS - %w[unknown]).freeze
+    private_constant :REAL_STATED_GROUPS
+
+    # Fixed text only. No patient identifier and no exception text (ADR 0003).
+    VERIFY_MEDICAID_ELIGIBILITY_GROUP_WARNING =
+      "medicaid eligibility group could not be recorded during verification"
+
+    # get_coverages returned nil or a non-Array. The source did not answer.
+    class UnansweredCoverages < StandardError; end
+    private_constant :UnansweredCoverages
+
     validates :eligibility_group, inclusion: { in: ELIGIBILITY_GROUPS }, allow_nil: true
     validates :eligibility_group_source, inclusion: { in: ELIGIBILITY_GROUP_SOURCES }, allow_nil: true
     validate :eligibility_group_only_on_medicaid
@@ -203,6 +216,7 @@ module Corvid
       return false if next_status.nil?
 
       update!(verification_attributes(result, next_status))
+      record_medicaid_eligibility_group
       true
     end
     private :verify_eligibility_answer!
@@ -300,6 +314,127 @@ module Corvid
         coverage_end: result[:coverage_end],
         renewal_date: result[:renewal_date]
       }
+    end
+
+    # After the Medicaid answer is saved. record! keeps a staff entry.
+    # An EHR failure leaves that answer in place and the group as it was.
+    # Nil or a non-Array from get_coverages is that failure, so record!
+    # is not called. The pin is read before get_coverages. One matching
+    # coverage that states a real group is recorded as that group, and
+    # the pin is not passed. No single matching row, or one row that
+    # does not state a real group, asks record! to replace the pin.
+    # The pin is that group, source, and set_at. A later write changes
+    # set_at, so the locked comparison leaves the stored group. A failed
+    # inference leaves the previous group. A staff entry stays.
+    def record_medicaid_eligibility_group
+      return unless resource_type == "medicaid"
+
+      pinned = pinned_stated_group
+      coverage = medicaid_group_coverage
+      MedicaidEligibilityGroupService.new(adapter: Corvid.adapter).record!(
+        self,
+        coverage: coverage,
+        date_of_service: medicaid_group_date_of_service,
+        **stated_group_supersede(coverage, pinned)
+      )
+    rescue StandardError
+      Rails.logger.warn(VERIFY_MEDICAID_ELIGIBILITY_GROUP_WARNING)
+    end
+
+    # The sole get_coverages row whose type matches this check.
+    # coverage_type when that key is present, otherwise resource_type.
+    # None or more than one states nothing.
+    def medicaid_group_coverage
+      matches = coverages_for_resource_type
+      return {} unless matches.one?
+
+      matches.first
+    end
+
+    # An Array is an answer, including an empty one. Nil or any other
+    # type means the source did not answer.
+    def coverages_for_resource_type
+      patient_identifier = prc_referral.case&.patient_identifier
+      rows = Corvid.adapter.get_coverages(patient_identifier)
+      raise UnansweredCoverages unless rows.is_a?(Array)
+
+      rows.select { |row| resource_type_coverage?(row) }
+    end
+
+    # Pass the pin read before get_coverages when the answer does not
+    # itself state a real group and that pin is a stated group. The
+    # service supersedes only while that group, source, and set_at are
+    # still stored. Omitting the option leaves record!'s other callers,
+    # and a staff entry, on the existing path. The caller reads the row
+    # because record! writes through another instance, so this object's
+    # attributes can lag the database.
+    def stated_group_supersede(coverage, pinned)
+      return {} if real_stated_group?(coverage)
+      return {} unless pinned
+
+      { supersede_stated: pinned }
+    end
+
+    def real_stated_group?(coverage)
+      REAL_STATED_GROUPS.include?(group_token(coverage_field(coverage, :eligibility_group)))
+    end
+
+    def pinned_stated_group
+      group, source, set_at = self.class.where(id: id).pick(
+        :eligibility_group,
+        :eligibility_group_source,
+        :eligibility_group_set_at
+      )
+      return unless MedicaidEligibilityGroupService::STATED_SOURCES.include?(source)
+
+      { group: group, source: source, set_at: set_at }
+    end
+
+    def coverage_field(coverage, key)
+      return unless coverage.is_a?(Hash)
+
+      if coverage.key?(key)
+        value = coverage[key]
+        return value unless value.nil?
+      end
+
+      coverage[key.to_s]
+    end
+
+    def group_token(value)
+      case value
+      when Symbol then value.name
+      when String then String.new(value)
+      end
+    rescue ArgumentError, EncodingError
+      nil
+    end
+
+    def resource_type_coverage?(coverage)
+      return false unless coverage.is_a?(Hash)
+
+      coverage_type_value(coverage).to_s.downcase == resource_type
+    end
+
+    def coverage_type_value(coverage)
+      return coverage[:coverage_type] if coverage.key?(:coverage_type)
+      return coverage["coverage_type"] if coverage.key?("coverage_type")
+      return coverage[:resource_type] if coverage.key?(:resource_type)
+
+      coverage["resource_type"]
+    end
+
+    # The referral service date when that attribute is present. Otherwise
+    # the date eligibility was answered. Never Date.current.
+    def medicaid_group_date_of_service
+      referral_service_date || checked_at.to_date
+    end
+
+    def referral_service_date
+      referral = prc_referral
+      return unless referral.has_attribute?(:service_date)
+
+      referral.service_date
     end
 
     def readable_answer?(result)

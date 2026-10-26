@@ -195,6 +195,9 @@ class Corvid::TribalEligibilityServiceTest < ActiveSupport::TestCase
 
     refute decision.eligible?
     assert_includes decision.reason_codes, :provider_unavailable_fail_closed
+    assert_nil decision.provider_confidence
+    row = Corvid::PrcEligibilityDecision.find(decision.decision_id)
+    assert_nil row.provider_confidence
   end
 
   test "decide denies when adapter returns confidence :VERIFIED symbol" do
@@ -208,6 +211,9 @@ class Corvid::TribalEligibilityServiceTest < ActiveSupport::TestCase
 
     refute decision.eligible?
     assert_includes decision.reason_codes, :provider_unavailable_fail_closed
+    assert_nil decision.provider_confidence
+    row = Corvid::PrcEligibilityDecision.find(decision.decision_id)
+    assert_nil row.provider_confidence
   end
 
   test "decide denies when adapter returns nil confidence" do
@@ -234,6 +240,8 @@ class Corvid::TribalEligibilityServiceTest < ActiveSupport::TestCase
 
     refute decision.eligible?
     assert_includes decision.reason_codes, :provider_unavailable_fail_closed
+    row = Corvid::PrcEligibilityDecision.find(decision.decision_id)
+    assert_nil row.provider_confidence
   end
 
   test "decide denies enrolled person with blank tribe_code when facility has contracted tribe" do
@@ -520,6 +528,22 @@ class Corvid::TribalEligibilityServiceTest < ActiveSupport::TestCase
     assert_equal "verified", decision.provider_confidence
     row = Corvid::PrcEligibilityDecision.find(decision.decision_id)
     assert_equal "verified", row.provider_confidence
+  end
+
+  test "decide persists unavailable provider_confidence when adapter returns unavailable with canonical enrolled true" do
+    seed_verified_enrollment_baseline("pt_unavail_persist", confidence: :unavailable)
+
+    decision = Corvid::TribalEligibilityService.decide(
+      person_identifier: "pt_unavail_persist",
+      facility: @facility,
+      tenant_identifier: TENANT
+    )
+
+    refute decision.eligible?
+    assert_includes decision.reason_codes, :provider_unavailable_fail_closed
+    assert_equal "unavailable", decision.provider_confidence
+    row = Corvid::PrcEligibilityDecision.find(decision.decision_id)
+    assert_equal "unavailable", row.provider_confidence
   end
 
   # ---- Would-be false negative (stale data must not deny on its own) --------

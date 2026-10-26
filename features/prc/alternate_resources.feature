@@ -294,3 +294,20 @@ Feature: Alternate resource tracking (payer of last resort)
     When I record medicaid application filed on "2026-06-15" from "staff_entry" in state "XA"
     And the medicaid check is verified ineligible
     Then the check status should be "denied"
+
+  # =============================================================================
+  # MEDICAID ELIGIBILITY GROUP ON VERIFY (issue #670)
+  # =============================================================================
+
+  Scenario: Verifying Medicaid records stated eligibility group from coverage
+    Given an alternate resource check for "medicaid" exists with status "not_checked"
+    And the adapter has eligible medicaid coverage for patient "pt_001" stating eligibility group "expansion_adult"
+    When I verify the enrollment status
+    Then the medicaid alternate resource check should have eligibility group "expansion_adult" with source "eligibility_response"
+
+  Scenario: Verifying Medicaid infers eligibility group when coverage omits stated group
+    Given an alternate resource check for "medicaid" exists with status "not_checked"
+    And patient "pt_001" has date of birth "1996-06-15" in the adapter
+    And the adapter has eligible medicaid coverage for patient "pt_001" in state "XA"
+    When I verify the enrollment status
+    Then the medicaid alternate resource check should have eligibility group "expansion_adult" with source "inferred"

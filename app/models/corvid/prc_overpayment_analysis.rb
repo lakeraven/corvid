@@ -16,8 +16,18 @@ module Corvid
 
     belongs_to :prc_obligation, class_name: "Corvid::PrcObligation"
 
+    # PrcOverpaymentAnalyzer payment systems. Null when the obligation is unmapped.
+    # Same set as corvid_prc_overpayment_analyses_payment_system_check (ADR 0002).
+    PAYMENT_SYSTEMS = %w[pfs ipps asc opps].freeze
+    # PrcOverpaymentAnalyzer recovery confidence levels.
+    # Same set as corvid_prc_overpayment_analyses_recovery_confidence_check.
+    RECOVERY_CONFIDENCES = %w[
+      clear stub_estimate no_rate_for_year unmapped_procedure unmapped_facility missing_service_date
+    ].freeze
+
     validates :analyzer_version, presence: true
-    validates :recovery_confidence, presence: true
+    validates :payment_system, inclusion: { in: PAYMENT_SYSTEMS }, allow_nil: true
+    validates :recovery_confidence, presence: true, inclusion: { in: RECOVERY_CONFIDENCES }
     validates :analyzed_at, presence: true
 
     scope :clear, -> { where(recovery_confidence: "clear") }
