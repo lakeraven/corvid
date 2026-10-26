@@ -25,15 +25,13 @@ module Corvid
       CONSENTED_TYPES = %w[Patient Condition Observation].freeze
 
       # Cases seeded before reference ids were hyphenated. reset! removes
-      # these so a later seed does not leave a second pair. The hero ids are
-      # the old Broken Rock pair. The pt_demo_* ids are the underscore
-      # patient ids the demo adapter tests still name.
+      # these exact ids at the demo tenant and the demo facility so a later
+      # seed does not leave a second pair. Only the old Broken Rock hero
+      # pair was persisted. The demo never stored pt_demo_001, pt_demo_other,
+      # or pt_demo_unknown.
       LEGACY_PATIENT_IDENTIFIERS = %w[
         pt_broken_rock_hero_1
         pt_broken_rock_hero_2
-        pt_demo_001
-        pt_demo_other
-        pt_demo_unknown
       ].freeze
 
       # Two synthetic hero patients (tokenized patient_ref). hero_1 is consented
@@ -109,12 +107,17 @@ module Corvid
       end
 
       # Clear the seeded rows and cases still stored under the old
-      # underscore ids (dependent: :destroy also removes their audit
-      # Determinations). Returns the number of cases removed.
+      # underscore hero ids. Scoped to this tenant and the demo facility,
+      # and to those exact ids (dependent: :destroy also removes their
+      # audit Determinations). Returns the number of cases removed.
       def reset!(tenant: DEFAULT_TENANT)
         Corvid.with_tenant(tenant) do
           identifiers = HEROES.keys + LEGACY_PATIENT_IDENTIFIERS
-          cases = Corvid::Case.where(tenant_identifier: tenant, patient_identifier: identifiers)
+          cases = Corvid::Case.where(
+            tenant_identifier: tenant,
+            facility_identifier: FACILITY,
+            patient_identifier: identifiers
+          )
           count = cases.count
           cases.destroy_all
           count

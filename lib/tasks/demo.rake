@@ -47,8 +47,17 @@ namespace :demo do
       # referral carries any report. Reseeding a demo is the one legitimate
       # reason to discard them, so it is done here, explicitly and visibly,
       # rather than by weakening the guarantee the application relies on.
-      old_case = Corvid::Case.find_by(patient_identifier: patient_id, facility_identifier: facility)
-      if old_case
+      #
+      # Also remove the pre-rename enrolled patient id (exact id, this demo
+      # tenant and facility only) so that Case and its referral are gone
+      # before the re-seed.
+      legacy_patient_id = "pt_demo_enrolled"
+      old_cases = Corvid::Case.where(
+        tenant_identifier: tenant,
+        facility_identifier: facility,
+        patient_identifier: [ patient_id, legacy_patient_id ]
+      ).to_a
+      old_cases.each do |old_case|
         report_ids = Corvid::ReferralFulfilmentReport
           .where(prc_referral_id: old_case.prc_referrals.select(:id))
           .pluck(:id)

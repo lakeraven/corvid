@@ -7,8 +7,12 @@ module Corvid
   # given, accepts only that server's absolute form of those shapes (the
   # base URL may have a trailing slash). After ASCII whitespace is stripped,
   # the id must match FHIR id syntax or a Corvid reference token
-  # (CORVID_TOKEN). The _history version stays strict FHIR id syntax, with
-  # no underscore. +type+ is a resource name or a list of names. nil, blank,
+  # (CORVID_TOKEN) whose prefix is paired with the reference's own resource
+  # type (CORVID_TOKEN_TYPES): pt_ on Patient, pr_ on Practitioner or
+  # PractitionerRole, and rf_ on ServiceRequest. A token whose prefix does
+  # not match that resource type is nil, whatever +type+ is. The _history
+  # version stays strict FHIR id syntax, with no underscore. +type+ is a
+  # resource name or a list of names. nil, blank,
   # a non-String, a missing or invalid id, a contained reference, extra path
   # segments, a foreign absolute URL, a different type, and a string with
   # invalid encoding are nil. A reference whose encoding is not
@@ -24,10 +28,16 @@ module Corvid
     # Vault tokens that appear in references (ADR 0001, ADR 0003).
     # MockAdapter#dereference resolves pt_, pr_, and rf_. store_text
     # prefixes are text tokens and never appear in references, so they are
-    # not an exception. One underscore, then FHIR id characters, 64
-    # characters total. The _history version stays ID_SYNTAX.
-    CORVID_TOKEN_PREFIXES = %w[pt pr rf].freeze
-    CORVID_TOKEN = /\A(?:#{CORVID_TOKEN_PREFIXES.join("|")})_[A-Za-z0-9\-\.]{1,61}\z/
+    # not an exception. The prefix is paired with the reference's own
+    # resource type: pt_ on Patient; pr_ on Practitioner and
+    # PractitionerRole; rf_ on ServiceRequest. One underscore, then FHIR id
+    # characters, 64 characters total. The _history version stays ID_SYNTAX.
+    CORVID_TOKEN_TYPES = {
+      "pt" => %w[Patient].freeze,
+      "pr" => %w[Practitioner PractitionerRole].freeze,
+      "rf" => %w[ServiceRequest].freeze
+    }.freeze
+    CORVID_TOKEN = /\A(?:#{CORVID_TOKEN_TYPES.keys.join("|")})_[A-Za-z0-9\-\.]{1,61}\z/
     PROVIDER_TYPES = %w[Practitioner PractitionerRole Organization].freeze
 
     class << self
@@ -93,7 +103,16 @@ module Corvid
         return nil unless raw
 
         id = ascii_strip(raw)
-        id if id.match?(ID_SYNTAX) || id.match?(CORVID_TOKEN)
+        id if id.match?(ID_SYNTAX) || corvid_token?(id, segments[0])
+      end
+
+      # Fail closed: the prefix must name this reference's resource type.
+      # +type:+ is not a way to accept a token on the wrong resource.
+      def corvid_token?(id, resource_type)
+        return false unless id.match?(CORVID_TOKEN)
+
+        prefix, = id.split("_", 2)
+        CORVID_TOKEN_TYPES[prefix]&.include?(resource_type) || false
       end
 
       def id_segment(segments)

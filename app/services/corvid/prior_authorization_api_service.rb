@@ -37,13 +37,13 @@ module Corvid
     }.freeze
 
     # Unusable patient reference. Names the rule only — never the submitted
-    # reference value (ADR 0003). Corvid pt_, pr_, and rf_ tokens are the
-    # one exception to FHIR id syntax; see Corvid::FhirReference.
+    # reference value (ADR 0003). For a patient the only Corvid token form
+    # is pt_; see Corvid::FhirReference.
     PATIENT_REFERENCE_ERROR =
       "patient reference must be a relative Patient/<id> reference " \
       "with a FHIR id (letters, digits, '-' or '.', up to 64 characters) " \
-      "or a Corvid token (pt_, pr_, or rf_ prefix, a single underscore, " \
-      "then FHIR id characters, 64 characters total)"
+      "or a Corvid pt_ token (a single underscore, then FHIR id characters, " \
+      "64 characters total)"
 
     class << self
       # POST /Claim/$submit handler. Accepts a FHIR Claim (as hash) and
