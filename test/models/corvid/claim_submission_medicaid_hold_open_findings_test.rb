@@ -112,51 +112,6 @@ class Corvid::ClaimSubmissionMedicaidHoldOpenFindingsTest < ActiveSupport::TestC
     end
   end
 
-  test "medicaid hold override stays spent when accepted response cannot persist with RecordNotUnique" do
-    with_tenant(TENANT) do
-      claim = held_draft_claim!
-      duplicate_identifier = "CLM-DUP-#{SecureRandom.hex(4)}"
-      Corvid::ClaimSubmission.create!(
-        tenant_identifier: TENANT,
-        facility_identifier: "fac_test",
-        patient_identifier: "DUP,OTHER #{SecureRandom.hex(3)}",
-        referral_identifier: "REF-DUP-OTHER-#{SecureRandom.hex(3)}",
-        claim_type: "professional",
-        service_date: Date.new(2027, 2, 15),
-        billed_amount: 50.0,
-        status: "submitted",
-        claim_identifier: duplicate_identifier,
-        submitted_at: Time.current
-      )
-
-      claim.override_medicaid_hold!(
-        reason_token: "rt_medicaid_hold_override",
-        by_identifier: "usr_billing_spec"
-      )
-      submit_calls = []
-      Corvid.adapter.define_singleton_method(:submit_claim) do |data|
-        submit_calls << data
-        { claim_identifier: duplicate_identifier, status: "accepted" }
-      end
-
-      assert_raises(ActiveRecord::RecordNotUnique) { claim.submit! }
-
-      assert_equal 1, submit_calls.size
-      claim.reload
-      assert_nil claim.medicaid_hold_override_reason_token,
-        "override must remain spent after clearinghouse acceptance when persistence fails"
-      assert_equal "draft", claim.status
-      assert_nil claim.submitted_at
-      assert_nil claim.claim_identifier
-      assert claim.submission_outcome_unknown_at.present?,
-        "phase B failure must leave the in-flight marker set"
-
-      follow_up_calls = stub_submit_claim!
-      assert_raises(Corvid::ClaimSubmission::SubmissionOutcomeUnknown) { claim.submit! }
-      assert_empty follow_up_calls
-    end
-  end
-
   test "never-sent held claim cannot reach submitted by claim_identifier then status plain saves" do
     with_tenant(TENANT) do
       claim = held_draft_claim!
@@ -201,34 +156,6 @@ class Corvid::ClaimSubmissionMedicaidHoldOpenFindingsTest < ActiveSupport::TestC
       claim2.reload
       assert_equal mark_id, claim2.claim_identifier
       assert claim2.submitted_at.present?
-    end
-  end
-
-  test "medicaid hold override stays spent when adapter succeeds but post-send save fails" do
-    with_tenant(TENANT) do
-      claim = held_draft_claim!
-      claim.override_medicaid_hold!(
-        reason_token: "rt_medicaid_hold_override",
-        by_identifier: "usr_billing_spec"
-      )
-      submit_calls = []
-      Corvid.adapter.define_singleton_method(:submit_claim) do |data|
-        submit_calls << data
-        { claim_identifier: "CLM-POST-SAVE-FAIL", status: "bogus_clearinghouse_status" }
-      end
-
-      assert_raises(ActiveRecord::RecordInvalid) { claim.submit! }
-
-      assert_equal 1, submit_calls.size
-      claim.reload
-      assert_nil claim.medicaid_hold_override_reason_token
-      assert_equal "draft", claim.status
-      assert_nil claim.submitted_at
-      assert claim.submission_outcome_unknown_at.present?
-
-      follow_up_calls = stub_submit_claim!
-      assert_raises(Corvid::ClaimSubmission::SubmissionOutcomeUnknown) { claim.submit! }
-      assert_empty follow_up_calls
     end
   end
 

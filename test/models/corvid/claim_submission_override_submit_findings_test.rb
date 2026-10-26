@@ -93,6 +93,60 @@ class Corvid::ClaimSubmissionOverrideSubmitFindingsTest < ActiveSupport::TestCas
     end
   end
 
+  test "medicaid hold override stays spent when accepted response cannot persist with RecordNotUnique" do
+    with_tenant(TENANT) do
+      duplicate_identifier = "CLM-DUP-#{SecureRandom.hex(4)}"
+      seed_submitted_claim!(claim_identifier: duplicate_identifier)
+
+      claim = held_draft_with_override!
+      submit_calls = []
+      Corvid.adapter.define_singleton_method(:submit_claim) do |data|
+        submit_calls << data
+        { claim_identifier: duplicate_identifier, status: "accepted" }
+      end
+
+      assert_raises(ActiveRecord::RecordNotUnique) { claim.submit! }
+
+      assert_equal 1, submit_calls.size
+      row = fresh_claim_row(claim.id)
+      assert_nil row.medicaid_hold_override_reason_token,
+        "override must remain spent after clearinghouse acceptance when persistence fails"
+      assert_equal "draft", row.status
+      assert_nil row.submitted_at
+      assert_nil row.claim_identifier
+      assert submission_outcome_unknown_row?(row),
+        "phase B failure must leave the in-flight marker set"
+
+      follow_up_calls = stub_submit_claim!
+      assert_raises(outcome_unknown_error_class) { Corvid::ClaimSubmission.find(claim.id).submit! }
+      assert_empty follow_up_calls
+    end
+  end
+
+  test "medicaid hold override stays spent when adapter succeeds but post-send save fails" do
+    with_tenant(TENANT) do
+      claim = held_draft_with_override!
+      submit_calls = []
+      Corvid.adapter.define_singleton_method(:submit_claim) do |data|
+        submit_calls << data
+        { claim_identifier: "CLM-POST-SAVE-FAIL", status: "bogus_clearinghouse_status" }
+      end
+
+      assert_raises(ActiveRecord::RecordInvalid) { claim.submit! }
+
+      assert_equal 1, submit_calls.size
+      row = fresh_claim_row(claim.id)
+      assert_nil row.medicaid_hold_override_reason_token
+      assert_equal "draft", row.status
+      assert_nil row.submitted_at
+      assert submission_outcome_unknown_row?(row)
+
+      follow_up_calls = stub_submit_claim!
+      assert_raises(outcome_unknown_error_class) { Corvid::ClaimSubmission.find(claim.id).submit! }
+      assert_empty follow_up_calls
+    end
+  end
+
   test "duplicate claim_identifier on accepted result leaves override spent and marker set" do
     with_tenant(TENANT) do
       duplicate_identifier = "CLM-DUP-#{SecureRandom.hex(4)}"
@@ -144,12 +198,13 @@ class Corvid::ClaimSubmissionOverrideSubmitFindingsTest < ActiveSupport::TestCas
     end
   end
 
-  test "concurrent override_medicaid_hold! during in-flight submit raises and records nothing" do
+  test "concurrent override_medicaid_hold! during successful in-flight submit raises and records nothing" do
     claim_id = nil
     with_tenant(TENANT) { claim_id = held_draft_with_override!.id }
 
     started = Queue.new
     release = Queue.new
+    override_at_call = Queue.new
     Corvid.adapter.define_singleton_method(:submit_claim) do |_data|
       started.push(true)
       release.pop
@@ -175,6 +230,7 @@ class Corvid::ClaimSubmissionOverrideSubmitFindingsTest < ActiveSupport::TestCas
     override_thread = Thread.new do
       ActiveRecord::Base.connection_pool.with_connection do
         Corvid::TenantContext.with_tenant(TENANT) do
+          override_at_call.push(true)
           Corvid::ClaimSubmission.find(claim_id).override_medicaid_hold!(
             reason_token: "rt_concurrent",
             by_identifier: "usr_concurrent"
@@ -186,7 +242,75 @@ class Corvid::ClaimSubmissionOverrideSubmitFindingsTest < ActiveSupport::TestCas
       end
     end
 
+    override_at_call.pop
+    wait_until_override_blocked_or_finished!(override_thread)
     release.push(true)
+    submit_thread.join(10)
+    override_thread.join(10)
+
+    out = []
+    out << results.pop until results.empty?
+    override_outcome = out.find { |kind, _| kind == :override }&.last
+    refute_equal :ok, override_outcome, "concurrent override must not succeed"
+    assert override_outcome.present?
+
+    row = fresh_claim_row(claim_id)
+    assert_equal "submitted", row.status
+    assert_override_spent_row!(row)
+    refute submission_outcome_unknown_row?(row),
+      "successful send must clear the in-flight marker"
+    with_tenant(TENANT) do
+      assert_equal 0, concurrent_override_determination_count(claim_id)
+    end
+  ensure
+    submit_thread&.kill if submit_thread&.alive?
+    override_thread&.kill if override_thread&.alive?
+  end
+
+  test "concurrent override_medicaid_hold! when in-flight send fails raises SubmissionOutcomeUnknown and records nothing" do
+    claim_id = nil
+    with_tenant(TENANT) { claim_id = held_draft_with_override!.id }
+
+    started = Queue.new
+    override_waiting_on_lock = Queue.new
+    Corvid.adapter.define_singleton_method(:submit_claim) do |_data|
+      started.push(true)
+      override_waiting_on_lock.pop
+      raise StandardError, "adapter send failed"
+    end
+
+    results = Queue.new
+    submit_thread = Thread.new do
+      ActiveRecord::Base.connection_pool.with_connection do
+        Corvid::TenantContext.with_tenant(TENANT) do
+          Corvid::ClaimSubmission.find(claim_id).submit!
+        rescue Exception => error
+          results.push([ :submit, error.class.name ])
+        end
+      end
+    end
+
+    started.pop
+    row_mid_send = fresh_claim_row(claim_id)
+    assert submission_outcome_unknown_row?(row_mid_send),
+      "marker must be visible after phase A commits, before the adapter returns"
+
+    override_thread = Thread.new do
+      ActiveRecord::Base.connection_pool.with_connection do
+        Corvid::TenantContext.with_tenant(TENANT) do
+          override_waiting_on_lock.push(true)
+          Corvid::ClaimSubmission.find(claim_id).override_medicaid_hold!(
+            reason_token: "rt_concurrent",
+            by_identifier: "usr_concurrent"
+          )
+          results.push([ :override, :ok ])
+        rescue Exception => error
+          results.push([ :override, error.class.name ])
+        end
+      end
+    end
+
+    wait_until_override_blocked_or_finished!(override_thread)
     submit_thread.join(10)
     override_thread.join(10)
 
@@ -195,19 +319,35 @@ class Corvid::ClaimSubmissionOverrideSubmitFindingsTest < ActiveSupport::TestCas
     assert_equal "SubmissionOutcomeUnknown", out.find { |kind, _| kind == :override }&.last
 
     row = fresh_claim_row(claim_id)
-    assert_nil row.medicaid_hold_override_reason_token
+    assert_override_spent_row!(row)
     assert submission_outcome_unknown_row?(row)
-    assert_equal 1, Corvid::Determination.where(
-      determinable_type: "Corvid::ClaimSubmission",
-      determinable_id: claim_id,
-      reasons_token: "rt_concurrent"
-    ).count
+    with_tenant(TENANT) do
+      assert_equal 0, concurrent_override_determination_count(claim_id)
+    end
   ensure
     submit_thread&.kill if submit_thread&.alive?
     override_thread&.kill if override_thread&.alive?
   end
 
   private
+
+  def wait_until_override_blocked_or_finished!(thread, timeout: 5)
+    deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + timeout
+    loop do
+      return unless thread.alive?
+
+      sleep 0.01
+      return if Process.clock_gettime(Process::CLOCK_MONOTONIC) >= deadline
+    end
+  end
+
+  def concurrent_override_determination_count(claim_id)
+    Corvid::Determination.where(
+      determinable_type: "Corvid::ClaimSubmission",
+      determinable_id: claim_id,
+      reasons_token: "rt_concurrent"
+    ).count
+  end
 
   def truncate_corvid_claim_graph!
     conn = ActiveRecord::Base.connection
