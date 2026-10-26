@@ -156,33 +156,6 @@ class Corvid::ClaimSubmissionMedicaidHoldTest < ActiveSupport::TestCase
     end
   end
 
-  test "override_medicaid_hold! records override fields and allows submit!" do
-    with_tenant(TENANT) do
-      claim, = authorized_claim_with_pending_medicaid!(
-        application_date: Date.new(2027, 3, 15),
-        application_date_source: "staff_entry",
-        medicaid_state_code: "XA",
-        eligibility_group: "expansion_adult",
-        service_date: Date.new(2027, 2, 1)
-      )
-      submit_calls = stub_submit_claim!
-
-      claim.override_medicaid_hold!(
-        reason_token: "rt_medicaid_hold_override",
-        by_identifier: "usr_billing_spec"
-      )
-      claim.reload
-      assert_equal "rt_medicaid_hold_override", claim.medicaid_hold_override_reason_token
-      assert_equal "usr_billing_spec", claim.medicaid_hold_override_by_identifier
-      assert_not_nil claim.medicaid_hold_overridden_at
-
-      claim.submit!
-
-      assert_equal 1, submit_calls.size
-      assert_equal "submitted", claim.reload.status
-    end
-  end
-
   test "override_medicaid_hold! rejects blank reason_token or by_identifier" do
     with_tenant(TENANT) do
       claim, = authorized_claim_with_pending_medicaid!(
@@ -749,39 +722,6 @@ class Corvid::ClaimSubmissionMedicaidHoldTest < ActiveSupport::TestCase
     end
   end
 
-  test "medicaid hold override columns clear after successful submit!" do
-    with_tenant(TENANT) do
-      claim, = authorized_claim_with_pending_medicaid!(
-        application_date: Date.new(2027, 3, 15),
-        application_date_source: "staff_entry",
-        medicaid_state_code: "XA",
-        eligibility_group: "expansion_adult",
-        service_date: Date.new(2027, 2, 1)
-      )
-      claim.override_medicaid_hold!(
-        reason_token: "rt_medicaid_hold_override",
-        by_identifier: "usr_billing_spec"
-      )
-      determination_count = Corvid::Determination.where(
-        determinable_type: claim.class.name,
-        determinable_id: claim.id
-      ).count
-      submit_calls = stub_submit_claim!
-
-      claim.submit!
-
-      assert_equal 1, submit_calls.size
-      claim.reload
-      assert_nil claim.medicaid_hold_override_reason_token
-      assert_nil claim.medicaid_hold_override_by_identifier
-      assert_nil claim.medicaid_hold_overridden_at
-      assert_equal determination_count, Corvid::Determination.where(
-        determinable_type: claim.class.name,
-        determinable_id: claim.id
-      ).count
-    end
-  end
-
   test "medicaid hold override columns clear after mark_submitted!" do
     with_tenant(TENANT) do
       claim, = authorized_claim_with_pending_medicaid!(
@@ -803,31 +743,6 @@ class Corvid::ClaimSubmissionMedicaidHoldTest < ActiveSupport::TestCase
       assert_nil claim.medicaid_hold_override_reason_token
       assert_nil claim.medicaid_hold_override_by_identifier
       assert_nil claim.medicaid_hold_overridden_at
-    end
-  end
-
-  test "resubmit after rejection re-evaluates medicaid hold without a fresh override" do
-    with_tenant(TENANT) do
-      claim, = authorized_claim_with_pending_medicaid!(
-        application_date: Date.new(2027, 3, 15),
-        application_date_source: "staff_entry",
-        medicaid_state_code: "XA",
-        eligibility_group: "expansion_adult",
-        service_date: Date.new(2027, 2, 1)
-      )
-      claim.override_medicaid_hold!(
-        reason_token: "rt_medicaid_hold_override",
-        by_identifier: "usr_billing_spec"
-      )
-      stub_submit_claim!
-      claim.submit!
-      claim.mark_rejected!(reason_token: "rt_front_door")
-      submit_calls = stub_submit_claim!
-
-      assert_raises(Corvid::ClaimSubmission::HeldForPendingMedicaid) { claim.submit! }
-
-      assert_empty submit_calls
-      assert_equal "rejected", claim.reload.status
     end
   end
 
@@ -1022,73 +937,6 @@ class Corvid::ClaimSubmissionMedicaidHoldTest < ActiveSupport::TestCase
       claim.reload
       assert_equal persisted_prc_referral_id, claim.prc_referral_id
       assert_equal override_token, claim.medicaid_hold_override_reason_token
-    end
-  end
-
-  test "nested submit! during adapter call allows only one clearinghouse submission" do
-    with_tenant(TENANT) do
-      claim, = authorized_claim_with_pending_medicaid!(
-        application_date: Date.new(2027, 3, 15),
-        application_date_source: "staff_entry",
-        medicaid_state_code: "XA",
-        eligibility_group: "expansion_adult",
-        service_date: Date.new(2027, 2, 1)
-      )
-      claim.override_medicaid_hold!(
-        reason_token: "rt_medicaid_hold_override",
-        by_identifier: "usr_billing_spec"
-      )
-      copy_a = Corvid::ClaimSubmission.find(claim.id)
-      copy_b = Corvid::ClaimSubmission.find(claim.id)
-      submit_calls = []
-      nested_error = nil
-      Corvid.adapter.define_singleton_method(:submit_claim) do |data|
-        submit_calls << data
-        if submit_calls.size == 1
-          begin
-            copy_b.submit!
-          rescue Corvid::ClaimSubmission::HeldForPendingMedicaid => error
-            nested_error = error
-          end
-        end
-        { claim_identifier: "CLM-CONCURRENT-1", status: "accepted" }
-      end
-
-      copy_a.submit!
-
-      assert_instance_of Corvid::ClaimSubmission::HeldForPendingMedicaid, nested_error
-
-      assert_equal 1, submit_calls.size
-      assert_equal "submitted", claim.reload.status
-    end
-  end
-
-  test "stale in-memory copy cannot submit! after override was consumed" do
-    with_tenant(TENANT) do
-      claim, = authorized_claim_with_pending_medicaid!(
-        application_date: Date.new(2027, 3, 15),
-        application_date_source: "staff_entry",
-        medicaid_state_code: "XA",
-        eligibility_group: "expansion_adult",
-        service_date: Date.new(2027, 2, 1)
-      )
-      claim.override_medicaid_hold!(
-        reason_token: "rt_medicaid_hold_override",
-        by_identifier: "usr_billing_spec"
-      )
-      fresh = Corvid::ClaimSubmission.find(claim.id)
-      stale = Corvid::ClaimSubmission.find(claim.id)
-      submit_calls = stub_submit_claim!
-
-      fresh.submit!
-
-      assert_equal 1, submit_calls.size
-      submit_calls.clear
-      stub_submit_claim!
-
-      assert_raises(Corvid::ClaimSubmission::HeldForPendingMedicaid) { stale.submit! }
-      assert_empty submit_calls
-      assert_equal "submitted", fresh.reload.status
     end
   end
 

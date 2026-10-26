@@ -6,12 +6,20 @@ require "test_helper"
 class Corvid::ClaimSubmissionOutcomeUnknownTest < ActiveSupport::TestCase
   include ActiveSupport::Testing::TimeHelpers
 
+  self.use_transactional_tests = false
+
   TENANT = "tnt_test"
+  OTHER_TENANT = "tnt_other_outcome"
   PATIENT = "TEST,PATIENT OUTCOME-UNK"
   RETRO_SCENARIO_TIME = Time.zone.local(2027, 6, 1, 12, 0, 0)
 
   setup { travel_to RETRO_SCENARIO_TIME }
-  teardown { travel_back }
+
+  teardown do
+    travel_back
+    Corvid::TenantContext.reset!
+    truncate_corvid_claim_graph!
+  end
 
   test "submit! spends override and marks submission_outcome_unknown_at when adapter raises Timeout::Error" do
     with_tenant(TENANT) do
@@ -22,12 +30,12 @@ class Corvid::ClaimSubmissionOutcomeUnknownTest < ActiveSupport::TestCase
 
       assert_equal "execution expired", error.message
       assert_equal 1, submit_calls.size
-      claim.reload
-      assert_override_spent!(claim)
-      assert submission_outcome_unknown_at_set?(claim)
-      assert_equal "draft", claim.status
-      assert_nil claim.submitted_at
-      assert_nil claim.claim_identifier
+      row = fresh_claim_row(claim.id)
+      assert_override_spent_row!(row)
+      assert submission_outcome_unknown_row?(row)
+      assert_equal "draft", row.status
+      assert_nil row.submitted_at
+      assert_nil row.claim_identifier
     end
   end
 
@@ -39,9 +47,9 @@ class Corvid::ClaimSubmissionOutcomeUnknownTest < ActiveSupport::TestCase
       assert_raises(RuntimeError) { claim.submit! }
 
       assert_equal 1, submit_calls.size
-      claim.reload
-      assert_override_spent!(claim)
-      assert submission_outcome_unknown_at_set?(claim)
+      row = fresh_claim_row(claim.id)
+      assert_override_spent_row!(row)
+      assert submission_outcome_unknown_row?(row)
     end
   end
 
@@ -54,8 +62,7 @@ class Corvid::ClaimSubmissionOutcomeUnknownTest < ActiveSupport::TestCase
 
       assert_instance_of outcome_unknown_error_class, error
       assert_empty submit_calls
-      claim.reload
-      assert submission_outcome_unknown_at_set?(claim)
+      assert submission_outcome_unknown_row?(fresh_claim_row(claim.id))
     end
   end
 
@@ -72,10 +79,10 @@ class Corvid::ClaimSubmissionOutcomeUnknownTest < ActiveSupport::TestCase
       end
 
       assert_instance_of outcome_unknown_error_class, error
-      claim.reload
+      row = fresh_claim_row(claim.id)
       assert_equal determinations_before, determination_count_for(claim)
-      assert_nil claim.medicaid_hold_override_reason_token
-      assert submission_outcome_unknown_at_set?(claim)
+      assert_nil row.medicaid_hold_override_reason_token
+      assert submission_outcome_unknown_row?(row)
     end
   end
 
@@ -86,8 +93,8 @@ class Corvid::ClaimSubmissionOutcomeUnknownTest < ActiveSupport::TestCase
       submit_calls = stub_submit_claim!
 
       claim.confirm_submission_not_sent!(by_identifier: "usr_recon_spec")
-      claim.reload
-      refute submission_outcome_unknown_at_set?(claim)
+      row = fresh_claim_row(claim.id)
+      refute submission_outcome_unknown_row?(row)
 
       determinations = new_determinations_since(claim, determinations_before)
       assert_equal 1, determinations.size
@@ -102,7 +109,7 @@ class Corvid::ClaimSubmissionOutcomeUnknownTest < ActiveSupport::TestCase
       claim.submit!
 
       assert_equal 1, submit_calls.size
-      assert_equal "submitted", claim.reload.status
+      assert_equal "submitted", fresh_claim_row(claim.id).status
     end
   end
 
@@ -113,11 +120,11 @@ class Corvid::ClaimSubmissionOutcomeUnknownTest < ActiveSupport::TestCase
 
       claim.mark_submitted!(claim_identifier: identifier)
 
-      claim.reload
-      refute submission_outcome_unknown_at_set?(claim)
-      assert_equal identifier, claim.claim_identifier
-      assert_equal "submitted", claim.status
-      assert claim.submitted_at.present?
+      row = fresh_claim_row(claim.id)
+      refute submission_outcome_unknown_row?(row)
+      assert_equal identifier, row.claim_identifier
+      assert_equal "submitted", row.status
+      assert row.submitted_at.present?
     end
   end
 
@@ -130,8 +137,7 @@ class Corvid::ClaimSubmissionOutcomeUnknownTest < ActiveSupport::TestCase
       refute claim.update(submission_outcome_unknown_at: Time.current)
       assert claim.errors[:submission_outcome_unknown_at].present? ||
         claim.errors[:base].present?
-      claim.reload
-      refute submission_outcome_unknown_at_set?(claim)
+      refute submission_outcome_unknown_row?(fresh_claim_row(claim.id))
     end
   end
 
@@ -142,8 +148,7 @@ class Corvid::ClaimSubmissionOutcomeUnknownTest < ActiveSupport::TestCase
       refute claim.update(submission_outcome_unknown_at: nil)
       assert claim.errors[:submission_outcome_unknown_at].present? ||
         claim.errors[:base].present?
-      claim.reload
-      assert submission_outcome_unknown_at_set?(claim)
+      assert submission_outcome_unknown_row?(fresh_claim_row(claim.id))
     end
   end
 
@@ -155,44 +160,128 @@ class Corvid::ClaimSubmissionOutcomeUnknownTest < ActiveSupport::TestCase
       assert_raises(StandardError) { claim.submit! }
 
       assert_equal 1, submit_calls.size
+      row = fresh_claim_row(claim.id)
+      assert_equal "draft", row.status
+      assert_nil row.submitted_at
+      assert_nil row.claim_identifier
+      refute submission_outcome_unknown_row?(row)
+    end
+  end
+
+  test "confirm_submission_not_sent! raises ArgumentError when marker is not set" do
+    with_tenant(TENANT) do
+      claim = held_draft_with_override!
+
+      error = assert_raises(ArgumentError) do
+        claim.confirm_submission_not_sent!(by_identifier: "usr_recon")
+      end
+      assert_match(/not unknown/i, error.message)
+      refute submission_outcome_unknown_row?(fresh_claim_row(claim.id))
+    end
+  end
+
+  test "confirm_submission_not_sent! raises ArgumentError when by_identifier is blank" do
+    with_tenant(TENANT) do
+      claim = claim_in_outcome_unknown_state!
+
+      assert_raises(ArgumentError) do
+        claim.confirm_submission_not_sent!(by_identifier: "")
+      end
+      assert submission_outcome_unknown_row?(fresh_claim_row(claim.id))
+    end
+  end
+
+  test "failed confirm_submission_not_sent! leaves marker set and reloads the claim" do
+    with_tenant(TENANT) do
+      claim = claim_in_outcome_unknown_state!
+      singleton = Corvid::Determination.singleton_class
+      original_create = singleton.instance_method(:create!)
+      singleton.define_method(:create!) do |*_args, **_kwargs|
+        raise ActiveRecord::RecordInvalid, Corvid::Determination.new
+      end
+      begin
+        assert_raises(ActiveRecord::RecordInvalid) do
+          claim.confirm_submission_not_sent!(by_identifier: "usr_fail_confirm")
+        end
+      ensure
+        singleton.define_method(:create!, original_create)
+      end
+
       claim.reload
-      assert_equal "draft", claim.status
-      assert_nil claim.submitted_at
-      assert_nil claim.claim_identifier
-      refute unknown_outcome_marked?(claim)
+      assert submission_outcome_unknown_row?(fresh_claim_row(claim.id))
+      refute claim.submission_outcome_unknown_at.nil?,
+        "in-memory row must reflect persisted marker after failed confirm"
+    end
+  end
+
+  test "Interrupt from adapter marks unknown outcome and re-raises the same object" do
+    with_tenant(TENANT) do
+      claim = held_draft_with_override!
+      original = Interrupt.new("ctrl-c")
+      Corvid.adapter.define_singleton_method(:submit_claim) { |_d| raise original }
+
+      err = assert_raises(Interrupt) { claim.submit! }
+
+      assert err.equal?(original)
+      row = fresh_claim_row(claim.id)
+      assert submission_outcome_unknown_row?(row)
+      assert_override_spent_row!(row)
+    end
+  end
+
+  test "submission_outcome_unknown marker is enforced when TenantContext differs from claim tenant" do
+    with_tenant(TENANT) do
+      claim = claim_in_outcome_unknown_state!
+      submit_calls = stub_submit_claim!
+
+      with_tenant(OTHER_TENANT) do
+        assert_raises(outcome_unknown_error_class) { claim.submit! }
+      end
+
+      assert_empty submit_calls
+      assert submission_outcome_unknown_row?(fresh_claim_row(claim.id))
     end
   end
 
   private
 
-  def unknown_outcome_marked?(claim)
-    claim.has_attribute?(:submission_outcome_unknown_at) &&
-      claim.submission_outcome_unknown_at.present?
+  def truncate_corvid_claim_graph!
+    conn = ActiveRecord::Base.connection
+    %w[
+      corvid_determinations corvid_claim_submissions corvid_eligibility_checklists
+      corvid_alternate_resource_checks corvid_prc_referrals corvid_cases
+    ].each do |table|
+      conn.execute("TRUNCATE #{table} CASCADE")
+    end
+  end
+
+  def fresh_claim_row(claim_id)
+    Corvid::ClaimSubmission.uncached do
+      Corvid::ClaimSubmission.unscoped.find(claim_id)
+    end
+  end
+
+  def submission_outcome_unknown_row?(row)
+    row.submission_outcome_unknown_at.present?
+  end
+
+  def assert_override_spent_row!(row)
+    assert_nil row.medicaid_hold_override_reason_token
+    assert_nil row.medicaid_hold_override_by_identifier
+    assert_nil row.medicaid_hold_overridden_at
   end
 
   def outcome_unknown_error_class
     Corvid::ClaimSubmission::SubmissionOutcomeUnknown
   end
 
-  def submission_outcome_unknown_at_set?(claim)
-    assert claim.has_attribute?(:submission_outcome_unknown_at),
-      "submission_outcome_unknown_at column must exist on corvid_claim_submissions"
-    claim.submission_outcome_unknown_at.present?
-  end
-
-  def assert_override_spent!(claim)
-    assert_nil claim.medicaid_hold_override_reason_token
-    assert_nil claim.medicaid_hold_override_by_identifier
-    assert_nil claim.medicaid_hold_overridden_at
-  end
-
   def claim_in_outcome_unknown_state!
     claim = held_draft_with_override!
     stub_adapter_raise!(Timeout::Error, "execution expired")
     assert_raises(Timeout::Error) { claim.submit! }
-    claim.reload
-    assert submission_outcome_unknown_at_set?(claim), "expected unknown-outcome marker after adapter failure"
-    claim
+    row = fresh_claim_row(claim.id)
+    assert submission_outcome_unknown_row?(row), "expected unknown-outcome marker after adapter failure"
+    Corvid::ClaimSubmission.find(claim.id)
   end
 
   def held_draft_with_override!
@@ -202,7 +291,6 @@ class Corvid::ClaimSubmissionOutcomeUnknownTest < ActiveSupport::TestCase
       by_identifier: "usr_billing_spec"
     )
     claim.reload
-    claim
   end
 
   def held_draft_claim!
@@ -218,18 +306,14 @@ class Corvid::ClaimSubmissionOutcomeUnknownTest < ActiveSupport::TestCase
       eligibility_group_source: "staff_entry",
       eligibility_group_set_at: Time.current
     )
-    claim = build_claim_for(referral, service_date: Date.new(2027, 2, 1))
-    claim.save!
-    claim
+    build_claim_for(referral, service_date: Date.new(2027, 2, 1)).tap(&:save!)
   end
 
   def clear_to_submit_draft_claim!
     referral = referral_at("fac_test", "REF-CLEAR-OUTCOME-#{SecureRandom.hex(3)}")
     authorize!(referral)
     referral.alternate_resource_checks.find_by!(resource_type: "medicaid").update!(status: "not_enrolled")
-    claim = build_claim_for(referral, service_date: Date.new(2027, 2, 1))
-    claim.save!
-    claim
+    build_claim_for(referral, service_date: Date.new(2027, 2, 1)).tap(&:save!)
   end
 
   def build_claim_for(referral, service_date:)

@@ -6,12 +6,19 @@ require "test_helper"
 class Corvid::ClaimSubmissionOverrideTopLevelTest < ActiveSupport::TestCase
   include ActiveSupport::Testing::TimeHelpers
 
+  self.use_transactional_tests = false
+
   TENANT = "tnt_test"
   PATIENT = "TEST,PATIENT TOP-LEVEL"
   RETRO_SCENARIO_TIME = Time.zone.local(2027, 6, 1, 12, 0, 0)
 
   setup { travel_to RETRO_SCENARIO_TIME }
-  teardown { travel_back }
+
+  teardown do
+    travel_back
+    Corvid::TenantContext.reset!
+    truncate_corvid_claim_graph!
+  end
 
   test "submit! with override inside ClaimSubmission.transaction raises before adapter and keeps override" do
     with_tenant(TENANT) do
@@ -27,10 +34,10 @@ class Corvid::ClaimSubmissionOverrideTopLevelTest < ActiveSupport::TestCase
 
       assert_instance_of top_level_error_class, error
       assert_empty submit_calls
-      claim.reload
-      assert_equal override_token, claim.medicaid_hold_override_reason_token
-      assert claim.medicaid_hold_overridden_at.present?
-      assert_equal "draft", claim.status
+      row = fresh_claim_row(claim.id)
+      assert_equal override_token, row.medicaid_hold_override_reason_token
+      assert row.medicaid_hold_overridden_at.present?
+      assert_equal "draft", row.status
     end
   end
 
@@ -46,8 +53,25 @@ class Corvid::ClaimSubmissionOverrideTopLevelTest < ActiveSupport::TestCase
       end
 
       assert_empty submit_calls
-      claim.reload
-      assert_equal "rt_medicaid_hold_override", claim.medicaid_hold_override_reason_token
+      row = fresh_claim_row(claim.id)
+      assert_equal "rt_medicaid_hold_override", row.medicaid_hold_override_reason_token
+    end
+  end
+
+  test "submit! with override inside requires_new caller transaction raises before adapter and keeps override" do
+    with_tenant(TENANT) do
+      claim = held_draft_with_override!
+      submit_calls = stub_submit_claim!
+
+      assert_raises(top_level_error_class) do
+        ActiveRecord::Base.transaction(requires_new: true) do
+          claim.submit!
+        end
+      end
+
+      assert_empty submit_calls
+      row = fresh_claim_row(claim.id)
+      assert_equal "rt_medicaid_hold_override", row.medicaid_hold_override_reason_token
     end
   end
 
@@ -72,10 +96,10 @@ class Corvid::ClaimSubmissionOverrideTopLevelTest < ActiveSupport::TestCase
 
       assert_instance_of top_level_error_class, error
       assert_empty submit_calls
-      claim.reload
-      assert_equal "rt_medicaid_hold_override", claim.medicaid_hold_override_reason_token
-      assert_equal "draft", claim.status
-      assert_nil claim.submitted_at
+      row = fresh_claim_row(claim.id)
+      assert_equal "rt_medicaid_hold_override", row.medicaid_hold_override_reason_token
+      assert_equal "draft", row.status
+      assert_nil row.submitted_at
     end
   end
 
@@ -89,12 +113,29 @@ class Corvid::ClaimSubmissionOverrideTopLevelTest < ActiveSupport::TestCase
       end
 
       assert_equal 1, submit_calls.size
-      assert_equal "submitted", claim.reload.status
-      assert_equal "CLM-SPEC-001", claim.claim_identifier
+      row = fresh_claim_row(claim.id)
+      assert_equal "submitted", row.status
+      assert_equal "CLM-SPEC-001", row.claim_identifier
     end
   end
 
   private
+
+  def truncate_corvid_claim_graph!
+    conn = ActiveRecord::Base.connection
+    %w[
+      corvid_determinations corvid_claim_submissions corvid_eligibility_checklists
+      corvid_alternate_resource_checks corvid_prc_referrals corvid_cases
+    ].each do |table|
+      conn.execute("TRUNCATE #{table} CASCADE")
+    end
+  end
+
+  def fresh_claim_row(claim_id)
+    Corvid::ClaimSubmission.uncached do
+      Corvid::ClaimSubmission.unscoped.find(claim_id)
+    end
+  end
 
   def top_level_error_class
     Corvid::ClaimSubmission::OverrideRequiresTopLevelSubmit
@@ -107,7 +148,6 @@ class Corvid::ClaimSubmissionOverrideTopLevelTest < ActiveSupport::TestCase
       by_identifier: "usr_billing_spec"
     )
     claim.reload
-    claim
   end
 
   def held_draft_claim!
@@ -123,18 +163,14 @@ class Corvid::ClaimSubmissionOverrideTopLevelTest < ActiveSupport::TestCase
       eligibility_group_source: "staff_entry",
       eligibility_group_set_at: Time.current
     )
-    claim = build_claim_for(referral, service_date: Date.new(2027, 2, 1))
-    claim.save!
-    claim
+    build_claim_for(referral, service_date: Date.new(2027, 2, 1)).tap(&:save!)
   end
 
   def clear_to_submit_draft_claim!
     referral = referral_at("fac_test", "REF-TOP-CLEAR-#{SecureRandom.hex(3)}")
     authorize!(referral)
     referral.alternate_resource_checks.find_by!(resource_type: "medicaid").update!(status: "not_enrolled")
-    claim = build_claim_for(referral, service_date: Date.new(2027, 2, 1))
-    claim.save!
-    claim
+    build_claim_for(referral, service_date: Date.new(2027, 2, 1)).tap(&:save!)
   end
 
   def build_claim_for(referral, service_date:)

@@ -148,10 +148,12 @@ class Corvid::ClaimSubmissionMedicaidHoldOpenFindingsTest < ActiveSupport::TestC
       assert_equal "draft", claim.status
       assert_nil claim.submitted_at
       assert_nil claim.claim_identifier
+      assert claim.submission_outcome_unknown_at.present?,
+        "phase B failure must leave the in-flight marker set"
 
-      assert_raises(Corvid::ClaimSubmission::HeldForPendingMedicaid) { claim.submit! }
-      assert_equal 1, submit_calls.size,
-        "second submit! must not call the adapter when override is spent and claim never sent"
+      follow_up_calls = stub_submit_claim!
+      assert_raises(Corvid::ClaimSubmission::SubmissionOutcomeUnknown) { claim.submit! }
+      assert_empty follow_up_calls
     end
   end
 
@@ -222,9 +224,11 @@ class Corvid::ClaimSubmissionMedicaidHoldOpenFindingsTest < ActiveSupport::TestC
       assert_nil claim.medicaid_hold_override_reason_token
       assert_equal "draft", claim.status
       assert_nil claim.submitted_at
+      assert claim.submission_outcome_unknown_at.present?
 
-      assert_raises(Corvid::ClaimSubmission::HeldForPendingMedicaid) { claim.submit! }
-      assert_equal 1, submit_calls.size
+      follow_up_calls = stub_submit_claim!
+      assert_raises(Corvid::ClaimSubmission::SubmissionOutcomeUnknown) { claim.submit! }
+      assert_empty follow_up_calls
     end
   end
 
