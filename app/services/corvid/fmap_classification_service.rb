@@ -72,7 +72,9 @@ module Corvid
                    coverage_group: nil, billed_amount_cents: nil,
                    evidence_refs: [])
         # One code for the rule rows, the registry, and a persisted
-        # determination. Blank still refuses.
+        # determination. Blank still refuses. A value that is not two
+        # ASCII letters comes back nil and is refused below, before any
+        # rule lookup.
         jurisdiction = canonical_jurisdiction(jurisdiction)
         check_coverage_group!(coverage_group)
         if received_through_basis.present? && !FmapRule::RECEIVED_THROUGH_BASES.include?(received_through_basis.to_s)
@@ -86,6 +88,11 @@ module Corvid
         backed = authority.present? && basis == "facility_authority"
         context = { authority: authority, basis: basis, evidence: evidence }
 
+        # Not two ASCII letters. Federal rows would still match and could
+        # grant a 100 percent tier, and the empty-rules warning would log
+        # the raw value. No lookup, no tier, and nothing here echoes it.
+        return undetermined_result(NO_MATCHING_RULE) if jurisdiction.nil?
+
         rules = FmapRule.in_force_on(date_of_service).for_jurisdiction(jurisdiction).to_a
 
         # An unloaded (or wholly end-dated) rule set is a broken input,
@@ -97,9 +104,9 @@ module Corvid
 
         # Separate registries. The expansion tier still matches on its
         # coverage group; StateMedicaidRules.lookup says whether this
-        # jurisdiction may use it. Lookup canonicalizes case; the value
-        # above was stripped and upcased so the rule rows are asked for
-        # that same code.
+        # jurisdiction may use it. The value above was stripped of ASCII
+        # whitespace and ASCII-upcased, so the rule rows and the registry
+        # are asked for that same code.
         expansion_open = expansion_state?(jurisdiction)
 
         matched = best_match(rules, authority_type: authority_type, aian_verified: aian_verified,
@@ -174,6 +181,9 @@ module Corvid
         end
 
         jurisdiction = canonical_jurisdiction(classify_opts.fetch(:jurisdiction))
+        # Before any row is written. The message does not repeat the raw value.
+        raise ArgumentError, "jurisdiction must be two letters" if jurisdiction.nil?
+
         result = classify(evidence_refs: evidence_refs, **classify_opts, jurisdiction: jurisdiction)
         applied = result.facility_authority
 
@@ -237,6 +247,10 @@ module Corvid
 
       def warn_no_rules(date_of_service, jurisdiction)
         return unless defined?(Rails) && Rails.respond_to?(:logger) && Rails.logger
+        # A malformed value is refused before this warning. If one arrived
+        # here, do not log it.
+        return unless two_ascii_letters?(jurisdiction)
+
         Rails.logger.error(
           "[Corvid::FmapClassificationService] no FMAP rules in force for " \
           "jurisdiction=#{jurisdiction} date_of_service=#{date_of_service}; " \
@@ -310,14 +324,39 @@ module Corvid
         [ nil, reason || EXPANSION_STATE_NOT_CONFIGURED ]
       end
 
-      # Strip, then upcase. Rule rows match the jurisdiction string
-      # exactly; blank is refused because federal rows alone would
-      # read as a complete answer.
+      # Leading and trailing ASCII whitespace only, then two ASCII
+      # letters (StateMedicaidRules::STATE_CODE) and upcase(:ascii).
+      # Unicode spaces stay in the string, and the letters are checked
+      # before upcase, so a full Unicode upcase cannot turn a lookalike
+      # into a configured state. Blank is refused because federal rows
+      # alone would read as a complete answer. Any other value is not a
+      # code and comes back nil; the raw characters are not returned.
       def canonical_jurisdiction(jurisdiction)
-        code = jurisdiction.to_s.strip.upcase
+        code = strip_ascii_whitespace(jurisdiction)
         raise ArgumentError, "jurisdiction is required" if code.empty?
+        return unless two_ascii_letters?(code)
 
-        code
+        code.upcase(:ascii)
+      end
+
+      # ASCII space, tab, newline, vertical tab, form feed, and carriage
+      # return. Unicode spaces are left in place so they cannot disappear
+      # into a two-letter code. An unreadable encoding is left as-is and
+      # fails the letter check.
+      def strip_ascii_whitespace(value)
+        text = value.to_s
+        return text unless text.valid_encoding? && text.encoding.ascii_compatible?
+
+        text.gsub(/\A[ \t\r\n\f\v]+|[ \t\r\n\f\v]+\z/, "")
+      end
+
+      # StateMedicaidRules::STATE_CODE, and only a readable string. A bad
+      # encoding is not a code, so match? is not asked to raise on it.
+      def two_ascii_letters?(code)
+        return false unless code.is_a?(String)
+        return false unless code.valid_encoding? && code.encoding.ascii_compatible?
+
+        StateMedicaidRules::STATE_CODE.match?(code)
       end
 
       # The 100 percent tier a non-expansion state may still grant when
