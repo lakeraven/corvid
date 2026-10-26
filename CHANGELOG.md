@@ -8,18 +8,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed (breaking)
-- A Medicaid hold override spent by `ClaimSubmission#submit!` stays spent
-  when `submit_claim` raises. The claim records
-  `submission_outcome_unknown_at`. While that marker is set, `submit!`
-  and `override_medicaid_hold!` raise `SubmissionOutcomeUnknown` before
+- A Medicaid hold override spent by `ClaimSubmission#submit!` is
+  committed in its own transaction before `submit_claim`, together
+  with `submission_outcome_unknown_at`. Phase A takes the patient
+  advisory lock and the row lock, re-checks the hold and the override,
+  spends the override, and sets the marker. Phase B is a new
+  transaction with the same locks: it calls `submit_claim` and records
+  the accepted result, clearing the marker in that save. A failure in
+  phase B leaves the spend and the marker committed and re-raises the
+  original exception. While the marker is set, `submit!` and
+  `override_medicaid_hold!` raise `SubmissionOutcomeUnknown` before
   any adapter call or write. `confirm_submission_not_sent!(by_identifier:)`
-  clears the marker, appends a `staff_review` Determination, and is
-  required before another override. `mark_submitted!(claim_identifier:)`
-  clears it too. A plain save cannot write or clear the column.
-  `submit!` also raises `OverrideRequiresTopLevelSubmit`, before any
-  adapter call or spend, when an override would be spent inside a
-  caller's open, joinable transaction. A submit with no override may
-  still run inside a host transaction.
+  takes the row lock, re-checks the marker, clears it, and appends a
+  `staff_review` Determination. `mark_submitted!(claim_identifier:)`
+  clears the marker too. A plain save cannot write or clear the column.
+  `submit!` raises `OverrideRequiresTopLevelSubmit`, before any lock,
+  spend, or adapter call, when an override would be spent inside any
+  open transaction. A submit with no override may still run inside a
+  host transaction, in one transaction, with nothing marked if the
+  adapter raises.
 - `corvid_eligibility_checklists.application_completed_by` and
   `management_approved_by` are renamed to `application_completed_by_identifier`
   and `management_approved_by_identifier`. They hold a practitioner identifier
