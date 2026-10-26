@@ -27,7 +27,9 @@ module Corvid
     class FhirDemoAdapter < FhirAdapter
       # resources: Array<Hash> of FHIR R4 resource hashes.
       def initialize(resources: [])
-        super(base_url: "memory://fhir-demo")
+        # Path-qualified in-memory base. FhirAdapter scopes tokens and
+        # next links to this path and rejects an empty path or "/".
+        super(base_url: "memory://fhir-demo/r4")
         @by_type_and_id = Hash.new { |h, k| h[k] = {} }
         @by_type = Hash.new { |h, k| h[k] = [] }
         Array(resources).each { |r| add_resource(r) }
