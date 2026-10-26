@@ -2235,9 +2235,9 @@ class Corvid::Adapters::FhirAdapterTest < Minitest::Test
     assert_equal 1, results.size
   end
 
-  def test_get_conditions_rejects_patient_subject_reference_with_underscore_id
-    condition = build_condition_resource(subject: { "reference" => "Patient/pt_x" })
-    results = get_conditions_with_bundle(conditions_bundle([ condition ]), patient_id: "pt_x")
+  def test_get_conditions_rejects_patient_subject_reference_with_non_token_underscore_id
+    condition = build_condition_resource(subject: { "reference" => "Patient/abc_x" })
+    results = get_conditions_with_bundle(conditions_bundle([ condition ]), patient_id: "abc_x")
     assert_nil results
   end
 
