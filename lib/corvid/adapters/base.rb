@@ -26,7 +26,8 @@ module Corvid
       end
 
       # Search patients by name or other criteria.
-      # Returns an array of PatientReference objects.
+      # Returns an Array of PatientReference, or nil when the source did
+      # not answer. nil means unknown. [] means the source answered "none".
       def search_patients(query)
         raise NotImplementedError, "#{self.class}#search_patients not implemented"
       end
@@ -39,6 +40,9 @@ module Corvid
         raise NotImplementedError, "#{self.class}#find_practitioner not implemented"
       end
 
+      # Search practitioners by name or other criteria.
+      # Returns an Array of PractitionerReference, or nil when the source
+      # did not answer. nil means unknown. [] means the source answered "none".
       def search_practitioners(query)
         raise NotImplementedError, "#{self.class}#search_practitioners not implemented"
       end
@@ -60,6 +64,8 @@ module Corvid
         raise NotImplementedError, "#{self.class}#update_referral not implemented"
       end
 
+      # Returns an Array of ReferralReference, or nil when the source did
+      # not answer. nil means unknown. [] means the source answered "none".
       def list_referrals(patient_identifier)
         raise NotImplementedError, "#{self.class}#list_referrals not implemented"
       end
@@ -152,6 +158,8 @@ module Corvid
       # Care team
       # ----------------------------------------------------------------------
 
+      # Returns an Array of CareTeamMemberReference, or nil when the source
+      # did not answer. nil means unknown. [] means the source answered "none".
       def get_care_team(patient_identifier)
         raise NotImplementedError, "#{self.class}#get_care_team not implemented"
       end
@@ -177,11 +185,14 @@ module Corvid
       end
 
       # Read purchased/referred-care billed line items for a patient from
-      # stock FHIR `Claim` (or `ExplanationOfBenefit`) resources. Returns an
-      # array of Corvid::ClaimLineReference. Adapters that can't surface
-      # claims return an empty array so callers degrade gracefully.
+      # stock FHIR `Claim` (or `ExplanationOfBenefit`) resources.
+      # Returns an Array of ClaimLineReference, or nil when the source did
+      # not answer. nil means unknown, as with get_conditions and
+      # get_medications. Adapters that cannot read claims return nil.
+      # [] means the source answered "none". In memory only — never persist
+      # or log (ADR 0003).
       def list_claims(patient_identifier)
-        []
+        nil
       end
 
       # ----------------------------------------------------------------------

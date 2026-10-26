@@ -21,8 +21,9 @@ module Corvid
   #   :ssn_missing                       — facility requires SSN-on-file and adapter says ssn_present: false
   #   :enrollment_stale                  — informational warning when source flagged data as stale
   #
-  # provider_confidence is nil unless enrolled is exactly true or false.
-  # Usable responses keep their confidence.
+  # provider_confidence is nil unless enrolled is exactly true or false
+  # and confidence is :verified, :stale, or :unavailable. Other values
+  # are unknown.
   #
   # Eligibility rule: deny if ANY hard-fail reason present; otherwise
   # approve (stale confidence is non-blocking — surfaces as a warning).
@@ -133,12 +134,16 @@ module Corvid
       end
 
       # Unusable answers (not a Hash, or enrolled other than exactly true
-      # or false) persist no confidence. A canonical flag keeps the source
-      # confidence, including :unavailable.
+      # or false) persist no confidence. A canonical flag persists only a
+      # contract symbol. enrollment_reasons matches symbols, not strings,
+      # so a string confidence is unknown and stays nil.
       def provider_confidence_for(enrollment)
         return nil unless canonical_enrolled_flag?(enrollment)
 
-        enrollment[:confidence]&.to_s
+        confidence = enrollment[:confidence]
+        return nil unless Adapters::Base::TRIBAL_CONFIDENCE_VALUES.include?(confidence)
+
+        confidence.to_s
       end
 
       def identity_reasons(identity, facility)

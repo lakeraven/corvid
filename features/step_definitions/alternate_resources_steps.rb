@@ -51,6 +51,40 @@ Given("the adapter has eligible coverage for patient {string} for resource type 
                               eligible: true)
 end
 
+Given("the adapter has eligible medicaid coverage for patient {string} stating eligibility group {string}") do |patient_id, group|
+  Corvid.adapter.add_coverage(
+    patient_id,
+    coverage_type: "medicaid",
+    payer_name: "MOCK MEDICAID PAYER",
+    plan_name: "Mock Plan",
+    eligible: true,
+    state: "XA",
+    eligibility_group: group,
+    eligibility_group_source: "eligibility_response"
+  )
+end
+
+Given("patient {string} has date of birth {string} in the adapter") do |patient_id, dob|
+  Corvid.adapter.add_patient(
+    patient_id,
+    display_name: "TEST,PATIENT CUCUMBER",
+    dob: Date.parse(dob),
+    sex: "F",
+    ssn_last4: "0000"
+  )
+end
+
+Given("the adapter has eligible medicaid coverage for patient {string} in state {string}") do |patient_id, state|
+  Corvid.adapter.add_coverage(
+    patient_id,
+    coverage_type: "medicaid",
+    payer_name: "MOCK MEDICAID PAYER",
+    plan_name: "TEST REGULAR PLAN",
+    eligible: true,
+    state: state
+  )
+end
+
 Given("the adapter has eligible coverage for all alternate resource types for patient {string}") do |patient_id|
   Corvid::AlternateResourceCheck::RESOURCE_TYPES.each do |type|
     Corvid.adapter.add_coverage(patient_id,
@@ -144,6 +178,14 @@ end
 Then("the check status should be {string}") do |status|
   @check.reload
   assert_equal status, @check.status
+end
+
+Then("the medicaid alternate resource check should have eligibility group {string} with source {string}") do |group, source|
+  check = @referral.alternate_resource_checks.find_by!(resource_type: "medicaid")
+  check.reload
+  assert_equal group, check.eligibility_group
+  assert_equal source, check.eligibility_group_source
+  refute_nil check.eligibility_group_set_at
 end
 
 Given("the check has policy token {string}") do |token|

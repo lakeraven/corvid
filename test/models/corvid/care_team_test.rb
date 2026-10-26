@@ -90,4 +90,18 @@ class Corvid::CareTeamTest < ActiveSupport::TestCase
       assert_equal [ "Practitioner/pr_a" ], participants
     end
   end
+
+  test "for_patient returns nil when adapter care team is unknown" do
+    adapter = Minitest::Mock.new
+    adapter.expect(:get_care_team, nil, [ "pt_test_001" ])
+
+    with_tenant(TENANT) do
+      Corvid.configure { |c| c.adapter = adapter }
+
+      assert_nil Corvid::CareTeam.for_patient("pt_test_001"),
+                 "nil from get_care_team means unknown; must not coerce to []"
+    end
+
+    adapter.verify
+  end
 end

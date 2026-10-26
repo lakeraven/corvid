@@ -9,6 +9,8 @@ module Corvid
     #
     # Production deployments wire a real enrollment adapter (e.g., a
     # tribal enrollment system) via the SaaS shell configuration.
+    # List reads follow MockAdapter: a blank patient identifier is
+    # unknown (nil) on list_referrals, list_claims, and get_care_team.
     class EnrollmentDemoAdapter < MockAdapter
       private
 

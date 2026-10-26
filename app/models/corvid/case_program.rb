@@ -3,6 +3,9 @@
 module Corvid
   # Tracks program enrollment per case (IHS CHS, Medicaid, Medicare, etc.).
   # A case may have multiple program enrollments with non-overlapping codes.
+  #
+  # #program_name is derived from ProgramRegistry. It is not a column: #591
+  # classified the stored label as patient PHI, and it duplicated program_code.
   class CaseProgram < ::ActiveRecord::Base
     self.table_name = "corvid_case_programs"
 
@@ -17,7 +20,6 @@ module Corvid
       terminated: "terminated"
     }
 
-    validates :program_name, presence: true
     validates :program_code, presence: true
     validates :program_code, uniqueness: { scope: :case_id }
     validate :program_code_in_registry, if: -> { program_code.present? }
@@ -38,6 +40,14 @@ module Corvid
 
     def disenroll!(as_of: Date.current)
       update!(disenrollment_date: as_of, enrollment_status: :terminated)
+    end
+
+    # Registry display name for program_code. A missing entry, or a blank
+    # display name, falls back to program_code. There is no writer: with the
+    # column gone, passing program_name: raises ActiveModel::UnknownAttributeError.
+    def program_name
+      entry = Corvid::ProgramRegistry.find(program_code)
+      entry&.display_name.to_s.strip.presence || program_code
     end
 
     private

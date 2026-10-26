@@ -78,13 +78,13 @@ module Corvid
     def unmet_evidence(received_through_basis:, evidence:, authority_backed:)
       unmet = []
       if requires_aian && evidence.none? { |e| e["supports"] == "aian_status" }
-        unmet << "aian_status_evidence"
+        unmet << FmapClassificationService.missing_evidence_term(:aian_status_evidence)
       end
       if requires_received_through
         if received_through_basis.to_s == "cca"
-          unmet << "care_coordination_agreement"
+          unmet << FmapClassificationService.missing_evidence_term(:care_coordination_agreement)
         elsif !authority_backed
-          unmet << "received_through_evidence"
+          unmet << FmapClassificationService.missing_evidence_term(:received_through_evidence)
         end
       end
       unmet
