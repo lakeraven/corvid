@@ -8,6 +8,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed (breaking)
+- A Medicaid hold override spent by `ClaimSubmission#submit!` stays spent
+  when `submit_claim` raises. The claim records
+  `submission_outcome_unknown_at`. While that marker is set, `submit!`
+  and `override_medicaid_hold!` raise `SubmissionOutcomeUnknown` before
+  any adapter call or write. `confirm_submission_not_sent!(by_identifier:)`
+  clears the marker, appends a `staff_review` Determination, and is
+  required before another override. `mark_submitted!(claim_identifier:)`
+  clears it too. A plain save cannot write or clear the column.
+  `submit!` also raises `OverrideRequiresTopLevelSubmit`, before any
+  adapter call or spend, when an override would be spent inside a
+  caller's open, joinable transaction. A submit with no override may
+  still run inside a host transaction.
 - `corvid_eligibility_checklists.application_completed_by` and
   `management_approved_by` are renamed to `application_completed_by_identifier`
   and `management_approved_by_identifier`. They hold a practitioner identifier
@@ -22,6 +34,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   instead of `denial_reason_token`.
 
 ### Added
+- `corvid_claim_submissions.submission_outcome_unknown_at`, a nullable
+  datetime, and `ClaimSubmission#confirm_submission_not_sent!(by_identifier:)`.
+  The column marks a spent Medicaid hold override whose clearinghouse
+  call then raised. Confirming the claim was not sent is required before
+  another override.
 - `corvid_claim_submissions.rejection_reason_token`, `denial_reason_codes`
   (CARC/RARC codes), `rejected_at` and `denied_at`. The timestamps are kept
   after the status moves on, so a claim rejected or denied and later paid
@@ -83,6 +100,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   nullable column and cannot restore values. (#702)
 
 ### Changed
+- A claim whose stored status is already `submitted`, `accepted`, or
+  `paid` may record `claim_identifier` through a plain save. The
+  never-sent marker guard applies only while the stored status is unsent.
 - Postgres CHECK constraints and foreign keys now bound columns that
   accepted any string. Value lists: `corvid_prc_referrals.priority_system`
   (`corvid_v1`), `corvid_prc_eligibility_decisions.provider_confidence`

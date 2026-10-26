@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_10_25_000004) do
+ActiveRecord::Schema[8.1].define(version: 2026_10_26_000001) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
@@ -232,6 +232,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_25_000004) do
     t.string "medicaid_hold_override_reason_token"
     t.string "medicaid_hold_override_by_identifier"
     t.datetime "medicaid_hold_overridden_at"
+    t.datetime "submission_outcome_unknown_at"
     t.index ["claim_identifier"], name: "index_corvid_claim_submissions_on_claim_identifier", unique: true
     t.index ["prc_referral_id"], name: "index_corvid_claim_submissions_on_prc_referral_id"
     t.index ["tenant_identifier", "patient_identifier"], name: "idx_on_tenant_identifier_patient_identifier_0a950bd516"

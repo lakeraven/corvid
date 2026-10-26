@@ -49,6 +49,25 @@ module Corvid
     # undetermined Medicaid window, before this runs.
     class UnsavedChanges < StandardError; end
 
+    # Raised by #submit! and #override_medicaid_hold! while
+    # submission_outcome_unknown_at is set. The clearinghouse may
+    # already have accepted the claim. Confirm it was not sent, or
+    # mark it submitted, before another send or override.
+    class SubmissionOutcomeUnknown < StandardError
+      def initialize
+        super("submission outcome is unknown until it is reconciled")
+      end
+    end
+
+    # Raised by #submit! when spending a Medicaid hold override would
+    # join a caller's open transaction. That caller could roll the
+    # spend back after the clearinghouse had accepted the claim.
+    class OverrideRequiresTopLevelSubmit < StandardError
+      def initialize
+        super("spending a Medicaid hold override requires a top-level submit!")
+      end
+    end
+
     # The referral this claim bills, where there is one. Optional: claims
     # billed outside the referral workflow, and legacy rows the backfill could
     # not match unambiguously, carry no reference.
@@ -61,6 +80,7 @@ module Corvid
     validate :never_sent_claim_markers_only_through_submission
     validate :medicaid_hold_override_not_assigned_directly
     validate :medicaid_hold_override_all_or_none
+    validate :submission_outcome_unknown_not_assigned_directly
 
     # Written only by override_medicaid_hold!. Cleared when the hold's
     # basis changes, and consumed by the submit! or mark_submitted! that
@@ -80,11 +100,12 @@ module Corvid
 
     # A plain save cannot move a claim that has never been sent into
     # submitted, accepted, or paid, and cannot write claim_identifier
-    # or submitted_at. Never sent means both of those are still blank.
-    # Creating a row that is already in one of those statuses stays
-    # allowed, and that row may move among them. Leaving one of them
-    # records submitted_at when it was missing, so the return trip is
-    # not a first send.
+    # or submitted_at while the stored status is still unsent. Never
+    # sent means both of those are still blank. Creating a row that is
+    # already submitted, accepted, or paid stays allowed. That row may
+    # record claim_identifier through a plain save and may move among
+    # those statuses. Leaving one of them records submitted_at when it
+    # was missing, so the return trip is not a first send.
     SENT_STATUSES = %w[submitted accepted paid].freeze
     private_constant :SENT_STATUSES
 
@@ -225,10 +246,7 @@ module Corvid
 
     def mark_submitted!(claim_identifier:)
       prepare_medicaid_hold_submission!
-      with_medicaid_submission_lock do
-        enforce_pending_medicaid_hold!
-        record_claim_submission!(claim_identifier:, status: "submitted")
-      end
+      with_medicaid_submission_lock { record_marked_submission!(claim_identifier) }
     end
 
     def mark_paid!(paid_amount:)
@@ -259,14 +277,30 @@ module Corvid
     # Each call appends a staff_review Determination and keeps the prior ones.
     # Raises when this claim is not currently held, and records nothing.
     # A rolled-back write reloads this object so the hold stays in force.
+    # Raises SubmissionOutcomeUnknown while that marker is set, before
+    # any write. confirm_submission_not_sent! is required before another
+    # override.
     def override_medicaid_hold!(reason_token:, by_identifier:)
+      refuse_unknown_submission_outcome!
       require_medicaid_hold_override_args!(reason_token, by_identifier)
       require_pending_medicaid_hold!
       persist_medicaid_hold_override!(reason_token, by_identifier)
     end
 
+    # Staff confirmed the clearinghouse did not accept the send whose
+    # outcome was unknown. Clears the marker and appends a staff_review
+    # Determination, the same audit shape as an override, with no free
+    # text. Another override is allowed only after this.
+    def confirm_submission_not_sent!(by_identifier:)
+      raise ArgumentError, "by_identifier is blank" if by_identifier.blank?
+
+      persist_confirmed_not_sent!(by_identifier)
+    end
+
     def submit!
+      refuse_unknown_submission_outcome!
       prepare_for_clearinghouse_submit!
+      refuse_override_submit_inside_caller_transaction!
       outcome = with_medicaid_submission_lock { submit_locked! }
       raise outcome.fetch(:failure) if outcome[:failure]
 
@@ -488,15 +522,33 @@ module Corvid
     end
 
     def record_medicaid_hold_override!(reason_token, by_identifier)
+      record_staff_review_determination!(by_identifier: by_identifier, reasons_token: reason_token)
+    end
+
+    # Same audit row as an override: staff_review, no free text, no PHI.
+    # reasons_token is a vault token when the caller has one.
+    def record_staff_review_determination!(by_identifier:, reasons_token: nil)
       Determination.create!(
         determinable: self,
         tenant_identifier: tenant_identifier,
         facility_identifier: facility_identifier,
         decision_method: "staff_review",
         outcome: "approved",
-        reasons_token: reason_token,
+        reasons_token: reasons_token,
         determined_by_identifier: by_identifier
       )
+    end
+
+    def persist_confirmed_not_sent!(by_identifier)
+      committed = false
+      transaction do
+        require_unknown_submission_outcome!
+        clear_submission_outcome_unknown!
+        record_staff_review_determination!(by_identifier: by_identifier)
+        committed = true
+      end
+    ensure
+      reload if persisted? && !committed
     end
 
     def never_submitted_claim_stays_unsubmitted
@@ -507,13 +559,16 @@ module Corvid
     end
 
     # claim_identifier and submitted_at are how a later save tells a
-    # sent claim from one that never left. A plain save must not write
-    # either onto a never-sent row, or a held draft can store an
-    # identifier and then walk into a sent status. Inserts may still
+    # sent claim from one that never left. While the stored status is
+    # unsent, a plain save must not write either onto a never-sent row,
+    # or a held draft can store an identifier and then walk into a sent
+    # status. A row already stored as submitted, accepted, or paid may
+    # record claim_identifier through a plain save. Inserts may still
     # carry them. submit! and mark_submitted! set the recording flag.
     def never_sent_claim_markers_only_through_submission
       return if @recording_claim_submission
       return unless persisted? && never_sent_in_database?
+      return if sent_status?(status_in_database)
 
       refuse_plain_sent_marker(:claim_identifier) if will_save_change_to_claim_identifier?
       refuse_plain_sent_marker(:submitted_at) if will_save_change_to_submitted_at?
@@ -568,6 +623,13 @@ module Corvid
       return unless medicaid_hold_override_changed?
 
       errors.add(:medicaid_hold_override_reason_token, "can only be changed through override_medicaid_hold!")
+    end
+
+    def submission_outcome_unknown_not_assigned_directly
+      return if @writing_submission_outcome_unknown
+      return unless will_save_change_to_submission_outcome_unknown_at?
+
+      errors.add(:submission_outcome_unknown_at, "can only be changed through claim submission")
     end
 
     def medicaid_hold_override_all_or_none
@@ -687,6 +749,71 @@ module Corvid
       reload
     end
 
+    # The marker is a column on this row. Read it without the active
+    # tenant scope so another tenant's context cannot hide it.
+    def persisted_submission_outcome_unknown_at
+      return unless persisted?
+      return unless has_attribute?(:submission_outcome_unknown_at)
+
+      self.class.unscoped.where(id: id).pick(:submission_outcome_unknown_at)
+    end
+
+    def submission_outcome_unknown?
+      persisted_submission_outcome_unknown_at.present?
+    end
+
+    def refuse_unknown_submission_outcome!
+      return unless submission_outcome_unknown?
+
+      raise SubmissionOutcomeUnknown
+    end
+
+    def require_unknown_submission_outcome!
+      return if submission_outcome_unknown?
+
+      raise ArgumentError, "submission outcome is not unknown"
+    end
+
+    def record_unknown_submission_outcome!
+      write_submission_outcome_unknown!(Time.current)
+    end
+
+    def clear_submission_outcome_unknown!
+      write_submission_outcome_unknown!(nil)
+    end
+
+    def write_submission_outcome_unknown!(timestamp)
+      @writing_submission_outcome_unknown = true
+      update!(submission_outcome_unknown_at: timestamp)
+    ensure
+      @writing_submission_outcome_unknown = false
+    end
+
+    # A joinable open transaction belongs to the caller. submit! would
+    # join it, and the caller could roll the spent override back after
+    # the clearinghouse had accepted. The transaction Rails opens around
+    # a test is not joinable, so that wrapper is not a caller
+    # transaction. This runs before submit! opens its own transaction.
+    # That one is joinable, and checking from inside it would refuse
+    # every override submit.
+    def refuse_override_submit_inside_caller_transaction!
+      return unless caller_transaction_open_and_joinable?
+      return unless override_would_be_spent?
+
+      raise OverrideRequiresTopLevelSubmit
+    end
+
+    def caller_transaction_open_and_joinable?
+      current = self.class.connection.current_transaction
+      current.open? && current.joinable?
+    end
+
+    def override_would_be_spent?
+      return false if complete_persisted_override_at.nil?
+
+      active_persisted_medicaid_hold_override? || pending_medicaid_hold_reason.nil?
+    end
+
     # The row lock and the patient advisory lock cover the hold check,
     # the adapter call, and the status update. The override is spent in
     # its own savepoint before the adapter. That savepoint is released
@@ -694,28 +821,47 @@ module Corvid
     # savepoint. Any error from that save — not only RecordInvalid —
     # rolls back only that savepoint. The outer transaction still
     # commits the spent override, and the error is raised after it
-    # commits. An exception from submit_claim is not an acceptance: it
-    # leaves the outer transaction, so the spend rolls back with it.
-    # A second submit! on this connection, while the adapter is in
-    # flight, re-reads a row whose override is already spent and is held.
+    # commits. An exception from submit_claim after that spend is not
+    # an acceptance either: the same outer transaction records
+    # submission_outcome_unknown_at and then commits, so the override
+    # stays spent, and submit! raises the adapter exception afterwards.
+    # Without a spent override, that exception leaves the outer
+    # transaction and nothing about the send is recorded. A second
+    # submit! on this connection, while the adapter is in flight,
+    # re-reads a row whose override is already spent and is held.
+    # submit! refuses this whole section when a caller transaction is
+    # open and joinable, so that caller cannot roll the spend back.
     def submit_locked!
+      refuse_unknown_submission_outcome!
       enforce_pending_medicaid_hold!
-      spend_medicaid_hold_override!
+      submit_to_clearinghouse(spend_medicaid_hold_override!)
+    end
+
+    def submit_to_clearinghouse(override_spent)
       result = Corvid.adapter.submit_claim(to_claim_data)
       { result: result, failure: accepted_result_failure(result) }
+    rescue Exception => error
+      raise error unless override_spent
+
+      record_unknown_submission_outcome!
+      { result: nil, failure: error }
     end
 
     def spend_medicaid_hold_override!
+      spent = false
       transaction(requires_new: true) do
-        release_persisted_medicaid_hold_override!
+        spent = release_persisted_medicaid_hold_override!
       end
+      spent
     end
 
     # nil when the accepted result was stored. Otherwise the error from
     # that save. Rescuing here, inside the outer transaction, lets that
     # transaction commit the spent override. submit! raises afterwards.
-    # submit_claim has already returned; an exception from the call
-    # itself never reaches this method.
+    # submit_claim has already returned. An exception from the call
+    # itself is handled in submit_to_clearinghouse, which commits the
+    # spend together with submission_outcome_unknown_at when an
+    # override was spent.
     def accepted_result_failure(result)
       save_accepted_result!(result)
       nil
@@ -734,10 +880,11 @@ module Corvid
     end
 
     def release_persisted_medicaid_hold_override!
-      return if complete_persisted_override_at.nil?
+      return false if complete_persisted_override_at.nil?
 
       @writing_medicaid_hold_override = true
       update!(cleared_medicaid_hold_override_attributes)
+      true
     ensure
       @writing_medicaid_hold_override = false
     end
@@ -818,23 +965,36 @@ module Corvid
       status == "accepted" ? "submitted" : status
     end
 
+    # Recording an identifier for a send whose outcome was unknown is
+    # reconciliation, not a new send, so the pending Medicaid hold does
+    # not apply. The marker is cleared with the identifier.
+    def record_marked_submission!(claim_identifier)
+      enforce_pending_medicaid_hold! unless submission_outcome_unknown?
+      record_claim_submission!(claim_identifier:, status: "submitted")
+    end
+
     # Clears the override through the internal writer so the direct-write
     # validation does not reject the submission that consumed it. The
-    # Determination audit row is left in place.
+    # Determination audit row is left in place. Also clears
+    # submission_outcome_unknown_at, which mark_submitted! uses when
+    # staff confirm the unknown send did go out.
     def record_claim_submission!(claim_identifier:, status:)
       @recording_claim_submission = true
       @writing_medicaid_hold_override = true
+      @writing_submission_outcome_unknown = true
       update!(submission_attributes(claim_identifier, status))
     ensure
       @recording_claim_submission = false
       @writing_medicaid_hold_override = false
+      @writing_submission_outcome_unknown = false
     end
 
     def submission_attributes(claim_identifier, status)
       {
         claim_identifier: claim_identifier,
         status: status,
-        submitted_at: Time.current
+        submitted_at: Time.current,
+        submission_outcome_unknown_at: nil
       }.merge(cleared_medicaid_hold_override_attributes)
     end
 
