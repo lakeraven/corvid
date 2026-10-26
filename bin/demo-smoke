@@ -51,84 +51,220 @@ check() {
   fi
 }
 
-mlr_doc_admin_database_url() {
-  ruby -ruri -e '
+mlr_doc_write_pg_env() {
+  OUT="$1" ruby -ruri -rshellwords -e '
     u = URI(ENV.fetch("DATABASE_URL", "postgres://postgres:postgres@localhost:5432/corvid_dummy_development"))
-    u.path = "/postgres"
-    puts u
+    decode = URI.method(:decode_www_form_component)
+    user = u.user ? decode.call(u.user) : "postgres"
+    pass = u.password ? decode.call(u.password) : "postgres"
+    File.open(ENV.fetch("OUT"), "w") do |f|
+      f.puts "PGHOST=#{Shellwords.shellescape(u.host || "localhost")}"
+      f.puts "PGPORT=#{Shellwords.shellescape((u.port || 5432).to_s)}"
+      f.puts "PGUSER=#{Shellwords.shellescape(user)}"
+      f.puts "PGPASSWORD=#{Shellwords.shellescape(pass)}"
+    end
   '
 }
 
-mlr_doc_canary_database_url() {
-  ruby -ruri -e '
-    u = URI(ENV.fetch("DATABASE_URL", "postgres://postgres:postgres@localhost:5432/corvid_dummy_development"))
-    u.path = "/corvid_dummy_test_mlr_doc_canary"
-    puts u
+mlr_doc_test_database_name() {
+  ruby -ryaml -e '
+    cfg = YAML.load_file("test/dummy/config/database.yml", aliases: true)
+    puts cfg.fetch("test").fetch("database")
   '
 }
 
-mlr_doc_drop_canary() {
-  local admin_url="$1"
+mlr_doc_log_tail() {
+  local logfile="$1"
+  tail -30 "$logfile" | sed -E \
+    -e 's#postgres://[^[:space:]"'\'']*#[REDACTED]#g' \
+    -e 's#(DATABASE_URL|PGPASSWORD)=[^[:space:]]*#\1=[REDACTED]#g' \
+    | sed 's/^/   | /'
+}
+
+# Writes "absent" or a sha256 hex digest to $1. Fails (non-zero) on probe/connection errors.
+mlr_doc_test_db_snapshot() {
+  local outfile="$1"
+  local test_db="$2"
+  local errfile="$3"
+  local snap_err="$tmp/mlr-doc-snapshot.err"
+
+  export MLR_DOC_TEST_DB="$test_db"
+
   if command -v psql >/dev/null 2>&1; then
-    psql "$admin_url" -v ON_ERROR_STOP=1 -tAc \
-      "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = 'corvid_dummy_test_mlr_doc_canary'" \
-      >/dev/null 2>&1 || true
-    psql "$admin_url" -v ON_ERROR_STOP=1 -tAc \
-      "DROP DATABASE IF EXISTS corvid_dummy_test_mlr_doc_canary" \
-      >/dev/null 2>&1 || true
+    if ! psql -d postgres -v ON_ERROR_STOP=1 -tAc "SELECT 1" >"$snap_err" 2>&1; then
+      cat "$snap_err" >"$errfile"
+      return 1
+    fi
+    if ! psql -d postgres -v ON_ERROR_STOP=1 -tAc \
+      "SELECT 1 FROM pg_database WHERE datname = '${test_db}'" >"$tmp/mlr-doc-db-exists.txt" 2>"$snap_err"; then
+      cat "$snap_err" >"$errfile"
+      return 1
+    fi
+    if [ "$(tr -d '[:space:]' <"$tmp/mlr-doc-db-exists.txt")" != "1" ]; then
+      printf '%s\n' absent >"$outfile"
+      return 0
+    fi
+    if ! psql -d "$test_db" -v ON_ERROR_STOP=1 -tAc \
+      "SELECT version FROM schema_migrations ORDER BY version" >"$tmp/mlr-doc-migrations.txt" 2>"$snap_err"; then
+      cat "$snap_err" >"$errfile"
+      return 1
+    fi
+    if ! psql -d "$test_db" -v ON_ERROR_STOP=1 -tAc \
+      "SELECT key, value, created_at, updated_at FROM ar_internal_metadata ORDER BY key" \
+      >"$tmp/mlr-doc-metadata.txt" 2>"$snap_err"; then
+      cat "$snap_err" >"$errfile"
+      return 1
+    fi
+    if ! psql -d "$test_db" -v ON_ERROR_STOP=1 -tAc \
+      "SELECT tablename FROM pg_tables WHERE schemaname = 'public' ORDER BY tablename" \
+      >"$tmp/mlr-doc-tables.txt" 2>"$snap_err"; then
+      cat "$snap_err" >"$errfile"
+      return 1
+    fi
+    {
+      printf '%s\n' 'schema_migrations'
+      cat "$tmp/mlr-doc-migrations.txt"
+      printf '%s\n' 'ar_internal_metadata'
+      cat "$tmp/mlr-doc-metadata.txt"
+      while IFS= read -r tbl; do
+        [ -z "$tbl" ] && continue
+        count="$(psql -d "$test_db" -v ON_ERROR_STOP=1 -tAc \
+          "SELECT COUNT(*)::bigint FROM public.\"${tbl//\"/\"\"}\"" 2>"$snap_err")" || {
+          cat "$snap_err" >"$errfile"
+          return 1
+        }
+        printf '%s\t%s\n' "$tbl" "$(tr -d '[:space:]' <<<"$count")"
+      done <"$tmp/mlr-doc-tables.txt"
+    } | sha256sum | awk '{print $1}' >"$outfile"
     return 0
   fi
-  bundle exec ruby -rpg -ruri -e "
-    u = URI('$admin_url')
-    conn = PG.connect(host: u.host, port: u.port || 5432, user: u.user, password: u.password, dbname: 'postgres')
-    conn.exec(\"SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = 'corvid_dummy_test_mlr_doc_canary'\")
-    conn.exec('DROP DATABASE IF EXISTS corvid_dummy_test_mlr_doc_canary')
-  " >/dev/null 2>&1 || true
+
+  if ! bundle exec ruby -rpg -rdigest -e '
+    test_db = ENV.fetch("MLR_DOC_TEST_DB")
+    conn = PG.connect(
+      host: ENV.fetch("PGHOST"),
+      port: ENV.fetch("PGPORT", "5432"),
+      user: ENV.fetch("PGUSER"),
+      password: ENV.fetch("PGPASSWORD"),
+      dbname: "postgres"
+    )
+    exists = conn.exec_params("SELECT 1 FROM pg_database WHERE datname = $1", [test_db]).ntuples.positive?
+    conn.close
+    unless exists
+      puts "absent"
+      exit 0
+    end
+    conn = PG.connect(
+      host: ENV.fetch("PGHOST"),
+      port: ENV.fetch("PGPORT", "5432"),
+      user: ENV.fetch("PGUSER"),
+      password: ENV.fetch("PGPASSWORD"),
+      dbname: test_db
+    )
+    parts = []
+    mig = conn.exec("SELECT version FROM schema_migrations ORDER BY version")
+    parts << "schema_migrations\n" + mig.map { |r| r["version"] }.join("\n")
+    meta = conn.exec("SELECT key, value, created_at, updated_at FROM ar_internal_metadata ORDER BY key")
+    parts << "ar_internal_metadata\n" + meta.map { |r| r.values.join("\t") }.join("\n")
+    tables = conn.exec_params(
+      "SELECT tablename FROM pg_tables WHERE schemaname = $1 ORDER BY tablename",
+      ["public"]
+    )
+    tables.each do |row|
+      tbl = row["tablename"]
+      q = "SELECT COUNT(*)::bigint AS c FROM public." + conn.quote_ident(tbl)
+      c = conn.exec(q).first["c"]
+      parts << "#{tbl}\t#{c}"
+    end
+    conn.close
+    puts Digest::SHA256.hexdigest(parts.join("\n"))
+  ' >"$outfile" 2>"$snap_err"; then
+    cat "$snap_err" >"$errfile"
+    return 1
+  fi
 }
 
-mlr_doc_canary_exists() {
-  local admin_url="$1"
-  if command -v psql >/dev/null 2>&1; then
-    [ -n "$(psql "$admin_url" -v ON_ERROR_STOP=1 -tAc \
-      "SELECT 1 FROM pg_database WHERE datname = 'corvid_dummy_test_mlr_doc_canary'")" ]
-    return
+mlr_doc_assert_pass() {
+  local logfile="$1"
+  local pass_label="$2"
+  local missing=0 pattern mlr_doc_pwd
+
+  for pattern in "docs/gm6_mlr_savings_methodology.md." "savings=$"; do
+    if ! grep -qF -- "$pattern" "$logfile"; then
+      printf '   FAIL: pass %s expected output missing: %s\n' "$pass_label" "$pattern"
+      missing=1
+    fi
+  done
+
+  mlr_doc_pwd="$(grep '^MLR_DOC_PWD=' "$logfile" | tail -1)"
+  if [ "$mlr_doc_pwd" != "MLR_DOC_PWD=$ROOT" ]; then
+    printf '   FAIL: pass %s must end in repo root (expected MLR_DOC_PWD=%s, got %s)\n' \
+      "$pass_label" "$ROOT" "${mlr_doc_pwd#MLR_DOC_PWD=}"
+    missing=1
   fi
-  bundle exec ruby -rpg -ruri -e "
-    u = URI('$admin_url')
-    conn = PG.connect(host: u.host, port: u.port || 5432, user: u.user, password: u.password, dbname: 'postgres')
-    r = conn.exec_params(\"SELECT 1 FROM pg_database WHERE datname = \$1\", ['corvid_dummy_test_mlr_doc_canary'])
-    exit(r.ntuples.zero? ? 1 : 0)
-  "
+
+  return "$missing"
 }
 
 check_mlr_doc() {
   local name="mlr-doc"
   if [ "$only" != "all" ] && [ "$only" != "$name" ]; then return 0; fi
 
-  local log="$tmp/$name.log"
   local script="$tmp/mlr-doc-reproduce.sh"
   local doc="docs/gm6_mlr_savings_methodology.md"
-  local admin_url canary_url missing=0
+  local log_a="$tmp/mlr-doc-pass-a.log"
+  local log_b="$tmp/mlr-doc-pass-b.log"
+  local snapshot_before="$tmp/mlr-doc-snapshot-before.txt"
+  local snapshot_after="$tmp/mlr-doc-snapshot-after.txt"
+  local snapshot_err="$tmp/mlr-doc-snapshot.err"
+  local pg_env="$tmp/mlr-doc-pg.env"
+  local test_db missing=0 assertions=0
 
   printf '== smoke: %s\n' "$name"
 
   if ! awk '
-    BEGIN { after = 0; blocks = 0; capturing = 0 }
+    BEGIN { after = 0; capturing = 0; got = 0 }
     /\*\*Reproduce:\*\*/ { after = 1; next }
-    after && /^```bash$/ {
-      blocks++
-      if (blocks > 1) exit 2
-      capturing = 1
-      next
-    }
-    capturing && /^```$/ { capturing = 0; next }
+    after && !got && /^```bash$/ { capturing = 1; got = 1; next }
+    capturing && /^```$/ { capturing = 0; exit 0 }
     capturing { print }
-    END { if (blocks != 1) exit 1 }
+    END { if (!got) exit 1 }
   ' "$doc" >"$tmp/mlr-doc-block.txt"; then
-    printf '   FAIL: expected exactly one ```bash block after **Reproduce:** in %s\n' "$doc"
+    printf '   FAIL: no ```bash block after **Reproduce:** in %s\n' "$doc"
     failures=$((failures + 1))
     return 0
   fi
+
+  if [ ! -s "$tmp/mlr-doc-block.txt" ]; then
+    printf '   FAIL: empty ```bash block after **Reproduce:** in %s\n' "$doc"
+    failures=$((failures + 1))
+    return 0
+  fi
+
+  if ! test_db="$(mlr_doc_test_database_name)"; then
+    printf '   FAIL: could not read test database name from test/dummy/config/database.yml\n'
+    failures=$((failures + 1))
+    return 0
+  fi
+
+  if ! mlr_doc_write_pg_env "$pg_env"; then
+    printf '   FAIL: could not parse DATABASE_URL server parameters\n'
+    failures=$((failures + 1))
+    return 0
+  fi
+  # shellcheck source=/dev/null
+  set -a && . "$pg_env" && set +a
+
+  if ! mlr_doc_test_db_snapshot "$snapshot_before" "$test_db" "$snapshot_err"; then
+    printf '   FAIL: test database snapshot before reproduce (probe error)\n'
+    sed -E \
+      -e 's#postgres://[^[:space:]"'\'']*#[REDACTED]#g' \
+      -e 's#(DATABASE_URL|PGPASSWORD)=[^[:space:]]*#\1=[REDACTED]#g' \
+      "$snapshot_err" | sed 's/^/   | /'
+    failures=$((failures + 1))
+    return 0
+  fi
+  assertions=$((assertions + 1))
 
   {
     printf '%s\n' '#!/usr/bin/env bash'
@@ -138,41 +274,58 @@ check_mlr_doc() {
   } >"$script"
   chmod +x "$script"
 
-  admin_url="$(mlr_doc_admin_database_url)"
-  canary_url="$(mlr_doc_canary_database_url)"
-  mlr_doc_drop_canary "$admin_url"
-
-  if ! env RAILS_ENV=test DATABASE_URL="$canary_url" bash -e "$script" >"$log" 2>&1; then
-    printf '   FAIL: reproduce block exited non-zero\n'
-    tail -20 "$log" | sed 's/^/   | /'
+  if ! env RAILS_ENV=test bash -e "$script" >"$log_a" 2>&1; then
+    printf '   FAIL: reproduce block pass A (DATABASE_URL inherited) exited non-zero\n'
+    mlr_doc_log_tail "$log_a"
     failures=$((failures + 1))
     return 0
   fi
-
-  for pattern in "docs/gm6_mlr_savings_methodology.md." "savings=$"; do
-    if ! grep -qF -- "$pattern" "$log"; then
-      printf '   FAIL: expected output missing: %s\n' "$pattern"
-      missing=1
-    fi
-  done
-
-  mlr_doc_pwd="$(grep '^MLR_DOC_PWD=' "$log" | tail -1)"
-  if [ "$mlr_doc_pwd" != "MLR_DOC_PWD=$ROOT" ]; then
-    printf '   FAIL: reproduce block must end in repo root (expected MLR_DOC_PWD=%s, got %s)\n' \
-      "$ROOT" "${mlr_doc_pwd#MLR_DOC_PWD=}"
+  if ! mlr_doc_assert_pass "$log_a" A; then
     missing=1
+  else
+    assertions=$((assertions + 3))
   fi
 
-  if mlr_doc_canary_exists "$admin_url"; then
-    printf '   FAIL: canary database corvid_dummy_test_mlr_doc_canary exists (test-pointed database was touched)\n'
+  if ! env -u DATABASE_URL RAILS_ENV=test \
+    PGHOST="$PGHOST" PGPORT="$PGPORT" PGUSER="$PGUSER" PGPASSWORD="$PGPASSWORD" \
+    bash -e "$script" >"$log_b" 2>&1; then
+    printf '   FAIL: reproduce block pass B (DATABASE_URL unset, TCP via PG*) exited non-zero\n'
+    mlr_doc_log_tail "$log_b"
+    failures=$((failures + 1))
+    return 0
+  fi
+  if ! mlr_doc_assert_pass "$log_b" B; then
     missing=1
+  else
+    assertions=$((assertions + 3))
+  fi
+
+  if ! mlr_doc_test_db_snapshot "$snapshot_after" "$test_db" "$snapshot_err"; then
+    printf '   FAIL: test database snapshot after reproduce (probe error)\n'
+    sed -E \
+      -e 's#postgres://[^[:space:]"'\'']*#[REDACTED]#g' \
+      -e 's#(DATABASE_URL|PGPASSWORD)=[^[:space:]]*#\1=[REDACTED]#g' \
+      "$snapshot_err" | sed 's/^/   | /'
+    failures=$((failures + 1))
+    return 0
+  fi
+  assertions=$((assertions + 1))
+
+  if ! cmp -s "$snapshot_before" "$snapshot_after"; then
+    printf '   FAIL: test database %s changed (snapshot before reproduce != after)\n' "$test_db"
+    missing=1
+  else
+    assertions=$((assertions + 1))
   fi
 
   if [ "$missing" -eq 1 ]; then
-    tail -20 "$log" | sed 's/^/   | /'
+    printf '   log tail pass A:\n'
+    mlr_doc_log_tail "$log_a"
+    printf '   log tail pass B:\n'
+    mlr_doc_log_tail "$log_b"
     failures=$((failures + 1))
   else
-    printf '   ok (4 assertions)\n'
+    printf '   ok (%s assertions)\n' "$assertions"
   fi
 }
 
