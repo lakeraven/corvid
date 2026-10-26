@@ -85,15 +85,34 @@ module Corvid
 
       # Same Bundle #fhir_search builds, so a page walk stays in memory and
       # still runs the caller's Coverage rules. Does not follow next links;
-      # the store is one page.
+      # the store is one page. The resource type is the first segment after
+      # this adapter's own base path, so memory://fhir-demo/r4/Coverage and
+      # a deeper base such as memory://fhir-demo/a/b/r4/Coverage both name
+      # Coverage. A path that is not under that base is not a page.
       def fetch_bundle_page(url)
         uri = URI.parse(url.to_s)
-        resource_type = uri.path.to_s.split("/").reject(&:empty?).first
+        resource_type = resource_type_on_base_path(uri.path.to_s)
         return if resource_type.nil?
 
         memory_search_bundle(resource_type, URI.decode_www_form(uri.query.to_s).to_h)
       rescue URI::Error, ArgumentError
         nil
+      end
+
+      def resource_type_on_base_path(path)
+        base_path = URI.parse(@base_url).path.to_s
+        relative = relative_path_under_base(base_path, path)
+        return if relative.nil?
+
+        relative.split("/").reject(&:empty?).first
+      end
+
+      def relative_path_under_base(base_path, path)
+        return if base_path.empty?
+        return "" if path == base_path
+        return unless path.start_with?("#{base_path}/")
+
+        path.delete_prefix(base_path)
       end
 
       def memory_search_bundle(resource_type, params)
