@@ -18,7 +18,7 @@ bundle install                                                                 #
 cd test/dummy && bundle install && cd ../..                                    # first time
 unset DATABASE_URL
 cd test/dummy && RAILS_ENV=development bin/rails db:prepare && cd ../..        # first time
-cd test/dummy && RAILS_ENV=development bin/rails demo:mlr_savings
+cd test/dummy && RAILS_ENV=development bin/rails demo:mlr_savings && cd ../..
 ```
 
 The demos use the development database and must never be run with
