@@ -102,6 +102,21 @@ class Corvid::Adapters::FhirDemoAdapterTest < Minitest::Test
     without_cov.get_coverages("pt_demo_cov")
   end
 
+  def test_fetch_bundle_page_returns_nil_for_coverage_search_outside_demo_base_path
+    adapter = Corvid::Adapters::FhirDemoAdapter.new(
+      resources: [ synthetic_demo_coverage(for_patient: "pt-1") ]
+    )
+    outside_url = "memory://fhir-demo/r4x/Coverage?beneficiary=Patient%2Fpt-1"
+    inside_url = "memory://fhir-demo/r4/Coverage?beneficiary=Patient%2Fpt-1"
+
+    assert_nil adapter.send(:fetch_bundle_page, outside_url)
+
+    page = adapter.send(:fetch_bundle_page, inside_url)
+    refute_nil page
+    assert_equal "searchset", page["type"]
+    refute_empty page["entry"]
+  end
+
   # The overlay demo installs this adapter as Corvid.adapter, so referral
   # writes must work in memory instead of reaching for HTTP.
   def test_create_referral_stores_a_service_request_that_reads_find_and_list

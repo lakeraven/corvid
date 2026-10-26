@@ -46,6 +46,27 @@ class Corvid::Adapters::FhirAdapterOutcomeCodeTokenTest < Minitest::Test
     "\uFEFFsuppressed"
   ].freeze
 
+  NON_BLOCKING_OUTCOME_SEVERITIES = %w[warning information].freeze
+
+  FULLWIDTH_TIMEOUT_CODE = "ｔｉｍｅｏｕｔ"
+
+  LIST_SEARCH_READS = {
+    list_claims: "pt_token_list",
+    list_referrals: "pt_token_list",
+    get_care_team: "pt_token_list",
+    search_patients: "TEST,TOKEN",
+    search_practitioners: "TEST,TOKEN"
+  }.freeze
+
+  # FHIR code tokens that fail regex anchoring or interior spacing rules.
+  MALFORMED_ANCHOR_OUTCOME_CODES = [
+    [ "timeout with trailing newline", "timeout\n" ],
+    [ "processing with trailing newline", "processing\n" ],
+    [ "processing with tab", "processing\t" ],
+    [ "processing with carriage return", "processing\r" ],
+    [ "too costly with double interior space", "too  costly" ]
+  ].freeze
+
   def setup
     @adapter = Corvid::Adapters::FhirAdapter.new(base_url: "https://fhir.example.com/r4")
   end
@@ -209,6 +230,111 @@ class Corvid::Adapters::FhirAdapterOutcomeCodeTokenTest < Minitest::Test
     end
   end
 
+  def test_get_coverages_returns_nil_when_operation_outcome_issue_code_is_explicit_json_null_at_warning_or_information
+    coverage = sample_coverage(for_patient: "pt_oo_null_cov")
+    NON_BLOCKING_OUTCOME_SEVERITIES.each do |severity|
+      bundle = coverage_bundle_with_outcome(coverage, code: nil, severity: severity)
+      stub_coverage_http(coverage_search_url("pt_oo_null_cov") => ok_json(bundle)) do
+        assert_nil @adapter.get_coverages("pt_oo_null_cov"),
+                   "expected nil for explicit JSON null OperationOutcome code at #{severity}"
+      end
+    end
+  end
+
+  def test_get_conditions_returns_nil_when_operation_outcome_issue_code_is_explicit_json_null_at_warning_or_information
+    condition = sample_condition
+    NON_BLOCKING_OUTCOME_SEVERITIES.each do |severity|
+      bundle = clinical_bundle_with_outcome([ condition ], code: nil, severity: severity)
+      assert_nil get_conditions(bundle),
+                 "expected nil for explicit JSON null OperationOutcome code at #{severity} on Condition search"
+    end
+  end
+
+  def test_get_medications_returns_nil_when_operation_outcome_issue_code_is_explicit_json_null_at_warning_or_information
+    request = sample_medication_request
+    NON_BLOCKING_OUTCOME_SEVERITIES.each do |severity|
+      bundle = clinical_bundle_with_outcome([ request ], code: nil, severity: severity)
+      assert_nil get_medications(bundle),
+                 "expected nil for explicit JSON null OperationOutcome code at #{severity} on MedicationRequest search"
+    end
+  end
+
+  def test_list_claims_returns_nil_when_operation_outcome_issue_code_is_explicit_json_null_at_warning_or_information
+    NON_BLOCKING_OUTCOME_SEVERITIES.each do |severity|
+      bundle = list_claims_bundle_with_outcome_issue({ "severity" => severity, "code" => nil })
+      assert_nil list_claims(bundle),
+                 "expected nil for explicit JSON null OperationOutcome code at #{severity} on Claim search"
+    end
+  end
+
+  def test_get_coverages_returns_nil_when_operation_outcome_issue_has_no_code_key_at_warning_or_information
+    coverage = sample_coverage(for_patient: "pt_oo_no_code_cov")
+    NON_BLOCKING_OUTCOME_SEVERITIES.each do |severity|
+      bundle = coverage_bundle_with_outcome_issue(coverage, issue: { "severity" => severity })
+      stub_coverage_http(coverage_search_url("pt_oo_no_code_cov") => ok_json(bundle)) do
+        assert_nil @adapter.get_coverages("pt_oo_no_code_cov"),
+                   "expected nil for OperationOutcome issue without code key at #{severity}"
+      end
+    end
+  end
+
+  def test_get_conditions_returns_nil_when_operation_outcome_issue_has_no_code_key_at_warning_or_information
+    condition = sample_condition
+    NON_BLOCKING_OUTCOME_SEVERITIES.each do |severity|
+      bundle = clinical_bundle_with_outcome_issue([ condition ], issue: { "severity" => severity })
+      assert_nil get_conditions(bundle),
+                 "expected nil for OperationOutcome issue without code key at #{severity} on Condition search"
+    end
+  end
+
+  def test_get_medications_returns_nil_when_operation_outcome_issue_has_no_code_key_at_warning_or_information
+    request = sample_medication_request
+    NON_BLOCKING_OUTCOME_SEVERITIES.each do |severity|
+      bundle = clinical_bundle_with_outcome_issue([ request ], issue: { "severity" => severity })
+      assert_nil get_medications(bundle),
+                 "expected nil for OperationOutcome issue without code key at #{severity} on MedicationRequest search"
+    end
+  end
+
+  def test_list_claims_returns_nil_when_operation_outcome_issue_has_no_code_key_at_warning_or_information
+    NON_BLOCKING_OUTCOME_SEVERITIES.each do |severity|
+      bundle = list_claims_bundle_with_outcome_issue({ "severity" => severity })
+      assert_nil list_claims(bundle),
+                 "expected nil for OperationOutcome issue without code key at #{severity} on Claim search"
+    end
+  end
+
+  LIST_SEARCH_READS.each do |method, arg|
+    define_method("test_#{method}_returns_nil_for_fullwidth_timeout_operation_outcome_at_warning") do
+      bundle = list_search_outcome_only_bundle(
+        code: FULLWIDTH_TIMEOUT_CODE,
+        severity: "warning"
+      )
+      result = @adapter.stub(:fhir_search, bundle) { @adapter.public_send(method, arg) }
+
+      assert_nil result,
+                 "expected nil for malformed fullwidth timeout OperationOutcome on #{method}"
+    end
+  end
+
+  def test_get_conditions_returns_nil_for_malformed_outcome_code_with_whitespace_or_newline_at_warning
+    condition = sample_condition
+    MALFORMED_ANCHOR_OUTCOME_CODES.each do |label, code|
+      bundle = clinical_bundle_with_outcome([ condition ], code: code, severity: "warning")
+      assert_nil get_conditions(bundle),
+                 "expected nil for malformed anchor/spacing OperationOutcome code (#{label})"
+    end
+  end
+
+  def test_get_conditions_keeps_list_for_too_costly_with_single_space_at_warning
+    condition = sample_condition
+    bundle = clinical_bundle_with_outcome([ condition ], code: "too costly", severity: "warning")
+    results = get_conditions(bundle)
+
+    refute_nil results
+    assert_equal 1, results.size
+  end
+
   private
 
   def invalid_utf8_byte_sequence
@@ -313,12 +439,87 @@ class Corvid::Adapters::FhirAdapterOutcomeCodeTokenTest < Minitest::Test
     { "resourceType" => "Bundle", "type" => "searchset", "entry" => entries }
   end
 
+  def coverage_bundle_with_outcome_issue(coverage, issue:)
+    {
+      "resourceType" => "Bundle",
+      "type" => "searchset",
+      "entry" => [
+        { "resource" => { "resourceType" => "OperationOutcome", "issue" => [ issue ] } },
+        { "resource" => coverage }
+      ]
+    }
+  end
+
+  def clinical_bundle_with_outcome_issue(resources, issue:)
+    entries = resources.map { |r| { "resource" => r, "search" => { "mode" => "match" } } }
+    entries << {
+      "resource" => { "resourceType" => "OperationOutcome", "issue" => [ issue ] },
+      "search" => { "mode" => "outcome" }
+    }
+    { "resourceType" => "Bundle", "type" => "searchset", "entry" => entries }
+  end
+
+  def list_claims_bundle_with_outcome_issue(issue)
+    {
+      "resourceType" => "Bundle",
+      "type" => "searchset",
+      "entry" => [
+        sample_claim_match_entry,
+        {
+          "resource" => { "resourceType" => "OperationOutcome", "issue" => [ issue ] },
+          "search" => { "mode" => "outcome" }
+        }
+      ]
+    }
+  end
+
+  def list_search_outcome_only_bundle(code:, severity:)
+    {
+      "resourceType" => "Bundle",
+      "type" => "searchset",
+      "entry" => [
+        {
+          "resource" => {
+            "resourceType" => "OperationOutcome",
+            "issue" => [ { "severity" => severity, "code" => code } ]
+          },
+          "search" => { "mode" => "outcome" }
+        }
+      ]
+    }
+  end
+
+  def sample_claim_match_entry
+    {
+      "resource" => {
+        "resourceType" => "Claim",
+        "id" => "clm_token_test",
+        "status" => "active",
+        "patient" => { "reference" => "Patient/pt_token_list" },
+        "item" => [
+          {
+            "sequence" => 1,
+            "productOrService" => {
+              "coding" => [ { "system" => "http://www.ama-assn.org/go/cpt", "code" => "99213" } ]
+            },
+            "net" => { "value" => 100.0, "currency" => "USD" }
+          }
+        ]
+      },
+      "search" => { "mode" => "match" }
+    }
+  end
+
   def get_conditions(bundle)
     @adapter.stub(:fhir_search, bundle) { @adapter.get_conditions("pt_token_clinical") }
   end
 
   def get_medications(bundle)
     @adapter.stub(:fhir_search, bundle) { @adapter.get_medications("pt_token_clinical") }
+  end
+
+  def list_claims(bundle)
+    @adapter.stub(:fhir_search, bundle) { @adapter.list_claims("pt_token_list") }
   end
 
   def stub_coverage_http(responses_by_url)
