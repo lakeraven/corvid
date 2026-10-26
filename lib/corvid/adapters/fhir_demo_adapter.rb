@@ -1,5 +1,6 @@
 # frozen_string_literal: true
 
+require "securerandom"
 require "corvid/adapters/fhir_adapter"
 
 module Corvid
@@ -8,15 +9,19 @@ module Corvid
     #
     # It IS the generic FhirAdapter — every read goes through the real
     # FhirAdapter FHIR-R4 parsing code (find_patient, verify_eligibility,
-    # verify_tribal_enrollment, list_claims, get_coverages, ...). The HTTP
-    # transport is what changes: `fhir_read` and `fhir_search` serve
-    # resources from an in-memory FHIR store, and `fetch_bundle_page`
-    # serves each search page from that store. Page walks such as
-    # get_coverages therefore apply the same Coverage rules without
-    # net/http. `fhir_search` itself still returns one in-memory Bundle.
-    # That keeps the demo self-contained (no live FHIR server) while
-    # proving the exact same stock-FHIR code path a production deployment
-    # runs against any conformant FHIR R4 server.
+    # verify_tribal_enrollment, list_claims, get_coverages, ...). A failed
+    # search stays nil on those list reads, and a blank patient identifier
+    # is unknown on list_referrals, list_claims, and get_care_team. The ONLY
+    # thing overridden is the HTTP transport: instead of issuing `net/http`
+    # calls, the REST primitives (`fhir_read`, `fhir_search`, `fhir_create`,
+    # `fhir_update`) serve and store resources in an in-memory FHIR store,
+    # and `fetch_bundle_page` serves each search page from that store, so
+    # page walks such as get_coverages apply the same Coverage rules without
+    # net/http. That keeps the demo self-contained (no live FHIR server)
+    # while proving the exact same stock-FHIR code path a production
+    # deployment runs against any conformant FHIR R4 server. Writes
+    # (create_referral, update_referral) land in that store, so later reads
+    # see them.
     #
     # The store is a plain array of FHIR resource hashes (as a real server
     # would return them). No vendor-specific shapes — see
@@ -24,7 +29,9 @@ module Corvid
     class FhirDemoAdapter < FhirAdapter
       # resources: Array<Hash> of FHIR R4 resource hashes.
       def initialize(resources: [])
-        super(base_url: "memory://fhir-demo")
+        # Path-qualified in-memory base. FhirAdapter scopes tokens and
+        # next links to this path and rejects an empty path or "/".
+        super(base_url: "memory://fhir-demo/r4")
         @by_type_and_id = Hash.new { |h, k| h[k] = {} }
         @by_type = Hash.new { |h, k| h[k] = [] }
         Array(resources).each { |r| add_resource(r) }
@@ -43,8 +50,29 @@ module Corvid
 
       # --- Overridden REST transport: serve from memory, no HTTP ----------
 
+      # Returns a copy, as a server would: the store changes only through
+      # fhir_create and fhir_update.
       def fhir_read(resource_type, id)
-        @by_type_and_id[resource_type][id.to_s]
+        resource = @by_type_and_id[resource_type][id.to_s]
+        resource && deep_stringify(resource)
+      end
+
+      # The server assigns the id, as POST does on a real FHIR server.
+      def fhir_create(resource_type, body)
+        resource = deep_stringify(body).merge("resourceType" => resource_type, "id" => SecureRandom.uuid)
+        deep_stringify(add_resource(resource))
+      end
+
+      # PUT to an id the store does not hold fails, as it would without
+      # update-as-create.
+      def fhir_update(resource_type, id, body)
+        id = id.to_s
+        return false unless @by_type_and_id[resource_type].key?(id)
+
+        resource = deep_stringify(body).merge("resourceType" => resource_type, "id" => id)
+        @by_type[resource_type].reject! { |r| r["id"] == id }
+        add_resource(resource)
+        true
       end
 
       # Minimal in-memory search. Supports the search params the overlay
@@ -71,6 +99,7 @@ module Corvid
       def memory_search_bundle(resource_type, params)
         params = params.transform_keys(&:to_s)
         matches = @by_type[resource_type].select { |r| search_match?(resource_type, r, params) }
+                                         .map { |r| deep_stringify(r) }
         {
           "resourceType" => "Bundle",
           "type" => "searchset",

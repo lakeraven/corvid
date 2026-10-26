@@ -9,6 +9,8 @@ module Corvid
     #
     # Production deployments wire a real enrollment adapter (e.g., a
     # tribal enrollment system) via the SaaS shell configuration.
+    # List reads follow MockAdapter: a blank patient identifier is
+    # unknown (nil) on list_referrals, list_claims, and get_care_team.
     class EnrollmentDemoAdapter < MockAdapter
       private
 
@@ -26,7 +28,8 @@ module Corvid
           membership_number: "TEST-10042",
           tribe_name: "Test Tribe",
           blood_quantum: "1/4",
-          member_status: "enrolled"
+          member_status: "enrolled",
+          confidence: :verified
         )
         add_residency("pt_demo_enrolled",
           on_reservation: true,
@@ -41,6 +44,7 @@ module Corvid
           sex: "M",
           ssn_last4: nil
         )
+        # No confidence key: MockAdapter reports :unavailable.
         add_enrollment("pt_demo_nonenrolled",
           enrolled: false,
           membership_number: nil,
@@ -66,7 +70,8 @@ module Corvid
           membership_number: "TEST-10098",
           tribe_name: "Test Tribe",
           blood_quantum: "1/8",
-          member_status: "enrolled"
+          member_status: "enrolled",
+          confidence: :verified
         )
         add_residency("pt_demo_off_reservation",
           on_reservation: false,

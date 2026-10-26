@@ -3,6 +3,7 @@
 require "net/http"
 require "json"
 require "uri"
+require "ipaddr"
 require "date"
 require "time"
 require "zlib"
@@ -23,6 +24,20 @@ module Corvid
     # implementation. Vendor-specific adapters in corvid-adapters can
     # override store_text/fetch_text/dereference to use a real backend.
     class FhirAdapter < Base
+      # Raised when a configured token_source yields a blank/non-string token.
+      class TokenSourceError < StandardError; end
+
+      # Raised when credentials would be sent over a non-TLS connection.
+      # Subclasses ArgumentError because the usual cause is a misconfigured
+      # base_url, caught at construction.
+      class InsecureTransportError < ArgumentError; end
+
+      # Raised when a credentialed request targets a URL outside base_url's
+      # origin and path. The bearer token is scoped to the configured FHIR
+      # base; server-supplied URLs (search next links) must never carry it
+      # anywhere else.
+      class CredentialScopeError < InsecureTransportError; end
+
       attr_reader :base_url
 
       EXTENSION_BASE_URL = "https://lakeraven.com/fhir/StructureDefinition"
@@ -202,6 +217,15 @@ module Corvid
         /\A[#{COVERAGE_SOP_INSURER_FIRST_DIGITS}]\d*\z/
       COVERAGE_REFERENCE_ID_RE = %r{\A[^/?#]+\z}
 
+      # The only names accepted as loopback. RFC 6761 reserves "localhost"
+      # and ".localhost" and requires resolvers to keep them on the loopback
+      # interface; every OTHER name — "ip6-localhost" and friends — is an
+      # ordinary DNS lookup that a search domain or a hostile resolver can
+      # point off-box, which would put a bearer token on the network. Literal
+      # addresses are checked numerically via IPAddr#loopback?, not by name.
+      LOOPBACK_NAME = "localhost"
+      LOOPBACK_NAME_SUFFIX = ".localhost"
+
       # One search that still has a next page after this many Bundles is
       # undetermined. Callers never see a partial result.
       MAX_SEARCH_PAGES = 100
@@ -210,14 +234,39 @@ module Corvid
       SEARCH_REJECTED = :rejected
       private_constant :SEARCH_REJECTED
 
-      def initialize(base_url:, bearer_token: nil, headers: {},
+      def initialize(base_url:, bearer_token: nil, token_source: nil, headers: {},
                      open_timeout: DEFAULT_OPEN_TIMEOUT,
                      read_timeout: DEFAULT_READ_TIMEOUT,
                      proxy_uri: nil,
                      ca_file: nil,
-                     ca_path: nil)
-        @base_url = base_url.chomp("/")
+                     ca_path: nil,
+                     allow_insecure_http: false)
+        if token_source && !token_source.respond_to?(:call)
+          raise ArgumentError,
+                "token_source must be callable (respond to #call), " \
+                "got #{token_source.class}"
+        end
+        if bearer_token && !(bearer_token.is_a?(String) && !bearer_token.strip.empty?)
+          raise ArgumentError,
+                "bearer_token must be a non-blank string when given, " \
+                "got #{describe_token(bearer_token)}"
+        end
+
+        # Frozen: the reader hands this string to callers, and the transport
+        # check reads it again per request. An unfrozen base_url could be
+        # mutated to http:// after the construction-time check passed.
+        @base_url = base_url.chomp("/").freeze
         @bearer_token = bearer_token
+        # Off by default: an Authorization header on a cleartext connection
+        # puts a live bearer token on the wire. The opt-out is honored only
+        # for loopback hosts, and only for a literal boolean — see
+        # #strict_boolean!.
+        @allow_insecure_http = strict_boolean!(allow_insecure_http, :allow_insecure_http)
+        # A callable resolved per request — e.g. a
+        # Corvid::Auth::BackendServicesClient — so each call carries a
+        # freshly-refreshed token. Takes precedence over the static
+        # bearer_token when both are given.
+        @token_source = token_source
         @default_headers = {
           "Accept" => "application/fhir+json",
           "Content-Type" => "application/fhir+json"
@@ -227,7 +276,59 @@ module Corvid
         @proxy_uri = build_proxy_uri(proxy_uri)
         @ca_file = ca_file
         @ca_path = ca_path
+
+        # Fail at configuration time, not on the first PHI request, when
+        # credentials are paired with a non-TLS base_url. A caller-supplied
+        # Authorization header counts: it is a credential the same as a
+        # configured one, and it is the request-level check below that is
+        # authoritative either way.
+        #
+        # A path with no real segment is rejected with or without
+        # credentials. Tokens and next links are scoped to this path; an
+        # empty path, a dot segment, a path parameter, or an encoded
+        # separator would cover or escape the host. An unparseable
+        # base_url fails closed here as well. TLS, host, and credential
+        # checks below still run for a path-qualified base.
+        require_path_qualified_base_url!(@base_url)
+        if bearer_token || token_source || preset_authorization_header?
+          require_secure_transport!(@base_url)
+        end
       end
+
+      # The default #inspect renders every ivar: the static bearer_token, a
+      # preset Authorization header, and the token_source (whose own inspect
+      # may hold a cached token). Only the base URL and the auth mode show.
+      def inspect
+        auth = if @token_source then "token_source"
+        elsif @bearer_token then "bearer_token"
+        elsif preset_authorization_header? then "authorization_header"
+        else "none"
+        end
+        "#<#{self.class.name} base_url=#{@base_url.inspect} auth=#{auth}>"
+      end
+
+      # True when the caller wired an Authorization header in directly.
+      # Matched case-insensitively: HTTP header names are case-insensitive
+      # and Net::HTTP will send "authorization" just as happily.
+      def preset_authorization_header?
+        @default_headers.any? { |name, _| name.to_s.casecmp?("authorization") }
+      end
+      private :preset_authorization_header?
+
+      # A config-driven opt-out must not be defeated by Ruby truthiness: the
+      # STRING "false" is truthy, so `allow_insecure_http: ENV["X"]` would
+      # silently DISABLE the protection for every value of X except nil —
+      # including "false", "0" and "". Only a literal boolean is accepted;
+      # anything else is a configuration error rather than a quiet grant.
+      def strict_boolean!(value, name)
+        return value if value == true || value == false
+
+        raise ArgumentError,
+              "#{name} must be true or false (a literal boolean), got #{value.class}. " \
+              "Parse environment variables explicitly — the string \"false\" is " \
+              "truthy in Ruby and would silently disable this check."
+      end
+      private :strict_boolean!
 
       def build_proxy_uri(raw)
         return nil if raw.nil?
@@ -265,11 +366,9 @@ module Corvid
         )
       end
 
+      # nil when the search did not answer; [] when it answered with no matches.
       def search_patients(query)
-        bundle = fhir_search("Patient", name: query)
-        extract_entries(bundle)
-          .select { |resource| resource["resourceType"] == "Patient" }
-          .map { |resource| build_patient_reference(resource) }
+        references_from_search("Patient", { name: query }) { |resource| build_patient_reference(resource) }
       end
 
       # ----------------------------------------------------------------------
@@ -283,9 +382,9 @@ module Corvid
         build_practitioner_reference(resource)
       end
 
+      # nil when the search did not answer; [] when it answered with no matches.
       def search_practitioners(query)
-        bundle = fhir_search("Practitioner", name: query)
-        extract_entries(bundle).map { |r| build_practitioner_reference(r) }
+        references_from_search("Practitioner", { name: query }) { |resource| build_practitioner_reference(resource) }
       end
 
       # ----------------------------------------------------------------------
@@ -332,12 +431,16 @@ module Corvid
         end
 
         fhir_update("ServiceRequest", referral_identifier, existing)
-        true
       end
 
+      # nil when the patient identifier is blank or the search did not
+      # answer; [] when the search answered with no matches.
       def list_referrals(patient_identifier)
-        bundle = fhir_search("ServiceRequest", patient: patient_identifier)
-        extract_entries(bundle).map { |r| build_referral_reference(r) }
+        return nil if blank_patient_identifier?(patient_identifier)
+
+        references_from_search("ServiceRequest", { patient: patient_identifier }) do |resource|
+          build_referral_reference(resource)
+        end
       end
 
       # ----------------------------------------------------------------------
@@ -348,12 +451,18 @@ module Corvid
       # only standard R4 elements — patient, provider, item.productOrService
       # (CPT/HCPCS coding), item.servicedDate/servicedPeriod, item.net — so
       # any conformant FHIR server (regardless of source EHR) maps the same
-      # way. No vendor-specific extensions.
+      # way. No vendor-specific extensions. nil when the patient identifier
+      # is blank or the search did not answer; [] when it answered with no
+      # matches. In memory only — never persist or log (ADR 0003).
       # ----------------------------------------------------------------------
 
       def list_claims(patient_identifier)
-        bundle = fhir_search("Claim", patient: patient_identifier)
-        extract_entries(bundle).flat_map { |claim| build_claim_line_references(claim) }
+        return nil if blank_patient_identifier?(patient_identifier)
+
+        claims = list_search_resources("Claim", { patient: patient_identifier })
+        return nil if claims.nil?
+
+        claim_lines_from(claims)
       end
 
       # One Condition search page only. A Bundle.link relation "next" is
@@ -443,18 +552,15 @@ module Corvid
       # Care team
       # ----------------------------------------------------------------------
 
+      # nil when the patient identifier is blank or the search did not
+      # answer; [] when the search answered with no matches.
       def get_care_team(patient_identifier)
-        bundle = fhir_search("CareTeam", patient: patient_identifier)
-        extract_entries(bundle).flat_map do |resource|
-          (resource["participant"] || []).map do |p|
-            Corvid::CareTeamMemberReference.new(
-              practitioner_identifier: p.dig("member", "reference")&.sub("Practitioner/", ""),
-              role: p.dig("role", 0, "coding", 0, "code"),
-              name: resource["name"],
-              status: resource["status"]
-            )
-          end
-        end
+        return nil if blank_patient_identifier?(patient_identifier)
+
+        teams = list_search_resources("CareTeam", { patient: patient_identifier })
+        return nil if teams.nil?
+
+        teams.flat_map { |team| care_team_members(team) }
       end
 
       # ----------------------------------------------------------------------
@@ -592,16 +698,7 @@ module Corvid
 
       def verify_eligibility(patient_identifier, resource_type)
         bundle = fhir_search("Coverage", beneficiary: "Patient/#{patient_identifier}")
-        coverages = extract_entries(bundle)
-
-        coverage = if resource_type.to_s != ""
-          fhir_code = COVERAGE_TYPE_MAP[resource_type.to_s]
-          coverages.find do |c|
-            type_code = c.dig("type", "coding", 0, "code")
-            type_code == fhir_code || type_code == resource_type.to_s
-          end
-        end
-        coverage ||= coverages.first
+        coverage = coverage_for_resource_type(extract_entries(bundle), resource_type)
         return nil unless coverage
 
         {
@@ -617,9 +714,9 @@ module Corvid
       # Enrollment verification — FHIR R4 / US Core have no native tribal
       # enrollment concept, so this reads Lakeraven's tribal-enrollment
       # extension on Patient (see TRIBAL_ENROLLMENT_EXTENSION_URL below).
-      # Servers that don't populate the extension fall back to
-      # "unavailable" (fail-closed) exactly as before — this is additive,
-      # not a behavior change for plain-vanilla FHIR servers.
+      # A failed Patient read (including a transport failure), or a Patient
+      # with no tribal-enrollment extension, is unknown enrollment: enrolled is nil and confidence
+      # is :unavailable. That is not a recorded denial.
       # ----------------------------------------------------------------------
 
       TRIBAL_ENROLLMENT_EXTENSION_URL = "#{EXTENSION_BASE_URL}/tribal-enrollment"
@@ -627,31 +724,19 @@ module Corvid
       US_CORE_BIRTHPLACE_URL = "http://hl7.org/fhir/us/core/StructureDefinition/us-core-birthplace"
 
       def verify_tribal_enrollment(patient_identifier)
-        unavailable = {
-          enrolled: false, membership_number: nil, tribe_name: nil, tribe_code: nil,
-          confidence: :unavailable, verified_at: Time.current
-        }
-
-        patient = fhir_read("Patient", patient_identifier)
-        return unavailable unless patient
+        patient = verification_patient_read(patient_identifier)
+        return tribal_enrollment_unavailable unless patient
 
         ext = find_extension(patient, TRIBAL_ENROLLMENT_EXTENSION_URL)
-        return unavailable unless ext
+        return tribal_enrollment_unavailable unless ext
 
-        {
-          enrolled: sub_extension_value(ext, "enrolled") == true,
-          membership_number: sub_extension_value(ext, "membershipNumber"),
-          tribe_name: sub_extension_value(ext, "tribeName"),
-          tribe_code: sub_extension_value(ext, "tribeCode"),
-          confidence: (sub_extension_value(ext, "confidence") || "verified").to_sym,
-          verified_at: Time.current
-        }
+        tribal_enrollment_from(ext)
       end
 
       def verify_identity_documents(patient_identifier)
         empty = { ssn_present: false, dob_present: false, birthplace_present: false, verified_at: Time.current }
 
-        patient = fhir_read("Patient", patient_identifier)
+        patient = verification_patient_read(patient_identifier)
         return empty unless patient
 
         {
@@ -665,7 +750,7 @@ module Corvid
       def verify_residency(patient_identifier)
         unavailable = { on_reservation: false, address: nil, service_area: nil, verified_at: Time.current }
 
-        patient = fhir_read("Patient", patient_identifier)
+        patient = verification_patient_read(patient_identifier)
         return unavailable unless patient
 
         ext = find_extension(patient, RESIDENCY_EXTENSION_URL)
@@ -689,8 +774,11 @@ module Corvid
         { claim_identifier: nil, status: "unsupported" }
       end
 
-      def check_claim_status(_claim_identifier)
-        { status: "unsupported" }
+      def check_claim_status(claim_identifier)
+        return nil if claim_identifier.nil? || claim_identifier.to_s.empty?
+        return nil unless fhir_read("Claim", claim_identifier)
+
+        { status: "unsupported", paid_amount: nil, adjustment_amount: nil, paid_date: nil }
       end
 
       def fetch_remittances(date_range: nil)
@@ -731,6 +819,21 @@ module Corvid
           "would record an obligation that was never made"
       end
 
+      # Stock FHIR cannot make obligations, so it has none to read. These
+      # raise rather than answer nil / [] so a lookup is never mistaken for
+      # "no obligation" (same posture as #create_obligation).
+      def get_obligation(_obligation_id)
+        raise NotImplementedError, "FhirAdapter#get_obligation requires a budget backend"
+      end
+
+      def get_obligation_by_referral(_referral_identifier)
+        raise NotImplementedError, "FhirAdapter#get_obligation_by_referral requires a budget backend"
+      end
+
+      def get_payments(obligation_id:)
+        raise NotImplementedError, "FhirAdapter#get_payments requires a budget backend"
+      end
+
       private
 
       # FHIR REST primitives ------------------------------------------------
@@ -740,6 +843,16 @@ module Corvid
 
         response = http_get("#{@base_url}/#{resource_type}/#{id}")
         parse_success_json(response)
+      end
+
+      # Patient read for the verification primitives. A transport or parse
+      # fault (connection refused, timeout, TLS, EOF, protocol) is an
+      # unavailable source — nil, same as a failed read — never an exception
+      # that would stop a fail-closed decision from being recorded.
+      def verification_patient_read(patient_identifier)
+        fhir_read("Patient", patient_identifier)
+      rescue *CLINICAL_READ_ERRORS
+        nil
       end
 
       # Returns one Bundle whose `entry` array is every page, in order.
@@ -764,14 +877,16 @@ module Corvid
       # %2f/%5c/%3b/%25 (any case) before or after decoding, or a path
       # segment is "." or ".." (that URL is not requested); when a present
       # `total` is not a non-negative Integer, or differs from the count of
-      # merged entries whose search.mode is "match" or absent (an equal
-      # total is kept, an absent total stays absent, and outcome and include
-      # entries are not counted); when the same resourceType and id appear
-      # twice among those match or no-mode entries (repeated include entries
-      # are allowed); when a next URL was already visited; or when the chain
-      # exceeds the page cap. Coverage uses MAX_COVERAGE_PAGES and is
-      # unknown when that many pages were read. Other types use
-      # MAX_SEARCH_PAGES and keep a chain that ends on the last page.
+      # merged entries whose search.mode is "match" or absent, or whose
+      # search value is not a Hash (an equal total is kept, an absent total
+      # stays absent, and outcome and include entries are not counted); when
+      # the same resourceType and id appear twice among those counted
+      # entries (repeated include entries are allowed); when a later page's
+      # Bundle.type differs from the first page's; when a next URL was
+      # already visited; or when the chain exceeds the page cap. Coverage
+      # uses MAX_COVERAGE_PAGES and is unknown when that many pages were
+      # read. Other types use MAX_SEARCH_PAGES and keep a chain that ends on
+      # the last page.
       def fhir_search(resource_type, params = {})
         query = URI.encode_www_form(params)
         url = "#{@base_url}/#{resource_type}?#{query}"
@@ -802,7 +917,7 @@ module Corvid
 
         while url && pages.size < page_limit && !seen[url]
           page = fetch_bundle_page(url)
-          return unless page && acceptable_entries?(page)
+          return unless page && acceptable_entries?(page) && same_bundle_type?(pages, page)
 
           seen[url] = true
           pages << page
@@ -998,7 +1113,7 @@ module Corvid
       end
 
       def merge_search_pages(pages)
-        entries = pages.flat_map { |page| bundle_entries(page) }
+        entries = pages.flat_map { |page| page_entries(page) }
         return if total_mismatch?(pages.first, entries)
         return if duplicate_match_entries?(entries)
 
@@ -1022,6 +1137,11 @@ module Corvid
         keys.size != keys.uniq.size
       end
 
+      # Counts for fhir_search total and duplicate checks. A non-Hash entry,
+      # a non-Hash search, or a missing mode is a match. A Hash search counts
+      # only when mode is absent or "match"; include, outcome, and any other
+      # mode do not. List reads do not use this: a non-Hash search or an
+      # unrecognized mode is unknown there.
       def search_match_entry?(entry)
         return true unless entry.is_a?(Hash)
 
@@ -1044,6 +1164,12 @@ module Corvid
         [ type, id ] unless type.nil? || id.nil?
       end
 
+      # The first page may be any Bundle.type. Every later page must
+      # declare that same type; a missing type is not the same as "searchset".
+      def same_bundle_type?(pages, page)
+        pages.empty? || page["type"] == pages.first["type"]
+      end
+
       def acceptable_entries?(page)
         return true unless page.key?("entry")
 
@@ -1051,7 +1177,10 @@ module Corvid
         entry.nil? || entry.is_a?(Array)
       end
 
-      def bundle_entries(page)
+      # Search pagination. Always an Array: a missing, null, or non-Array
+      # entry is an empty page. A non-Array entry never reaches
+      # merge_search_pages; acceptable_entries? rejects that page first.
+      def page_entries(page)
         entries = page["entry"]
         entries.is_a?(Array) ? entries : []
       end
@@ -1112,9 +1241,175 @@ module Corvid
         when :put  then Net::HTTP::Put.new(uri).tap { |r| r.body = body }
         end
         @default_headers.each { |k, v| request[k] = v }
-        request["Authorization"] = "Bearer #{@bearer_token}" if @bearer_token
+        # Checked before the token source is consulted, so an out-of-scope
+        # URL neither spends a grant nor receives a credential.
+        require_credential_scope!(url) if credentialed?
+        token = resolve_bearer_token
+        request["Authorization"] = "Bearer #{token}" unless token.nil? || token.strip.empty?
+
+        # Authoritative check, keyed on what the request ACTUALLY carries
+        # rather than on what was configured: a caller-supplied
+        # headers["Authorization"] is just as much a credential as a
+        # resolved token, and base_url is not the only URL that reaches
+        # here. Runs after every header is applied and before the socket.
+        require_secure_transport!(url) if request["Authorization"]
 
         build_http(uri).request(request)
+      end
+
+      def credentialed?
+        !@token_source.nil? || !@bearer_token.nil? || preset_authorization_header?
+      end
+
+      # The bearer token belongs to base_url alone: same scheme, host and
+      # port, a path at or under the base path, no userinfo, and no dot
+      # segment or encoded separator a gateway could normalize out of the
+      # base. The message names neither the URL nor its host — both are
+      # server-supplied for a next link, and a path carries record ids.
+      def require_credential_scope!(url)
+        uri = URI.parse(url.to_s)
+        return if uri.userinfo.nil? && same_origin_url?(url.to_s) && !dot_segment_path?(url.to_s)
+
+        raise CredentialScopeError,
+              "FhirAdapter refuses to send credentials to a URL outside the " \
+              "configured base_url origin and path"
+      rescue URI::InvalidURIError
+        raise CredentialScopeError, "FhirAdapter refuses to send credentials to an unparseable URL"
+      end
+
+      # Bearer tokens and followed search next links are scoped to
+      # base_url's scheme, host, port, and path. A path with no real
+      # segment is rejected whether or not credentials are present.
+      # Empty or slash-only paths fail that check directly. "." and ".."
+      # segments (including %2e/%2E), path parameters (";"), and encoded
+      # separators (%2F/%5C) are the same rule dot_segment_path? already
+      # applies to search next links: it percent-decodes %2e and calls
+      # forbidden_next_path? on the raw and decoded path. A segment that
+      # merely contains a dot (for example "fhir.v2") stays valid.
+      # An unparseable URL — URI::InvalidURIError, or a string URI.parse
+      # cannot handle — raises ArgumentError here with or without
+      # credentials. The message does not echo the URL; parser errors quote it.
+      def require_path_qualified_base_url!(url)
+        uri = parse_base_url!(url)
+        return unless uri.path.to_s.delete("/").empty? || dot_segment_path?(url.to_s)
+
+        raise ArgumentError,
+              "base_url must be path-qualified so bearer tokens and search " \
+              "next links stay scoped to the FHIR base path, not the whole " \
+              "host (for example https://fhir.vendor.example/r4)"
+      end
+
+      # Fail closed. URI::InvalidURIError is the usual parse failure;
+      # some strings raise ArgumentError instead (a null byte, on a parser
+      # that rejects it before the URI check). Either one becomes
+      # ArgumentError. cause is cleared: the parser message quotes the URL,
+      # and Ruby would otherwise attach it to the new exception.
+      def parse_base_url!(url)
+        URI.parse(url.to_s)
+      rescue URI::InvalidURIError, ArgumentError
+        raise ArgumentError,
+              "base_url could not be parsed; FhirAdapter refuses an unparseable base URL",
+              cause: nil
+      end
+
+      # Reject any URL that would carry an Authorization header over a
+      # non-TLS connection. Requests with no Authorization header are
+      # untouched, so genuinely unauthenticated on-prem and in-memory demo
+      # use over plain http still works.
+      #
+      # The opt-out is deliberately narrow: it applies only when every hop
+      # stays on the loopback interface, where traffic never reaches a
+      # network. Setting it does NOT license cleartext credentials to a
+      # remote host.
+      def require_secure_transport!(url)
+        uri = URI.parse(url.to_s)
+        return if uri.scheme == "https"
+        return if @allow_insecure_http && loopback_peer?(uri)
+
+        # Host only, never the path — a FHIR path carries record identifiers.
+        raise InsecureTransportError,
+              "FhirAdapter refuses to send an Authorization header over " \
+              "#{uri.scheme.inspect} (host #{uri.host.inspect}). Use https; " \
+              "#{insecure_opt_out_detail(uri)}."
+      rescue URI::InvalidURIError => e
+        raise InsecureTransportError, "invalid FHIR base URL: #{e.message}"
+      end
+
+      # "Is this loopback?" is a question about the actual network peers,
+      # not about the URL alone. A proxy is the host we really connect to,
+      # and it then makes its own hop to the target — so a cleartext request
+      # is confined to the machine only if BOTH ends are loopback. A remote
+      # proxy in front of a localhost URL still puts the token on the wire.
+      def loopback_peer?(uri)
+        return false unless loopback_host?(uri.host)
+        return false if @proxy_uri && !loopback_host?(@proxy_uri.host)
+
+        true
+      end
+
+      def insecure_opt_out_detail(uri)
+        return "pass allow_insecure_http: true for a loopback endpoint only" unless @allow_insecure_http
+
+        if @proxy_uri && !loopback_host?(@proxy_uri.host) && loopback_host?(uri.host)
+          "allow_insecure_http does not apply here: proxy_uri routes this " \
+            "request through a non-loopback host, which is the real peer"
+        else
+          "allow_insecure_http covers loopback peers only"
+        end
+      end
+
+      # Literal loopback addresses are recognized numerically; names are
+      # accepted only for the RFC 6761 reserved "localhost" family, which
+      # resolvers must keep on the loopback interface. Any other name is a
+      # DNS lookup we cannot vouch for. See LOOPBACK_NAME.
+      def loopback_host?(host)
+        return false if host.nil?
+
+        # URI#host keeps the brackets on an IPv6 literal.
+        h = host.downcase.delete_prefix("[").delete_suffix("]")
+        return true if h == LOOPBACK_NAME || h.end_with?(LOOPBACK_NAME_SUFFIX)
+
+        literal = begin
+          IPAddr.new(h)
+        rescue IPAddr::Error
+          nil
+        end
+        !literal.nil? && literal.loopback?
+      end
+
+      # Resolve the bearer token for the current request. A token_source
+      # (callable) is consulted per request and wins over the static
+      # bearer_token; returns nil when neither is configured.
+      #
+      # A configured token_source that yields a blank token is a hard error:
+      # falling through would send an unauthenticated (or malformed
+      # "Bearer ") request whose 401 looks like a credentials problem rather
+      # than the real cause — the source produced nothing. Whitespace-only
+      # counts as blank; it passes a bare empty? check but produces the same
+      # broken header.
+      def resolve_bearer_token
+        if @token_source
+          token = @token_source.call
+          unless token.is_a?(String) && !token.strip.empty?
+            raise TokenSourceError,
+                  "token_source returned #{describe_token(token)}; " \
+                  "expected a non-blank token string"
+          end
+          return token
+        end
+
+        @bearer_token
+      end
+
+      # Describe a rejected token by shape only. The value is never
+      # rendered: TokenSourceError messages reach Rails logs, and a token
+      # that merely failed *our* validation may still be live credential
+      # material.
+      def describe_token(token)
+        return "nil" if token.nil?
+        return "a blank string (#{token.length} whitespace characters)" if token.is_a?(String)
+
+        "a #{token.class}"
       end
 
       # Construct a Net::HTTP instance configured per the constructor's
@@ -1129,6 +1424,7 @@ module Corvid
         end
         http = klass.new(uri.host, uri.port)
         http.use_ssl = uri.scheme == "https"
+        http.verify_mode = OpenSSL::SSL::VERIFY_PEER
         http.open_timeout = @open_timeout
         http.read_timeout = @read_timeout
         http.ca_file = @ca_file if @ca_file
@@ -1155,6 +1451,31 @@ module Corvid
           npi: extract_npi(resource),
           specialty: resource.dig("qualification", 0, "code", "coding", 0, "display")
         )
+      end
+
+      def claim_lines_from(claims)
+        claims.each_with_object([]) do |claim, lines|
+          built = safe_claim_lines(claim)
+          return nil if built.nil?
+
+          lines.concat(built)
+        end
+      end
+
+      # A non-Hash item makes the whole claim read unknown. nil item means
+      # the claim has no lines, which is an answer.
+      def safe_claim_lines(claim)
+        return nil unless claim_items_are_hashes?(claim)
+
+        build_claim_line_references(claim)
+      end
+
+      def claim_items_are_hashes?(claim)
+        raw = claim["item"]
+        return true if raw.nil?
+        return false unless raw.is_a?(Array)
+
+        raw.all? { |item| item.is_a?(Hash) }
       end
 
       def build_claim_line_references(claim)
@@ -1199,7 +1520,19 @@ module Corvid
 
         [ BigDecimal(value.to_s), nil ]
       rescue ArgumentError
-        [ nil, "unparseable billed amount #{value.inspect}" ]
+        # amount_error is surfaced to callers and reporting output, so the
+        # server-supplied value is described, not echoed — same rule as the
+        # auth path: nothing off the wire reaches a message verbatim.
+        [ nil, "unparseable billed amount (#{describe_wire_value(value)})" ]
+      end
+
+      # Describe a server-supplied value by type/shape without echoing it.
+      def describe_wire_value(value)
+        return "null" if value.nil?
+        return value.to_s if value == true || value == false
+        return "a #{value.length}-character String" if value.is_a?(String)
+
+        value.class.to_s.start_with?(/[AEIOU]/i) ? "an #{value.class}" : "a #{value.class}"
       end
 
       def build_referral_reference(resource)
@@ -1214,9 +1547,27 @@ module Corvid
           emergent: resource["priority"] == "stat",
           urgent: resource["priority"] == "urgent",
           chs_approval_status: nil,
-          service_requested: resource.dig("code", "text").presence || resource.dig("code", "coding", 0, "display").presence,
+          service_requested: service_requested_label(resource),
           requesting_provider_identifier: resource.dig("requester", "reference")&.split("/")&.last
         )
+      end
+
+      # Empty or whitespace text is absent so coding.display can fill in.
+      # Kept in plain Ruby: a list read builds this reference without
+      # ActiveSupport loaded.
+      def service_requested_label(resource)
+        text = resource.dig("code", "text")
+        return text if kept_label?(text)
+
+        display = resource.dig("code", "coding", 0, "display")
+        display if kept_label?(display)
+      end
+
+      def kept_label?(value)
+        return false if value.nil?
+        return false if value.is_a?(String) && value.match?(/\A[[:space:]]*\z/)
+
+        true
       end
 
       def priority_to_level(priority)
@@ -1237,10 +1588,73 @@ module Corvid
         end
       end
 
+      def care_team_members(resource)
+        (resource["participant"] || []).map { |participant| care_team_member(resource, participant) }
+      end
+
+      def care_team_member(resource, participant)
+        Corvid::CareTeamMemberReference.new(
+          practitioner_identifier: participant.dig("member", "reference")&.sub("Practitioner/", ""),
+          role: participant.dig("role", 0, "coding", 0, "code"),
+          name: resource["name"],
+          status: resource["status"]
+        )
+      end
+
+      # nil when the search did not answer; [] when it answered with no
+      # matches. Same gates as #clinical_search (#search_bundle?, next link,
+      # total). Only match-mode (or mode-less) entries of resource_type are
+      # results. A blocking OperationOutcome, a malformed entry, or an entry
+      # whose search is not a Hash or whose mode is not match, include, or
+      # outcome is unknown.
+      def references_from_search(resource_type, params)
+        resources = list_search_resources(resource_type, params)
+        return nil if resources.nil?
+
+        resources.map { |resource| yield resource }
+      end
+
+      def list_search_resources(resource_type, params)
+        bundle = validated_search(resource_type, params)
+        return nil if bundle.nil?
+
+        match_resources(bundle, resource_type)
+      end
+
+      def match_resources(bundle, resource_type)
+        entries = clinical_bundle_entries(bundle)
+        return nil if entries.nil?
+
+        entries.each_with_object([]) do |entry, resources|
+          resource = list_entry_resource(entry, resource_type)
+          return nil if resource == :unknown
+
+          resources << resource if resource
+        end
+      end
+
+      def list_entry_resource(entry, resource_type)
+        resource = entry_resource(entry)
+        return :unknown if resource == :unknown
+        return :unknown if blocking_list_outcome?(resource)
+        return :unknown if malformed_entry_search?(entry)
+        return unless typed_match_entry?(entry, resource_type)
+
+        resource
+      end
+
+      def blocking_list_outcome?(resource)
+        resource["resourceType"] == "OperationOutcome" && blocking_outcome?(resource)
+      end
+
       def extract_entries(bundle)
         return [] unless bundle.is_a?(Hash) && bundle["entry"].is_a?(Array)
 
         bundle["entry"].filter_map { |e| e["resource"] }
+      end
+
+      def blank_patient_identifier?(patient_identifier)
+        patient_identifier.nil? || patient_identifier.to_s.strip.empty?
       end
 
       def format_human_name(name_hash)
@@ -1261,8 +1675,80 @@ module Corvid
         npi&.dig("value")
       end
 
+      # Unknown enrollment, not a recorded denial: enrolled is nil.
+      def tribal_enrollment_unavailable
+        {
+          enrolled: nil,
+          membership_number: nil,
+          tribe_name: nil,
+          tribe_code: nil,
+          member_status: nil,
+          blood_quantum: nil,
+          confidence: :unavailable,
+          verified_at: Time.current
+        }
+      end
+
+      def tribal_enrollment_from(ext)
+        {
+          enrolled: enrolled_value(ext),
+          membership_number: sub_extension_value(ext, "membershipNumber"),
+          tribe_name: sub_extension_value(ext, "tribeName"),
+          tribe_code: sub_extension_value(ext, "tribeCode"),
+          member_status: sub_extension_value(ext, "memberStatus"),
+          blood_quantum: normalize_blood_quantum(blood_quantum_extension_value(ext)),
+          confidence: tribal_confidence(ext),
+          verified_at: Time.current
+        }
+      end
+
+      # A missing or unrecognized confidence sub-extension is not :verified.
+      # Only the exact documented spellings count; anything else, including
+      # blank, other case, or a non-String value, fails closed.
+      def tribal_confidence(ext)
+        normalize_tribal_confidence(sub_extension_value(ext, "confidence"))
+      end
+
+      def blood_quantum_extension_value(extension)
+        sub = Array(extension["extension"]).find { |entry| entry["url"] == "bloodQuantum" }
+        return nil unless sub
+
+        %w[valueDecimal valueInteger valueString].each do |key|
+          return sub[key] if sub.key?(key)
+        end
+
+        nil
+      end
+
+      # A nil, empty, or whitespace-only resource_type is undetermined:
+      # nil, never the first coverage. A requested type that matches
+      # nothing is unknown — never another type's coverage.
+      def coverage_for_resource_type(coverages, resource_type)
+        return nil if resource_type.to_s.strip.empty?
+
+        coverages.find { |coverage| coverage_type_matches?(coverage, resource_type) }
+      end
+
+      def coverage_type_matches?(coverage, resource_type)
+        type_code = coverage.dig("type", "coding", 0, "code")
+        return false if type_code.nil? || type_code.to_s.empty?
+
+        requested = resource_type.to_s
+        type_code == requested || type_code == COVERAGE_TYPE_MAP[requested]
+      end
+
       def find_extension(resource, url)
         Array(resource["extension"]).find { |e| e["url"] == url }
+      end
+
+      # Exact boolean valueBoolean only. A missing enrolled sub-extension, or
+      # any other FHIR value, is nil rather than a denial.
+      def enrolled_value(extension)
+        sub = Array(extension["extension"]).find { |entry| entry.is_a?(Hash) && entry["url"] == "enrolled" }
+        return nil unless sub
+
+        value = sub["valueBoolean"]
+        value if value == true || value == false
       end
 
       def sub_extension_value(extension, sub_url)
@@ -1741,12 +2227,24 @@ module Corvid
       def clinical_search(resource_type, patient_identifier)
         return nil if patient_identifier.blank?
 
-        bundle = fhir_search(resource_type, patient: patient_identifier)
-        return nil unless search_bundle?(bundle)
+        bundle = validated_search(resource_type, { patient: patient_identifier })
+        return nil if bundle.nil?
+
+        yield bundle
+      rescue *CLINICAL_READ_ERRORS
+        nil
+      end
+
+      # One answered search page, or nil. A transport failure is unknown.
+      # Pass a block to replace the #search_bundle? check; next-link and
+      # total gates stay the same.
+      def validated_search(resource_type, params, &accept)
+        bundle = fhir_search(resource_type, params)
+        return nil unless accept ? accept.call(bundle) : search_bundle?(bundle)
         return nil if next_page_link?(bundle)
         return nil unless consistent_search_total?(bundle, resource_type)
 
-        yield bundle
+        bundle
       rescue *CLINICAL_READ_ERRORS
         nil
       end
@@ -1789,17 +2287,34 @@ module Corvid
       end
 
       def match_mode_entry?(entry)
-        return false unless entry.is_a?(Hash)
-
-        search = entry["search"]
-        return true if search.nil?
-        return false unless search.is_a?(Hash)
-
-        mode = search["mode"]
-        mode.nil? || mode == "match"
+        entry.is_a?(Hash) && entry_search_state(entry) == :match
       end
 
-      def bundle_entries(bundle)
+      # :match, :other, or :malformed. Absent search or an absent mode is a
+      # match. include and outcome are known non-matches. Anything else,
+      # including a search value that is not a Hash, is malformed. List reads
+      # treat :malformed as unknown. fhir_search total and duplicate counts
+      # do not: see #search_match_entry?.
+      def entry_search_state(entry)
+        search = entry["search"]
+        return :match if search.nil?
+        return :malformed unless search.is_a?(Hash)
+
+        case search["mode"]
+        when nil, "match" then :match
+        when "include", "outcome" then :other
+        else :malformed
+        end
+      end
+
+      def malformed_entry_search?(entry)
+        entry.is_a?(Hash) && entry_search_state(entry) == :malformed
+      end
+
+      # Clinical reads. A missing or null entry is no rows. A present entry
+      # that is not an Array is unknown (nil); callers treat that nil as the
+      # search not answering.
+      def clinical_bundle_entries(bundle)
         entries = bundle["entry"]
         return [] if entries.nil?
         return nil unless entries.is_a?(Array)
@@ -2054,7 +2569,7 @@ module Corvid
       # Conditions ------------------------------------------------------------
 
       def map_condition_entries(bundle, patient_identifier)
-        entries = bundle_entries(bundle)
+        entries = clinical_bundle_entries(bundle)
         return nil if entries.nil?
 
         entries.each_with_object([]) do |entry, results|
@@ -2391,7 +2906,7 @@ module Corvid
       # Medications -----------------------------------------------------------
 
       def map_medication_entries(bundle, patient_identifier)
-        entries = bundle_entries(bundle)
+        entries = clinical_bundle_entries(bundle)
         return nil if entries.nil?
 
         collected = partition_medication_entries(entries)

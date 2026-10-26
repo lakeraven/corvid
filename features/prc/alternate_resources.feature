@@ -135,6 +135,7 @@ Feature: Alternate resource tracking (payer of last resort)
 
   Scenario: Verify Medicare enrollment through service
     Given an alternate resource check for "medicare_a" exists with status "not_checked"
+    And the adapter has eligible coverage for patient "pt_001" for resource type "medicare_a"
     When I verify the enrollment status
     Then the check status should not be "not_checked"
     And the check should have response data
@@ -145,10 +146,14 @@ Feature: Alternate resource tracking (payer of last resort)
       | medicare_a         | not_checked  |
       | medicaid           | not_checked  |
       | tribal_program     | not_checked  |
+    And the adapter has eligible coverage for patient "pt_001" for resource type "medicare_a"
+    And the adapter has eligible coverage for patient "pt_001" for resource type "medicaid"
+    And the adapter has eligible coverage for patient "pt_001" for resource type "tribal_program"
     When I verify all enrollment statuses for the referral
     Then all checks should have been verified
 
   Scenario: Create and verify all resource checks for a referral
+    Given the adapter has eligible coverage for all alternate resource types for patient "pt_001"
     When I create all resource checks for the referral
     Then alternate resource checks should exist for all resource types
     When I verify all enrollment statuses for the referral
@@ -269,3 +274,20 @@ Feature: Alternate resource tracking (payer of last resort)
     Then 3 checks should still be pending
     And 7 checks should have status "not_enrolled"
     And the referral should not be ready for authorization
+
+  # =============================================================================
+  # MEDICAID ELIGIBILITY GROUP ON VERIFY (issue #670)
+  # =============================================================================
+
+  Scenario: Verifying Medicaid records stated eligibility group from coverage
+    Given an alternate resource check for "medicaid" exists with status "not_checked"
+    And the adapter has eligible medicaid coverage for patient "pt_001" stating eligibility group "expansion_adult"
+    When I verify the enrollment status
+    Then the medicaid alternate resource check should have eligibility group "expansion_adult" with source "eligibility_response"
+
+  Scenario: Verifying Medicaid infers eligibility group when coverage omits stated group
+    Given an alternate resource check for "medicaid" exists with status "not_checked"
+    And patient "pt_001" has date of birth "1996-06-15" in the adapter
+    And the adapter has eligible medicaid coverage for patient "pt_001" in state "XA"
+    When I verify the enrollment status
+    Then the medicaid alternate resource check should have eligibility group "expansion_adult" with source "inferred"

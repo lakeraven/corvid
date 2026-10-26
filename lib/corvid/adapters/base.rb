@@ -26,7 +26,8 @@ module Corvid
       end
 
       # Search patients by name or other criteria.
-      # Returns an array of PatientReference objects.
+      # Returns an Array of PatientReference, or nil when the source did
+      # not answer. nil means unknown. [] means the source answered "none".
       def search_patients(query)
         raise NotImplementedError, "#{self.class}#search_patients not implemented"
       end
@@ -39,6 +40,9 @@ module Corvid
         raise NotImplementedError, "#{self.class}#find_practitioner not implemented"
       end
 
+      # Search practitioners by name or other criteria.
+      # Returns an Array of PractitionerReference, or nil when the source
+      # did not answer. nil means unknown. [] means the source answered "none".
       def search_practitioners(query)
         raise NotImplementedError, "#{self.class}#search_practitioners not implemented"
       end
@@ -60,6 +64,8 @@ module Corvid
         raise NotImplementedError, "#{self.class}#update_referral not implemented"
       end
 
+      # Returns an Array of ReferralReference, or nil when the source did
+      # not answer. nil means unknown. [] means the source answered "none".
       def list_referrals(patient_identifier)
         raise NotImplementedError, "#{self.class}#list_referrals not implemented"
       end
@@ -152,6 +158,8 @@ module Corvid
       # Care team
       # ----------------------------------------------------------------------
 
+      # Returns an Array of CareTeamMemberReference, or nil when the source
+      # did not answer. nil means unknown. [] means the source answered "none".
       def get_care_team(patient_identifier)
         raise NotImplementedError, "#{self.class}#get_care_team not implemented"
       end
@@ -182,11 +190,14 @@ module Corvid
       end
 
       # Read purchased/referred-care billed line items for a patient from
-      # stock FHIR `Claim` (or `ExplanationOfBenefit`) resources. Returns an
-      # array of Corvid::ClaimLineReference. Adapters that can't surface
-      # claims return an empty array so callers degrade gracefully.
+      # stock FHIR `Claim` (or `ExplanationOfBenefit`) resources.
+      # Returns an Array of ClaimLineReference, or nil when the source did
+      # not answer. nil means unknown, as with get_conditions and
+      # get_medications. Adapters that cannot read claims return nil.
+      # [] means the source answered "none". In memory only — never persist
+      # or log (ADR 0003).
       def list_claims(patient_identifier)
-        []
+        nil
       end
 
       # ----------------------------------------------------------------------
@@ -202,6 +213,11 @@ module Corvid
       # renewal_date as Date or nil. Any other type makes the answer
       # unreadable. Callers treat anything else as undetermined, never
       # as no coverage (42 CFR 136.61).
+      #
+      # A nil, empty, or whitespace-only resource_type returns nil
+      # (undetermined) and never selects a coverage. A real resource
+      # type returns its matching coverage. Absence never verifies
+      # (42 CFR 136.61).
       def verify_eligibility(patient_identifier, resource_type)
         raise NotImplementedError, "#{self.class}#verify_eligibility not implemented"
       end
@@ -210,18 +226,28 @@ module Corvid
       # Enrollment verification (for PRC eligibility checklist)
       # ----------------------------------------------------------------------
 
-      # Returns { enrolled: bool, membership_number: str|nil,
+      # Returns { enrolled: true|false|nil, membership_number: str|nil,
       #           tribe_name: str|nil, tribe_code: str|nil,
-      #           member_status: str|nil, blood_quantum: hash|nil,
+      #           member_status: str|nil,
+      #           blood_quantum: { display: String, decimal: Float|nil }|nil,
       #           confidence: :verified|:stale|:unavailable,
       #           verified_at: datetime }
+      #
+      # `enrolled` is nil when the source is unreachable or the record is
+      # unknown. true and false are answers from the source.
+      #
+      # `blood_quantum` is nil when the source has none. `display` is the
+      # source text (for example "1/4" or "0.25"). `decimal` is that value
+      # as a Float when it parses as a Rational, and nil when it does not.
       #
       # `tribe_code` lets eligibility services compare the enrollee's tribe
       # against a facility's contracted tribe (preventing wrong-tribe false
       # positives). `confidence` reflects how fresh the underlying data is —
       # `:verified` is canonical; `:stale` means the source returned data
       # but flagged it as out-of-date; `:unavailable` means the source could
-      # not be reached.
+      # not be reached. A missing or unrecognized confidence is also
+      # `:unavailable`, not `:verified`. Consumers must treat anything other
+      # than :verified/:stale as not verified.
       def verify_tribal_enrollment(patient_identifier)
         raise NotImplementedError, "#{self.class}#verify_tribal_enrollment not implemented"
       end
@@ -249,11 +275,19 @@ module Corvid
 
       # Check claim status (276/277). Returns { status: str, paid_amount: decimal,
       #   adjustment_amount: decimal, paid_date: date }
+      # Optional keys: rejection_reason_token (vault token for a front-end
+      # rejection reason) and denial_reason_codes (array of CARC/RARC codes,
+      # e.g. ["CO-97"]).
       def check_claim_status(claim_identifier)
         raise NotImplementedError, "#{self.class}#check_claim_status not implemented"
       end
 
-      # Fetch remittances (835 ERA). Returns array of remittance hashes.
+      # Fetch remittances (835 ERA). Returns array of remittance hashes:
+      #   { remittance_identifier:, payer_name:, payment_date:, total_paid:,
+      #     line_items: [ { claim_identifier:, paid_amount:, adjustment_amount:,
+      #                     patient_responsibility:, status:, adjustment_codes: } ] }
+      # A line item with status "denied" is an adjudicated denial; its
+      # adjustment_codes are CARC/RARC codes. Apply with Corvid::RemittanceProcessor.
       def fetch_remittances(date_range: nil)
         raise NotImplementedError, "#{self.class}#fetch_remittances not implemented"
       end
@@ -276,6 +310,65 @@ module Corvid
       # Refund a payment. Returns { refund_identifier: str, status: str }
       def refund_payment(payment_identifier)
         raise NotImplementedError, "#{self.class}#refund_payment not implemented"
+      end
+
+      # Missing or unrecognized confidence is not :verified.
+      TRIBAL_CONFIDENCE_VALUES = %i[verified stale unavailable].freeze
+
+      private
+
+      # Canonical blood-quantum hash. nil stays nil. Strings keep their
+      # display text; numerics display via their usual decimal spelling.
+      def normalize_blood_quantum(value)
+        scalar = unwrap_blood_quantum(value)
+        return nil if scalar.nil?
+
+        case scalar
+        when Numeric
+          { display: blood_quantum_numeric_display(scalar), decimal: scalar.to_f }
+        when String
+          blood_quantum_from_string(scalar)
+        end
+      end
+
+      # Allow-list: an exact documented Symbol, or its exact String spelling
+      # (FHIR sends valueString). Anything else, including blank, other case
+      # or padding, is :unavailable. Never raises.
+      def normalize_tribal_confidence(value)
+        return :unavailable unless value.is_a?(Symbol) || value.is_a?(String)
+
+        symbol = value.to_sym
+        TRIBAL_CONFIDENCE_VALUES.include?(symbol) ? symbol : :unavailable
+      end
+
+      def unwrap_blood_quantum(value)
+        return value unless value.is_a?(Hash)
+
+        %i[display fraction value blood_quantum decimal].each do |key|
+          raw = value.key?(key) ? value[key] : value[key.to_s]
+          return raw unless raw.nil?
+        end
+
+        nil
+      end
+
+      def blood_quantum_from_string(text)
+        display = text.strip
+        return nil if display.empty?
+
+        { display: display, decimal: parse_blood_quantum_decimal(display) }
+      end
+
+      def parse_blood_quantum_decimal(display)
+        Rational(display).to_f
+      rescue ArgumentError, ZeroDivisionError
+        nil
+      end
+
+      def blood_quantum_numeric_display(number)
+        return number.to_s if number.is_a?(Integer) || number.is_a?(Float)
+
+        number.to_f.to_s
       end
     end
   end

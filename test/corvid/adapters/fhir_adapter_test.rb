@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "minitest/autorun"
+require "minitest/mock"
 require "json"
 require "zlib"
 require "net/http"
@@ -99,6 +100,7 @@ class Corvid::Adapters::FhirAdapterTest < Minitest::Test
   def test_list_claims_skips_blank_provider_identifier_value_for_reference_id
     bundle = {
       "resourceType" => "Bundle",
+      "type" => "searchset",
       "entry" => [ { "resource" => {
         "resourceType" => "Claim",
         "id" => "clm_pr_blank_id",
@@ -123,6 +125,7 @@ class Corvid::Adapters::FhirAdapterTest < Minitest::Test
   def test_list_claims_skips_blank_provider_reference_for_display
     bundle = {
       "resourceType" => "Bundle",
+      "type" => "searchset",
       "entry" => [ { "resource" => {
         "resourceType" => "Claim",
         "id" => "clm_pr_blank_ref",
@@ -175,6 +178,7 @@ class Corvid::Adapters::FhirAdapterTest < Minitest::Test
   def test_list_claims_procedure_display_nil_when_all_label_fallbacks_blank
     bundle = {
       "resourceType" => "Bundle",
+      "type" => "searchset",
       "entry" => [ { "resource" => {
         "resourceType" => "Claim",
         "id" => "clm_all_blank_disp",
@@ -214,6 +218,7 @@ class Corvid::Adapters::FhirAdapterTest < Minitest::Test
   def test_list_claims_falls_back_procedure_display_from_product_or_service_text
     bundle = {
       "resourceType" => "Bundle",
+      "type" => "searchset",
       "entry" => [ { "resource" => {
         "resourceType" => "Claim",
         "id" => "clm_blank_disp",
@@ -270,6 +275,7 @@ class Corvid::Adapters::FhirAdapterTest < Minitest::Test
     # for the procedure_code, not blindly take index 0.
     bundle = {
       "resourceType" => "Bundle",
+      "type" => "searchset",
       "entry" => [ { "resource" => {
         "resourceType" => "Claim",
         "id" => "clm_1",
@@ -294,6 +300,7 @@ class Corvid::Adapters::FhirAdapterTest < Minitest::Test
   def test_list_claims_selects_hcpcs_coding_over_non_billing_first
     bundle = {
       "resourceType" => "Bundle",
+      "type" => "searchset",
       "entry" => [ { "resource" => {
         "resourceType" => "Claim",
         "id" => "clm_2",
@@ -316,6 +323,7 @@ class Corvid::Adapters::FhirAdapterTest < Minitest::Test
   def test_list_claims_falls_back_to_first_coding_when_no_billing_system
     bundle = {
       "resourceType" => "Bundle",
+      "type" => "searchset",
       "entry" => [ { "resource" => {
         "resourceType" => "Claim",
         "id" => "clm_3",
@@ -335,6 +343,7 @@ class Corvid::Adapters::FhirAdapterTest < Minitest::Test
   def test_list_claims_flags_present_but_unparseable_amount
     bundle = {
       "resourceType" => "Bundle",
+      "type" => "searchset",
       "entry" => [ { "resource" => {
         "resourceType" => "Claim",
         "id" => "clm_4",
@@ -350,12 +359,17 @@ class Corvid::Adapters::FhirAdapterTest < Minitest::Test
       line = @adapter.list_claims("pt_4").first
       assert_nil line.billed_amount, "unparseable amount does not become a bogus number"
       refute_nil line.amount_error, "present-but-unparseable amount is surfaced, not silently swallowed"
+      # amount_error reaches reporting output, so the server-supplied value
+      # is described rather than echoed — same rule as the auth path.
+      refute_match(/not-a-number/, line.amount_error)
+      assert_match(/12-character String/, line.amount_error)
     end
   end
 
   def test_list_claims_absent_amount_is_legit_nil_without_error
     bundle = {
       "resourceType" => "Bundle",
+      "type" => "searchset",
       "entry" => [ { "resource" => {
         "resourceType" => "Claim",
         "id" => "clm_5",
@@ -376,6 +390,7 @@ class Corvid::Adapters::FhirAdapterTest < Minitest::Test
   def test_list_claims_serviced_date_from_period_when_serviced_date_blank
     bundle = {
       "resourceType" => "Bundle",
+      "type" => "searchset",
       "entry" => [ { "resource" => {
         "resourceType" => "Claim",
         "id" => "clm_blank_serviced_date",
@@ -449,15 +464,182 @@ class Corvid::Adapters::FhirAdapterTest < Minitest::Test
     end
   end
 
-  def test_verify_tribal_enrollment_falls_back_when_extension_absent
-    # Plain FHIR servers with no tribal-enrollment extension degrade to the
-    # same fail-closed "unavailable" shape as before this method read FHIR.
-    @adapter.stub(:fhir_read, { "id" => "pt_001" }) do
-      result = @adapter.verify_tribal_enrollment("pt_001")
-      assert_equal false, result[:enrolled]
+  def test_verify_tribal_enrollment_missing_confidence_sub_extension_is_unavailable
+    resource = {
+      "id" => "pt_no_conf",
+      "extension" => [ {
+        "url" => "https://lakeraven.com/fhir/StructureDefinition/tribal-enrollment",
+        "extension" => [
+          { "url" => "enrolled", "valueBoolean" => true },
+          { "url" => "membershipNumber", "valueString" => "TGN-100255" },
+          { "url" => "tribeName", "valueString" => "Tallgrass Nation" },
+          { "url" => "tribeCode", "valueString" => "TGN" }
+        ]
+      } ]
+    }
+    @adapter.stub(:fhir_read, resource) do
+      result = @adapter.verify_tribal_enrollment("pt_no_conf")
+      assert_equal true, result[:enrolled]
       assert_equal :unavailable, result[:confidence]
     end
   end
+
+  def test_verify_tribal_enrollment_explicit_stale_confidence_passes_through
+    resource = {
+      "id" => "pt_stale",
+      "extension" => [ {
+        "url" => "https://lakeraven.com/fhir/StructureDefinition/tribal-enrollment",
+        "extension" => [
+          { "url" => "enrolled", "valueBoolean" => true },
+          { "url" => "tribeCode", "valueString" => "TGN" },
+          { "url" => "confidence", "valueString" => "stale" }
+        ]
+      } ]
+    }
+    @adapter.stub(:fhir_read, resource) do
+      result = @adapter.verify_tribal_enrollment("pt_stale")
+      assert_equal :stale, result[:confidence]
+    end
+  end
+
+  def test_verify_tribal_enrollment_falls_back_when_extension_absent
+    # Issue #662 round 4: missing extension is unknown enrollment, not a firm false.
+    @adapter.stub(:fhir_read, { "id" => "pt_001" }) do
+      result = @adapter.verify_tribal_enrollment("pt_001")
+      assert_nil result[:enrolled]
+      assert_equal :unavailable, result[:confidence]
+    end
+  end
+
+  def test_verify_tribal_enrollment_returns_nil_enrolled_when_patient_read_fails
+    @adapter.stub(:fhir_read, nil) do
+      result = @adapter.verify_tribal_enrollment("pt_missing")
+      assert_nil result[:enrolled]
+      assert_equal :unavailable, result[:confidence]
+    end
+  end
+
+  # Issue #662 round 2: missing or non-boolean enrolled sub-extension => nil enrolled.
+
+  def test_verify_tribal_enrollment_missing_enrolled_sub_extension_returns_nil_enrolled
+    resource = {
+      "id" => "pt_no_enrolled_sub",
+      "extension" => [ {
+        "url" => TRIBAL_ENROLLMENT_EXTENSION_URL,
+        "extension" => [
+          { "url" => "tribeCode", "valueString" => "TGN" },
+          { "url" => "confidence", "valueString" => "verified" }
+        ]
+      } ]
+    }
+    @adapter.stub(:fhir_read, resource) do
+      result = @adapter.verify_tribal_enrollment("pt_no_enrolled_sub")
+      assert_nil result[:enrolled]
+      assert_equal :verified, result[:confidence]
+    end
+  end
+
+  def test_verify_tribal_enrollment_non_boolean_enrolled_sub_extension_returns_nil_enrolled
+    resource = {
+      "id" => "pt_str_enrolled",
+      "extension" => [ {
+        "url" => TRIBAL_ENROLLMENT_EXTENSION_URL,
+        "extension" => [
+          { "url" => "enrolled", "valueString" => "true" },
+          { "url" => "tribeCode", "valueString" => "TGN" },
+          { "url" => "confidence", "valueString" => "verified" }
+        ]
+      } ]
+    }
+    @adapter.stub(:fhir_read, resource) do
+      result = @adapter.verify_tribal_enrollment("pt_str_enrolled")
+      assert_nil result[:enrolled]
+    end
+  end
+
+  def test_verify_tribal_enrollment_value_boolean_false_returns_false_enrolled
+    resource = {
+      "id" => "pt_enrolled_false",
+      "extension" => [ {
+        "url" => TRIBAL_ENROLLMENT_EXTENSION_URL,
+        "extension" => [
+          { "url" => "enrolled", "valueBoolean" => false },
+          { "url" => "tribeCode", "valueString" => "TGN" },
+          { "url" => "confidence", "valueString" => "verified" }
+        ]
+      } ]
+    }
+    @adapter.stub(:fhir_read, resource) do
+      result = @adapter.verify_tribal_enrollment("pt_enrolled_false")
+      assert_equal false, result[:enrolled]
+    end
+  end
+
+  # Issue #662: confidence sub-extension is allow-listed; anything else is :unavailable.
+
+  def test_verify_tribal_enrollment_confidence_allow_lists_verified_stale_unavailable_strings
+    %w[verified stale unavailable].each do |word|
+      resource = tribal_enrollment_patient("pt_conf_#{word}", confidence_sub: { "valueString" => word })
+      @adapter.stub(:fhir_read, resource) do
+        result = @adapter.verify_tribal_enrollment("pt_conf_#{word}")
+        assert_equal word.to_sym, result[:confidence]
+      end
+    end
+  end
+
+  def test_verify_tribal_enrollment_confidence_blank_string_is_unavailable
+    resource = tribal_enrollment_patient("pt_conf_blank", confidence_sub: { "valueString" => "" })
+    @adapter.stub(:fhir_read, resource) do
+      result = @adapter.verify_tribal_enrollment("pt_conf_blank")
+      assert_equal :unavailable, result[:confidence]
+    end
+  end
+
+  %w[VERIFIED unverified probable].each do |bad|
+    define_method("test_verify_tribal_enrollment_confidence_#{bad.downcase}_string_is_unavailable") do
+      resource = tribal_enrollment_patient("pt_bad_#{bad}", confidence_sub: { "valueString" => bad })
+      @adapter.stub(:fhir_read, resource) do
+        result = @adapter.verify_tribal_enrollment("pt_bad_#{bad}")
+        assert_equal :unavailable, result[:confidence]
+      end
+    end
+  end
+
+  def test_verify_tribal_enrollment_confidence_value_decimal_is_unavailable_without_raising
+    resource = tribal_enrollment_patient("pt_conf_dec", confidence_sub: { "valueDecimal" => 0.2 })
+    @adapter.stub(:fhir_read, resource) do
+      result = @adapter.verify_tribal_enrollment("pt_conf_dec")
+      assert_equal :unavailable, result[:confidence]
+    end
+  end
+
+  def test_verify_tribal_enrollment_confidence_value_boolean_true_is_unavailable_without_raising
+    resource = tribal_enrollment_patient("pt_conf_bool_t", confidence_sub: { "valueBoolean" => true })
+    @adapter.stub(:fhir_read, resource) do
+      result = @adapter.verify_tribal_enrollment("pt_conf_bool_t")
+      assert_equal :unavailable, result[:confidence]
+    end
+  end
+
+  def test_verify_tribal_enrollment_confidence_value_boolean_false_is_unavailable_without_raising
+    resource = tribal_enrollment_patient("pt_conf_bool_f", confidence_sub: { "valueBoolean" => false })
+    @adapter.stub(:fhir_read, resource) do
+      result = @adapter.verify_tribal_enrollment("pt_conf_bool_f")
+      assert_equal :unavailable, result[:confidence]
+    end
+  end
+
+  def test_verify_tribal_enrollment_confidence_value_code_is_unavailable_without_raising
+    resource = tribal_enrollment_patient("pt_conf_code", confidence_sub: {
+      "valueCode" => "verified",
+      "system" => "http://example.test/confidence"
+    })
+    @adapter.stub(:fhir_read, resource) do
+      result = @adapter.verify_tribal_enrollment("pt_conf_code")
+      assert_equal :unavailable, result[:confidence]
+    end
+  end
+
 
   def test_verify_identity_documents_derives_from_patient_resource
     resource = {
@@ -493,18 +675,62 @@ class Corvid::Adapters::FhirAdapterTest < Minitest::Test
     end
   end
 
+  # Issue #662: a transport failure is an unavailable source, not an exception.
+  # The fault is raised from the HTTP request so fhir_read/http_get run for real.
+
+  VERIFICATION_TRANSPORT_ERRORS = [
+    Errno::ECONNREFUSED,
+    Net::OpenTimeout,
+    Net::ReadTimeout,
+    SocketError,
+    OpenSSL::SSL::SSLError,
+    EOFError,
+    Net::ProtocolError
+  ].freeze
+
+  VERIFICATION_TRANSPORT_ERRORS.each do |error_class|
+    slug = error_class.name.gsub("::", "_").downcase
+
+    define_method("test_verify_tribal_enrollment_#{slug}_is_unavailable") do
+      with_transport_failure(error_class) do
+        result = @adapter.verify_tribal_enrollment("pt_test_001")
+        assert_nil result[:enrolled]
+        assert_equal :unavailable, result[:confidence]
+        assert_nil result[:tribe_code]
+        assert_nil result[:membership_number]
+      end
+    end
+
+    define_method("test_verify_identity_documents_#{slug}_reports_nothing_present") do
+      with_transport_failure(error_class) do
+        result = @adapter.verify_identity_documents("pt_test_001")
+        assert_equal false, result[:ssn_present]
+        assert_equal false, result[:dob_present]
+        assert_equal false, result[:birthplace_present]
+      end
+    end
+
+    define_method("test_verify_residency_#{slug}_is_not_on_reservation") do
+      with_transport_failure(error_class) do
+        result = @adapter.verify_residency("pt_test_001")
+        assert_equal false, result[:on_reservation]
+        assert_nil result[:address]
+        assert_nil result[:service_area]
+      end
+    end
+  end
+
+
   # -- get_coverages (issue #607) ---------------------------------------------
   # Active-coverage date filtering uses Date.current in the adapter; stub both
   # Date.current and Date.today to FIXED_COVERAGE_TODAY for determinism.
 
   FIXED_COVERAGE_TODAY = Date.new(2026, 6, 15)
 
-  def test_get_coverages_returns_nil_for_non_http_base_url_without_raising
-    adapter = Corvid::Adapters::FhirAdapter.new(base_url: "memory://x")
-
-    result = adapter.get_coverages("pt_x")
-
-    assert_nil result
+  def test_new_raises_argument_error_for_non_path_qualified_memory_base_url
+    assert_raises(ArgumentError) do
+      Corvid::Adapters::FhirAdapter.new(base_url: "memory://x")
+    end
   end
 
   def test_get_coverages_maps_only_active_coverages_on_single_page
@@ -3923,6 +4149,7 @@ class Corvid::Adapters::FhirAdapterTest < Minitest::Test
   def list_claim_with_provider(provider)
     bundle = {
       "resourceType" => "Bundle",
+      "type" => "searchset",
       "entry" => [ { "resource" => {
         "resourceType" => "Claim",
         "id" => "clm_pr_helper",
@@ -5049,6 +5276,44 @@ class Corvid::Adapters::FhirAdapterTest < Minitest::Test
     end
   end
 
+  def multi_type_coverage_bundle
+    {
+      "resourceType" => "Bundle",
+      "entry" => [
+        {
+          "resource" => {
+            "resourceType" => "Coverage",
+            "id" => "cov_test_medicare",
+            "status" => "active",
+            "type" => { "coding" => [ { "code" => "MCRSC" } ] },
+            "payor" => [ { "display" => "TEST MEDICARE PAYER" } ]
+          }
+        },
+        {
+          "resource" => {
+            "resourceType" => "Coverage",
+            "id" => "cov_test_medicaid",
+            "status" => "active",
+            "type" => { "coding" => [ { "code" => "MCDSC" } ] },
+            "payor" => [ { "display" => "TEST MEDICAID PAYER" } ]
+          }
+        }
+      ]
+    }
+  end
+
+  def test_verify_eligibility_with_a_blank_resource_type_is_undetermined
+    @adapter.stub(:fhir_search, multi_type_coverage_bundle) do
+      [ nil, "", "   ", "\t \n", :"" ].each do |resource_type|
+        assert_nil @adapter.verify_eligibility("pt_test_001", resource_type),
+                   "resource_type #{resource_type.inspect} must not answer from arbitrary coverage"
+      end
+
+      assert_equal true, @adapter.verify_eligibility("pt_test_001", "medicaid")[:eligible]
+      assert_equal true, @adapter.verify_eligibility("pt_test_001", "medicare_a")[:eligible]
+    end
+  end
+
   def test_verify_eligibility_year_only_period_parses_to_year_range
     result = eligibility_for_period("start" => "2026", "end" => "2026")
     assert_equal Date.new(2026, 1, 1), result[:coverage_start]
@@ -5087,6 +5352,34 @@ class Corvid::Adapters::FhirAdapterTest < Minitest::Test
   end
 
   private
+
+  TRIBAL_ENROLLMENT_EXTENSION_URL = "https://lakeraven.com/fhir/StructureDefinition/tribal-enrollment"
+
+  def tribal_enrollment_patient(id, confidence_sub:)
+    {
+      "id" => id,
+      "extension" => [ {
+        "url" => TRIBAL_ENROLLMENT_EXTENSION_URL,
+        "extension" => [
+          { "url" => "enrolled", "valueBoolean" => true },
+          { "url" => "tribeCode", "valueString" => "TGN" },
+          { "url" => "confidence" }.merge(confidence_sub)
+        ]
+      } ]
+    }
+  end
+
+  # Raises from Net::HTTP#request so execute_http, http_get, and fhir_read all run.
+  def with_transport_failure(error_class)
+    requests = 0
+    failing_http = Object.new
+    failing_http.define_singleton_method(:request) do |_req|
+      requests += 1
+      raise error_class, "synthetic transport failure"
+    end
+    @adapter.stub(:build_http, failing_http) { yield }
+    assert_equal 1, requests, "expected the Patient read to reach the transport"
+  end
 
   def no_content_http_response
     response = Net::HTTPNoContent.new("1.1", "204", "No Content")

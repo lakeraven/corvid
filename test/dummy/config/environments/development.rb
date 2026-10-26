@@ -43,8 +43,9 @@ Rails.application.configure do
   # Highlight code that triggered redirect in logs.
   config.action_dispatch.verbose_redirect_logs = true
 
-  # Suppress logger output for asset requests.
-  config.assets.quiet = true
+  # NOTE: no `config.assets.*` here — this API-only dummy app has no asset
+  # pipeline gem, so touching config.assets raises NoMethodError at boot and
+  # makes every `bin/rails` call in development fail.
 
   # Raises error for missing translations.
   # config.i18n.raise_on_missing_translations = true
