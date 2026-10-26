@@ -1844,7 +1844,7 @@ class Corvid::Adapters::FhirAdapterTest < Minitest::Test
         )
         with_stubbed_coverage_http({ coverage_search_url("pt_oo_inexact") => http_ok_json(bundle) }) do
           assert_nil @adapter.get_coverages("pt_oo_inexact"),
-                     "expected nil for inexact untrusted OperationOutcome #{severity}/#{code.inspect}"
+                     "expected nil for malformed or untrusted OperationOutcome #{severity}/#{code.inspect}"
         end
       end
     end
@@ -1876,7 +1876,7 @@ class Corvid::Adapters::FhirAdapterTest < Minitest::Test
         )
         with_stubbed_coverage_http({ coverage_search_url("pt_oo_unicode") => http_ok_json(bundle) }) do
           assert_nil @adapter.get_coverages("pt_oo_unicode"),
-                     "expected nil for unicode-padded OperationOutcome #{severity}/#{code.inspect}"
+                     "expected nil for malformed (non-ASCII-token) OperationOutcome #{severity}/#{code.inspect}"
         end
       end
     end
@@ -3590,7 +3590,7 @@ class Corvid::Adapters::FhirAdapterTest < Minitest::Test
       OUTCOME_SEVERITIES.each do |severity|
         bundle = conditions_bundle_with_operation_outcome([ condition ], issue_code: code, severity: severity)
         assert_nil get_conditions_with_bundle(bundle),
-                   "expected nil for unicode-padded OperationOutcome #{severity}/#{code.inspect} on Condition search"
+                   "expected nil for malformed (non-ASCII-token) OperationOutcome #{severity}/#{code.inspect} on Condition search"
       end
     end
   end
@@ -3601,7 +3601,7 @@ class Corvid::Adapters::FhirAdapterTest < Minitest::Test
       OUTCOME_SEVERITIES.each do |severity|
         bundle = medications_bundle_with_operation_outcome([ request ], issue_code: code, severity: severity)
         assert_nil get_medications_with_bundle(bundle),
-                   "expected nil for unicode-padded OperationOutcome #{severity}/#{code.inspect} on MedicationRequest search"
+                   "expected nil for malformed (non-ASCII-token) OperationOutcome #{severity}/#{code.inspect} on MedicationRequest search"
       end
     end
   end
@@ -5035,7 +5035,7 @@ class Corvid::Adapters::FhirAdapterTest < Minitest::Test
       OUTCOME_SEVERITIES.each do |severity|
         bundle = conditions_bundle_with_operation_outcome([ condition ], issue_code: code, severity: severity)
         assert_nil get_conditions_with_bundle(bundle),
-                   "expected nil for inexact untrusted OperationOutcome #{severity}/#{code.inspect}"
+                   "expected nil for malformed or untrusted OperationOutcome #{severity}/#{code.inspect}"
       end
     end
   end
@@ -5046,7 +5046,7 @@ class Corvid::Adapters::FhirAdapterTest < Minitest::Test
       OUTCOME_SEVERITIES.each do |severity|
         bundle = medications_bundle_with_operation_outcome([ request ], issue_code: code, severity: severity)
         assert_nil get_medications_with_bundle(bundle),
-                   "expected nil for inexact untrusted OperationOutcome #{severity}/#{code.inspect}"
+                   "expected nil for malformed or untrusted OperationOutcome #{severity}/#{code.inspect}"
       end
     end
   end

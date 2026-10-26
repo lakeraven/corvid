@@ -71,6 +71,17 @@ class Corvid::Adapters::FhirDemoAdapterTest < Minitest::Test
     }, result.first)
   end
 
+  def test_deep_base_path_demo_subclass_maps_coverage_from_in_memory_store
+    coverage = synthetic_demo_coverage(for_patient: "pt_demo_deep_cov")
+    adapter = deep_base_fhir_demo_adapter(resources: [ coverage ])
+
+    result = adapter.get_coverages("pt_demo_deep_cov")
+
+    refute_nil result
+    assert_equal 1, result.size
+    assert_equal "POL_DEMO_COV", result.first[:policy_number]
+  end
+
   def test_get_coverages_returns_empty_array_when_patient_has_no_coverage_in_memory_store
     adapter = Corvid::Adapters::FhirDemoAdapter.new(
       resources: [ synthetic_condition ]
@@ -136,6 +147,16 @@ class Corvid::Adapters::FhirDemoAdapterTest < Minitest::Test
   end
 
   private
+
+  def deep_base_fhir_demo_adapter(resources:)
+    klass = Class.new(Corvid::Adapters::FhirDemoAdapter) do
+      define_method(:initialize) do |resources: []|
+        super(resources: resources)
+        @base_url = "memory://fhir-demo/a/b/r4".freeze
+      end
+    end
+    klass.new(resources: resources)
+  end
 
   def synthetic_service_request
     {
