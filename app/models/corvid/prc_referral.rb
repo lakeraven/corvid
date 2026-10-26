@@ -41,6 +41,11 @@ module Corvid
     validates :referral_identifier, presence: true
     validates :referral_identifier, uniqueness: { scope: [ :tenant_identifier, :facility_identifier ] }
 
+    # MedicalPriorityService writes only this. Null until a priority is assigned.
+    # Same set as corvid_prc_referrals_priority_system_check (ADR 0002).
+    PRIORITY_SYSTEMS = %w[corvid_v1].freeze
+    validates :priority_system, inclusion: { in: PRIORITY_SYSTEMS }, allow_nil: true
+
     # Referrals for a given patient. Joins the parent Case since the
     # patient_identifier lives there (the referral is case-scoped).
     # Eager-loads the case so callers iterating referrals don't N+1.
