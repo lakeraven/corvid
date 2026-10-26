@@ -69,6 +69,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `ActiveRecord::IrreversibleMigration` on `down` by design — re-adding columns
   that store patient names at rest should be a new decision with a new ADR, not
   a rollback. If you genuinely need them back, the manual path is `add_column`.
+- `corvid_cases.closure_reason`. Nothing in the engine read or wrote it.
+  `down` adds the nullable string column back; any previous values are gone.
+- `corvid_claim_submissions.provider_type`. Nothing in the engine wrote it,
+  and a token check would still have accepted PHI-shaped values. `down` adds
+  the nullable string column back; any previous values are gone.
 - `corvid_prc_payments.check_number` and the `Corvid::PrcPayment#check_number`
   attribute. The #591 PHI disclosure classifies a cheque number as patient
   PHI, and nothing in Corvid read it. `Corvid::PrcImporter` no longer stores
@@ -78,6 +83,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   nullable column and cannot restore values. (#702)
 
 ### Changed
+- Postgres CHECK constraints and foreign keys now bound columns that
+  accepted any string. Value lists: `corvid_prc_referrals.priority_system`
+  (`corvid_v1`), `corvid_prc_eligibility_decisions.provider_confidence`
+  (`verified`, `stale`, `unavailable`),
+  `corvid_prc_overpayment_analyses.payment_system` (`pfs`, `ipps`, `asc`,
+  `opps`) and `recovery_confidence` (`clear`, `stub_estimate`,
+  `no_rate_for_year`, `unmapped_procedure`, `unmapped_facility`,
+  `missing_service_date`). `corvid_fmap_determinations.jurisdiction` is two
+  uppercase letters, and `missing_evidence` is a jsonb array drawn from the
+  six-term evidence vocabulary. `best_available_rule_key` and `rule_key`
+  reference `corvid_fmap_rules.rule_key`. Nullable columns still allow NULL.
+  `corvid_prc_obligations.status` is left unconstrained (owner decision
+  pending). The migration counts existing violating rows and aborts without
+  updating or coercing them when any row would fail a new constraint.
+  Deployments that ran `FhirAdapter` before #665 may have
+  `corvid_prc_eligibility_decisions.provider_confidence` values outside
+  `verified`, `stale`, and `unavailable`, and the migration will then abort
+  with a count. List the offending values before migrating:
+
+      SELECT DISTINCT provider_confidence
+      FROM corvid_prc_eligibility_decisions
+      WHERE provider_confidence IS NOT NULL
+        AND provider_confidence NOT IN ('verified', 'stale', 'unavailable')
+
+  Decide whether to null them (these are audit rows) before re-running.
+  `FmapClassificationService.classify!` now raises `RecordInvalid` for a
+  jurisdiction that is not two upper-case letters (for example 'ak'), where
+  it used to persist a federal-only row.
+- `Corvid::TribalEligibilityService` now returns and persists a nil
+  `provider_confidence` for out-of-contract adapter confidence. This is an
+  API output change.
 - `Corvid::Case#display_name` no longer falls back to a stored name. It
   resolves through `Corvid.adapter` for the duration of the call and returns
   `"Unknown Patient"` when the patient cannot be resolved. A host without vault
