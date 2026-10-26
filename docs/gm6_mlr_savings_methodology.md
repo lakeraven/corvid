@@ -16,9 +16,14 @@ referred-care (PRC) claim panel for a 2-provider Urban Indian Organization
 ```bash
 cd corvid
 bundle install                                                      # first time
-cd test/dummy && RAILS_ENV=test bin/rails db:prepare && cd ../..    # first time
-cd test/dummy && RAILS_ENV=test bin/rails demo:mlr_savings
+cd test/dummy && RAILS_ENV=development bin/rails db:prepare && cd ../..  # first time
+cd test/dummy && RAILS_ENV=development bin/rails demo:mlr_savings
 ```
+
+Run it with `DATABASE_URL` unset so `test/dummy/config/database.yml` selects the
+development database. The task refuses any other `RAILS_ENV`, like the
+`bin/demo-*` entry points: it deletes and re-seeds rate rows and must not write
+into the test database.
 
 The task is idempotent — every seeded rate row and the whole claim panel are
 deleted/recreated on each run, so it's safe to re-run.

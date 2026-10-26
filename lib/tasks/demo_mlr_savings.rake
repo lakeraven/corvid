@@ -22,10 +22,17 @@
 #     synthetic — no PHI, ground rules documented inline and in
 #     docs/gm6_mlr_savings_methodology.md.
 #
-# Reproduce: bundle exec rails demo:mlr_savings
+# Reproduce (development only; the task refuses any other RAILS_ENV, and
+# DATABASE_URL must be unset so database.yml picks the development database):
+#
+#   cd test/dummy && RAILS_ENV=development bin/rails demo:mlr_savings
+
+require "corvid/demo/environment_guard"
+
 namespace :demo do
   desc "GM-6: build a representative 2-provider UIO PRC claim panel and reprice it to MLR (corvid#469)"
   task mlr_savings: :environment do
+    Corvid::Demo::EnvironmentGuard.ensure_development!("demo:mlr_savings")
     Corvid::Gm6::MlrSavingsDemo.run
   end
 end

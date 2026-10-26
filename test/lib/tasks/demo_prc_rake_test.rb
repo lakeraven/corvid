@@ -2,6 +2,7 @@
 
 require "test_helper"
 require "rake"
+require "minitest/mock"
 
 # Pins demo:prc (lib/tasks/demo.rake) so the narrated happy path seeds all
 # twelve alternate-resource determinations before guarded authorization steps.
@@ -19,7 +20,7 @@ class DemoPrcRakeTest < ActiveSupport::TestCase
   test "demo:prc leaves referral authorized with all alternate resources exhausted" do
     original_adapter = Corvid.adapter
 
-    capture_io { Rake::Task["demo:prc"].invoke }
+    invoke_demo_task("demo:prc")
 
     with_tenant(TENANT) do
       Corvid::TenantContext.current_facility_identifier = FACILITY
@@ -34,5 +35,17 @@ class DemoPrcRakeTest < ActiveSupport::TestCase
     end
   ensure
     Corvid.configure { |c| c.adapter = original_adapter }
+  end
+
+  private
+
+  # The demo tasks refuse any RAILS_ENV but development (see
+  # demo_environment_guard_test.rb). These tests exercise what the task does
+  # once allowed, inside the suite's rolled-back transaction, so they lift
+  # the guard for the one call.
+  def invoke_demo_task(name)
+    Corvid::Demo::EnvironmentGuard.stub(:ensure_development!, nil) do
+      capture_io { Rake::Task[name].invoke }
+    end
   end
 end

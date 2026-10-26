@@ -2,6 +2,7 @@
 
 require "test_helper"
 require "rake"
+require "minitest/mock"
 
 # Pins demo:overlay_reset (lib/tasks/demo_fhir_overlay.rake). The overlay and
 # the narrated PRC demo share the Broken Rock tenant/facility, so the overlay
@@ -20,7 +21,7 @@ class DemoOverlayRakeTest < ActiveSupport::TestCase
 
   test "demo:overlay_reset clears a referral demo:prc left with alternate-resource checks" do
     original_adapter = Corvid.adapter
-    capture_io { Rake::Task["demo:prc"].invoke }
+    invoke_demo_task("demo:prc")
 
     check_ids = with_tenant(TENANT) do
       Corvid::TenantContext.current_facility_identifier = FACILITY
@@ -29,7 +30,7 @@ class DemoOverlayRakeTest < ActiveSupport::TestCase
     end
     assert_not_empty check_ids, "precondition: demo:prc seeds alternate-resource checks in the shared facility"
 
-    capture_io { Rake::Task["demo:overlay_reset"].invoke }
+    invoke_demo_task("demo:overlay_reset")
 
     with_tenant(TENANT) do
       assert_equal 0, Corvid::AlternateResourceCheck.unscoped.where(id: check_ids).count,
@@ -39,5 +40,17 @@ class DemoOverlayRakeTest < ActiveSupport::TestCase
     end
   ensure
     Corvid.configure { |c| c.adapter = original_adapter }
+  end
+
+  private
+
+  # The demo tasks refuse any RAILS_ENV but development (see
+  # demo_environment_guard_test.rb). These tests exercise what the task does
+  # once allowed, inside the suite's rolled-back transaction, so they lift
+  # the guard for the one call.
+  def invoke_demo_task(name)
+    Corvid::Demo::EnvironmentGuard.stub(:ensure_development!, nil) do
+      capture_io { Rake::Task[name].invoke }
+    end
   end
 end

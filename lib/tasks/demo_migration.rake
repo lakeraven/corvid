@@ -11,9 +11,12 @@
 #
 #   bin/rails demo:migrate          # seed + run (migrate vs halt) per hero
 #   bin/rails demo:migration_reset  # clear the seeded rows
+require "corvid/demo/environment_guard"
+
 namespace :demo do
   desc "Seed the synthetic Broken Rock scenario and run the governed migration per hero (in-process stub target)"
   task migrate: :environment do
+    Corvid::Demo::EnvironmentGuard.ensure_development!("demo:migrate")
     target = Corvid::Demo::StubMigrationTarget.new
     puts "== Reusable PRC governed migration demo =="
     puts "Tenant:    #{Corvid::Demo::Migration::DEFAULT_TENANT}"
@@ -36,6 +39,7 @@ namespace :demo do
 
   desc "Clear the seeded synthetic Broken Rock scenario"
   task migration_reset: :environment do
+    Corvid::Demo::EnvironmentGuard.ensure_development!("demo:migration_reset")
     count = Corvid::Demo::Migration.reset!
     puts "demo:migration_reset — removed #{count} Broken Rock hero case(s) and their determinations."
   end

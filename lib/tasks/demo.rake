@@ -1,9 +1,12 @@
 # frozen_string_literal: true
 
+require "corvid/demo/environment_guard"
+
 namespace :demo do
   desc "Run the narrated GM-5 PRC happy-path demo (corvid#468): " \
        "registration -> eligibility/tribal enrollment -> referral -> obligation/budget"
   task prc: :environment do
+    Corvid::Demo::EnvironmentGuard.ensure_development!("demo:prc")
     require "corvid/adapters/enrollment_demo_adapter"
 
     tenant = "tnt_broken_rock"

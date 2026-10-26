@@ -8,17 +8,21 @@
 # with the unchanged analyzer, and reports per-clinic + consortium dollars
 # recovered. CEHRT-safe: the certified EHR stays the system of record.
 #
-#   bundle exec rails demo:overlay
-#   bundle exec rails demo:overlay_reset
+#   cd test/dummy && RAILS_ENV=development bin/rails demo:overlay
+#   cd test/dummy && RAILS_ENV=development bin/rails demo:overlay_reset
+require "corvid/demo/environment_guard"
+
 namespace :demo do
   desc "Corvid stock-FHIR overlay demo: ingest 2 synthetic clinics over FHIR R4, run PRC + MLR, report $ recovered"
   task overlay: :environment do
+    Corvid::Demo::EnvironmentGuard.ensure_development!("demo:overlay")
     require "corvid/demo/fhir_overlay_demo"
     Corvid::Demo::FhirOverlayDemo.run
   end
 
   desc "Reset the stock-FHIR overlay demo (delete ingested cases/obligations for both synthetic tenants)"
   task overlay_reset: :environment do
+    Corvid::Demo::EnvironmentGuard.ensure_development!("demo:overlay_reset")
     require "corvid/demo/fhir_overlay_demo"
     Corvid::Demo::FhirOverlayDemo.reset!
   end
