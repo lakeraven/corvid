@@ -11,9 +11,34 @@ class Corvid::FhirReferenceCorvidTokenTest < ActiveSupport::TestCase
   test "id_from accepts Corvid pt_, pr_, and rf_ token ids on matching resource types" do
     assert_equal PT_TOKEN, Corvid::FhirReference.id_from("Patient/#{PT_TOKEN}", type: "Patient")
     assert_equal PR_TOKEN, Corvid::FhirReference.id_from("Practitioner/#{PR_TOKEN}", type: "Practitioner")
+    assert_equal PR_TOKEN, Corvid::FhirReference.id_from("PractitionerRole/#{PR_TOKEN}", type: "PractitionerRole")
     assert_equal RF_TOKEN, Corvid::FhirReference.id_from("ServiceRequest/#{RF_TOKEN}", type: "ServiceRequest")
     assert_equal "pt_contract-001", Corvid::FhirReference.id_from("Patient/pt_contract-001", type: "Patient")
     assert_equal "pt_x", Corvid::FhirReference.id_from("Patient/pt_x")
+  end
+
+  test "id_from rejects Corvid token prefixes on the wrong resource type" do
+    assert_nil Corvid::FhirReference.id_from("Patient/rf_01HK8B", type: "Patient")
+    assert_nil Corvid::FhirReference.id_from("Patient/rf_01HK8B")
+    assert_nil Corvid::FhirReference.id_from("Practitioner/pt_01HK8B", type: "Practitioner")
+    assert_nil Corvid::FhirReference.id_from("Organization/pr_01HK8B", type: Corvid::FhirReference::PROVIDER_TYPES)
+    assert_nil Corvid::FhirReference.id_from("ServiceRequest/pt_01HK8B", type: "ServiceRequest")
+    assert_nil Corvid::FhirReference.id_from("Practitioner/rf_01HK8B", type: "Practitioner")
+  end
+
+  test "id_from accepts a pt_ Corvid token of exactly 64 characters and rejects 65" do
+    ok_token = "pt_#{'a' * 61}"
+    long_token = "pt_#{'a' * 62}"
+    assert_equal 64, ok_token.length
+    assert_equal 65, long_token.length
+    assert_equal ok_token, Corvid::FhirReference.id_from("Patient/#{ok_token}", type: "Patient")
+    assert_nil Corvid::FhirReference.id_from("Patient/#{long_token}", type: "Patient")
+  end
+
+  test "id_from returns nil for store_text nt_ prefix and strict _history version for Corvid-shaped ids" do
+    assert_nil Corvid::FhirReference.id_from("Patient/nt_01HK8B", type: "Patient")
+    assert_nil Corvid::FhirReference.id_from("Patient/pt-1/_history/pt_1")
+    assert_equal "pt-1", Corvid::FhirReference.id_from("Patient/pt-1/_history/3")
   end
 
   test "id_from accepts versioned references when the resource id is a Corvid token" do
@@ -49,5 +74,30 @@ class Corvid::FhirReferenceCorvidTokenTest < ActiveSupport::TestCase
     assert adapter.send(:patient_reference?, "Patient/#{PT_TOKEN}", PT_TOKEN)
     refute adapter.send(:patient_reference?, "Patient/#{PT_TOKEN}", "pt-other")
     refute adapter.send(:patient_reference?, "Patient/pt-other", PT_TOKEN)
+  end
+
+  test "FhirAdapter patient_reference? rejects rf_ token on Patient reference" do
+    adapter = Corvid::Adapters::FhirAdapter.new(base_url: "https://fhir.example.com/r4")
+    refute adapter.send(:patient_reference?, "Patient/rf_01HK8BXYZ", "rf_01HK8BXYZ")
+  end
+
+  test "Task.from_fhir_attributes omits assignee when owner Practitioner reference uses pt_ token" do
+    fhir_resource = OpenStruct.new(
+      status: "requested",
+      intent: "order",
+      owner: OpenStruct.new(reference: "Practitioner/pt_01HK8C")
+    )
+    attrs = Corvid::Task.from_fhir_attributes(fhir_resource)
+    refute attrs.key?(:assignee_identifier)
+  end
+
+  test "Task.from_fhir_attributes extracts assignee when owner Practitioner reference uses pr_ token" do
+    fhir_resource = OpenStruct.new(
+      status: "requested",
+      intent: "order",
+      owner: OpenStruct.new(reference: "Practitioner/#{PR_TOKEN}")
+    )
+    attrs = Corvid::Task.from_fhir_attributes(fhir_resource)
+    assert_equal PR_TOKEN, attrs[:assignee_identifier]
   end
 end

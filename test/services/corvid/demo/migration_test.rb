@@ -59,7 +59,7 @@ class Corvid::Demo::MigrationTest < ActiveSupport::TestCase
     end
   end
 
-  test "reset! removes legacy underscore Broken Rock hero cases alongside current heroes" do
+  test "reset! removes legacy underscore Broken Rock hero cases at the demo facility alongside current heroes" do
     with_tenant(TENANT) do
       LEGACY_HERO_IDS.each do |patient_ref|
         Corvid::Case.find_or_create_by!(
@@ -79,6 +79,71 @@ class Corvid::Demo::MigrationTest < ActiveSupport::TestCase
     Corvid::Demo::Migration.reset!(tenant: TENANT)
     with_tenant(TENANT) do
       assert_equal 0, Corvid::Case.where(patient_identifier: LEGACY_HERO_IDS + Corvid::Demo::Migration::HEROES.keys).count
+    end
+  end
+
+  NON_SEEDED_DEMO_ADAPTER_IDS = %w[pt_demo_001 pt_demo_other pt_demo_unknown].freeze
+
+  test "reset! deletes only demo-seeded rows within tenant and facility scope" do
+    other_tenant = "#{TENANT}_other"
+    other_facility = "fac_other_demo_scope"
+    legacy_at_demo_facility = LEGACY_HERO_IDS.first
+
+    with_tenant(TENANT) do
+      Corvid::Demo::Migration.seed!(tenant: TENANT)
+      NON_SEEDED_DEMO_ADAPTER_IDS.each do |patient_ref|
+        Corvid::Case.create!(
+          tenant_identifier: TENANT,
+          facility_identifier: other_facility,
+          patient_identifier: patient_ref,
+          status: "active",
+          lifecycle_status: "intake",
+          intake_at: Time.current
+        )
+      end
+      Corvid::Case.create!(
+        tenant_identifier: TENANT,
+        facility_identifier: other_facility,
+        patient_identifier: legacy_at_demo_facility,
+        status: "active",
+        lifecycle_status: "intake",
+        intake_at: Time.current
+      )
+    end
+
+    with_tenant(other_tenant) do
+      Corvid::Case.create!(
+        tenant_identifier: other_tenant,
+        facility_identifier: Corvid::Demo::Migration::FACILITY,
+        patient_identifier: Corvid::Demo::Migration::HEROES.keys.first,
+        status: "active",
+        lifecycle_status: "intake",
+        intake_at: Time.current
+      )
+    end
+
+    removed = Corvid::Demo::Migration.reset!(tenant: TENANT)
+
+    with_tenant(TENANT) do
+      assert_operator removed, :>=, 2, "reset! must remove seeded heroes at the demo facility"
+      NON_SEEDED_DEMO_ADAPTER_IDS.each do |patient_ref|
+        assert Corvid::Case.exists?(patient_identifier: patient_ref, facility_identifier: other_facility),
+               "reset! must not delete #{patient_ref} (adapter test id, never seeded by Migration)"
+      end
+      assert Corvid::Case.exists?(
+        patient_identifier: legacy_at_demo_facility,
+        facility_identifier: other_facility
+      ), "legacy hero id at a non-demo facility must survive reset!"
+      refute Corvid::Case.exists?(
+        patient_identifier: legacy_at_demo_facility,
+        facility_identifier: Corvid::Demo::Migration::FACILITY
+      ), "legacy hero id at the demo facility must be removed"
+      assert_equal 0, Corvid::Case.where(patient_identifier: Corvid::Demo::Migration::HEROES.keys).count
+    end
+
+    with_tenant(other_tenant) do
+      assert Corvid::Case.exists?(patient_identifier: Corvid::Demo::Migration::HEROES.keys.first),
+             "cases in another tenant must not be deleted"
     end
   end
 

@@ -2,6 +2,7 @@
 
 require "minitest/autorun"
 require "corvid/adapters/enrollment_demo_adapter"
+require "corvid/fhir_reference"
 
 class Corvid::Adapters::EnrollmentDemoAdapterTest < Minitest::Test
   def setup
