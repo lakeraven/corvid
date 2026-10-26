@@ -91,8 +91,8 @@ module Corvid
       BLOCKING_OUTCOME_SEVERITIES = %w[error fatal].freeze
       # Plain-ASCII FHIR code token: printable ASCII runs separated by one
       # space. No padding, no empty string, and no character outside [!-~].
-      # A present OperationOutcome issue.code that is not this token is
-      # unknown. Do not normalize or guess.
+      # An OperationOutcome issue.code that is missing or is not this
+      # token is unknown. Do not normalize or guess.
       FHIR_CODE_TOKEN = /\A[!-~]+(?: [!-~]+)*\z/
       # These tokens make the page unknown at any severity. Comparison is
       # code.downcase of a FHIR_CODE_TOKEN, with no whitespace or format
@@ -483,7 +483,7 @@ module Corvid
       # codes given only as verificationStatus text, stripped and
       # case-insensitive, are excluded too. Entered-in-error is dropped
       # even when clinical status is unusable. An OperationOutcome issue
-      # code key that is present but not a plain-ASCII FHIR code token is
+      # whose code is missing or is not a plain-ASCII FHIR code token is
       # unknown at any severity, including a non-String. Never raises.
       # In memory only — never persisted or logged (ADR 0003).
       def get_conditions(patient_identifier)
@@ -508,8 +508,8 @@ module Corvid
       # doNotPerform value makes the page unknown. Code is the first
       # coding with a non-empty code; display falls back to that coding's
       # display, then text. No such coding and no text is unknown. Invalid
-      # Medication ids are not requested. An OperationOutcome issue code
-      # key that is present but not a plain-ASCII FHIR code token is
+      # Medication ids are not requested. An OperationOutcome issue whose
+      # code is missing or is not a plain-ASCII FHIR code token is
       # unknown at any severity, including a non-String. Never raises.
       # Array of MedicationReference, or nil when unknown. In memory only —
       # never persisted or logged (ADR 0003).
@@ -638,12 +638,12 @@ module Corvid
       # or the result is nil. An OperationOutcome entry is nil when issue
       # is missing, not an Array, empty, contains a non-Hash, or has a
       # severity other than exactly "fatal", "error", "warning", or
-      # "information". A present issue code that is not a plain-ASCII
-      # FHIR code token (FHIR_CODE_TOKEN) is nil: a non-String, invalid
-      # encoding, look-alike characters, padding, or "". Nothing is
-      # stripped or rewritten. UNTRUSTED_OUTCOME_CODES are nil at any
-      # severity when that token matches one of them case-insensitively
-      # (code.downcase).
+      # "information". An issue code that is missing or is not a
+      # plain-ASCII FHIR code token (FHIR_CODE_TOKEN) is nil: a missing
+      # key, JSON null, a non-String, invalid encoding, look-alike
+      # characters, padding, or "". Nothing is stripped or rewritten.
+      # UNTRUSTED_OUTCOME_CODES are nil at any severity when that token
+      # matches one of them case-insensitively (code.downcase).
       # "error" and "fatal" still block. A well-formed warning or
       # information issue with another code token is ignored. A
       # resourceType equal to "OperationOutcome" case-insensitively or
@@ -671,8 +671,8 @@ module Corvid
       # total that is not an Integer >= 0, differs from the first page,
       # or does not match the Coverage count, invalid encoding, an
       # untrusted or inexact OperationOutcome, an empty issue array, a
-      # present issue code that is not a FHIR code token, an unexpected
-      # resource without search.mode "include", a blank patient
+      # missing issue code or one that is not a FHIR code token, an
+      # unexpected resource without search.mode "include", a blank patient
       # identifier, a non-String
       # payor display, subscriberId, or type code, a malformed kind,
       # an off-origin / cyclic / over-limit next link, a next relation
@@ -1966,10 +1966,10 @@ module Corvid
 
       # A missing issue, an empty Array, a non-Array, a non-Hash element,
       # or a severity outside COVERAGE_OUTCOME_SEVERITIES is unknown.
-      # A present code uses the same predicate as every other
-      # OperationOutcome read (#blocking_issue?): a non-String, or any
-      # other value that is not a plain-ASCII FHIR code token, is
-      # unknown. UNTRUSTED_OUTCOME_CODES block at any severity.
+      # issue.code uses the same predicate as every other OperationOutcome
+      # read (#blocking_issue?): a missing code, a non-String, or any
+      # other value that is not a plain-ASCII FHIR code token is unknown.
+      # UNTRUSTED_OUTCOME_CODES block at any severity.
       # error and fatal still block. A well-formed warning or information
       # issue with another code token does not.
       def unknown_coverage_outcome?(entry)
@@ -1996,10 +1996,6 @@ module Corvid
         return true unless COVERAGE_OUTCOME_SEVERITIES.include?(issue["severity"])
 
         blocking_issue?(issue)
-      end
-
-      def non_string_issue_code?(code)
-        !code.nil? && !code.is_a?(String)
       end
 
       # 0 skips the entry. nil fails the search. Exact OperationOutcome
@@ -2349,14 +2345,14 @@ module Corvid
         issues.any? { |issue| blocking_issue?(issue) }
       end
 
-      # A code that is present but not a String is unknown at any severity.
-      # A present code that is not a plain-ASCII FHIR code token is unknown
-      # too: invalid encoding, look-alike characters, padding, and "". A
-      # missing code is not, and still follows severity.
+      # FHIR R4 requires OperationOutcome.issue.code (1..1). Malformed
+      # means unknown: an issue is blocking unless its code is a
+      # plain-ASCII FHIR code token. A missing key, JSON null, a
+      # non-String, invalid encoding, look-alike characters, padding,
+      # and "" are unknown at any severity.
       def blocking_issue?(issue)
         return true unless issue.is_a?(Hash)
-        return true if non_string_issue_code?(issue["code"])
-        return true if issue.key?("code") && !fhir_code_token?(issue["code"])
+        return true unless fhir_code_token?(issue["code"])
 
         untrusted_outcome?(issue) || blocking_severity?(issue)
       end
