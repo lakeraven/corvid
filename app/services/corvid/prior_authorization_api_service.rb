@@ -37,10 +37,13 @@ module Corvid
     }.freeze
 
     # Unusable patient reference. Names the rule only — never the submitted
-    # reference value (ADR 0003).
+    # reference value (ADR 0003). Corvid pt_, pr_, and rf_ tokens are the
+    # one exception to FHIR id syntax; see Corvid::FhirReference.
     PATIENT_REFERENCE_ERROR =
       "patient reference must be a relative Patient/<id> reference " \
-      "with a FHIR id (letters, digits, '-' or '.', up to 64 characters)"
+      "with a FHIR id (letters, digits, '-' or '.', up to 64 characters) " \
+      "or a Corvid token (pt_, pr_, or rf_ prefix, a single underscore, " \
+      "then FHIR id characters, 64 characters total)"
 
     class << self
       # POST /Claim/$submit handler. Accepts a FHIR Claim (as hash) and
@@ -278,30 +281,47 @@ module Corvid
         converted if converted.is_a?(Hash)
       end
 
+      # Both :reference and "reference", with different values, is not a
+      # reference. nil fails the patient path closed and drops an optional
+      # provider. The same value under both keys is that value. No value is
+      # included in an error.
       def reference_value(element)
-        element[:reference] || element["reference"]
+        values = reference_candidates(element)
+        values.first if values.uniq.one?
+      end
+
+      def reference_candidates(element)
+        keys = [ :reference, "reference" ]
+        keys.select { |key| element.key?(key) }.map { |key| element[key] }
       end
 
       def extract_service_description(fhir_claim)
-        items = fhir_claim[:item] || fhir_claim["item"] || []
-        first = items.first || {}
-        raw = first[:productOrService] || first["productOrService"]
+        source = hash_like(fhir_claim) || {}
+        items = source[:item] || source["item"] || []
+        raw = codeable_from_item(items.first)
         normalize_codeable_concept(raw) || "Service"
       end
 
-      # productOrService is a FHIR CodeableConcept — may be a Hash with
-      # text/coding in real payloads, or a simple String in lightweight
+      def codeable_from_item(item)
+        source = hash_like(item)
+        return nil unless source
+
+        source[:productOrService] || source["productOrService"]
+      end
+
+      # productOrService is a FHIR CodeableConcept — a Hash or Parameters
+      # (raw or permitted) with text/coding, or a String in lightweight
       # callers. Return a String suitable for persistence as service_requested.
       def normalize_codeable_concept(value)
-        case value
-        when String
-          value.presence
-        when Hash
-          v = value.deep_symbolize_keys
-          v[:text].presence ||
-            v.dig(:coding, 0, :display).presence ||
-            v.dig(:coding, 0, :code).presence
-        end
+        return value.presence if value.is_a?(String)
+
+        concept = hash_like(value)
+        return nil unless concept
+
+        labeled = concept.deep_symbolize_keys
+        labeled[:text].presence ||
+          labeled.dig(:coding, 0, :display).presence ||
+          labeled.dig(:coding, 0, :code).presence
       end
 
       def extract_estimated_cost(fhir_claim)

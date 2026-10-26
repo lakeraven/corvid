@@ -80,7 +80,7 @@ module Corvid
         )
 
         # Seed practitioners for demo
-        add_practitioner("pr_demo_001",
+        add_practitioner("pr-demo-001",
           display_name: "DEMO,PRC MANAGER",
           npi: "0000000001",
           specialty: "PRC Manager"

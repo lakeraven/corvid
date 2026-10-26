@@ -1703,6 +1703,7 @@ module Corvid
       end
 
       # Non-String identifiers are not coerced (an Integer must not match).
+      # id_from accepts a Corvid pt_ token, so that form matches too.
       def patient_reference?(reference, patient_identifier)
         return false unless patient_identifier.is_a?(String)
 

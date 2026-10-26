@@ -60,6 +60,12 @@ ReferralRecord.new(
 )
 ```
 
+A FHIR reference carries FHIR id syntax in its id segment: letters, digits,
+`-`, and `.`, at most 64 characters. Corvid vault tokens are the accepted
+exception. A reference id may be a `pt_`, `pr_`, or `rf_` token with that
+single underscore and no further underscore, still at most 64 characters.
+`Corvid::FhirReference` (`lib/corvid/fhir_reference.rb`) is the reader.
+
 ## Consequences
 
 ### Positive

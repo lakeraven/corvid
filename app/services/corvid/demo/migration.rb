@@ -24,6 +24,18 @@ module Corvid
       # The types the Data Governance Board consents to release for hero_1.
       CONSENTED_TYPES = %w[Patient Condition Observation].freeze
 
+      # Cases seeded before reference ids were hyphenated. reset! removes
+      # these so a later seed does not leave a second pair. The hero ids are
+      # the old Broken Rock pair. The pt_demo_* ids are the underscore
+      # patient ids the demo adapter tests still name.
+      LEGACY_PATIENT_IDENTIFIERS = %w[
+        pt_broken_rock_hero_1
+        pt_broken_rock_hero_2
+        pt_demo_001
+        pt_demo_other
+        pt_demo_unknown
+      ].freeze
+
       # Two synthetic hero patients (tokenized patient_ref). hero_1 is consented
       # and migrates; hero_2 has NO board consent and halts — the deny path is
       # what proves the sovereignty gate is real, not just trusted.
@@ -96,11 +108,13 @@ module Corvid
         end
       end
 
-      # Clear the seeded rows (dependent: :destroy also removes their audit
-      # Determinations). Returns the number of hero cases removed.
+      # Clear the seeded rows and cases still stored under the old
+      # underscore ids (dependent: :destroy also removes their audit
+      # Determinations). Returns the number of cases removed.
       def reset!(tenant: DEFAULT_TENANT)
         Corvid.with_tenant(tenant) do
-          cases = Corvid::Case.where(tenant_identifier: tenant, patient_identifier: HEROES.keys)
+          identifiers = HEROES.keys + LEGACY_PATIENT_IDENTIFIERS
+          cases = Corvid::Case.where(tenant_identifier: tenant, patient_identifier: identifiers)
           count = cases.count
           cases.destroy_all
           count
