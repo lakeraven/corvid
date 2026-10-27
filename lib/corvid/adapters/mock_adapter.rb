@@ -393,7 +393,7 @@ module Corvid
 
       # A check that names no payer is undetermined, never the first coverage.
       # Plan dates that miss the inquiry are not eligible, same rule as
-      # verify_eligibility.
+      # verify_eligibility. A recorded service_active is passed through.
       def check_eligibility_detailed(patient_identifier, payer_identifier, date_of_service: nil)
         answered_on, defaulted = resolve_inquiry_date(date_of_service)
         result = detailed_eligibility_result(patient_identifier, payer_identifier)
@@ -472,8 +472,9 @@ module Corvid
         @coverages[patient_identifier.to_s] << row
       end
 
-      # Synthetic Medicaid answers for issue #712. Dates are applied when
-      # the inquiry date is known, so the scenario follows that month.
+      # Synthetic Medicaid answers for issue #712. Most scenario dates
+      # follow the inquiry month. :active_this_month_only stores the
+      # first and last day of Date.current's month at seeding time.
       MEDICAID_ELIGIBILITY_SCENARIOS = %i[
         active_this_month_only
         mid_month_end
@@ -634,19 +635,39 @@ module Corvid
           plan_name: "TEST PLAN 712",
           eligible: true,
           medicaid_eligibility_scenario: scenario
+        }.merge(seeded_scenario_dates(scenario))
+      end
+
+      # The seed month, not the inquiry month. Other scenarios omit dates
+      # here and apply them when the inquiry is known.
+      def seeded_scenario_dates(scenario)
+        return {} unless scenario == :active_this_month_only
+
+        month = Date.current
+        {
+          coverage_start: Date.new(month.year, month.month, 1),
+          coverage_end: Date.new(month.year, month.month, -1)
         }
       end
 
-      # Plan dates follow the inquiry month. Inactive service stays
-      # eligible at the plan level and reports service_active false.
+      # Plan dates follow the inquiry month. :active_this_month_only keeps
+      # the month stored on the row at seeding; the plan-date check then
+      # decides eligibility. Inactive service stays eligible at the plan
+      # level and reports service_active false.
       def apply_medicaid_scenario!(result, coverage, inquiry_date)
         scenario = coverage[:medicaid_eligibility_scenario]
         return unless MEDICAID_ELIGIBILITY_SCENARIOS.include?(scenario)
 
-        result[:coverage_start] = Date.new(inquiry_date.year, inquiry_date.month, 1)
-        result[:coverage_end] = scenario_coverage_end(scenario, inquiry_date)
+        apply_inquiry_month_dates!(result, scenario, inquiry_date)
         result[:eligible] = true
         result[:service_active] = false if scenario == :inactive_with_covering_dates
+      end
+
+      def apply_inquiry_month_dates!(result, scenario, inquiry_date)
+        return if scenario == :active_this_month_only
+
+        result[:coverage_start] = Date.new(inquiry_date.year, inquiry_date.month, 1)
+        result[:coverage_end] = scenario_coverage_end(scenario, inquiry_date)
       end
 
       # Plan dates that miss the inquiry are not eligible. verify_eligibility
@@ -680,13 +701,15 @@ module Corvid
       end
 
       def detailed_eligibility_from_coverage(payer_identifier, coverage)
-        {
+        result = {
           eligible: coverage[:eligible] == true,
           payer_name: coverage[:payer_name] || "MOCK #{payer_identifier}",
           plan_name: coverage[:plan_name] || "Mock Plan",
           coverage_start: coverage[:coverage_start] || year_start,
           coverage_end: coverage[:coverage_end] || year_end
         }
+        result[:service_active] = coverage[:service_active] if coverage.key?(:service_active)
+        result
       end
 
       def undetermined_detailed_eligibility

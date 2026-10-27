@@ -496,13 +496,18 @@ module Corvid
 
       # FHIR R4 Coverage search has no date parameter, so the inquiry
       # date cannot be sent to the server. Coverage.status is today's
-      # state. eligible is true only when that status is active and
-      # either the inquiry is in Date.current's year and month and the
-      # present period bounds cover it, or period has both start and end
-      # and they cover the inquiry date. An active match that covers the
-      # inquiry is preferred; otherwise the first match is answered. The
-      # asked date is echoed. No matching coverage, or a search that does
-      # not answer, stays nil: absence never verifies (42 CFR 136.61).
+      # state. Missing data is never a negative answer. The chosen
+      # Coverage prefers an active Coverage whose period covers the
+      # inquiry; otherwise the first match is answered. A present
+      # period bound that excludes the inquiry date is eligible: false.
+      # Status active is eligible: true when the inquiry is in
+      # Date.current's year and month and the present bounds cover it,
+      # or when both bounds are present and cover the inquiry. A status
+      # other than active is eligible: false when the inquiry is in the
+      # current month and the present bounds cover it. Anything else
+      # returns nil (undetermined; the row stays unchanged). The asked
+      # date is echoed. No matching coverage, or a search that does not
+      # answer, stays nil: absence never verifies (42 CFR 136.61).
       def verify_eligibility(patient_identifier, resource_type, date_of_service: nil)
         answered_on, defaulted = resolve_inquiry_date(date_of_service)
         coverage = eligibility_coverage(patient_identifier, resource_type, answered_on)
@@ -655,8 +660,11 @@ module Corvid
       def eligibility_hash(coverage, answered_on, defaulted)
         coverage_start = parse_period_date(coverage.dig("period", "start"), :start)
         coverage_end = parse_period_date(coverage.dig("period", "end"), :end)
+        eligible = coverage_eligibility(coverage, coverage_start, coverage_end, answered_on)
+        return nil if eligible.nil?
+
         {
-          eligible: active_on_inquiry?(coverage, coverage_start, coverage_end, answered_on),
+          eligible: eligible,
           payer_name: coverage.dig("payor", 0, "display"),
           policy_number: coverage["subscriberId"],
           coverage_start: coverage_start,
@@ -666,13 +674,29 @@ module Corvid
         }
       end
 
+      # true, false, or nil. A present bound that excludes the inquiry
+      # is false. Active coverage is true for an inquiry in the current
+      # year-month whose present bounds cover it, or when both bounds
+      # are present and cover it. Any other status is false for an
+      # inquiry in the current month whose present bounds cover it.
+      # Missing data stays nil.
+      def coverage_eligibility(coverage, coverage_start, coverage_end, inquiry_date)
+        return nil unless inquiry_date.instance_of?(Date)
+        return false if bound_excludes_inquiry?(coverage_start, coverage_end, inquiry_date)
+        return true if active_on_inquiry?(coverage, coverage_start, coverage_end, inquiry_date)
+        return false if not_active_in_current_month?(coverage, coverage_start, coverage_end, inquiry_date)
+
+        nil
+      end
+
       def active_on_inquiry?(coverage, coverage_start, coverage_end, inquiry_date)
         coverage["status"] == "active" &&
           inquiry_period_eligible?(coverage_start, coverage_end, inquiry_date)
       end
 
-      # Status is today's state. Present bounds cover an inquiry in the
-      # current year-month. Both start and end cover an inquiry they include.
+      # True when present bounds cover an inquiry in the current
+      # year-month, or both start and end cover the inquiry. False here
+      # is not a denial; a missing bound stays open.
       def inquiry_period_eligible?(coverage_start, coverage_end, inquiry_date)
         return false unless inquiry_date.instance_of?(Date)
 
@@ -694,10 +718,19 @@ module Corvid
       # A missing bound does not exclude. A start after the inquiry, or an
       # end before it, does.
       def present_bounds_cover?(coverage_start, coverage_end, inquiry_date)
-        return false if coverage_start && coverage_start > inquiry_date
-        return false if coverage_end && coverage_end < inquiry_date
+        !bound_excludes_inquiry?(coverage_start, coverage_end, inquiry_date)
+      end
 
-        true
+      def bound_excludes_inquiry?(coverage_start, coverage_end, inquiry_date)
+        (coverage_start && coverage_start > inquiry_date) ||
+          (coverage_end && coverage_end < inquiry_date)
+      end
+
+      # Status other than active, in Date.current's year and month, with
+      # the present bounds covering the inquiry.
+      def not_active_in_current_month?(coverage, coverage_start, coverage_end, inquiry_date)
+        coverage["status"] != "active" &&
+          current_month_bounds_cover?(coverage_start, coverage_end, inquiry_date)
       end
 
       def bounded_period_covers?(coverage_start, coverage_end, inquiry_date)

@@ -56,11 +56,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   even when the plan dates cover the inquiry, and that check is not current.
   A present non-boolean `service_active` is not an answer. Mock eligibility,
   including `check_eligibility_detailed` and a seeded Medicaid scenario, is
-  false when the plan period misses the inquiry date. FHIR `Coverage.status`
-  is today's state: eligible is true only when status is active and either
-  the inquiry is in the current year-month and the present period bounds
-  cover it, or the period has both start and end and they cover the inquiry.
-  FHIR prefers an active Coverage that covers that date.
+  false when the plan period misses the inquiry date.
+  `check_eligibility_detailed` passes through a recorded `service_active`.
+  `:active_this_month_only` stores the first and last day of the month of
+  `Date.current` at seeding; other seeded scenarios still follow the inquiry
+  month. FHIR `Coverage.status` is today's state. Missing data is never a
+  negative answer. A present period bound that excludes the inquiry is
+  eligible false. Eligible is true when status is active and either the
+  inquiry is in the current year-month and the present period bounds cover
+  it, or both start and end are present and cover the inquiry. A status
+  other than active is eligible false when the inquiry is in the current
+  month and the present bounds cover it. Otherwise FHIR `verify_eligibility`
+  returns nil and the check row stays unchanged. FHIR prefers an active
+  Coverage that covers that date.
 - `corvid_claim_submissions.rejection_reason_token`, `denial_reason_codes`
   (CARC/RARC codes), `rejected_at` and `denied_at`. The timestamps are kept
   after the status moves on, so a claim rejected or denied and later paid
