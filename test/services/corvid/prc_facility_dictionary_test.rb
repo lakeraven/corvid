@@ -3,6 +3,11 @@
 require "test_helper"
 
 class Corvid::PrcFacilityDictionaryTest < ActiveSupport::TestCase
+  setup do
+    Corvid::PrcFacilityDictionary.reset!
+    cleanup_zip_cbsa_crosswalk_rows!
+  end
+
   def teardown
     Corvid::PrcFacilityDictionary.reset!
     cleanup_zip_cbsa_crosswalk_rows!

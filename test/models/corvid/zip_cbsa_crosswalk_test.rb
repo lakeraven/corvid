@@ -3,8 +3,16 @@
 require "test_helper"
 
 class Corvid::ZipCbsaCrosswalkTest < ActiveSupport::TestCase
+  setup do
+    cleanup_zip_cbsa_crosswalk_rows!
+  end
+
   teardown do
-    next unless Corvid.const_defined?(:ZipCbsaCrosswalk, false)
+    cleanup_zip_cbsa_crosswalk_rows!
+  end
+
+  def cleanup_zip_cbsa_crosswalk_rows!
+    return unless Corvid.const_defined?(:ZipCbsaCrosswalk, false)
 
     Corvid::ZipCbsaCrosswalk.unscoped.delete_all
   rescue ActiveRecord::StatementInvalid

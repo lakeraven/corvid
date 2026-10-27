@@ -10,11 +10,16 @@ class CmsZipCbsaRakeTest < ActiveSupport::TestCase
     Rails.application.load_tasks if Rake::Task.tasks.empty?
     Rake::Task["cms:zip_cbsa:import"].reenable
     @tmpdir = Dir.mktmpdir
+    cleanup_zip_cbsa_crosswalk_rows!
   end
 
   teardown do
     FileUtils.rm_rf(@tmpdir) if @tmpdir
-    next unless Corvid.const_defined?(:ZipCbsaCrosswalk, false)
+    cleanup_zip_cbsa_crosswalk_rows!
+  end
+
+  def cleanup_zip_cbsa_crosswalk_rows!
+    return unless Corvid.const_defined?(:ZipCbsaCrosswalk, false)
 
     Corvid::ZipCbsaCrosswalk.unscoped.delete_all
   rescue ActiveRecord::StatementInvalid
