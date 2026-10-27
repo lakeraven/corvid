@@ -67,6 +67,50 @@ class Corvid::CmsZipCbsaParserTest < ActiveSupport::TestCase
     refute_includes err.message, "11111"
   end
 
+  test "parse accepts a UTF-8 BOM before the header row" do
+    csv = "\xEF\xBB\xBF#{VALID_CSV}"
+    rows = Corvid::CmsZipCbsaParser.parse(csv, fiscal_year: 2026, release_label: "bom")
+    assert_equal 2, rows.size
+  end
+
+  test "parse raises ArgumentError when the header is wrong but a valid data row follows" do
+    assert_raises(ArgumentError) do
+      Corvid::CmsZipCbsaParser.parse("foo,bar\n88101,12345\n", fiscal_year: 2026, release_label: "bad")
+    end
+  end
+
+  test "parse raises ArgumentError when zip and cbsa columns are swapped in the header" do
+    assert_raises(ArgumentError) do
+      Corvid::CmsZipCbsaParser.parse("cbsa,zip\n12345,88101\n", fiscal_year: 2026, release_label: "swapped")
+    end
+  end
+
+  test "parse preserves a zip with a leading zero" do
+    rows = Corvid::CmsZipCbsaParser.parse(
+      "zip,cbsa\n01234,98765\n", fiscal_year: 2026, release_label: "leading_zero"
+    )
+    assert_equal "01234", rows.first[:zip]
+  end
+
+  test "parse accepts ASCII-8BIT input that holds valid UTF-8 bytes" do
+    binary = VALID_CSV.dup.force_encoding(Encoding::ASCII_8BIT)
+    rows = Corvid::CmsZipCbsaParser.parse(binary, fiscal_year: 2026, release_label: "binary_utf8")
+    assert_equal 2, rows.size
+  end
+
+  test "parse raises ArgumentError on invalid UTF-8 without echoing raw bytes" do
+    invalid = "zip,cbsa\n".b + "\xC3\x28".b + ",98765\n".b
+    err = assert_raises(ArgumentError) do
+      Corvid::CmsZipCbsaParser.parse(invalid, fiscal_year: 2026, release_label: "bad_encoding")
+    end
+    assert(
+      err.message.match?(/line\s+\d+/i) || err.message.match?(/encoding/i),
+      "expected line number or encoding in message, got: #{err.message.inspect}"
+    )
+    refute_includes err.message, "\xC3"
+    refute_includes err.message, "\x28"
+  end
+
   test "parse skips comment lines like other CMS canonical CSV importers" do
     csv = <<~CSV
       # release_label: comment_test

@@ -17,8 +17,6 @@ class Corvid::PrcFacilityDictionaryTest < ActiveSupport::TestCase
     return unless Corvid.const_defined?(:ZipCbsaCrosswalk, false)
 
     Corvid::ZipCbsaCrosswalk.unscoped.delete_all
-  rescue ActiveRecord::StatementInvalid
-    nil
   end
 
   test "ships built-in mapping for SEA (Seattle) with locality 02" do
@@ -58,6 +56,15 @@ class Corvid::PrcFacilityDictionaryTest < ActiveSupport::TestCase
   end
 
   # ZIP → CBSA resolution (#371) — synthetic crosswalk rows only.
+
+  test "cbsa_for resolves a zip with a leading zero from an imported crosswalk row" do
+    Corvid::ZipCbsaCrosswalk.create!(
+      fiscal_year: 2026, zip: "01234", cbsa: "98765", release_label: "test"
+    )
+
+    assert_equal "98765",
+                 Corvid::PrcFacilityDictionary.cbsa_for(zip: "01234", on: Date.new(2026, 1, 15))
+  end
 
   test "cbsa_for returns a five-digit urban CBSA from a loaded crosswalk row" do
     Corvid::ZipCbsaCrosswalk.create!(
@@ -130,19 +137,52 @@ class Corvid::PrcFacilityDictionaryTest < ActiveSupport::TestCase
     assert_nil Corvid::PrcFacilityDictionary.cbsa_for(zip: "88101")
   end
 
-  test "reset! clears cbsa_for memo so rows imported after reset are visible" do
+  test "cbsa_for does not cache misses; a row loaded after an earlier nil call is visible on the next call" do
     zip = "88505"
-    Corvid::PrcFacilityDictionary.cbsa_for(zip: zip, on: Date.new(2026, 1, 1))
+    on = Date.new(2026, 1, 1)
+
+    assert_nil Corvid::PrcFacilityDictionary.cbsa_for(zip: zip, on: on)
+
     Corvid::ZipCbsaCrosswalk.create!(
       fiscal_year: 2026, zip: zip, cbsa: "77777", release_label: "test"
     )
 
-    assert_nil Corvid::PrcFacilityDictionary.cbsa_for(zip: zip, on: Date.new(2026, 1, 1)),
-               "memoized nil must persist until reset!"
+    assert_equal "77777", Corvid::PrcFacilityDictionary.cbsa_for(zip: zip, on: on)
+  end
 
-    Corvid::PrcFacilityDictionary.reset!
+  test "cbsa_for does not cache hits; a corrected crosswalk row is visible on the next call" do
+    zip = "88506"
+    on = Date.new(2026, 1, 1)
+    Corvid::ZipCbsaCrosswalk.create!(
+      fiscal_year: 2026, zip: zip, cbsa: "98765", release_label: "test"
+    )
 
-    assert_equal "77777",
-                 Corvid::PrcFacilityDictionary.cbsa_for(zip: zip, on: Date.new(2026, 1, 1))
+    assert_equal "98765", Corvid::PrcFacilityDictionary.cbsa_for(zip: zip, on: on)
+
+    Corvid::ZipCbsaCrosswalk.find_by(fiscal_year: 2026, zip: zip).update!(cbsa: "11111")
+
+    assert_equal "11111", Corvid::PrcFacilityDictionary.cbsa_for(zip: zip, on: on)
+  end
+
+  test "host register still resolves lookup after cbsa_for calls and crosswalk imports" do
+    Corvid::PrcFacilityDictionary.register(
+      "HOSTZIP",
+      name: "Host site",
+      city: "Host City",
+      state: "OR",
+      zip: "88607",
+      locality: "01"
+    )
+
+    Corvid::PrcFacilityDictionary.cbsa_for(zip: "88999", on: Date.new(2026, 1, 1))
+    Corvid::ZipCbsaCrosswalk.create!(
+      fiscal_year: 2026, zip: "88607", cbsa: "44444", release_label: "test"
+    )
+    Corvid::PrcFacilityDictionary.cbsa_for(zip: "88607", on: Date.new(2026, 1, 1))
+
+    entry = Corvid::PrcFacilityDictionary.lookup("HOSTZIP")
+    assert_equal "88607", entry.zip
+    assert_equal "44444",
+                 Corvid::PrcFacilityDictionary.cbsa_for(zip: entry.zip, on: Date.new(2026, 1, 1))
   end
 end

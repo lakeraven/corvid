@@ -15,8 +15,6 @@ class Corvid::ZipCbsaCrosswalkTest < ActiveSupport::TestCase
     return unless Corvid.const_defined?(:ZipCbsaCrosswalk, false)
 
     Corvid::ZipCbsaCrosswalk.unscoped.delete_all
-  rescue ActiveRecord::StatementInvalid
-    nil
   end
 
   test "valid urban row requires fiscal_year, five-digit zip, and five-digit cbsa" do
@@ -57,6 +55,61 @@ class Corvid::ZipCbsaCrosswalkTest < ActiveSupport::TestCase
     six = Corvid::ZipCbsaCrosswalk.new(fiscal_year: 2026, zip: "88101", cbsa: "123456")
     refute six.valid?
     assert six.errors[:cbsa].any?
+  end
+
+  test "fiscal_year must be between 2000 and 2100" do
+    low = Corvid::ZipCbsaCrosswalk.new(fiscal_year: 1999, zip: "88101", cbsa: "98765")
+    refute low.valid?
+    assert low.errors[:fiscal_year].any?
+
+    high = Corvid::ZipCbsaCrosswalk.new(fiscal_year: 2101, zip: "88101", cbsa: "98765")
+    refute high.valid?
+    assert high.errors[:fiscal_year].any?
+  end
+
+  test "database check constraint rejects a four-digit zip on raw insert" do
+    now = Time.current
+    assert_raises(ActiveRecord::StatementInvalid) do
+      Corvid::ZipCbsaCrosswalk.transaction(requires_new: true) do
+        Corvid::ZipCbsaCrosswalk.insert_all(
+          [ { fiscal_year: 2026, zip: "8810", cbsa: "98765", release_label: "raw",
+              created_at: now, updated_at: now } ]
+        )
+      end
+    end
+  end
+
+  test "database check constraint rejects a three-digit cbsa on raw insert" do
+    now = Time.current
+    assert_raises(ActiveRecord::StatementInvalid) do
+      Corvid::ZipCbsaCrosswalk.transaction(requires_new: true) do
+        Corvid::ZipCbsaCrosswalk.insert_all(
+          [ { fiscal_year: 2026, zip: "88101", cbsa: "123", release_label: "raw",
+              created_at: now, updated_at: now } ]
+        )
+      end
+    end
+  end
+
+  test "database check constraint rejects fiscal_year outside 2000..2100 on raw insert" do
+    now = Time.current
+    assert_raises(ActiveRecord::StatementInvalid) do
+      Corvid::ZipCbsaCrosswalk.transaction(requires_new: true) do
+        Corvid::ZipCbsaCrosswalk.insert_all(
+          [ { fiscal_year: 1999, zip: "88101", cbsa: "98765", release_label: "raw",
+              created_at: now, updated_at: now } ]
+        )
+      end
+    end
+  end
+
+  test "zip with a leading zero is stored as five digits" do
+    Corvid::ZipCbsaCrosswalk.create!(
+      fiscal_year: 2026, zip: "01234", cbsa: "98765", release_label: "test"
+    )
+
+    row = Corvid::ZipCbsaCrosswalk.find_by(fiscal_year: 2026, zip: "01234")
+    assert_equal "01234", row.zip
   end
 
   test "unique index rejects duplicate fiscal_year and zip" do
