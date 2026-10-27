@@ -2,6 +2,8 @@
 
 require "test_helper"
 require "minitest/mock"
+require "corvid/adapters/fhir_demo_adapter"
+require_relative "../../support/fhir_adapter_contract_fixtures"
 
 # Issue #712 review panel: binding behavior pins (tests only).
 class Corvid::AlternateResourceCheck712PanelTest < ActiveSupport::TestCase
@@ -18,6 +20,92 @@ class Corvid::AlternateResourceCheck712PanelTest < ActiveSupport::TestCase
   teardown do
     restore_configuration(@config_snapshot)
     Corvid.configuration.alternate_resource_check_max_age = @max_age_snapshot
+  end
+
+  # Issue #712 S1: no date asked — store the adapter's exact Date echo.
+  test "verify! stores adapter date_of_service as inquiry when no date was asked" do
+    with_tenant(TENANT) do
+      check = medicaid_check_for(create_referral)
+      echoed = Date.new(2026, 10, 20)
+
+      Corvid.adapter.define_singleton_method(:verify_eligibility) do |_pid, _type, date_of_service: nil|
+        {
+          eligible: true,
+          coverage_start: Date.new(2026, 10, 1),
+          coverage_end: Date.new(2026, 10, 31),
+          date_of_service: echoed,
+          date_of_service_defaulted: true
+        }
+      end
+
+      travel_to Time.zone.local(2026, 10, 15, 10, 0, 0) do
+        assert check.verify!
+      end
+      check.reload
+
+      assert_equal echoed, check.inquiry_date_of_service,
+                   "When nothing was asked, inquiry_date_of_service must be the adapter's exact Date (issue #712 S1)"
+    end
+  end
+
+  # Issue #712 S2: reject non-Date before the adapter runs.
+  test "verify! raises ArgumentError for string date_of_service before calling adapter" do
+    with_tenant(TENANT) do
+      check = medicaid_check_for(create_referral)
+      calls = []
+      Corvid.configure do |config|
+        config.adapter = Object.new.tap do |recording|
+          recording.define_singleton_method(:verify_eligibility) do |*_args, **_kwargs|
+            calls << :verify_eligibility
+            nil
+          end
+        end
+      end
+
+      assert_raises(ArgumentError) { check.verify!(date_of_service: "2026-10-15") }
+      assert_empty calls,
+                   "verify! must reject a String date_of_service before verify_eligibility (issue #712 S2)"
+    end
+  end
+
+  # Issue #712 S4: FHIR undetermined eligibility leaves the row unchanged.
+  test "verify! leaves check not_checked when FHIR adapter cannot determine eligibility" do
+    previous_adapter = Corvid.adapter
+    fixtures = FhirAdapterContractFixtures
+    patient_id = "pt_712_fhir_undetermined"
+    coverage = {
+      "resourceType" => "Coverage",
+      "id" => "cov_712_undetermined",
+      "status" => "active",
+      "beneficiary" => { "reference" => "Patient/#{patient_id}" },
+      "type" => { "coding" => [ { "code" => "MCDSC" } ] },
+      "payor" => [ { "display" => "TEST MEDICAID PAYER 712" } ]
+    }
+    fhir_adapter = Corvid::Adapters::FhirDemoAdapter.new(
+      resources: [
+        fixtures.patient_resource(patient_id, "TEST", "PATIENT 712 UND"),
+        coverage
+      ]
+    )
+    Corvid.configure { |c| c.adapter = fhir_adapter }
+
+    with_tenant(TENANT) do
+      referral = create_referral
+      referral.case.update!(patient_identifier: patient_id)
+      check = medicaid_check_for(referral)
+      before = check.attributes.slice("status", "checked_at", "inquiry_date_of_service")
+      inquiry = Date.new(2026, 12, 15)
+
+      travel_to Time.zone.local(2026, 10, 27, 10, 0, 0) do
+        refute check.verify!(date_of_service: inquiry)
+      end
+      check.reload
+
+      assert_equal before, check.attributes.slice("status", "checked_at", "inquiry_date_of_service")
+      assert check.not_checked?
+    end
+  ensure
+    Corvid.configure { |c| c.adapter = previous_adapter }
   end
 
   # R2: present non-boolean service_active makes the answer unreadable.

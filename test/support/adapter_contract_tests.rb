@@ -799,6 +799,7 @@ module AdapterContractTests
     end
 
     def assert_eligibility_inquiry_date_contract(adapter, seed, method:)
+      saved_zone = Time.zone
       explicit_dos = Date.new(2026, 6, 15)
       args =
         case method
@@ -828,7 +829,6 @@ module AdapterContractTests
         end
       end
 
-      saved_zone = Time.zone
       Time.zone = "Pacific/Kiritimati"
       travel_to Time.utc(2025, 12, 31, 12, 0, 0) do
         zoned = adapter.public_send(method, *args)

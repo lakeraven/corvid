@@ -548,6 +548,27 @@ class Corvid::Adapters::MockAdapterTest < Minitest::Test
     assert result[:eligible]
   end
 
+  def test_check_eligibility_detailed_passes_service_active_from_recorded_coverage_row
+    payer = "PAYER_712_SERVICE_ACTIVE"
+    @adapter.add_coverage(
+      "pt-712-service-active-detailed",
+      payer_identifier: payer,
+      eligible: true,
+      service_active: false,
+      coverage_start: Date.new(2026, 1, 1),
+      coverage_end: Date.new(2026, 12, 31)
+    )
+
+    result = @adapter.check_eligibility_detailed(
+      "pt-712-service-active-detailed",
+      payer,
+      date_of_service: Date.new(2026, 10, 10)
+    )
+
+    assert_equal false, result[:service_active],
+                 "check_eligibility_detailed must pass service_active from the coverage row (issue #712)"
+  end
+
   def test_verify_eligibility_passes_service_active_from_recorded_coverage_row
     @adapter.add_coverage(
       "pt-712-service-active",
@@ -655,13 +676,36 @@ class Corvid::Adapters::MockAdapterTest < Minitest::Test
   def test_seed_medicaid_eligibility_scenario_active_this_month_only
     assert_respond_to @adapter, :seed_medicaid_eligibility_scenario
 
-    inquiry = Date.new(2026, 10, 20)
-    @adapter.seed_medicaid_eligibility_scenario(SCENARIO_PATIENT, :active_this_month_only)
-    result = @adapter.verify_eligibility(SCENARIO_PATIENT, "medicaid", date_of_service: inquiry)
+    travel_to Time.zone.local(2026, 10, 5, 9, 0, 0) do
+      @adapter.seed_medicaid_eligibility_scenario(SCENARIO_PATIENT, :active_this_month_only)
+    end
 
-    assert result[:eligible]
-    assert_equal Date.new(2026, 10, 31), result[:coverage_end]
-    assert_equal inquiry, result[:date_of_service]
+    inquiry = Date.new(2026, 10, 20)
+    travel_to Time.zone.local(2026, 10, 20, 9, 0, 0) do
+      result = @adapter.verify_eligibility(SCENARIO_PATIENT, "medicaid", date_of_service: inquiry)
+
+      assert result[:eligible]
+      assert_equal Date.new(2026, 10, 1), result[:coverage_start]
+      assert_equal Date.new(2026, 10, 31), result[:coverage_end]
+      assert_equal inquiry, result[:date_of_service]
+    end
+  end
+
+  def test_seed_medicaid_eligibility_scenario_active_this_month_only_ineligible_in_next_month
+    assert_respond_to @adapter, :seed_medicaid_eligibility_scenario
+
+    travel_to Time.zone.local(2026, 10, 5, 9, 0, 0) do
+      @adapter.seed_medicaid_eligibility_scenario(SCENARIO_PATIENT, :active_this_month_only)
+    end
+
+    inquiry = Date.new(2026, 11, 5)
+    travel_to Time.zone.local(2026, 11, 5, 9, 0, 0) do
+      result = @adapter.verify_eligibility(SCENARIO_PATIENT, "medicaid", date_of_service: inquiry)
+
+      refute result[:eligible],
+             "active_this_month_only plan ends at seed month; November inquiry must not be eligible (issue #712)"
+      assert_equal Date.new(2026, 10, 31), result[:coverage_end]
+    end
   end
 
   def test_seed_medicaid_eligibility_scenario_mid_month_end_eligible_before_plan_end

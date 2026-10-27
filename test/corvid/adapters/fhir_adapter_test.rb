@@ -2024,7 +2024,7 @@ class Corvid::Adapters::FhirAdapterTest < Minitest::Test
   end
 
   # Issue #712 round 2: month-scoped active coverage vs full period bounds.
-  def test_verify_eligibility_active_no_period_false_outside_current_month
+  def test_verify_eligibility_active_no_period_undetermined_outside_current_month
     bundle = coverage_bundle({})
     bundle["entry"].first["resource"]["status"] = "active"
     inquiry = Date.new(2026, 12, 15)
@@ -2032,8 +2032,8 @@ class Corvid::Adapters::FhirAdapterTest < Minitest::Test
     travel_to Time.zone.local(2026, 10, 27, 9, 0, 0) do
       @adapter.stub(:fhir_search, bundle) do
         result = @adapter.verify_eligibility("pt_test_001", "medicaid", date_of_service: inquiry)
-        refute result[:eligible], "Active coverage with no period must not cover a future-month inquiry (issue #712)"
-        assert_equal inquiry, result[:date_of_service]
+        assert_nil result,
+                   "Active coverage with no period must not answer outside the current month (issue #712 S4)"
       end
     end
   end
@@ -2052,7 +2052,7 @@ class Corvid::Adapters::FhirAdapterTest < Minitest::Test
     end
   end
 
-  def test_verify_eligibility_active_start_only_false_for_future_month_inquiry
+  def test_verify_eligibility_active_start_only_undetermined_for_future_month_inquiry
     bundle = coverage_bundle("start" => "2026-01-01")
     bundle["entry"].first["resource"]["status"] = "active"
     inquiry = Date.new(2026, 12, 15)
@@ -2060,9 +2060,8 @@ class Corvid::Adapters::FhirAdapterTest < Minitest::Test
     travel_to Time.zone.local(2026, 10, 27, 9, 0, 0) do
       @adapter.stub(:fhir_search, bundle) do
         result = @adapter.verify_eligibility("pt_test_001", "medicaid", date_of_service: inquiry)
-        refute result[:eligible],
-               "Start-only period must not make eligible outside the current month without an end bound (issue #712)"
-        assert_equal inquiry, result[:date_of_service]
+        assert_nil result,
+                   "Start-only period must not answer outside the current month without an end bound (issue #712 S4)"
       end
     end
   end
@@ -2081,7 +2080,7 @@ class Corvid::Adapters::FhirAdapterTest < Minitest::Test
     end
   end
 
-  def test_verify_eligibility_active_no_period_false_for_past_month_inquiry
+  def test_verify_eligibility_active_no_period_undetermined_for_past_month_inquiry
     bundle = coverage_bundle({})
     bundle["entry"].first["resource"]["status"] = "active"
     inquiry = Date.new(2025, 3, 1)
@@ -2089,8 +2088,37 @@ class Corvid::Adapters::FhirAdapterTest < Minitest::Test
     travel_to Time.zone.local(2026, 10, 27, 9, 0, 0) do
       @adapter.stub(:fhir_search, bundle) do
         result = @adapter.verify_eligibility("pt_test_001", "medicaid", date_of_service: inquiry)
-        refute result[:eligible], "Active coverage with no period must not cover a past-month inquiry (issue #712)"
-        assert_equal inquiry, result[:date_of_service]
+        assert_nil result,
+                   "Active coverage with no period must not answer for a past-month inquiry (issue #712 S4)"
+      end
+    end
+  end
+
+  def test_verify_eligibility_cancelled_status_false_when_period_covers_inquiry_in_current_month
+    bundle = coverage_bundle("start" => "2026-01-01", "end" => "2026-12-31")
+    bundle["entry"].first["resource"]["status"] = "cancelled"
+    inquiry = Date.new(2026, 10, 15)
+
+    travel_to Time.zone.local(2026, 10, 27, 9, 0, 0) do
+      @adapter.stub(:fhir_search, bundle) do
+        result = @adapter.verify_eligibility("pt_test_001", "medicaid", date_of_service: inquiry)
+        assert_instance_of Hash, result
+        refute result[:eligible],
+               "Non-active status with covering bounds in the current month must be eligible: false (issue #712)"
+      end
+    end
+  end
+
+  def test_verify_eligibility_not_active_status_false_for_inquiry_in_current_month_with_covering_bounds
+    bundle = coverage_bundle("start" => "2026-10-01", "end" => "2026-10-31")
+    bundle["entry"].first["resource"]["status"] = "draft"
+    inquiry = Date.new(2026, 10, 15)
+
+    travel_to Time.zone.local(2026, 10, 27, 9, 0, 0) do
+      @adapter.stub(:fhir_search, bundle) do
+        result = @adapter.verify_eligibility("pt_test_001", "medicaid", date_of_service: inquiry)
+        assert_instance_of Hash, result
+        refute result[:eligible]
       end
     end
   end
