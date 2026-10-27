@@ -118,6 +118,21 @@ class CmsZipCbsaRakeTest < ActiveSupport::TestCase
     assert_equal 1, Corvid::ZipCbsaCrosswalk.where(fiscal_year: 2026).count
   end
 
+  %w[1999 2101].each do |boundary_year|
+    test "import aborts with usage for fiscal year #{boundary_year} and writes nothing" do
+      seed_fy2026_row!
+      path = write_crosswalk_csv("valid.csv", "zip,cbsa\n88101,11111\n")
+
+      assert_raises(SystemExit) do
+        Rake::Task["cms:zip_cbsa:import"].invoke(boundary_year, path, "boundary_year")
+      end
+      Rake::Task["cms:zip_cbsa:import"].reenable
+
+      assert_equal "98765", Corvid::ZipCbsaCrosswalk.find_by(fiscal_year: 2026, zip: "88101").cbsa
+      assert_nil Corvid::ZipCbsaCrosswalk.find_by(fiscal_year: 2026, zip: "88101", cbsa: "11111")
+    end
+  end
+
   %w[abc 26 2026x 0 2O26].each do |bad_year|
     test "import aborts with usage for invalid fiscal year #{bad_year.inspect} and writes nothing" do
       seed_fy2026_row!
@@ -182,5 +197,71 @@ class CmsZipCbsaRakeTest < ActiveSupport::TestCase
     end
 
     assert_equal "98765", Corvid::ZipCbsaCrosswalk.find_by(fiscal_year: 2026, zip: "01234").cbsa
+  end
+
+  # Gate G1: bare carriage returns must not replace a fiscal-year snapshot (issue #371).
+  test "import aborts on embedded bare carriage return and leaves the fiscal year snapshot untouched" do
+    seed_fy2026_row!
+    path = write_crosswalk_csv(
+      "mixed_cr.csv",
+      "zip,cbsa\r\n01234,98765\n05555,12\r06666,13\r\n"
+    )
+
+    assert_raises(ArgumentError) do
+      Rake::Task["cms:zip_cbsa:import"].invoke("2026", path, "cr_partial")
+    end
+    Rake::Task["cms:zip_cbsa:import"].reenable
+
+    assert_equal 1, Corvid::ZipCbsaCrosswalk.where(fiscal_year: 2026).count
+    assert_equal "98765", Corvid::ZipCbsaCrosswalk.find_by(fiscal_year: 2026, zip: "88101").cbsa
+    assert_nil Corvid::ZipCbsaCrosswalk.find_by(fiscal_year: 2026, zip: "01234")
+  end
+
+  test "import raises on CR-only line separators instead of the header-only empty-file abort" do
+    seed_fy2026_row!
+    path = write_crosswalk_csv("cr_only.csv", "zip,cbsa\r01234,98765\r")
+
+    error = nil
+    begin
+      Rake::Task["cms:zip_cbsa:import"].invoke("2026", path, "cr_only")
+    rescue ArgumentError => e
+      error = e
+    rescue SystemExit
+      flunk "import must raise ArgumentError for CR-only line separators, not abort on empty rows"
+    end
+    Rake::Task["cms:zip_cbsa:import"].reenable
+
+    assert_kind_of ArgumentError, error, "expected ArgumentError from parser for CR-only line separators"
+    assert_equal 1, Corvid::ZipCbsaCrosswalk.where(fiscal_year: 2026).count
+    assert_equal "98765", Corvid::ZipCbsaCrosswalk.find_by(fiscal_year: 2026, zip: "88101").cbsa
+  end
+
+  test "import accepts a normal CRLF crosswalk file" do
+    path = write_crosswalk_csv("crlf.csv", "zip,cbsa\r\n01234,98765\r\n05555,12\r\n")
+
+    assert_output(/Imported 2/) do
+      Rake::Task["cms:zip_cbsa:import"].invoke("2026", path, "crlf")
+    end
+
+    assert_equal "98765", Corvid::ZipCbsaCrosswalk.find_by(fiscal_year: 2026, zip: "01234").cbsa
+    assert_equal "12", Corvid::ZipCbsaCrosswalk.find_by(fiscal_year: 2026, zip: "05555").cbsa
+  end
+
+  # Gate G2: malformed row after valid header and rows rolls back the snapshot replace (issue #371).
+  test "import aborts on a malformed third data row and leaves prior fiscal year rows untouched" do
+    seed_fy2026_row!
+    path = write_crosswalk_csv(
+      "bad_third_row.csv",
+      "zip,cbsa\n88101,98765\n88202,12\nBAD,DATA\n"
+    )
+
+    assert_raises(ArgumentError) do
+      Rake::Task["cms:zip_cbsa:import"].invoke("2026", path, "bad_row")
+    end
+    Rake::Task["cms:zip_cbsa:import"].reenable
+
+    assert_equal 1, Corvid::ZipCbsaCrosswalk.where(fiscal_year: 2026).count
+    assert_equal "98765", Corvid::ZipCbsaCrosswalk.find_by(fiscal_year: 2026, zip: "88101").cbsa
+    assert_nil Corvid::ZipCbsaCrosswalk.find_by(fiscal_year: 2026, zip: "88202")
   end
 end

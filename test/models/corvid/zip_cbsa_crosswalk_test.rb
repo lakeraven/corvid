@@ -112,6 +112,22 @@ class Corvid::ZipCbsaCrosswalkTest < ActiveSupport::TestCase
     assert_equal "01234", row.zip
   end
 
+  # Gate G2: anchored zip/cbsa formats (issue #371 mutant pins).
+  {
+    zip: %w[x01234y 012345],
+    cbsa: %w[x12345y 123456]
+  }.each do |field, values|
+    values.each do |bad_value|
+      test "rejects #{field} value #{bad_value.inspect} outside anchored format" do
+        attrs = { fiscal_year: 2026, zip: "88101", cbsa: "98765", release_label: "anchored" }
+        attrs[field] = bad_value
+        row = Corvid::ZipCbsaCrosswalk.new(attrs)
+        refute row.valid?
+        assert row.errors[field].any?
+      end
+    end
+  end
+
   test "unique index rejects duplicate fiscal_year and zip" do
     Corvid::ZipCbsaCrosswalk.create!(
       fiscal_year: 2026, zip: "88303", cbsa: "98765", release_label: "first"
