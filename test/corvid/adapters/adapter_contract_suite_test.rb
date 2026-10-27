@@ -66,6 +66,17 @@ class Corvid::Adapters::AdapterContractSuiteTest < Minitest::Test
     end
   end
 
+  # Drops every source answer time, so stale-answer protection never runs.
+  class NilAsOfAdapter < Corvid::Adapters::MockAdapter
+    def get_coverages(patient_identifier)
+      super(patient_identifier).map { |row| row.merge(as_of: nil) }
+    end
+
+    def verify_eligibility(patient_identifier, resource_type)
+      super&.merge(as_of: nil)
+    end
+  end
+
   # Answers from the first seeded coverage when resource_type is blank (contract violation).
   class VerifyEligibilityOnBlankResourceTypeAdapter < Corvid::Adapters::MockAdapter
     def verify_eligibility(patient_identifier, resource_type)
@@ -124,6 +135,30 @@ class Corvid::Adapters::AdapterContractSuiteTest < Minitest::Test
   def test_suite_rejects_now_as_answer_time_when_timestamp_missing
     assert_contract_fails(NowAsOfAdapter, :get_coverages)
     assert_contract_fails(NowAsOfAdapter, :verify_eligibility)
+  end
+
+  def test_suite_rejects_an_adapter_that_drops_a_known_answer_time
+    assert_contract_fails(NilAsOfAdapter, :coverage_answer_as_of_known_time)
+  end
+
+  def test_suite_rejects_a_known_answer_time_dropped_by_one_read
+    nil_rows = Class.new(Corvid::Adapters::MockAdapter) do
+      def get_coverages(patient_identifier)
+        super(patient_identifier).map { |row| row.merge(as_of: nil) }
+      end
+    end
+    nil_answer = Class.new(Corvid::Adapters::MockAdapter) do
+      def verify_eligibility(patient_identifier, resource_type)
+        super&.merge(as_of: nil)
+      end
+    end
+
+    assert_contract_fails(nil_rows, :coverage_answer_as_of_known_time)
+    assert_contract_fails(nil_answer, :coverage_answer_as_of_known_time)
+  end
+
+  def test_suite_accepts_a_known_answer_time_carried_through
+    run_contract(probe_for(Corvid::Adapters::MockAdapter), :coverage_answer_as_of_known_time)
   end
 
   def test_suite_rejects_verify_eligibility_that_answers_on_blank_resource_type
