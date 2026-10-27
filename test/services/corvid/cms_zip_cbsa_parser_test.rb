@@ -188,6 +188,38 @@ class Corvid::CmsZipCbsaParserTest < ActiveSupport::TestCase
     assert_equal "98765", urban[:cbsa]
   end
 
+  # Gate H1: carriage-return rule applies to comment lines too (issue #371 round 3).
+  test "parse raises ArgumentError on a comment line with a bare carriage return naming the line without echoing values" do
+    csv = "zip,cbsa\n88101,98765\n# reviewed\r88202,12\n"
+    err = assert_raises(ArgumentError) do
+      Corvid::CmsZipCbsaParser.parse(csv, fiscal_year: 2026, release_label: "cr_comment")
+    end
+    assert_match(/line\s+3/i, err.message)
+    refute_includes err.message, "reviewed"
+    refute_includes err.message, "88202"
+  end
+
+  # Gate H5: field count on data rows (issue #371 round 3).
+  test "parse raises ArgumentError on a data row with three fields naming the line without echoing values" do
+    extra = "EXTRA"
+    csv = "zip,cbsa\n88101,98765,#{extra}\n"
+    err = assert_raises(ArgumentError) do
+      Corvid::CmsZipCbsaParser.parse(csv, fiscal_year: 2026, release_label: "three_fields")
+    end
+    assert_match(/line\s+2/i, err.message)
+    refute_includes err.message, "88101"
+    refute_includes err.message, extra
+  end
+
+  test "parse raises ArgumentError on a data row with one field naming the line without echoing values" do
+    csv = "zip,cbsa\n88101\n"
+    err = assert_raises(ArgumentError) do
+      Corvid::CmsZipCbsaParser.parse(csv, fiscal_year: 2026, release_label: "one_field")
+    end
+    assert_match(/line\s+2/i, err.message)
+    refute_includes err.message, "88101"
+  end
+
   # Gate G2: anchored zip/cbsa formats (issue #371 mutant pins).
   {
     zip: %w[x01234y 012345],

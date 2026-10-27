@@ -247,6 +247,88 @@ class CmsZipCbsaRakeTest < ActiveSupport::TestCase
     assert_equal "12", Corvid::ZipCbsaCrosswalk.find_by(fiscal_year: 2026, zip: "05555").cbsa
   end
 
+  # Gate H1: bare CR on a comment line must abort import and leave the FY snapshot (issue #371 round 3).
+  test "import aborts when a comment line contains a bare carriage return and leaves the fiscal year snapshot untouched" do
+    seed_fy2026_row!
+    path = write_crosswalk_csv(
+      "cr_in_comment.csv",
+      "zip,cbsa\n88101,98765\n# reviewed\r88202,12\n"
+    )
+
+    assert_raises(ArgumentError) do
+      Rake::Task["cms:zip_cbsa:import"].invoke("2026", path, "cr_comment")
+    end
+    Rake::Task["cms:zip_cbsa:import"].reenable
+
+    assert_equal 1, Corvid::ZipCbsaCrosswalk.where(fiscal_year: 2026).count
+    assert_equal "98765", Corvid::ZipCbsaCrosswalk.find_by(fiscal_year: 2026, zip: "88101").cbsa
+    assert_nil Corvid::ZipCbsaCrosswalk.find_by(fiscal_year: 2026, zip: "88202")
+  end
+
+  # Gate H2: import must not silently skip duplicate keys (issue #371 round 3).
+  test "import raises when parsed rows contain duplicate zips for the year and leaves prior rows" do
+    seed_fy2026_row!
+    path = write_crosswalk_csv("dup_stub.csv", "zip,cbsa\n88101,11111\n")
+
+    duplicate_rows = [
+      { fiscal_year: 2026, zip: "88101", cbsa: "11111", release_label: "dup" },
+      { fiscal_year: 2026, zip: "88101", cbsa: "22222", release_label: "dup" }
+    ]
+
+    Corvid::CmsZipCbsaParser.stub(:parse, duplicate_rows) do
+      assert_raises(ActiveRecord::RecordNotUnique) do
+        Rake::Task["cms:zip_cbsa:import"].invoke("2026", path, "dup")
+      end
+    end
+    Rake::Task["cms:zip_cbsa:import"].reenable
+
+    assert_equal "98765", Corvid::ZipCbsaCrosswalk.find_by(fiscal_year: 2026, zip: "88101").cbsa
+    assert_equal "seed", Corvid::ZipCbsaCrosswalk.find_by(fiscal_year: 2026, zip: "88101").release_label
+  end
+
+  # Gate H2: concurrent imports of the same fiscal year use a transaction advisory lock before delete.
+  test "import takes pg_advisory_xact_lock before deleting the fiscal year snapshot" do
+    path = write_crosswalk_csv("lock_probe.csv", "zip,cbsa\n88101,98765\n")
+
+    statements = []
+    subscriber = ActiveSupport::Notifications.subscribe("sql.active_record") do |_name, _start, _finish, _id, payload|
+      sql = payload[:sql]
+      statements << sql if sql.match?(/pg_advisory_xact_lock|DELETE/i)
+    end
+
+    Rake::Task["cms:zip_cbsa:import"].invoke("2026", path, "lock_probe")
+    Rake::Task["cms:zip_cbsa:import"].reenable
+  ensure
+    ActiveSupport::Notifications.unsubscribe(subscriber) if subscriber
+
+    lock_index = statements.index { |s| s.include?("pg_advisory_xact_lock") }
+    delete_index = statements.index { |s| s.match?(/DELETE.*corvid_zip_cbsa_crosswalks/i) }
+    assert lock_index, "expected pg_advisory_xact_lock SQL during import, got: #{statements.inspect}"
+    assert delete_index, "expected DELETE on zip_cbsa_crosswalk during import"
+    assert_operator lock_index, :<, delete_index, "advisory lock must run before DELETE"
+  end
+
+  # Gate H3: replacing one fiscal year must not touch other years (issue #371 round 3).
+  test "import replaces only the target fiscal year and leaves other fiscal years untouched" do
+    Corvid::ZipCbsaCrosswalk.create!(
+      fiscal_year: 2025, zip: "88101", cbsa: "55", release_label: "fy2025_seed"
+    )
+    Corvid::ZipCbsaCrosswalk.create!(
+      fiscal_year: 2026, zip: "88101", cbsa: "98765", release_label: "fy2026_seed"
+    )
+
+    path = write_crosswalk_csv("fy2026_only.csv", "zip,cbsa\n88202,12\n")
+    Rake::Task["cms:zip_cbsa:import"].invoke("2026", path, "fy2026_replace")
+    Rake::Task["cms:zip_cbsa:import"].reenable
+
+    fy2025 = Corvid::ZipCbsaCrosswalk.find_by(fiscal_year: 2025, zip: "88101")
+    assert_equal "55", fy2025.cbsa
+    assert_equal "fy2025_seed", fy2025.release_label
+
+    assert_nil Corvid::ZipCbsaCrosswalk.find_by(fiscal_year: 2026, zip: "88101")
+    assert_equal "12", Corvid::ZipCbsaCrosswalk.find_by(fiscal_year: 2026, zip: "88202").cbsa
+  end
+
   # Gate G2: malformed row after valid header and rows rolls back the snapshot replace (issue #371).
   test "import aborts on a malformed third data row and leaves prior fiscal year rows untouched" do
     seed_fy2026_row!

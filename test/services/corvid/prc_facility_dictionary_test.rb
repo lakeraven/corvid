@@ -97,6 +97,18 @@ class Corvid::PrcFacilityDictionaryTest < ActiveSupport::TestCase
                  Corvid::PrcFacilityDictionary.cbsa_for(zip: "88101-1234", on: Date.new(2026, 1, 1))
   end
 
+  # Gate H4: malformed zip strings never resolve even when a crosswalk row exists (issue #371 round 3).
+  test "cbsa_for returns nil for malformed zips when crosswalk row exists for the five-digit prefix" do
+    Corvid::ZipCbsaCrosswalk.create!(
+      fiscal_year: 2026, zip: "88101", cbsa: "98765", release_label: "test"
+    )
+
+    [ "881011", "88101abc", " 88101", "88101-12", "88101-12345" ].each do |zip|
+      assert_nil Corvid::PrcFacilityDictionary.cbsa_for(zip: zip, on: Date.new(2026, 1, 1)),
+                 "expected nil for malformed zip=#{zip.inspect}"
+    end
+  end
+
   test "cbsa_for returns nil without raising for invalid zip inputs" do
     invalid = [ nil, "", "ABCDE", "8810", "881011", 88_101 ]
     invalid.each do |zip|
