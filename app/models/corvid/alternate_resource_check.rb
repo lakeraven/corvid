@@ -89,6 +89,7 @@ module Corvid
       end
     end
 
+    # verify! passes the referral service_date when that column holds a Date.
     def self.verify_all_for_referral(prc_referral)
       patient_identifier = prc_referral.case&.patient_identifier
       return [] unless patient_identifier
@@ -153,11 +154,15 @@ module Corvid
       end
     end
 
-    def verify!
+    # date_of_service is the inquiry date sent to the adapter. When it is
+    # omitted, the referral service_date is sent if that column holds a
+    # Date. No other date is invented. The adapter's :date_of_service is
+    # stored on inquiry_date_of_service.
+    def verify!(date_of_service: nil)
       patient_identifier = prc_referral.case&.patient_identifier
       return false unless patient_identifier
 
-      result = Corvid.adapter.verify_eligibility(patient_identifier, resource_type)
+      result = eligibility_result(patient_identifier, date_of_service)
       # An unreadable answer is not a determination (42 CFR 136.61).
       # coverage_start, coverage_end, and renewal_date must be an exact
       # Date or nil. Any other type updates nothing. Absent keys store nil.
@@ -196,16 +201,19 @@ module Corvid
 
     # Current for a date of service only when the check is fresh for its
     # resource type and any reported period still covers that date (#640).
-    # as_of is a Time; a check recorded after that moment is not current.
-    # not_enrolled is not current inside its own stored period. Exhausted
-    # and denied describe a benefit period: with a stored period they are
-    # current only inside it, and with none they are current when fresh.
+    # Month-bounded types (medicaid by default) are current only in the
+    # year-month of inquiry_date_of_service (#712). as_of is a Time; a
+    # check recorded after that moment is not current. not_enrolled is
+    # not current inside its own stored period. Exhausted and denied
+    # describe a benefit period: with a stored period they are current
+    # only inside it, and with none they are current when fresh.
     # Absence never verifies.
     def current_for?(date_of_service, as_of: Time.current)
       raise ArgumentError, "date_of_service must be a Date" unless date_of_service.instance_of?(Date)
       raise ArgumentError, "as_of must be a Time" unless as_of.is_a?(Time) || as_of.is_a?(ActiveSupport::TimeWithZone)
 
       fresh_for?(as_of) &&
+        inquiry_month_current?(date_of_service) &&
         !negative_inside_coverage?(date_of_service) &&
         coverage_period_covers?(date_of_service) &&
         benefit_period_covers?(date_of_service) &&
@@ -226,13 +234,15 @@ module Corvid
     end
 
     def verification_attributes(result, next_status)
+      inquiry = exact_inquiry_date(result)
       {
         status: next_status,
         policy_token: result[:policy_token],
         checked_at: Time.current,
         coverage_start: result[:coverage_start],
-        coverage_end: result[:coverage_end],
-        renewal_date: result[:renewal_date]
+        coverage_end: open_ended_date(result[:coverage_end], inquiry),
+        renewal_date: open_ended_date(result[:renewal_date], inquiry),
+        inquiry_date_of_service: inquiry
       }
     end
 
@@ -360,8 +370,19 @@ module Corvid
     def readable_answer?(result)
       return false unless result.is_a?(Hash)
       return false unless result[:eligible] == true || result[:eligible] == false
+      return false unless readable_inquiry_date?(result)
 
       readable_coverage_dates?(result)
+    end
+
+    # Absent key stores nil. A present value must be an exact Date or nil.
+    def readable_inquiry_date?(result)
+      !result.key?(:date_of_service) || exact_date_or_nil?(result[:date_of_service])
+    end
+
+    def exact_inquiry_date(result)
+      value = result[:date_of_service]
+      value if value.instance_of?(Date)
     end
 
     # Nil and a missing key are nil. DateTime is a Date subclass and is
@@ -372,6 +393,65 @@ module Corvid
 
     def exact_date_or_nil?(value)
       value.nil? || value.instance_of?(Date)
+    end
+
+    # Caller date wins. Otherwise the referral service_date when that
+    # column holds a Date. The keyword is omitted when neither is a Date
+    # so existing adapters that lack the keyword still answer.
+    def eligibility_result(patient_identifier, date_of_service)
+      inquiry = inquiry_date_for_adapter(date_of_service)
+      if inquiry.nil?
+        Corvid.adapter.verify_eligibility(patient_identifier, resource_type)
+      else
+        Corvid.adapter.verify_eligibility(patient_identifier, resource_type, date_of_service: inquiry)
+      end
+    end
+
+    def inquiry_date_for_adapter(date_of_service)
+      return date_of_service unless date_of_service.nil?
+
+      service_date = referral_service_date
+      service_date if service_date.instance_of?(Date)
+    end
+
+    # Sentinel dates and dates past the horizon are open coverage (nil).
+    def open_ended_date(date, inquiry_date)
+      return nil if date.nil?
+      return nil if placeholder_coverage_end?(date)
+      return nil if beyond_placeholder_horizon?(date, inquiry_date)
+
+      date
+    end
+
+    def placeholder_coverage_end?(date)
+      dates = Corvid.configuration.placeholder_coverage_end_dates
+      dates.respond_to?(:include?) && dates.include?(date)
+    end
+
+    def beyond_placeholder_horizon?(date, inquiry_date)
+      return false unless inquiry_date.instance_of?(Date)
+
+      years = Corvid.configuration.placeholder_coverage_end_horizon_years
+      return false unless years.is_a?(Integer)
+
+      date > inquiry_date + years.years
+    end
+
+    # Month-bounded checks are current only in the inquiry year-month.
+    # A missing inquiry date is not current, saved or not. The reader
+    # raises when a partial load omitted the column.
+    def inquiry_month_current?(date_of_service)
+      return true unless month_bounded_type?
+
+      inquiry = inquiry_date_of_service
+      return false if inquiry.nil?
+
+      inquiry.year == date_of_service.year && inquiry.month == date_of_service.month
+    end
+
+    def month_bounded_type?
+      types = Corvid.configuration.month_bounded_eligibility_resource_types
+      Array(types).map(&:to_s).include?(resource_type.to_s)
     end
 
     # A checked_at later than as_of is a future answer, not a current one.
@@ -436,9 +516,13 @@ module Corvid
 
     # Coordinated sticks only when the adapter's policy token is present
     # and matches the stored token. Any other eligible result is enrolled
-    # (verify! stores the new token). Ineligible is not_enrolled. nil
-    # leaves the row unchanged — silence is not a determination.
+    # (verify! stores the new token). Ineligible is not_enrolled.
+    # service_active false is not enrolled even when the plan dates cover
+    # the inquiry. nil leaves the row unchanged — silence is not a
+    # determination.
     def status_for_eligibility(result)
+      return :not_enrolled if result[:service_active] == false
+
       case result[:eligible]
       when true then eligible_status(result)
       when false then :not_enrolled

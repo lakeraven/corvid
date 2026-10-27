@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require "date"
+
 module Corvid
   # Engine configuration. Hosts wire this in an initializer:
   #
@@ -40,6 +42,20 @@ module Corvid
     attr_accessor :adapter, :edi_adapter, :phi_sanitizer, :on_provenance, :fetch_provenance
     attr_accessor :verification_snapshot_keys, :verification_snapshot_key_version
 
+    # Dates an eligibility response uses for "no real end". verify! stores
+    # those coverage_end and renewal_date values as nil (open). Default
+    # includes the sentinel 9999-12-31 (#712).
+    attr_accessor :placeholder_coverage_end_dates
+
+    # A coverage_end or renewal_date more than this many years after the
+    # inquiry date is a placeholder and is stored as nil (#712).
+    attr_accessor :placeholder_coverage_end_horizon_years
+
+    # Resource types whose current_for? is limited to the year-month of
+    # inquiry_date_of_service. A saved check with no inquiry date is not
+    # current. Default is medicaid (#712).
+    attr_accessor :month_bounded_eligibility_resource_types
+
     def initialize
       @adapter = nil
       @edi_adapter = nil
@@ -50,6 +66,9 @@ module Corvid
       @fetch_provenance = ->(**) { [] }
       @verification_snapshot_keys = {}
       @verification_snapshot_key_version = nil
+      @placeholder_coverage_end_dates = [ Date.new(9999, 12, 31) ]
+      @placeholder_coverage_end_horizon_years = 25
+      @month_bounded_eligibility_resource_types = %w[medicaid]
     end
 
     def inspect

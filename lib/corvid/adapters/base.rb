@@ -201,19 +201,30 @@ module Corvid
 
       # Verify enrollment for a patient against a coverage type.
       #
+      # date_of_service is the date the answer is for. nil means
+      # Date.current, and a Hash result then sets
+      # :date_of_service_defaulted to true. An explicit Date is echoed
+      # in :date_of_service with :date_of_service_defaulted false. A
+      # non-Date raises ArgumentError; the message does not include the
+      # value. Optional :service_active false means the plan is not
+      # active for that date even when the plan dates cover it.
+      #
       # Returns a Hash with symbol key :eligible set to exactly true or
       # false when the payer answered. Returns nil, or a Hash without a
       # boolean :eligible, when the answer could not be determined.
-      # The result may carry coverage_start, coverage_end, and
-      # renewal_date as Date or nil. Any other type makes the answer
-      # unreadable. Callers treat anything else as undetermined, never
-      # as no coverage (42 CFR 136.61).
+      # A Hash result includes :date_of_service and
+      # :date_of_service_defaulted. The result may carry
+      # coverage_start, coverage_end, and renewal_date as Date or nil.
+      # Any other type makes the answer unreadable. Callers treat
+      # anything else as undetermined, never as no coverage
+      # (42 CFR 136.61).
       #
       # A nil, empty, or whitespace-only resource_type returns nil
       # (undetermined) and never selects a coverage. A real resource
       # type returns its matching coverage. Absence never verifies
       # (42 CFR 136.61).
-      def verify_eligibility(patient_identifier, resource_type)
+      def verify_eligibility(patient_identifier, resource_type, date_of_service: nil)
+        reject_non_date_inquiry!(date_of_service)
         raise NotImplementedError, "#{self.class}#verify_eligibility not implemented"
       end
 
@@ -287,8 +298,15 @@ module Corvid
         raise NotImplementedError, "#{self.class}#fetch_remittances not implemented"
       end
 
-      # Detailed eligibility check (270/271). Returns coverage details hash.
-      def check_eligibility_detailed(patient_identifier, payer_identifier)
+      # Detailed eligibility check (270/271). Returns a coverage details
+      # hash. date_of_service follows verify_eligibility: nil answers for
+      # Date.current and sets :date_of_service_defaulted. A non-Date
+      # raises ArgumentError and the message does not include the value.
+      # A Hash result includes :date_of_service (the Date answered for)
+      # and :date_of_service_defaulted. Absence never verifies
+      # (42 CFR 136.61).
+      def check_eligibility_detailed(patient_identifier, payer_identifier, date_of_service: nil)
+        reject_non_date_inquiry!(date_of_service)
         raise NotImplementedError, "#{self.class}#check_eligibility_detailed not implemented"
       end
 
@@ -311,6 +329,23 @@ module Corvid
       TRIBAL_CONFIDENCE_VALUES = %i[verified stale unavailable].freeze
 
       private
+
+      # A non-Date inquiry is rejected before any lookup. nil is the
+      # omitted keyword, not a value to echo.
+      def reject_non_date_inquiry!(date_of_service)
+        return if date_of_service.nil? || date_of_service.instance_of?(Date)
+
+        raise ArgumentError, "date_of_service must be a Date"
+      end
+
+      # [Date answered for, defaulted]. Date.current when the caller
+      # omitted the keyword.
+      def resolve_inquiry_date(date_of_service)
+        reject_non_date_inquiry!(date_of_service)
+        return [ Date.current, true ] if date_of_service.nil?
+
+        [ date_of_service, false ]
+      end
 
       # Canonical blood-quantum hash. nil stays nil. Strings keep their
       # display text; numerics display via their usual decimal spelling.

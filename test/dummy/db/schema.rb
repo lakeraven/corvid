@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_10_25_000004) do
+ActiveRecord::Schema[8.1].define(version: 2026_10_27_000001) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
@@ -31,15 +31,16 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_25_000004) do
     t.string "eligibility_group_source"
     t.datetime "eligibility_group_set_at"
     t.date "renewal_date"
+    t.date "inquiry_date_of_service"
     t.index ["prc_referral_id", "resource_type"], name: "idx_corvid_arc_referral_type", unique: true
     t.index ["prc_referral_id"], name: "index_corvid_alternate_resource_checks_on_prc_referral_id"
     t.check_constraint "eligibility_group IS NULL AND eligibility_group_set_at IS NULL OR eligibility_group IS NOT NULL AND eligibility_group_set_at IS NOT NULL", name: "corvid_arc_eligibility_group_set_at_check"
     t.check_constraint "eligibility_group IS NULL AND eligibility_group_source IS NULL OR eligibility_group IS NOT NULL AND eligibility_group_source IS NOT NULL", name: "corvid_arc_eligibility_group_pair_check"
-    t.check_constraint "eligibility_group IS NULL OR (eligibility_group::text = ANY (ARRAY['expansion_adult'::character varying, 'waiver_adult'::character varying, 'other'::character varying, 'unknown'::character varying]::text[]))", name: "corvid_arc_eligibility_group_check"
+    t.check_constraint "eligibility_group IS NULL OR (eligibility_group::text = ANY (ARRAY['expansion_adult'::character varying::text, 'waiver_adult'::character varying::text, 'other'::character varying::text, 'unknown'::character varying::text]))", name: "corvid_arc_eligibility_group_check"
     t.check_constraint "eligibility_group IS NULL OR resource_type::text = 'medicaid'::text", name: "corvid_arc_eligibility_group_medicaid_only_check"
-    t.check_constraint "eligibility_group_source IS NULL OR (eligibility_group_source::text = ANY (ARRAY['eligibility_response'::character varying, 'state_case_data'::character varying, 'registration'::character varying, 'staff_entry'::character varying, 'inferred'::character varying]::text[]))", name: "corvid_arc_eligibility_group_source_check"
-    t.check_constraint "resource_type::text = ANY (ARRAY['medicare_a'::character varying, 'medicare_b'::character varying, 'medicare_d'::character varying, 'medicaid'::character varying, 'va_benefits'::character varying, 'private_insurance'::character varying, 'workers_comp'::character varying, 'auto_insurance'::character varying, 'liability_coverage'::character varying, 'state_program'::character varying, 'tribal_program'::character varying, 'charity_care'::character varying]::text[])", name: "corvid_arc_resource_type_check"
-    t.check_constraint "status::text = ANY (ARRAY['not_checked'::character varying, 'checking'::character varying, 'enrolled'::character varying, 'not_enrolled'::character varying, 'denied'::character varying, 'exhausted'::character varying, 'pending_enrollment'::character varying, 'coordinated'::character varying]::text[])", name: "corvid_arc_status_check"
+    t.check_constraint "eligibility_group_source IS NULL OR (eligibility_group_source::text = ANY (ARRAY['eligibility_response'::character varying::text, 'state_case_data'::character varying::text, 'registration'::character varying::text, 'staff_entry'::character varying::text, 'inferred'::character varying::text]))", name: "corvid_arc_eligibility_group_source_check"
+    t.check_constraint "resource_type::text = ANY (ARRAY['medicare_a'::character varying::text, 'medicare_b'::character varying::text, 'medicare_d'::character varying::text, 'medicaid'::character varying::text, 'va_benefits'::character varying::text, 'private_insurance'::character varying::text, 'workers_comp'::character varying::text, 'auto_insurance'::character varying::text, 'liability_coverage'::character varying::text, 'state_program'::character varying::text, 'tribal_program'::character varying::text, 'charity_care'::character varying::text])", name: "corvid_arc_resource_type_check"
+    t.check_constraint "status::text = ANY (ARRAY['not_checked'::character varying::text, 'checking'::character varying::text, 'enrolled'::character varying::text, 'not_enrolled'::character varying::text, 'denied'::character varying::text, 'exhausted'::character varying::text, 'pending_enrollment'::character varying::text, 'coordinated'::character varying::text])", name: "corvid_arc_status_check"
   end
 
   create_table "corvid_api_call_logs", force: :cascade do |t|
@@ -55,7 +56,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_25_000004) do
     t.index ["tenant_identifier", "api_name", "called_at", "app_identifier"], name: "idx_corvid_api_calls_tenant_api_time_app"
     t.index ["tenant_identifier", "api_name", "called_at", "patient_identifier"], name: "idx_corvid_api_calls_tenant_api_time_patient"
     t.index ["tenant_identifier", "api_name", "endpoint", "called_at"], name: "idx_corvid_api_calls_tenant_api_endpoint_time"
-    t.check_constraint "api_name::text = ANY (ARRAY['pas'::character varying, 'patient_access'::character varying, 'provider_access'::character varying, 'payer_to_payer'::character varying]::text[])", name: "corvid_api_call_logs_api_name_check"
+    t.check_constraint "api_name::text = ANY (ARRAY['pas'::character varying::text, 'patient_access'::character varying::text, 'provider_access'::character varying::text, 'payer_to_payer'::character varying::text])", name: "corvid_api_call_logs_api_name_check"
   end
 
   create_table "corvid_asc_conversion_factors", force: :cascade do |t|
@@ -108,9 +109,9 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_25_000004) do
     t.datetime "updated_at", null: false
     t.index ["tenant_identifier", "reference_identifier"], name: "idx_on_tenant_identifier_reference_identifier_6214d6a05c"
     t.index ["tenant_identifier", "transaction_type"], name: "idx_on_tenant_identifier_transaction_type_c3e90efcf5"
-    t.check_constraint "direction::text = ANY (ARRAY['inbound'::character varying, 'outbound'::character varying]::text[])", name: "corvid_billing_tx_direction_check"
-    t.check_constraint "status::text = ANY (ARRAY['pending'::character varying, 'completed'::character varying, 'failed'::character varying]::text[])", name: "corvid_billing_tx_status_check"
-    t.check_constraint "transaction_type::text = ANY (ARRAY['eligibility'::character varying, 'claim'::character varying, 'claim_status'::character varying, 'remittance'::character varying, 'payment'::character varying]::text[])", name: "corvid_billing_tx_type_check"
+    t.check_constraint "direction::text = ANY (ARRAY['inbound'::character varying::text, 'outbound'::character varying::text])", name: "corvid_billing_tx_direction_check"
+    t.check_constraint "status::text = ANY (ARRAY['pending'::character varying::text, 'completed'::character varying::text, 'failed'::character varying::text])", name: "corvid_billing_tx_status_check"
+    t.check_constraint "transaction_type::text = ANY (ARRAY['eligibility'::character varying::text, 'claim'::character varying::text, 'claim_status'::character varying::text, 'remittance'::character varying::text, 'payment'::character varying::text])", name: "corvid_billing_tx_type_check"
   end
 
   create_table "corvid_cah_facilities", force: :cascade do |t|
@@ -149,7 +150,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_25_000004) do
     t.datetime "created_at", null: false
     t.datetime "updated_at", null: false
     t.index ["tenant_identifier", "facility_identifier"], name: "idx_on_tenant_identifier_facility_identifier_6f25172ef7"
-    t.check_constraint "status::text = ANY (ARRAY['active'::character varying, 'inactive'::character varying]::text[])", name: "corvid_care_teams_status_check"
+    t.check_constraint "status::text = ANY (ARRAY['active'::character varying::text, 'inactive'::character varying::text])", name: "corvid_care_teams_status_check"
   end
 
   create_table "corvid_case_programs", force: :cascade do |t|
@@ -166,7 +167,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_25_000004) do
     t.index ["case_id"], name: "index_corvid_case_programs_on_case_id"
     t.index ["tenant_identifier", "enrollment_status"], name: "idx_corvid_case_programs_tenant_status"
     t.index ["tenant_identifier", "facility_identifier"], name: "idx_corvid_case_programs_tenant_facility"
-    t.check_constraint "enrollment_status::text = ANY (ARRAY['active'::character varying, 'inactive'::character varying, 'pending'::character varying, 'terminated'::character varying]::text[])", name: "corvid_case_programs_enrollment_status_check"
+    t.check_constraint "enrollment_status::text = ANY (ARRAY['active'::character varying::text, 'inactive'::character varying::text, 'pending'::character varying::text, 'terminated'::character varying::text])", name: "corvid_case_programs_enrollment_status_check"
   end
 
   create_table "corvid_cases", force: :cascade do |t|
@@ -186,8 +187,8 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_25_000004) do
     t.index ["care_team_id"], name: "index_corvid_cases_on_care_team_id"
     t.index ["tenant_identifier", "facility_identifier", "patient_identifier"], name: "idx_on_tenant_identifier_facility_identifier_patien_a3dd76b8ca"
     t.index ["tenant_identifier", "status"], name: "index_corvid_cases_on_tenant_identifier_and_status"
-    t.check_constraint "lifecycle_status::text = ANY (ARRAY['intake'::character varying, 'active_followup'::character varying, 'closure'::character varying, 'closed'::character varying]::text[])", name: "corvid_cases_lifecycle_check"
-    t.check_constraint "status::text = ANY (ARRAY['active'::character varying, 'inactive'::character varying, 'closed'::character varying]::text[])", name: "corvid_cases_status_check"
+    t.check_constraint "lifecycle_status::text = ANY (ARRAY['intake'::character varying::text, 'active_followup'::character varying::text, 'closure'::character varying::text, 'closed'::character varying::text])", name: "corvid_cases_lifecycle_check"
+    t.check_constraint "status::text = ANY (ARRAY['active'::character varying::text, 'inactive'::character varying::text, 'closed'::character varying::text])", name: "corvid_cases_status_check"
   end
 
   create_table "corvid_claim_submissions", force: :cascade do |t|
@@ -226,8 +227,8 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_25_000004) do
     t.index ["prc_referral_id"], name: "index_corvid_claim_submissions_on_prc_referral_id"
     t.index ["tenant_identifier", "patient_identifier"], name: "idx_on_tenant_identifier_patient_identifier_0a950bd516"
     t.index ["tenant_identifier", "status"], name: "index_corvid_claim_submissions_on_tenant_identifier_and_status"
-    t.check_constraint "claim_type::text = ANY (ARRAY['professional'::character varying, 'institutional'::character varying, 'dental'::character varying]::text[])", name: "corvid_claim_submissions_type_check"
-    t.check_constraint "status::text = ANY (ARRAY['draft'::character varying, 'submitted'::character varying, 'accepted'::character varying, 'rejected'::character varying, 'paid'::character varying, 'denied'::character varying, 'appealed'::character varying, 'error'::character varying]::text[])", name: "corvid_claim_submissions_status_check"
+    t.check_constraint "claim_type::text = ANY (ARRAY['professional'::character varying::text, 'institutional'::character varying::text, 'dental'::character varying::text])", name: "corvid_claim_submissions_type_check"
+    t.check_constraint "status::text = ANY (ARRAY['draft'::character varying::text, 'submitted'::character varying::text, 'accepted'::character varying::text, 'rejected'::character varying::text, 'paid'::character varying::text, 'denied'::character varying::text, 'appealed'::character varying::text, 'error'::character varying::text])", name: "corvid_claim_submissions_status_check"
   end
 
   create_table "corvid_cms_fee_schedule_releases", force: :cascade do |t|
@@ -263,7 +264,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_25_000004) do
     t.index ["committee_date"], name: "index_corvid_committee_reviews_on_committee_date"
     t.index ["prc_referral_id"], name: "index_corvid_committee_reviews_on_prc_referral_id"
     t.index ["tenant_identifier", "decision"], name: "idx_on_tenant_identifier_decision_51d5d49df2"
-    t.check_constraint "decision::text = ANY (ARRAY['pending'::character varying, 'approved'::character varying, 'denied'::character varying, 'deferred'::character varying, 'modified'::character varying]::text[])", name: "corvid_committee_reviews_decision_check"
+    t.check_constraint "decision::text = ANY (ARRAY['pending'::character varying::text, 'approved'::character varying::text, 'denied'::character varying::text, 'deferred'::character varying::text, 'modified'::character varying::text])", name: "corvid_committee_reviews_decision_check"
   end
 
   create_table "corvid_determinations", force: :cascade do |t|
@@ -283,8 +284,8 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_25_000004) do
     t.index ["determinable_type", "determinable_id"], name: "index_corvid_determinations_on_determinable"
     t.index ["determined_at"], name: "index_corvid_determinations_on_determined_at"
     t.index ["tenant_identifier", "outcome"], name: "index_corvid_determinations_on_tenant_identifier_and_outcome"
-    t.check_constraint "decision_method::text = ANY (ARRAY['automated'::character varying, 'staff_review'::character varying, 'committee_review'::character varying]::text[])", name: "corvid_determinations_method_check"
-    t.check_constraint "outcome::text = ANY (ARRAY['approved'::character varying, 'denied'::character varying, 'deferred'::character varying, 'pending_review'::character varying]::text[])", name: "corvid_determinations_outcome_check"
+    t.check_constraint "decision_method::text = ANY (ARRAY['automated'::character varying::text, 'staff_review'::character varying::text, 'committee_review'::character varying::text])", name: "corvid_determinations_method_check"
+    t.check_constraint "outcome::text = ANY (ARRAY['approved'::character varying::text, 'denied'::character varying::text, 'deferred'::character varying::text, 'pending_review'::character varying::text])", name: "corvid_determinations_outcome_check"
   end
 
   create_table "corvid_eligibility_checklists", force: :cascade do |t|
@@ -330,7 +331,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_25_000004) do
     t.string "tenant_identifier", null: false
     t.datetime "updated_at", null: false
     t.index ["tenant_identifier", "facility_identifier"], name: "idx_corvid_facility_authorities_tenant_facility"
-    t.check_constraint "authority_type::text = ANY (ARRAY['ihs_direct'::character varying, 'contract_638'::character varying, 'compact_638'::character varying, 'uio'::character varying, 'fqhc'::character varying, 'other'::character varying]::text[])", name: "corvid_facility_authorities_type_check"
+    t.check_constraint "authority_type::text = ANY (ARRAY['ihs_direct'::character varying::text, 'contract_638'::character varying::text, 'compact_638'::character varying::text, 'uio'::character varying::text, 'fqhc'::character varying::text, 'other'::character varying::text])", name: "corvid_facility_authorities_type_check"
   end
 
   create_table "corvid_fee_schedule_entries", force: :cascade do |t|
@@ -399,15 +400,15 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_25_000004) do
     t.index ["superseded_by_id"], name: "idx_corvid_fmap_determinations_superseded_by", unique: true, where: "(superseded_by_id IS NOT NULL)"
     t.index ["tenant_identifier", "date_of_service"], name: "idx_corvid_fmap_determinations_tenant_dos"
     t.index ["tenant_identifier", "encounter_identifier"], name: "idx_corvid_fmap_determinations_tenant_encounter"
-    t.check_constraint "authority_type IS NULL OR (authority_type::text = ANY (ARRAY['ihs_direct'::character varying, 'contract_638'::character varying, 'compact_638'::character varying, 'uio'::character varying, 'fqhc'::character varying, 'other'::character varying]::text[]))", name: "corvid_fmap_determinations_authority_type_check"
-    t.check_constraint "best_available_category IS NULL OR (best_available_category::text = ANY (ARRAY['fmap_100_ihs_638'::character varying, 'fmap_100_cca'::character varying, 'fmap_100_uio'::character varying, 'fmap_90_expansion'::character varying, 'fmap_regular'::character varying, 'non_medicaid'::character varying]::text[]))", name: "corvid_fmap_determinations_best_category_check"
-    t.check_constraint "category::text = ANY (ARRAY['fmap_100_ihs_638'::character varying, 'fmap_100_cca'::character varying, 'fmap_100_uio'::character varying, 'fmap_90_expansion'::character varying, 'fmap_regular'::character varying, 'non_medicaid'::character varying, 'undetermined'::character varying]::text[])", name: "corvid_fmap_determinations_category_check"
-    t.check_constraint "coverage_group IS NULL OR (coverage_group::text = ANY (ARRAY['expansion_adult'::character varying, 'waiver_adult'::character varying, 'other'::character varying, 'unknown'::character varying]::text[]))", name: "corvid_fmap_determinations_coverage_group_check"
+    t.check_constraint "authority_type IS NULL OR (authority_type::text = ANY (ARRAY['ihs_direct'::character varying::text, 'contract_638'::character varying::text, 'compact_638'::character varying::text, 'uio'::character varying::text, 'fqhc'::character varying::text, 'other'::character varying::text]))", name: "corvid_fmap_determinations_authority_type_check"
+    t.check_constraint "best_available_category IS NULL OR (best_available_category::text = ANY (ARRAY['fmap_100_ihs_638'::character varying::text, 'fmap_100_cca'::character varying::text, 'fmap_100_uio'::character varying::text, 'fmap_90_expansion'::character varying::text, 'fmap_regular'::character varying::text, 'non_medicaid'::character varying::text]))", name: "corvid_fmap_determinations_best_category_check"
     t.check_constraint "category::text <> 'undetermined'::text OR rule_key IS NULL AND fmap_percent IS NULL AND determination_reason IS NOT NULL", name: "corvid_fmap_determinations_undetermined_check"
-    t.check_constraint "determination_reason IS NULL OR (determination_reason::text = ANY (ARRAY['no_rules_in_force'::character varying, 'no_matching_rule'::character varying, 'unevidenced_100_percent'::character varying]::text[]))", name: "corvid_fmap_determinations_reason_check"
+    t.check_constraint "category::text = ANY (ARRAY['fmap_100_ihs_638'::character varying::text, 'fmap_100_cca'::character varying::text, 'fmap_100_uio'::character varying::text, 'fmap_90_expansion'::character varying::text, 'fmap_regular'::character varying::text, 'non_medicaid'::character varying::text, 'undetermined'::character varying::text])", name: "corvid_fmap_determinations_category_check"
+    t.check_constraint "coverage_group IS NULL OR (coverage_group::text = ANY (ARRAY['expansion_adult'::character varying::text, 'waiver_adult'::character varying::text, 'other'::character varying::text, 'unknown'::character varying::text]))", name: "corvid_fmap_determinations_coverage_group_check"
+    t.check_constraint "determination_reason IS NULL OR (determination_reason::text = ANY (ARRAY['no_rules_in_force'::character varying::text, 'no_matching_rule'::character varying::text, 'unevidenced_100_percent'::character varying::text]))", name: "corvid_fmap_determinations_reason_check"
     t.check_constraint "jsonb_typeof(missing_evidence) = 'array'::text AND missing_evidence <@ '[\"evidence_refs\", \"aian_attestation\", \"received_through_basis\", \"aian_status_evidence\", \"care_coordination_agreement\", \"received_through_evidence\"]'::jsonb", name: "corvid_fmap_determinations_missing_evidence_check"
     t.check_constraint "jurisdiction::text ~ '^[A-Z]{2}$'::text", name: "corvid_fmap_determinations_jurisdiction_check"
-    t.check_constraint "received_through_basis IS NULL OR (received_through_basis::text = ANY (ARRAY['facility_authority'::character varying, 'cca'::character varying]::text[]))", name: "corvid_fmap_determinations_basis_check"
+    t.check_constraint "received_through_basis IS NULL OR (received_through_basis::text = ANY (ARRAY['facility_authority'::character varying::text, 'cca'::character varying::text]))", name: "corvid_fmap_determinations_basis_check"
   end
 
   create_table "corvid_fmap_rules", force: :cascade do |t|
@@ -428,8 +429,8 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_25_000004) do
     t.datetime "updated_at", null: false
     t.index ["jurisdiction", "effective_on"], name: "index_corvid_fmap_rules_on_jurisdiction_and_effective_on"
     t.index ["rule_key"], name: "index_corvid_fmap_rules_on_rule_key", unique: true
-    t.check_constraint "category::text = ANY (ARRAY['fmap_100_ihs_638'::character varying, 'fmap_100_cca'::character varying, 'fmap_100_uio'::character varying, 'fmap_90_expansion'::character varying, 'fmap_regular'::character varying, 'non_medicaid'::character varying]::text[])", name: "corvid_fmap_rules_category_check"
-    t.check_constraint "coverage_group IS NULL OR (coverage_group::text = ANY (ARRAY['expansion_adult'::character varying, 'waiver_adult'::character varying, 'other'::character varying]::text[]))", name: "corvid_fmap_rules_coverage_group_check"
+    t.check_constraint "category::text = ANY (ARRAY['fmap_100_ihs_638'::character varying::text, 'fmap_100_cca'::character varying::text, 'fmap_100_uio'::character varying::text, 'fmap_90_expansion'::character varying::text, 'fmap_regular'::character varying::text, 'non_medicaid'::character varying::text])", name: "corvid_fmap_rules_category_check"
+    t.check_constraint "coverage_group IS NULL OR (coverage_group::text = ANY (ARRAY['expansion_adult'::character varying::text, 'waiver_adult'::character varying::text, 'other'::character varying::text]))", name: "corvid_fmap_rules_coverage_group_check"
   end
 
   create_table "corvid_ipps_drg_weights", force: :cascade do |t|
@@ -503,7 +504,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_25_000004) do
     t.index ["payment_identifier"], name: "index_corvid_payments_on_payment_identifier", unique: true
     t.index ["tenant_identifier", "patient_identifier"], name: "idx_on_tenant_identifier_patient_identifier_238e33c764"
     t.index ["tenant_identifier", "status"], name: "index_corvid_payments_on_tenant_identifier_and_status"
-    t.check_constraint "status::text = ANY (ARRAY['pending'::character varying, 'processing'::character varying, 'succeeded'::character varying, 'failed'::character varying, 'refunded'::character varying]::text[])", name: "corvid_payments_status_check"
+    t.check_constraint "status::text = ANY (ARRAY['pending'::character varying::text, 'processing'::character varying::text, 'succeeded'::character varying::text, 'failed'::character varying::text, 'refunded'::character varying::text])", name: "corvid_payments_status_check"
   end
 
   create_table "corvid_prc_eligibility_decisions", force: :cascade do |t|
@@ -524,7 +525,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_25_000004) do
     t.index ["tenant_identifier", "decided_at"], name: "idx_corvid_prc_eligibility_decisions_tenant_decided_at"
     t.index ["tenant_identifier", "facility_identifier", "decided_at"], name: "idx_corvid_prc_elig_decisions_tenant_facility_decided"
     t.index ["tenant_identifier", "person_identifier", "decided_at"], name: "idx_corvid_prc_elig_decisions_tenant_person_decided"
-    t.check_constraint "provider_confidence IS NULL OR (provider_confidence::text = ANY (ARRAY['verified'::character varying, 'stale'::character varying, 'unavailable'::character varying]::text[]))", name: "corvid_prc_eligibility_decisions_provider_confidence_check"
+    t.check_constraint "provider_confidence IS NULL OR (provider_confidence::text = ANY (ARRAY['verified'::character varying::text, 'stale'::character varying::text, 'unavailable'::character varying::text]))", name: "corvid_prc_eligibility_decisions_provider_confidence_check"
   end
 
   create_table "corvid_prc_obligations", force: :cascade do |t|
@@ -570,8 +571,8 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_25_000004) do
     t.index ["prc_obligation_id", "analyzed_at"], name: "idx_corvid_prc_overpay_oblig_time"
     t.index ["prc_obligation_id"], name: "idx_corvid_prc_overpay_oblig"
     t.index ["tenant_identifier", "recovery_confidence"], name: "idx_corvid_prc_overpay_confidence"
-    t.check_constraint "payment_system IS NULL OR (payment_system::text = ANY (ARRAY['pfs'::character varying, 'ipps'::character varying, 'asc'::character varying, 'opps'::character varying]::text[]))", name: "corvid_prc_overpayment_analyses_payment_system_check"
-    t.check_constraint "recovery_confidence::text = ANY (ARRAY['clear'::character varying, 'stub_estimate'::character varying, 'no_rate_for_year'::character varying, 'unmapped_procedure'::character varying, 'unmapped_facility'::character varying, 'missing_service_date'::character varying]::text[])", name: "corvid_prc_overpayment_analyses_recovery_confidence_check"
+    t.check_constraint "payment_system IS NULL OR (payment_system::text = ANY (ARRAY['pfs'::character varying::text, 'ipps'::character varying::text, 'asc'::character varying::text, 'opps'::character varying::text]))", name: "corvid_prc_overpayment_analyses_payment_system_check"
+    t.check_constraint "recovery_confidence::text = ANY (ARRAY['clear'::character varying::text, 'stub_estimate'::character varying::text, 'no_rate_for_year'::character varying::text, 'unmapped_procedure'::character varying::text, 'unmapped_facility'::character varying::text, 'missing_service_date'::character varying::text])", name: "corvid_prc_overpayment_analyses_recovery_confidence_check"
   end
 
   create_table "corvid_prc_payments", force: :cascade do |t|
@@ -623,7 +624,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_25_000004) do
     t.index ["tenant_identifier", "facility_identifier", "referral_identifier"], name: "idx_corvid_prc_referrals_tenant_referral", unique: true
     t.index ["tenant_identifier", "status"], name: "index_corvid_prc_referrals_on_tenant_identifier_and_status"
     t.check_constraint "priority_system IS NULL OR priority_system::text = 'corvid_v1'::text", name: "corvid_prc_referrals_priority_system_check"
-    t.check_constraint "status::text = ANY (ARRAY['draft'::character varying, 'submitted'::character varying, 'eligibility_review'::character varying, 'management_approval'::character varying, 'alternate_resource_review'::character varying, 'priority_assignment'::character varying, 'committee_review'::character varying, 'exception_review'::character varying, 'authorized'::character varying, 'denied'::character varying, 'deferred'::character varying, 'cancelled'::character varying]::text[])", name: "corvid_prc_referrals_status_check"
+    t.check_constraint "status::text = ANY (ARRAY['draft'::character varying::text, 'submitted'::character varying::text, 'eligibility_review'::character varying::text, 'management_approval'::character varying::text, 'alternate_resource_review'::character varying::text, 'priority_assignment'::character varying::text, 'committee_review'::character varying::text, 'exception_review'::character varying::text, 'authorized'::character varying::text, 'denied'::character varying::text, 'deferred'::character varying::text, 'cancelled'::character varying::text])", name: "corvid_prc_referrals_status_check"
   end
 
   create_table "corvid_referral_fulfilment_reports", force: :cascade do |t|
@@ -639,8 +640,8 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_25_000004) do
     t.index ["prc_referral_id", "reported_at"], name: "idx_corvid_fulfilment_reports_referral_reported_at"
     t.index ["prc_referral_id"], name: "index_corvid_referral_fulfilment_reports_on_prc_referral_id"
     t.index ["tenant_identifier", "prc_referral_id"], name: "idx_corvid_fulfilment_reports_tenant_referral"
-    t.check_constraint "outcome::text = ANY (ARRAY['delivered'::character varying, 'not_delivered'::character varying]::text[])", name: "corvid_fulfilment_reports_outcome_check"
-    t.check_constraint "source::text = ANY (ARRAY['receiving_specialist'::character varying, 'patient'::character varying, 'staff'::character varying, 'other'::character varying]::text[])", name: "corvid_fulfilment_reports_source_check"
+    t.check_constraint "outcome::text = ANY (ARRAY['delivered'::character varying::text, 'not_delivered'::character varying::text])", name: "corvid_fulfilment_reports_outcome_check"
+    t.check_constraint "source::text = ANY (ARRAY['receiving_specialist'::character varying::text, 'patient'::character varying::text, 'staff'::character varying::text, 'other'::character varying::text])", name: "corvid_fulfilment_reports_source_check"
   end
 
   create_table "corvid_tasks", force: :cascade do |t|
@@ -666,8 +667,8 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_25_000004) do
     t.index ["tenant_identifier", "assignee_identifier"], name: "idx_on_tenant_identifier_assignee_identifier_35adb7cf72"
     t.index ["tenant_identifier", "facility_identifier"], name: "idx_on_tenant_identifier_facility_identifier_aa1e96cb7e"
     t.index ["tenant_identifier", "status"], name: "index_corvid_tasks_on_tenant_identifier_and_status"
-    t.check_constraint "priority::text = ANY (ARRAY['routine'::character varying, 'urgent'::character varying, 'asap'::character varying, 'stat'::character varying]::text[])", name: "corvid_tasks_priority_check"
-    t.check_constraint "status::text = ANY (ARRAY['pending'::character varying, 'in_progress'::character varying, 'completed'::character varying, 'cancelled'::character varying, 'on_hold'::character varying]::text[])", name: "corvid_tasks_status_check"
+    t.check_constraint "priority::text = ANY (ARRAY['routine'::character varying::text, 'urgent'::character varying::text, 'asap'::character varying::text, 'stat'::character varying::text])", name: "corvid_tasks_priority_check"
+    t.check_constraint "status::text = ANY (ARRAY['pending'::character varying::text, 'in_progress'::character varying::text, 'completed'::character varying::text, 'cancelled'::character varying::text, 'on_hold'::character varying::text])", name: "corvid_tasks_status_check"
   end
 
   create_table "corvid_zip_localities", force: :cascade do |t|

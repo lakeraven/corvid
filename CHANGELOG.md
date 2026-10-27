@@ -22,6 +22,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   instead of `denial_reason_token`.
 
 ### Added
+- Eligibility reads take `date_of_service:` (`Date`, or omitted). A non-Date
+  raises `ArgumentError`. `verify_eligibility` and `check_eligibility_detailed`
+  include `:date_of_service` (the date answered for, `Date.current` when
+  omitted) and `:date_of_service_defaulted`. `AlternateResourceCheck#verify!`
+  accepts the same keyword, passes a referral `service_date` when that column
+  holds a `Date`, and stores the answer on
+  `corvid_alternate_resource_checks.inquiry_date_of_service`.
+- Month-bounded eligibility (`month_bounded_eligibility_resource_types`,
+  default `medicaid`) is current only in the year-month of
+  `inquiry_date_of_service`. A saved check with no inquiry date is not current.
+- Placeholder coverage ends (`placeholder_coverage_end_dates`, default
+  `9999-12-31`, or more than `placeholder_coverage_end_horizon_years` after
+  the inquiry date, default 25) are stored as nil on `coverage_end` and
+  `renewal_date`. `service_active: false` records `not_enrolled` even when
+  the plan dates cover the inquiry.
 - `corvid_claim_submissions.rejection_reason_token`, `denial_reason_codes`
   (CARC/RARC codes), `rejected_at` and `denied_at`. The timestamps are kept
   after the status moves on, so a claim rejected or denied and later paid

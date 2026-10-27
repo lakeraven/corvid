@@ -494,18 +494,18 @@ module Corvid
       # Eligibility
       # ----------------------------------------------------------------------
 
-      def verify_eligibility(patient_identifier, resource_type)
-        bundle = fhir_search("Coverage", beneficiary: "Patient/#{patient_identifier}")
-        coverage = coverage_for_resource_type(extract_entries(bundle), resource_type)
+      # FHIR R4 Coverage search has no date parameter, so the inquiry
+      # date cannot be sent to the server. Coverage.period is compared
+      # to that date locally. A bound that excludes the date makes
+      # eligible false. A missing period does not, by itself, deny an
+      # active coverage. No matching coverage, or a search that does
+      # not answer, stays nil: absence never verifies (42 CFR 136.61).
+      def verify_eligibility(patient_identifier, resource_type, date_of_service: nil)
+        answered_on, defaulted = resolve_inquiry_date(date_of_service)
+        coverage = eligibility_coverage(patient_identifier, resource_type)
         return nil unless coverage
 
-        {
-          eligible: coverage["status"] == "active",
-          payer_name: coverage.dig("payor", 0, "display"),
-          policy_number: coverage["subscriberId"],
-          coverage_start: parse_period_date(coverage.dig("period", "start"), :start),
-          coverage_end: parse_period_date(coverage.dig("period", "end"), :end)
-        }
+        eligibility_hash(coverage, answered_on, defaulted)
       end
 
       # ----------------------------------------------------------------------
@@ -583,8 +583,18 @@ module Corvid
         []
       end
 
-      def check_eligibility_detailed(_patient_identifier, _payer_id)
-        { eligible: false, payer_name: nil, plan_name: nil }
+      # Stock FHIR has no 270/271 exchange, and Coverage cannot be
+      # queried by date, so this cannot confirm eligibility. Fail
+      # closed: eligible is false. The inquiry date is still reported.
+      def check_eligibility_detailed(_patient_identifier, _payer_id, date_of_service: nil)
+        answered_on, defaulted = resolve_inquiry_date(date_of_service)
+        {
+          eligible: false,
+          payer_name: nil,
+          plan_name: nil,
+          date_of_service: answered_on,
+          date_of_service_defaulted: defaulted
+        }
       end
 
       def search_payers(_query)
@@ -633,6 +643,39 @@ module Corvid
       end
 
       private
+
+      def eligibility_coverage(patient_identifier, resource_type)
+        bundle = fhir_search("Coverage", beneficiary: "Patient/#{patient_identifier}")
+        coverage_for_resource_type(extract_entries(bundle), resource_type)
+      end
+
+      def eligibility_hash(coverage, answered_on, defaulted)
+        coverage_start = parse_period_date(coverage.dig("period", "start"), :start)
+        coverage_end = parse_period_date(coverage.dig("period", "end"), :end)
+        {
+          eligible: active_on_inquiry?(coverage, coverage_start, coverage_end, answered_on),
+          payer_name: coverage.dig("payor", 0, "display"),
+          policy_number: coverage["subscriberId"],
+          coverage_start: coverage_start,
+          coverage_end: coverage_end,
+          date_of_service: answered_on,
+          date_of_service_defaulted: defaulted
+        }
+      end
+
+      def active_on_inquiry?(coverage, coverage_start, coverage_end, inquiry_date)
+        coverage["status"] == "active" &&
+          period_covers_inquiry?(coverage_start, coverage_end, inquiry_date)
+      end
+
+      # Missing bounds do not deny. A start after the inquiry, or an end
+      # before it, does.
+      def period_covers_inquiry?(coverage_start, coverage_end, inquiry_date)
+        return false if coverage_start && coverage_start > inquiry_date
+        return false if coverage_end && coverage_end < inquiry_date
+
+        true
+      end
 
       # FHIR REST primitives ------------------------------------------------
 

@@ -6,6 +6,10 @@ require "ulid"
 require "corvid/adapters/base"
 require "corvid/value_objects"
 
+# Rails boots with a zone. Standalone adapter tests travel via Time.zone
+# and otherwise see nil.
+Time.zone = "UTC" if Time.zone.nil?
+
 module Corvid
   module Adapters
     # In-memory adapter for development and tests.
@@ -305,11 +309,16 @@ module Corvid
       # Eligibility
       # ----------------------------------------------------------------------
 
-      def verify_eligibility(patient_identifier, resource_type)
+      def verify_eligibility(patient_identifier, resource_type, date_of_service: nil)
+        answered_on, defaulted = resolve_inquiry_date(date_of_service)
         coverage = coverage_for(patient_identifier, resource_type, :coverage_type)
         return nil unless coverage
 
-        eligibility_from_coverage(patient_identifier, resource_type, coverage)
+        result = eligibility_from_coverage(patient_identifier, resource_type, coverage)
+        return nil unless result
+
+        apply_medicaid_scenario!(result, coverage, answered_on)
+        result.merge(date_of_service: answered_on, date_of_service_defaulted: defaulted)
       end
 
       # ----------------------------------------------------------------------
@@ -386,13 +395,12 @@ module Corvid
       end
 
       # A check that names no payer is undetermined, never the first coverage.
-      def check_eligibility_detailed(patient_identifier, payer_identifier)
-        return undetermined_detailed_eligibility if payer_identifier.to_s.strip.empty?
-
-        coverage = coverage_for(patient_identifier, payer_identifier, :payer_identifier)
-        return undetermined_detailed_eligibility unless coverage
-
-        detailed_eligibility_from_coverage(payer_identifier, coverage)
+      def check_eligibility_detailed(patient_identifier, payer_identifier, date_of_service: nil)
+        answered_on, defaulted = resolve_inquiry_date(date_of_service)
+        detailed_eligibility_result(patient_identifier, payer_identifier).merge(
+          date_of_service: answered_on,
+          date_of_service_defaulted: defaulted
+        )
       end
 
       def search_payers(query)
@@ -461,6 +469,23 @@ module Corvid
         row = attrs.is_a?(Hash) ? attrs.merge(extra) : extra
         @coverages[patient_identifier.to_s] ||= []
         @coverages[patient_identifier.to_s] << row
+      end
+
+      # Synthetic Medicaid answers for issue #712. Dates are applied when
+      # the inquiry date is known, so the scenario follows that month.
+      MEDICAID_ELIGIBILITY_SCENARIOS = %i[
+        active_this_month_only
+        mid_month_end
+        placeholder_end
+        inactive_with_covering_dates
+      ].freeze
+
+      def seed_medicaid_eligibility_scenario(patient_identifier, scenario)
+        unless MEDICAID_ELIGIBILITY_SCENARIOS.include?(scenario)
+          raise ArgumentError, "unknown medicaid eligibility scenario"
+        end
+
+        add_coverage(patient_identifier, medicaid_scenario_coverage(scenario))
       end
 
       def get_coverages(patient_identifier)
@@ -588,7 +613,50 @@ module Corvid
           coverage_start: year_start,
           coverage_end: year_end
         }
+        result[:service_active] = coverage[:service_active] if coverage.key?(:service_active)
         apply_recorded_dates(result, coverage)
+      end
+
+      def detailed_eligibility_result(patient_identifier, payer_identifier)
+        return undetermined_detailed_eligibility if payer_identifier.to_s.strip.empty?
+
+        coverage = coverage_for(patient_identifier, payer_identifier, :payer_identifier)
+        return undetermined_detailed_eligibility unless coverage
+
+        detailed_eligibility_from_coverage(payer_identifier, coverage)
+      end
+
+      def medicaid_scenario_coverage(scenario)
+        {
+          coverage_type: "medicaid",
+          payer_name: "MOCK MEDICAID PAYER",
+          plan_name: "TEST PLAN 712",
+          eligible: true,
+          medicaid_eligibility_scenario: scenario
+        }
+      end
+
+      # Plan dates follow the inquiry month. Inactive service stays
+      # eligible at the plan level and reports service_active false.
+      def apply_medicaid_scenario!(result, coverage, inquiry_date)
+        scenario = coverage[:medicaid_eligibility_scenario]
+        return unless MEDICAID_ELIGIBILITY_SCENARIOS.include?(scenario)
+
+        result[:coverage_start] = Date.new(inquiry_date.year, inquiry_date.month, 1)
+        result[:coverage_end] = scenario_coverage_end(scenario, inquiry_date)
+        result[:eligible] = true
+        result[:service_active] = false if scenario == :inactive_with_covering_dates
+      end
+
+      def scenario_coverage_end(scenario, inquiry_date)
+        case scenario
+        when :mid_month_end
+          Date.new(inquiry_date.year, inquiry_date.month, 14)
+        when :placeholder_end
+          Date.new(9999, 12, 31)
+        else
+          Date.new(inquiry_date.year, inquiry_date.month, -1)
+        end
       end
 
       def detailed_eligibility_from_coverage(payer_identifier, coverage)
@@ -669,7 +737,7 @@ module Corvid
       end
 
       def seed!
-        # Synthetic seed data per ADR 0003 — obviously fake, not realistic PHI.
+        # Synthetic seed data per ADR 0003 - obviously fake, not realistic PHI.
         add_patient("pt_seed_001", display_name: "TEST,PATIENT 001", dob: Date.new(1980, 1, 1), sex: "F", ssn_last4: "0001")
         add_practitioner("pr_seed_001", display_name: "TEST,PROVIDER 001", npi: "0000000001", specialty: "TEST")
       end
