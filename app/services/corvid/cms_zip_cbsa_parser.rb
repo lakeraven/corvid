@@ -35,7 +35,7 @@ module Corvid
         text.force_encoding(Encoding::UTF_8)
         raise ArgumentError, "invalid encoding: expected UTF-8" unless text.valid_encoding?
 
-        text.sub(/\A\xEF\xBB\xBF/, "").sub(/\A\uFEFF/, "")
+        text.sub(/\A\xEF\xBB\xBF/, "")
       end
 
       def header_index(lines)
@@ -45,13 +45,17 @@ module Corvid
         fields = header_fields(lines[index], index + 1)
         return index if fields == HEADER
 
-        raise ArgumentError, "missing header row; expected zip,cbsa on line #{index + 1}"
+        raise ArgumentError, header_message(index + 1)
       end
 
       def header_fields(line, line_no)
-        Array(CSV.parse_line(line.to_s.strip)).map { |field| field.to_s.strip }
+        Array(CSV.parse_line(logical_line(line, line_no, header: true).strip)).map { |field| field.to_s.strip }
       rescue CSV::MalformedCSVError
-        raise ArgumentError, "missing header row; expected zip,cbsa on line #{line_no}"
+        raise ArgumentError, header_message(line_no)
+      end
+
+      def header_message(line_no)
+        "missing header row; expected zip,cbsa on line #{line_no}"
       end
 
       def row_for(line, line_no, fiscal_year, release_label, seen)
@@ -65,12 +69,27 @@ module Corvid
       end
 
       def split_fields(line, line_no)
-        fields = Array(CSV.parse_line(line.to_s.strip)).map { |field| field.to_s.strip }
+        fields = Array(CSV.parse_line(logical_line(line, line_no, header: false).strip)).map { |field| field.to_s.strip }
         raise ArgumentError, "malformed row on line #{line_no}" unless fields.length == 2
 
         fields
       rescue CSV::MalformedCSVError
         raise ArgumentError, "malformed row on line #{line_no}"
+      end
+
+      def logical_line(line, line_no, header:)
+        body = without_trailing_break(line)
+        return body unless body.include?("\r")
+
+        raise ArgumentError, header ? header_message(line_no) : "malformed row on line #{line_no}"
+      end
+
+      def without_trailing_break(line)
+        text = line.to_s
+        return text.delete_suffix("\r\n") if text.end_with?("\r\n")
+        return text.delete_suffix("\n") if text.end_with?("\n")
+
+        text
       end
 
       def validate_field!(value, format, name, line_no)
