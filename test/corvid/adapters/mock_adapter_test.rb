@@ -512,6 +512,62 @@ class Corvid::Adapters::MockAdapterTest < Minitest::Test
                  "mock_adapter.rb must not default Time.zone to UTC on load (issue #712 R10); child output: #{output}"
   end
 
+  def test_check_eligibility_detailed_false_when_coverage_end_before_inquiry_date
+    payer = "PAYER_712_DETAILED"
+    @adapter.add_coverage(
+      "pt-712-detailed",
+      payer_identifier: payer,
+      eligible: true,
+      coverage_start: Date.new(2026, 1, 1),
+      coverage_end: Date.new(2026, 1, 31)
+    )
+
+    result = @adapter.check_eligibility_detailed(
+      "pt-712-detailed",
+      payer,
+      date_of_service: Date.new(2026, 6, 15)
+    )
+    refute result[:eligible], "check_eligibility_detailed must judge plan end against inquiry (issue #712)"
+  end
+
+  def test_check_eligibility_detailed_true_when_coverage_end_covers_inquiry_date
+    payer = "PAYER_712_DETAILED"
+    @adapter.add_coverage(
+      "pt-712-detailed",
+      payer_identifier: payer,
+      eligible: true,
+      coverage_start: Date.new(2026, 1, 1),
+      coverage_end: Date.new(2026, 1, 31)
+    )
+
+    result = @adapter.check_eligibility_detailed(
+      "pt-712-detailed",
+      payer,
+      date_of_service: Date.new(2026, 1, 15)
+    )
+    assert result[:eligible]
+  end
+
+  def test_verify_eligibility_passes_service_active_from_recorded_coverage_row
+    @adapter.add_coverage(
+      "pt-712-service-active",
+      coverage_type: "medicaid",
+      eligible: true,
+      service_active: false,
+      coverage_start: Date.new(2026, 1, 1),
+      coverage_end: Date.new(2026, 12, 31)
+    )
+
+    result = @adapter.verify_eligibility(
+      "pt-712-service-active",
+      "medicaid",
+      date_of_service: Date.new(2026, 10, 10)
+    )
+
+    assert_equal false, result[:service_active],
+                 "verify_eligibility must pass service_active from the coverage row (issue #712)"
+  end
+
   def test_verify_eligibility_false_when_coverage_end_before_inquiry_date
     @adapter.add_coverage(
       "pt-712-inquiry",

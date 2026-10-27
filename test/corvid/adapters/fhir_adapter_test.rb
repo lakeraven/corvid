@@ -8,11 +8,20 @@ require "net/protocol"
 require "uri"
 require "zlib"
 require "active_support/all" # adapter uses AS ext (Time.current, String#last, present?); loaded by the host app in real use
+require "active_support/testing/time_helpers"
 require "corvid/adapters/fhir_adapter"
 
 class Corvid::Adapters::FhirAdapterTest < Minitest::Test
+  include ActiveSupport::Testing::TimeHelpers
+
   def setup
+    @saved_time_zone = Time.zone
+    Time.zone = "UTC"
     @adapter = Corvid::Adapters::FhirAdapter.new(base_url: "https://fhir.example.com/r4")
+  end
+
+  def teardown
+    Time.zone = @saved_time_zone
   end
 
   def test_initializes_with_base_url
@@ -2011,6 +2020,78 @@ class Corvid::Adapters::FhirAdapterTest < Minitest::Test
     @adapter.stub(:fhir_search, bundle) do
       result = @adapter.verify_eligibility("pt_test_001", "medicaid", date_of_service: Date.new(2026, 10, 15))
       refute result[:eligible]
+    end
+  end
+
+  # Issue #712 round 2: month-scoped active coverage vs full period bounds.
+  def test_verify_eligibility_active_no_period_false_outside_current_month
+    bundle = coverage_bundle({})
+    bundle["entry"].first["resource"]["status"] = "active"
+    inquiry = Date.new(2026, 12, 15)
+
+    travel_to Time.zone.local(2026, 10, 27, 9, 0, 0) do
+      @adapter.stub(:fhir_search, bundle) do
+        result = @adapter.verify_eligibility("pt_test_001", "medicaid", date_of_service: inquiry)
+        refute result[:eligible], "Active coverage with no period must not cover a future-month inquiry (issue #712)"
+        assert_equal inquiry, result[:date_of_service]
+      end
+    end
+  end
+
+  def test_verify_eligibility_active_no_period_true_in_current_month
+    bundle = coverage_bundle({})
+    bundle["entry"].first["resource"]["status"] = "active"
+    inquiry = Date.new(2026, 10, 15)
+
+    travel_to Time.zone.local(2026, 10, 27, 9, 0, 0) do
+      @adapter.stub(:fhir_search, bundle) do
+        result = @adapter.verify_eligibility("pt_test_001", "medicaid", date_of_service: inquiry)
+        assert result[:eligible], "Active coverage with no period must cover an inquiry in the current month (issue #712)"
+        assert_equal inquiry, result[:date_of_service]
+      end
+    end
+  end
+
+  def test_verify_eligibility_active_start_only_false_for_future_month_inquiry
+    bundle = coverage_bundle("start" => "2026-01-01")
+    bundle["entry"].first["resource"]["status"] = "active"
+    inquiry = Date.new(2026, 12, 15)
+
+    travel_to Time.zone.local(2026, 10, 27, 9, 0, 0) do
+      @adapter.stub(:fhir_search, bundle) do
+        result = @adapter.verify_eligibility("pt_test_001", "medicaid", date_of_service: inquiry)
+        refute result[:eligible],
+               "Start-only period must not make eligible outside the current month without an end bound (issue #712)"
+        assert_equal inquiry, result[:date_of_service]
+      end
+    end
+  end
+
+  def test_verify_eligibility_active_full_period_true_for_inquiry_inside_bounds
+    bundle = coverage_bundle("start" => "2026-01-01", "end" => "2026-12-31")
+    bundle["entry"].first["resource"]["status"] = "active"
+    inquiry = Date.new(2026, 12, 15)
+
+    travel_to Time.zone.local(2026, 10, 27, 9, 0, 0) do
+      @adapter.stub(:fhir_search, bundle) do
+        result = @adapter.verify_eligibility("pt_test_001", "medicaid", date_of_service: inquiry)
+        assert result[:eligible], "Full period must cover an inquiry inside start and end (issue #712)"
+        assert_equal inquiry, result[:date_of_service]
+      end
+    end
+  end
+
+  def test_verify_eligibility_active_no_period_false_for_past_month_inquiry
+    bundle = coverage_bundle({})
+    bundle["entry"].first["resource"]["status"] = "active"
+    inquiry = Date.new(2025, 3, 1)
+
+    travel_to Time.zone.local(2026, 10, 27, 9, 0, 0) do
+      @adapter.stub(:fhir_search, bundle) do
+        result = @adapter.verify_eligibility("pt_test_001", "medicaid", date_of_service: inquiry)
+        refute result[:eligible], "Active coverage with no period must not cover a past-month inquiry (issue #712)"
+        assert_equal inquiry, result[:date_of_service]
+      end
     end
   end
 

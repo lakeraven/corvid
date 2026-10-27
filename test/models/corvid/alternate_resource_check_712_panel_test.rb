@@ -12,10 +12,12 @@ class Corvid::AlternateResourceCheck712PanelTest < ActiveSupport::TestCase
 
   setup do
     @config_snapshot = snapshot_configuration
+    @max_age_snapshot = Corvid.configuration.alternate_resource_check_max_age
   end
 
   teardown do
     restore_configuration(@config_snapshot)
+    Corvid.configuration.alternate_resource_check_max_age = @max_age_snapshot
   end
 
   # R2: present non-boolean service_active makes the answer unreadable.
@@ -77,19 +79,97 @@ class Corvid::AlternateResourceCheck712PanelTest < ActiveSupport::TestCase
     end
   end
 
-  # R5: adapter omits :date_of_service — store the date verify! asked for.
-  test "verify! stores explicit inquiry date when adapter omits date_of_service" do
+  # Round 2: when a date was asked, the adapter must echo it exactly.
+  test "verify! rejects adapter omitting date_of_service when a date was asked" do
     with_tenant(TENANT) do
       check = medicaid_check_for(create_referral)
       inquiry = Date.new(2026, 10, 15)
+      before = check.attributes.slice("status", "checked_at", "inquiry_date_of_service")
       stub_verify_omitting_date(eligible: true, coverage_end: Date.new(2026, 12, 31))
 
       travel_to Time.zone.local(2026, 10, 15, 10, 0, 0) do
-        assert check.verify!(date_of_service: inquiry)
+        refute check.verify!(date_of_service: inquiry)
       end
       check.reload
 
-      assert_equal inquiry, check.inquiry_date_of_service
+      assert_equal before, check.attributes.slice("status", "checked_at", "inquiry_date_of_service")
+      assert check.not_checked?
+    end
+  end
+
+  test "verify! rejects adapter nil date_of_service when a date was asked" do
+    with_tenant(TENANT) do
+      check = medicaid_check_for(create_referral)
+      asked = Date.new(2026, 10, 15)
+
+      Corvid.adapter.define_singleton_method(:verify_eligibility) do |_pid, _type, date_of_service: nil|
+        {
+          eligible: true,
+          coverage_start: Date.new(2026, 10, 1),
+          coverage_end: Date.new(2026, 10, 31),
+          date_of_service: nil,
+          date_of_service_defaulted: false
+        }
+      end
+
+      refute check.verify!(date_of_service: asked)
+      check.reload
+      assert check.not_checked?
+    end
+  end
+
+  test "verify! rejects adapter date_of_service mismatch when asked date is referral service_date" do
+    with_tenant(TENANT) do
+      referral = create_referral
+      service_date = Date.new(2026, 10, 15)
+      referral.define_singleton_method(:has_attribute?) do |name|
+        name == :service_date || super(name)
+      end
+      referral.define_singleton_method(:service_date) { service_date }
+      check = medicaid_check_for(referral)
+
+      Corvid.adapter.define_singleton_method(:verify_eligibility) do |_pid, _type, date_of_service: nil|
+        {
+          eligible: true,
+          coverage_start: Date.new(2026, 10, 1),
+          coverage_end: Date.new(2026, 10, 31),
+          date_of_service: Date.new(2026, 11, 1),
+          date_of_service_defaulted: false
+        }
+      end
+
+      refute check.verify!
+      check.reload
+      assert check.not_checked?
+      assert_nil check.inquiry_date_of_service
+    end
+  end
+
+  test "verify! raises ArgumentError when date_of_service is a String" do
+    with_tenant(TENANT) do
+      check = medicaid_check_for(create_referral)
+
+      assert_raises(ArgumentError) { check.verify!(date_of_service: "2026-10-15") }
+    end
+  end
+
+  test "verify! raises ArgumentError when date_of_service is a Time" do
+    with_tenant(TENANT) do
+      check = medicaid_check_for(create_referral)
+
+      assert_raises(ArgumentError) do
+        check.verify!(date_of_service: Time.zone.local(2026, 10, 15, 12, 0, 0))
+      end
+    end
+  end
+
+  test "verify! raises ArgumentError when date_of_service is a DateTime" do
+    with_tenant(TENANT) do
+      check = medicaid_check_for(create_referral)
+
+      assert_raises(ArgumentError) do
+        check.verify!(date_of_service: DateTime.new(2026, 10, 15, 12, 0, 0))
+      end
     end
   end
 
@@ -183,8 +263,10 @@ class Corvid::AlternateResourceCheck712PanelTest < ActiveSupport::TestCase
     end
   end
 
-  # R12: month compare includes year.
-  test "medicaid verified 2026-10-15 is not current for 2027-10-15" do
+  # R12: month compare includes year; freshness can still hold across that boundary.
+  test "medicaid verified 2026-10-15 is not current for 2027-10-15 but is for 2026-10-20 when still fresh" do
+    Corvid.configuration.alternate_resource_check_max_age = { "medicaid" => 400.days }
+
     with_tenant(TENANT) do
       check = medicaid_check_for(create_referral)
       inquiry = Date.new(2026, 10, 15)
@@ -201,11 +283,12 @@ class Corvid::AlternateResourceCheck712PanelTest < ActiveSupport::TestCase
       end
       check.reload
 
-      later = Date.new(2027, 10, 15)
-      as_of = Time.zone.local(2027, 10, 15, 12, 0, 0)
+      as_of = Time.zone.local(2027, 10, 16, 12, 0, 0)
       travel_to as_of do
-        refute check.current_for?(later, as_of: as_of),
+        refute check.current_for?(Date.new(2027, 10, 15), as_of: as_of),
                "Same month/day in a later year must not be current for month-bounded Medicaid (issue #712)"
+        assert check.current_for?(Date.new(2026, 10, 20), as_of: as_of),
+               "Same inquiry year-month must stay current for another day in that month (issue #712)"
       end
     end
   end
@@ -223,6 +306,40 @@ class Corvid::AlternateResourceCheck712PanelTest < ActiveSupport::TestCase
       check.reload
 
       assert_equal exact_end, check.coverage_end
+    end
+  end
+
+  test "verify! keeps coverage_end ten years after inquiry when horizon years is zero" do
+    Corvid.configuration.placeholder_coverage_end_horizon_years = 0
+    inquiry = Date.new(2026, 10, 15)
+    end_ten_years_out = inquiry + 10.years
+
+    with_tenant(TENANT) do
+      check = medicaid_check_for(create_referral)
+      stub_verify(eligible: true, coverage_end: end_ten_years_out, echoed_inquiry: inquiry)
+
+      assert verify_with_dos!(check, inquiry)
+      check.reload
+
+      assert_equal end_ten_years_out, check.coverage_end,
+                 "Horizon years 0 must fall back to 25 and keep ends within that span (issue #712)"
+    end
+  end
+
+  test "verify! keeps coverage_end ten years after inquiry when horizon years is negative" do
+    Corvid.configuration.placeholder_coverage_end_horizon_years = -1
+    inquiry = Date.new(2026, 10, 15)
+    end_ten_years_out = inquiry + 10.years
+
+    with_tenant(TENANT) do
+      check = medicaid_check_for(create_referral)
+      stub_verify(eligible: true, coverage_end: end_ten_years_out, echoed_inquiry: inquiry)
+
+      assert verify_with_dos!(check, inquiry)
+      check.reload
+
+      assert_equal end_ten_years_out, check.coverage_end,
+                 "Horizon years -1 must fall back to 25 and keep ends within that span (issue #712)"
     end
   end
 
@@ -260,6 +377,30 @@ class Corvid::AlternateResourceCheck712PanelTest < ActiveSupport::TestCase
       refute check.verify!(date_of_service: asked)
       check.reload
       assert check.not_checked?
+    end
+  end
+
+  test "verify! records not_enrolled when mock coverage row has service_active false" do
+    with_tenant(TENANT) do
+      referral = create_referral
+      patient_identifier = referral.case.patient_identifier
+      Corvid.adapter.add_coverage(
+        patient_identifier,
+        coverage_type: "medicaid",
+        eligible: true,
+        service_active: false,
+        coverage_start: Date.new(2026, 1, 1),
+        coverage_end: Date.new(2026, 12, 31)
+      )
+      check = medicaid_check_for(referral)
+
+      travel_to Time.zone.local(2026, 10, 10, 10, 0, 0) do
+        assert check.verify!(date_of_service: Date.new(2026, 10, 10))
+      end
+      check.reload
+
+      assert check.not_enrolled?,
+             "service_active false from recorded coverage must yield not_enrolled (issue #712)"
     end
   end
 

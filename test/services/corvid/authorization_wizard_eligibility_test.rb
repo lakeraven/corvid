@@ -369,7 +369,20 @@ class Corvid::AuthorizationWizardEligibilityTest < ActiveSupport::TestCase
     end
   end
 
-  test "service_active false yields not_enrolled even when eligible true via verify_all_enrollment" do
+  test "service_active false without boolean eligible leaves resource not_checked via verify_all_enrollment" do
+    Corvid.configure do |c|
+      c.adapter = EligibilityControllingAdapter.new(default: { service_active: false })
+    end
+
+    with_tenant(TENANT) do
+      wizard = build_wizard
+      wizard.verify_all_enrollment!
+
+      assert_all_resources_undetermined!(wizard)
+    end
+  end
+
+  test "service_active false with eligible true yields not_enrolled via verify_all_enrollment" do
     Corvid.configure do |c|
       c.adapter = EligibilityControllingAdapter.new(
         default: { eligible: true, service_active: false }

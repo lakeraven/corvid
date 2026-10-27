@@ -150,6 +150,53 @@ class Corvid::AlternateResourceCheckPlaceholderEndTest < ActiveSupport::TestCase
     end
   end
 
+  test "verify! stores nil coverage_end when placeholder list includes ISO date string 2030-12-31" do
+    Corvid.configuration.placeholder_coverage_end_dates = [ "2030-12-31" ]
+
+    with_tenant(TENANT) do
+      check = medicaid_check_for(create_referral)
+      stub_verify_result(coverage_end: Date.new(2030, 12, 31), renewal_date: nil)
+
+      assert verify_with_dos!(check, INQUIRY_DOS)
+      check.reload
+
+      assert_nil check.coverage_end,
+                 "ISO 8601 strings in placeholder_coverage_end_dates must sentinel that date (issue #712)"
+    end
+  end
+
+  test "verify! stores nil coverage_end for configured custom placeholder Date" do
+    sentinel = Date.new(2099, 12, 31)
+    Corvid.configuration.placeholder_coverage_end_dates = [ sentinel ]
+
+    with_tenant(TENANT) do
+      check = medicaid_check_for(create_referral)
+      stub_verify_result(coverage_end: sentinel, renewal_date: nil)
+
+      assert verify_with_dos!(check, INQUIRY_DOS)
+      check.reload
+
+      assert_nil check.coverage_end,
+                 "Configured placeholder Dates must nil matching adapter ends (issue #712)"
+    end
+  end
+
+  test "verify! ignores unparsable placeholder_coverage_end_dates elements" do
+    Corvid.configuration.placeholder_coverage_end_dates = [ "soon" ]
+    real_end = Date.new(2026, 12, 31)
+
+    with_tenant(TENANT) do
+      check = medicaid_check_for(create_referral)
+      stub_verify_result(coverage_end: real_end, renewal_date: nil)
+
+      assert verify_with_dos!(check, INQUIRY_DOS)
+      check.reload
+
+      assert_equal real_end, check.coverage_end,
+                 "Unparsable placeholder list entries must be ignored without raising (issue #712)"
+    end
+  end
+
   test "horizon string 25 falls back and nils end 30 years after inquiry" do
     Corvid.configuration.placeholder_coverage_end_horizon_years = "25"
     far_end = INQUIRY_DOS + 30.years
