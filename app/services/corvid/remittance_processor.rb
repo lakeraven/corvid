@@ -12,7 +12,9 @@ module Corvid
   # A nil read is unknown, not an empty history: nothing is written for
   # the batch's claims, they are counted as unknown, and the batch is
   # never applied on its own. A batch of only the new lines would
-  # understate the claim, or go negative on a reversal.
+  # understate the claim, or go negative on a reversal. The merged list is
+  # deduplicated and indexed by stripped claim identifier once per call,
+  # so each claim is summed over only the remittances that name it.
   #
   # Amounts are written once per claim, from RemittanceAmounts, over every
   # line for that claim. The last line does not replace an earlier payment.
@@ -75,13 +77,34 @@ module Corvid
         return
       end
 
-      apply_batch(claims, batch + history, batch_keys(batch), result)
+      apply_batch(claims, remittances_by_claim(batch + history), batch_keys(batch), result)
     end
 
-    def apply_batch(claims, remittances, keys, result)
+    def apply_batch(claims, index, keys, result)
       ClaimSubmission.transaction do
-        claims.each { |claim| tally(result, apply_claim(claim, remittances, keys)) }
+        claims.each do |claim|
+          remittances = index.fetch(claim.claim_identifier.to_s.strip, [])
+          tally(result, apply_claim(claim, remittances, keys))
+        end
       end
+    end
+
+    # One pass over the merged list, before the transaction opens. The
+    # first copy of each dedupe key is kept, as RemittanceAmounts would
+    # keep it, so the batch's copy still wins. Each remittance is filed
+    # under every claim its lines name, in merged order, so payment-date
+    # ties still break the same way.
+    def remittances_by_claim(remittances)
+      seen = Set.new
+      remittances.each_with_object({}) do |remittance, index|
+        next unless seen.add?(RemittanceAmounts.remittance_key(remittance))
+
+        claim_identifiers(remittance).each { |id| (index[id] ||= []) << remittance }
+      end
+    end
+
+    def claim_identifiers(remittance)
+      Array(remittance[:line_items]).filter_map { |item| item[:claim_identifier].to_s.strip.presence }.uniq
     end
 
     # One entry per claim the batch names. Each unmatched line is counted
