@@ -148,15 +148,17 @@ class CmsZipCbsaRakeTest < ActiveSupport::TestCase
     end
   end
 
-  test "import rolls back when insert_all fails after delete (transactional snapshot replace)" do
+  test "import rolls back when bulk insert fails after delete (transactional snapshot replace)" do
     Corvid::ZipCbsaCrosswalk.create!(
       fiscal_year: 2026, zip: "88101", cbsa: "98765", release_label: "keep"
     )
     path = write_crosswalk_csv("replace.csv", "zip,cbsa\n88202,12\n")
 
-    boom = Class.new(StandardError)
-    Corvid::ZipCbsaCrosswalk.stub(:insert_all, ->(*) { raise boom, "insert failed" }) do
-      assert_raises(boom) do
+    Corvid::ZipCbsaCrosswalk.stub(
+      :insert_all!,
+      ->(*) { raise ActiveRecord::StatementInvalid, "insert failed" }
+    ) do
+      assert_raises(ActiveRecord::StatementInvalid) do
         Rake::Task["cms:zip_cbsa:import"].invoke("2026", path, "boom")
       end
     end
