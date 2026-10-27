@@ -11,6 +11,7 @@ class Corvid::Adapters::MockAdapterTest < Minitest::Test
 
   def setup
     @saved_time_zone = Time.zone
+    Time.zone = "UTC"
     @adapter = Corvid::Adapters::MockAdapter.new
   end
 
@@ -607,16 +608,27 @@ class Corvid::Adapters::MockAdapterTest < Minitest::Test
     assert_equal inquiry, result[:date_of_service]
   end
 
-  def test_seed_medicaid_eligibility_scenario_mid_month_end
+  def test_seed_medicaid_eligibility_scenario_mid_month_end_eligible_before_plan_end
+    assert_respond_to @adapter, :seed_medicaid_eligibility_scenario
+
+    inquiry = Date.new(2026, 10, 10)
+    @adapter.seed_medicaid_eligibility_scenario(SCENARIO_PATIENT, :mid_month_end)
+    result = @adapter.verify_eligibility(SCENARIO_PATIENT, "medicaid", date_of_service: inquiry)
+
+    assert result[:eligible], "inquiry on plan end date must be eligible (issue #712 R9)"
+    assert_equal Date.new(2026, 10, 1), result[:coverage_start],
+                 "mid_month_end must start coverage on the first of the inquiry month (issue #712 R12)"
+    assert_equal Date.new(2026, 10, 14), result[:coverage_end]
+  end
+
+  def test_seed_medicaid_eligibility_scenario_mid_month_end_ineligible_after_plan_end
     assert_respond_to @adapter, :seed_medicaid_eligibility_scenario
 
     inquiry = Date.new(2026, 10, 20)
     @adapter.seed_medicaid_eligibility_scenario(SCENARIO_PATIENT, :mid_month_end)
     result = @adapter.verify_eligibility(SCENARIO_PATIENT, "medicaid", date_of_service: inquiry)
 
-    assert result[:eligible]
-    assert_equal Date.new(2026, 10, 1), result[:coverage_start],
-                 "mid_month_end must start coverage on the first of the inquiry month (issue #712 R12)"
+    refute result[:eligible], "inquiry after coverage_end must not be eligible (issue #712 R9)"
     assert_equal Date.new(2026, 10, 14), result[:coverage_end]
   end
 

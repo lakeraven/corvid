@@ -1,5 +1,6 @@
 # frozen_string_literal: true
 
+require "active_support/testing/time_helpers"
 require "corvid/adapters/base"
 require "corvid/value_objects"
 
@@ -202,6 +203,7 @@ module AdapterContractTests
     base_methods = Corvid::Adapters::Base.public_instance_methods(false).sort
 
     base.class_eval do
+      include ActiveSupport::Testing::TimeHelpers
       include AdapterContractTests::Assertions
 
       define_method(:test_contract_unknown_identifier_policy_exhaustive) do
