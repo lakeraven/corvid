@@ -10,7 +10,7 @@ module Corvid
     ZIP_FORMAT = /\A[0-9]{5}\z/
     CBSA_FORMAT = /\A(?:[0-9]{5}|[0-9]{2})\z/
 
-    validates :fiscal_year, presence: true
+    validates :fiscal_year, presence: true, inclusion: { in: 2000..2100 }
     validates :zip, presence: true, format: { with: ZIP_FORMAT }
     validates :cbsa, presence: true, format: { with: CBSA_FORMAT }
   end

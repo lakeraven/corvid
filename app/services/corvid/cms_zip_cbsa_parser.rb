@@ -4,10 +4,13 @@ require "csv"
 
 module Corvid
   # Parses the canonical ZIP → CBSA CSV (`zip,cbsa`). Leading `#` lines
-  # are comments, matching the other CMS importers. `fiscal_year` is
-  # stamped by the caller — CMS files are year-specific by filename.
+  # are comments, matching the other CMS importers. `fiscal_year` and
+  # `release_label` are stamped by the caller. A file comment is not a
+  # release label. CMS files are year-specific by filename.
   #
-  # ArgumentError names the line number and never the field values.
+  # Input is parsed from a UTF-8 copy. Invalid encodings raise
+  # ArgumentError and never echo the bytes. A bad row names the line
+  # number and never the field values.
   module CmsZipCbsaParser
     HEADER = %w[zip cbsa].freeze
 
@@ -28,7 +31,11 @@ module Corvid
       private
 
       def normalize_text(csv_text)
-        csv_text.to_s.sub(/\A\xEF\xBB\xBF/, "").sub(/\A\uFEFF/, "")
+        text = csv_text.to_s.dup
+        text.force_encoding(Encoding::UTF_8)
+        raise ArgumentError, "invalid encoding: expected UTF-8" unless text.valid_encoding?
+
+        text.sub(/\A\xEF\xBB\xBF/, "").sub(/\A\uFEFF/, "")
       end
 
       def header_index(lines)

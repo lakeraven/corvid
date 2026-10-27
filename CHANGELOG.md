@@ -24,12 +24,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - ZIP-to-CBSA wage-area crosswalk (#371). `corvid_zip_cbsa_crosswalks`
   stores the CMS crosswalk by federal fiscal year (`zip` is five ASCII
-  digits; `cbsa` is a five-digit CBSA or a two-digit rural-state code).
-  `rake cms:zip_cbsa:import` replaces that year's rows from a canonical
-  CSV. `Corvid::PrcFacilityDictionary.cbsa_for` resolves a ZIP or ZIP+4
-  for the fiscal year of the service date. With no rows loaded it
-  returns nil and institutional pricing stays on the NATIONAL wage
-  index.
+  digits; `cbsa` is a five-digit CBSA or a two-digit rural-state code;
+  `fiscal_year` is 2000 through 2100). `rake cms:zip_cbsa:import`
+  replaces that year's rows from a canonical CSV when the file has data
+  rows. The year argument must be four digits in 2000..2100, or the task
+  aborts with usage before reading the file. `release_label` comes only
+  from the third argument (default `manual`), not from a file comment.
+  A file with no data rows is refused and that year's rows stay
+  untouched. `Corvid::PrcFacilityDictionary.cbsa_for` resolves a ZIP or
+  ZIP+4 for the fiscal year of the service date, one indexed query per
+  call, with no cache. With no row for that year it returns nil and
+  institutional pricing stays on the NATIONAL wage index.
 - `corvid_claim_submissions.rejection_reason_token`, `denial_reason_codes`
   (CARC/RARC codes), `rejected_at` and `denied_at`. The timestamps are kept
   after the status moves on, so a claim rejected or denied and later paid

@@ -679,6 +679,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_28_000001) do
     t.datetime "updated_at", null: false
     t.index ["fiscal_year", "zip"], name: "idx_corvid_zip_cbsa_crosswalks_fy_zip", unique: true
     t.check_constraint "cbsa::text ~ '^([0-9]{5}|[0-9]{2})$'::text", name: "corvid_zip_cbsa_crosswalks_cbsa_check"
+    t.check_constraint "(fiscal_year >= 2000) AND (fiscal_year <= 2100)", name: "corvid_zip_cbsa_crosswalks_fiscal_year_check"
     t.check_constraint "zip::text ~ '^[0-9]{5}$'::text", name: "corvid_zip_cbsa_crosswalks_zip_check"
   end
 

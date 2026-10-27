@@ -248,20 +248,25 @@ Remaining in this cluster:
 Wage-index rows are keyed by CMS wage area (5-digit CBSA or 2-digit
 rural-state code), not by ZIP. `corvid_zip_cbsa_crosswalks` holds that
 crosswalk, one row per ZIP per federal fiscal year. The canonical CSV
-uses the same leading `#` comments as the IPPS files. The header is
+uses the same leading `#` comments as the IPPS files. Comments are
+ignored and do not set `release_label`. The label comes only from the
+task's third argument and defaults to `manual`. The header is
 `zip,cbsa`:
 
 ```csv
 # ZIP to CBSA crosswalk, FY 2026
-# release_label: synthetic_example
 zip,cbsa
 88101,98765
 88202,12
 ```
 
 `zip` is exactly five ASCII digits. `cbsa` is five digits (urban CBSA)
-or two digits (CMS rural state code). `#` lines are ignored. Import
-replaces that fiscal year's rows in one transaction:
+or two digits (CMS rural state code). Stored `fiscal_year` values are
+2000 through 2100. The year argument must be four digits in that range;
+any other year aborts with usage before the file is read. A file with
+no data rows is refused, and that year's rows stay untouched. When the
+file has data rows, import replaces that fiscal year's rows in one
+transaction:
 
 ```bash
 rake "cms:zip_cbsa:import[2026,/tmp/zip_cbsa_FY2026.csv,synthetic_example]"
@@ -270,5 +275,6 @@ rake "cms:zip_cbsa:import[2026,/tmp/zip_cbsa_FY2026.csv,synthetic_example]"
 `Corvid::PrcFacilityDictionary.cbsa_for(zip:, on:)` accepts `#####` or
 `#####-####` and returns the wage area for the federal fiscal year of
 `on` (October 1 starts the next FY). Any other ZIP shape returns nil.
-With no row loaded for that year, `cbsa_for` returns nil and
-institutional pricing stays on the NATIONAL wage index.
+Each call is one indexed query; nothing is cached. With no row loaded
+for that year, `cbsa_for` returns nil and institutional pricing stays
+on the NATIONAL wage index.
