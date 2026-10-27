@@ -799,7 +799,8 @@ class Corvid::AlternateResourceCheckTest < ActiveSupport::TestCase
           checked_at: 1.day.ago,
           coverage_start: Date.new(2025, 1, 1),
           coverage_end: Date.new(2025, 12, 31),
-          renewal_date: Date.new(2025, 12, 1)
+          renewal_date: Date.new(2025, 12, 1),
+          inquiry_date_of_service: inquiry_month_for(dos)
         )
 
         assert check.current_for?(dos)
@@ -817,7 +818,8 @@ class Corvid::AlternateResourceCheckTest < ActiveSupport::TestCase
           checked_at: 1.day.ago,
           coverage_start: Date.new(2025, 1, 1),
           coverage_end: Date.new(2025, 12, 31),
-          renewal_date: Date.new(2025, 12, 1)
+          renewal_date: Date.new(2025, 12, 1),
+          inquiry_date_of_service: inquiry_month_for(dos)
         )
 
         assert check.current_for?(dos)
@@ -864,11 +866,13 @@ class Corvid::AlternateResourceCheckTest < ActiveSupport::TestCase
         travel_to Time.zone.parse("2027-01-10 12:00:00 UTC") do
           ended = Corvid::AlternateResourceCheck.new(
             resource_type: "medicaid", status: negative_status, checked_at: 1.day.ago,
-            coverage_start: nil, coverage_end: Date.new(2026, 12, 31)
+            coverage_start: nil, coverage_end: Date.new(2026, 12, 31),
+            inquiry_date_of_service: Date.new(2026, 12, 31)
           )
           started = Corvid::AlternateResourceCheck.new(
             resource_type: "medicaid", status: negative_status, checked_at: 1.day.ago,
-            coverage_start: Date.new(2027, 2, 1), coverage_end: nil
+            coverage_start: Date.new(2027, 2, 1), coverage_end: nil,
+            inquiry_date_of_service: Date.new(2027, 2, 1)
           )
 
           assert ended.current_for?(Date.new(2026, 12, 31))
@@ -882,11 +886,13 @@ class Corvid::AlternateResourceCheckTest < ActiveSupport::TestCase
     test "current_for? is true for fresh #{negative_status} with no stored period" do
       with_tenant("tnt_test") do
         travel_to Time.zone.parse("2027-01-10 12:00:00 UTC") do
+          dos = Date.new(2027, 1, 5)
           check = Corvid::AlternateResourceCheck.new(
-            resource_type: "medicaid", status: negative_status, checked_at: 1.day.ago
+            resource_type: "medicaid", status: negative_status, checked_at: 1.day.ago,
+            inquiry_date_of_service: inquiry_month_for(dos)
           )
 
-          assert check.current_for?(Date.new(2027, 1, 5))
+          assert check.current_for?(dos)
         end
       end
     end
@@ -999,7 +1005,8 @@ class Corvid::AlternateResourceCheckTest < ActiveSupport::TestCase
           status: "enrolled",
           checked_at: 30.days.ago,
           coverage_start: Date.new(2025, 1, 1),
-          coverage_end: nil
+          coverage_end: nil,
+          inquiry_date_of_service: inquiry_month_for(dos)
         )
 
         assert check.current_for?(dos, as_of: as_of)
@@ -1127,7 +1134,8 @@ class Corvid::AlternateResourceCheckTest < ActiveSupport::TestCase
           status: "enrolled",
           checked_at: 31.days.ago,
           coverage_start: Date.new(2025, 1, 1),
-          coverage_end: nil
+          coverage_end: nil,
+          inquiry_date_of_service: inquiry_month_for(dos)
         )
 
         assert check.current_for?(dos, as_of: Time.current)
@@ -1515,6 +1523,10 @@ class Corvid::AlternateResourceCheckTest < ActiveSupport::TestCase
       resource_type: "medicaid",
       status: "checking"
     )
+  end
+
+  def inquiry_month_for(date_of_service)
+    Date.new(date_of_service.year, date_of_service.month, 1)
   end
 
   def check_constraint_exists?(name)

@@ -75,6 +75,63 @@ class Corvid::AlternateResourceCheckMonthCurrencyTest < ActiveSupport::TestCase
     end
   end
 
+  test "unsaved medicaid with no inquiry date is not current for any date of service" do
+    with_tenant(TENANT) do
+      check = Corvid::AlternateResourceCheck.new(
+        resource_type: "medicaid",
+        status: "enrolled",
+        checked_at: Time.zone.local(2026, 10, 15, 10, 0, 0),
+        coverage_start: Date.new(2026, 1, 1),
+        coverage_end: Date.new(2026, 12, 31)
+      )
+
+      travel_to Time.zone.local(2026, 10, 20, 10, 0, 0) do
+        as_of = Time.zone.local(2026, 10, 20, 10, 0, 0)
+        refute check.current_for?(Date.new(2026, 10, 20), as_of: as_of),
+               "Unsaved Medicaid without inquiry_date_of_service must not be current (issue #712)"
+        refute check.current_for?(Date.new(2026, 11, 1), as_of: as_of),
+               "Unsaved Medicaid without inquiry_date_of_service must not be current (issue #712)"
+      end
+    end
+  end
+
+  test "medicaid partial load without inquiry_date_of_service is not current" do
+    with_tenant(TENANT) do
+      referral = create_referral
+      persisted = Corvid::AlternateResourceCheck.create!(
+        prc_referral: referral,
+        resource_type: "medicaid",
+        status: "enrolled",
+        checked_at: Time.zone.local(2026, 10, 15, 10, 0, 0),
+        coverage_start: Date.new(2026, 1, 1),
+        coverage_end: Date.new(2026, 12, 31),
+        inquiry_date_of_service: Date.new(2026, 10, 15)
+      )
+
+      partial = Corvid::AlternateResourceCheck
+        .select(
+          :id, :resource_type, :status, :checked_at,
+          :coverage_start, :coverage_end, :renewal_date
+        )
+        .find(persisted.id)
+
+      travel_to Time.zone.local(2026, 10, 20, 10, 0, 0) do
+        dos = Date.new(2026, 10, 20)
+        as_of = Time.zone.local(2026, 10, 20, 10, 0, 0)
+        current = nil
+        raised = false
+        begin
+          current = partial.current_for?(dos, as_of: as_of)
+        rescue StandardError
+          raised = true
+        end
+
+        assert raised || current == false,
+               "Medicaid row without loaded inquiry_date_of_service must fail closed (issue #712)"
+      end
+    end
+  end
+
   test "medicaid with no inquiry date is not current for any date of service" do
     with_tenant(TENANT) do
       check = Corvid::AlternateResourceCheck.create!(
