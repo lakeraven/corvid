@@ -6,10 +6,6 @@ require "ulid"
 require "corvid/adapters/base"
 require "corvid/value_objects"
 
-# Rails boots with a zone. Standalone adapter tests travel via Time.zone
-# and otherwise see nil.
-Time.zone = "UTC" if Time.zone.nil?
-
 module Corvid
   module Adapters
     # In-memory adapter for development and tests.
@@ -318,6 +314,7 @@ module Corvid
         return nil unless result
 
         apply_medicaid_scenario!(result, coverage, answered_on)
+        mark_ineligible_outside_inquiry!(result, answered_on)
         result.merge(date_of_service: answered_on, date_of_service_defaulted: defaulted)
       end
 
@@ -646,6 +643,24 @@ module Corvid
         result[:coverage_end] = scenario_coverage_end(scenario, inquiry_date)
         result[:eligible] = true
         result[:service_active] = false if scenario == :inactive_with_covering_dates
+      end
+
+      # Plan dates that miss the inquiry are not eligible. A seeded
+      # scenario is checked the same way as a recorded row.
+      def mark_ineligible_outside_inquiry!(result, inquiry_date)
+        return unless result[:eligible] == true
+        return unless outside_inquiry_period?(result[:coverage_start], result[:coverage_end], inquiry_date)
+
+        result[:eligible] = false
+      end
+
+      # A start after the inquiry, or an end before it, misses. A nil
+      # bound does not.
+      def outside_inquiry_period?(coverage_start, coverage_end, inquiry_date)
+        return false unless inquiry_date.is_a?(Date)
+
+        (coverage_start.is_a?(Date) && coverage_start > inquiry_date) ||
+          (coverage_end.is_a?(Date) && coverage_end < inquiry_date)
       end
 
       def scenario_coverage_end(scenario, inquiry_date)

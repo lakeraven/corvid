@@ -26,17 +26,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   raises `ArgumentError`. `verify_eligibility` and `check_eligibility_detailed`
   include `:date_of_service` (the date answered for, `Date.current` when
   omitted) and `:date_of_service_defaulted`. `AlternateResourceCheck#verify!`
-  accepts the same keyword, passes a referral `service_date` when that column
-  holds a `Date`, and stores the answer on
-  `corvid_alternate_resource_checks.inquiry_date_of_service`.
-- Month-bounded eligibility (`month_bounded_eligibility_resource_types`,
-  default `medicaid`) is current only in the year-month of
-  `inquiry_date_of_service`. A saved check with no inquiry date is not current.
-- Placeholder coverage ends (`placeholder_coverage_end_dates`, default
-  `9999-12-31`, or more than `placeholder_coverage_end_horizon_years` after
-  the inquiry date, default 25) are stored as nil on `coverage_end` and
-  `renewal_date`. `service_active: false` records `not_enrolled` even when
-  the plan dates cover the inquiry.
+  accepts the same keyword and passes a referral `service_date` when that
+  column holds a `Date`. `inquiry_date_of_service` stores the adapter's exact
+  `Date` when present, otherwise that asked date, otherwise nil. A non-nil
+  adapter date that differs from an explicit `date_of_service:` is not an
+  answer, and a re-verify that asked for no date and received none clears a
+  stored inquiry date. The Medicaid eligibility group uses the inquiry date,
+  then the referral service date, then `checked_at`.
+- Month-bounded eligibility is always `medicaid`, plus any names in
+  `month_bounded_eligibility_resource_types` compared case-insensitively.
+  Nil or a non-array does not remove medicaid. A check is current only in
+  the year-month of `inquiry_date_of_service`. A saved check with no inquiry
+  date is not current.
+- Placeholder coverage ends are stored as nil on `coverage_end` and
+  `renewal_date`. `9999-12-31` is always a placeholder. An Array in
+  `placeholder_coverage_end_dates` adds dates; anything else is ignored.
+  An end more than `placeholder_coverage_end_horizon_years` after the inquiry
+  date is also open (25 when that setting is not a positive integer;
+  `Time.current.to_date` when there is no inquiry date). An end exactly that
+  many years out is kept. `service_active: false` records `not_enrolled`
+  even when the plan dates cover the inquiry. A present non-boolean
+  `service_active` is not an answer. Mock and FHIR eligibility is false when
+  the plan period misses the inquiry date, including a seeded Medicaid
+  scenario. FHIR prefers an active Coverage whose period covers that date.
 - `corvid_claim_submissions.rejection_reason_token`, `denial_reason_codes`
   (CARC/RARC codes), `rejected_at` and `denied_at`. The timestamps are kept
   after the status moves on, so a claim rejected or denied and later paid

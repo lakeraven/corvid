@@ -231,9 +231,11 @@ module Corvid
 
     # A failed or malformed lookup is not a determination of no coverage
     # (42 CFR 136.61). Only an explicit boolean :eligible enrolls or
-    # refuses; anything else stays :not_checked so an unanswered payer
-    # lookup cannot be treated as a refusal. The warning count is the
-    # number of resource types whose latest lookup was undetermined.
+    # refuses. service_active false is not enrolled, and a present
+    # non-boolean service_active stays :not_checked. Anything else stays
+    # :not_checked so an unanswered payer lookup cannot be treated as a
+    # refusal. The warning count is the number of resource types whose
+    # latest lookup was undetermined.
     def verify_all_enrollment!
       @enrollment_verification_run = true
       @alternate_resources.each do |type, resource|
@@ -444,13 +446,24 @@ module Corvid
     end
 
     # Symbol key only: a string-keyed or error hash is an unanswered lookup.
+    # service_active false is not enrolled. A present value other than
+    # true, false, or nil is unanswered.
     def enrollment_status_from(result)
       return unless result.is_a?(Hash)
+      return :not_enrolled if result[:service_active] == false
+      return if non_boolean_service_active?(result)
 
       case result[:eligible]
       when true then :enrolled
       when false then :not_enrolled
       end
+    end
+
+    def non_boolean_service_active?(result)
+      return false unless result.key?(:service_active)
+
+      value = result[:service_active]
+      !value.nil? && value != true && value != false
     end
 
     def create_alternate_resource_checks

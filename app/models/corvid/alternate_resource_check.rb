@@ -44,6 +44,12 @@ module Corvid
     VERIFY_MEDICAID_ELIGIBILITY_GROUP_WARNING =
       "medicaid eligibility group could not be recorded during verification"
 
+    # Always open, even when placeholder configuration is nil or not an Array.
+    PLACEHOLDER_COVERAGE_END = Date.new(9999, 12, 31)
+    # Used when placeholder_coverage_end_horizon_years is not a positive Integer.
+    PLACEHOLDER_HORIZON_YEARS = 25
+    private_constant :PLACEHOLDER_COVERAGE_END, :PLACEHOLDER_HORIZON_YEARS
+
     # get_coverages returned nil or a non-Array. The source did not answer.
     class UnansweredCoverages < StandardError; end
     private_constant :UnansweredCoverages
@@ -156,22 +162,25 @@ module Corvid
 
     # date_of_service is the inquiry date sent to the adapter. When it is
     # omitted, the referral service_date is sent if that column holds a
-    # Date. No other date is invented. The adapter's :date_of_service is
-    # stored on inquiry_date_of_service.
+    # Date. No other date is invented. inquiry_date_of_service stores the
+    # adapter's exact Date, else that asked date, else nil. A non-nil
+    # adapter date other than an explicit date_of_service is unreadable.
     def verify!(date_of_service: nil)
       patient_identifier = prc_referral.case&.patient_identifier
       return false unless patient_identifier
 
-      result = eligibility_result(patient_identifier, date_of_service)
+      asked = inquiry_date_for_adapter(date_of_service)
+      result = eligibility_result(patient_identifier, asked)
       # An unreadable answer is not a determination (42 CFR 136.61).
       # coverage_start, coverage_end, and renewal_date must be an exact
       # Date or nil. Any other type updates nothing. Absent keys store nil.
-      return false unless readable_answer?(result)
+      # A present service_active must be true, false, or nil.
+      return false unless readable_answer?(result, date_of_service)
 
       next_status = status_for_eligibility(result)
       return false if next_status.nil?
 
-      update!(verification_attributes(result, next_status))
+      update!(verification_attributes(result, next_status, asked))
       record_medicaid_eligibility_group
       true
     end
@@ -233,8 +242,8 @@ module Corvid
       self.checked_at = Time.current
     end
 
-    def verification_attributes(result, next_status)
-      inquiry = exact_inquiry_date(result)
+    def verification_attributes(result, next_status, asked)
+      inquiry = stored_inquiry_date(result, asked)
       {
         status: next_status,
         policy_token: result[:policy_token],
@@ -354,10 +363,10 @@ module Corvid
       coverage["resource_type"]
     end
 
-    # The referral service date when that attribute is present. Otherwise
-    # the date eligibility was answered. Never Date.current.
+    # Inquiry date, then the referral service date, then the date
+    # eligibility was answered. Never Date.current.
     def medicaid_group_date_of_service
-      referral_service_date || checked_at.to_date
+      inquiry_date_of_service || referral_service_date || checked_at.to_date
     end
 
     def referral_service_date
@@ -367,22 +376,42 @@ module Corvid
       referral.service_date
     end
 
-    def readable_answer?(result)
+    def readable_answer?(result, date_of_service)
       return false unless result.is_a?(Hash)
       return false unless result[:eligible] == true || result[:eligible] == false
-      return false unless readable_inquiry_date?(result)
+      return false unless readable_service_active?(result)
+      return false unless readable_inquiry_date?(result, date_of_service)
 
       readable_coverage_dates?(result)
     end
 
-    # Absent key stores nil. A present value must be an exact Date or nil.
-    def readable_inquiry_date?(result)
-      !result.key?(:date_of_service) || exact_date_or_nil?(result[:date_of_service])
+    # A present value must be exactly true, false, or nil. "false" and 0
+    # are not answers.
+    def readable_service_active?(result)
+      return true unless result.key?(:service_active)
+
+      value = result[:service_active]
+      value.nil? || value == true || value == false
     end
 
-    def exact_inquiry_date(result)
-      value = result[:date_of_service]
-      value if value.instance_of?(Date)
+    # Absent or nil stores the asked date. A present value must be an
+    # exact Date or nil. A non-nil date must match an explicit keyword.
+    def readable_inquiry_date?(result, date_of_service)
+      echoed = result[:date_of_service]
+      return false if result.key?(:date_of_service) && !exact_date_or_nil?(echoed)
+      return true if echoed.nil? || !date_of_service.instance_of?(Date)
+
+      echoed == date_of_service
+    end
+
+    # Adapter Date wins. Otherwise the date verify! asked the adapter
+    # about. Otherwise nil, which clears a previous inquiry on re-verify.
+    def stored_inquiry_date(result, asked)
+      echoed = result[:date_of_service]
+      return echoed if echoed.instance_of?(Date)
+      return asked if asked.instance_of?(Date)
+
+      nil
     end
 
     # Nil and a missing key are nil. DateTime is a Date subclass and is
@@ -395,11 +424,9 @@ module Corvid
       value.nil? || value.instance_of?(Date)
     end
 
-    # Caller date wins. Otherwise the referral service_date when that
-    # column holds a Date. The keyword is omitted when neither is a Date
-    # so existing adapters that lack the keyword still answer.
-    def eligibility_result(patient_identifier, date_of_service)
-      inquiry = inquiry_date_for_adapter(date_of_service)
+    # The keyword is omitted when the asked date is not a Date so existing
+    # adapters that lack the keyword still answer.
+    def eligibility_result(patient_identifier, inquiry)
       if inquiry.nil?
         Corvid.adapter.verify_eligibility(patient_identifier, resource_type)
       else
@@ -407,6 +434,8 @@ module Corvid
       end
     end
 
+    # Caller date wins. Otherwise the referral service_date when that
+    # column holds a Date.
     def inquiry_date_for_adapter(date_of_service)
       return date_of_service unless date_of_service.nil?
 
@@ -424,17 +453,32 @@ module Corvid
     end
 
     def placeholder_coverage_end?(date)
-      dates = Corvid.configuration.placeholder_coverage_end_dates
-      dates.respond_to?(:include?) && dates.include?(date)
+      return true if date == PLACEHOLDER_COVERAGE_END
+
+      configured_placeholder_date?(date)
     end
 
+    # Only an Array adds dates. A String or nil must not be asked
+    # include?, and must not raise.
+    def configured_placeholder_date?(date)
+      dates = Corvid.configuration.placeholder_coverage_end_dates
+      return false unless dates.is_a?(Array)
+
+      dates.include?(date)
+    end
+
+    # Strictly past the horizon. With no inquiry date, measure from the
+    # answer time in the host zone.
     def beyond_placeholder_horizon?(date, inquiry_date)
-      return false unless inquiry_date.instance_of?(Date)
+      anchor = inquiry_date.instance_of?(Date) ? inquiry_date : Time.current.to_date
+      date > anchor + placeholder_horizon_years.years
+    end
 
+    def placeholder_horizon_years
       years = Corvid.configuration.placeholder_coverage_end_horizon_years
-      return false unless years.is_a?(Integer)
+      return years if years.is_a?(Integer) && years.positive?
 
-      date > inquiry_date + years.years
+      PLACEHOLDER_HORIZON_YEARS
     end
 
     # Month-bounded checks are current only in the inquiry year-month.
@@ -449,9 +493,22 @@ module Corvid
       inquiry.year == date_of_service.year && inquiry.month == date_of_service.month
     end
 
+    # Medicaid is always month-bounded. Configured names are added and
+    # compared case-insensitively. Nil or a non-Array adds nothing.
     def month_bounded_type?
+      medicaid_resource? || configured_month_bounded_type?
+    end
+
+    def medicaid_resource?
+      resource_type.to_s.downcase == "medicaid"
+    end
+
+    def configured_month_bounded_type?
       types = Corvid.configuration.month_bounded_eligibility_resource_types
-      Array(types).map(&:to_s).include?(resource_type.to_s)
+      return false unless types.is_a?(Array)
+
+      name = resource_type.to_s.downcase
+      types.any? { |type| type.to_s.downcase == name }
     end
 
     # A checked_at later than as_of is a future answer, not a current one.

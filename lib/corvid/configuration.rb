@@ -43,17 +43,21 @@ module Corvid
     attr_accessor :verification_snapshot_keys, :verification_snapshot_key_version
 
     # Dates an eligibility response uses for "no real end". verify! stores
-    # those coverage_end and renewal_date values as nil (open). Default
-    # includes the sentinel 9999-12-31 (#712).
+    # those coverage_end and renewal_date values as nil (open) only when
+    # this is an Array. 9999-12-31 is always open. Default includes that
+    # sentinel (#712).
     attr_accessor :placeholder_coverage_end_dates
 
     # A coverage_end or renewal_date more than this many years after the
-    # inquiry date is a placeholder and is stored as nil (#712).
+    # inquiry date is a placeholder and is stored as nil. With no inquiry
+    # date the horizon is measured from Time.current. A value that is not
+    # a positive Integer falls back to 25 (#712).
     attr_accessor :placeholder_coverage_end_horizon_years
 
-    # Resource types whose current_for? is limited to the year-month of
-    # inquiry_date_of_service. A saved check with no inquiry date is not
-    # current. Default is medicaid (#712).
+    # Extra resource types whose current_for? is limited to the year-month
+    # of inquiry_date_of_service, compared case-insensitively. Medicaid is
+    # always month-bounded. Nil or a non-Array adds nothing. A saved check
+    # with no inquiry date is not current (#712).
     attr_accessor :month_bounded_eligibility_resource_types
 
     def initialize

@@ -496,13 +496,15 @@ module Corvid
 
       # FHIR R4 Coverage search has no date parameter, so the inquiry
       # date cannot be sent to the server. Coverage.period is compared
-      # to that date locally. A bound that excludes the date makes
-      # eligible false. A missing period does not, by itself, deny an
-      # active coverage. No matching coverage, or a search that does
-      # not answer, stays nil: absence never verifies (42 CFR 136.61).
+      # to that date locally. An active match whose period covers the
+      # inquiry is preferred; otherwise the first match is answered and
+      # a bound that excludes the date makes eligible false. A missing
+      # period does not, by itself, deny an active coverage. No matching
+      # coverage, or a search that does not answer, stays nil: absence
+      # never verifies (42 CFR 136.61).
       def verify_eligibility(patient_identifier, resource_type, date_of_service: nil)
         answered_on, defaulted = resolve_inquiry_date(date_of_service)
-        coverage = eligibility_coverage(patient_identifier, resource_type)
+        coverage = eligibility_coverage(patient_identifier, resource_type, answered_on)
         return nil unless coverage
 
         eligibility_hash(coverage, answered_on, defaulted)
@@ -644,9 +646,9 @@ module Corvid
 
       private
 
-      def eligibility_coverage(patient_identifier, resource_type)
+      def eligibility_coverage(patient_identifier, resource_type, inquiry_date)
         bundle = fhir_search("Coverage", beneficiary: "Patient/#{patient_identifier}")
-        coverage_for_resource_type(extract_entries(bundle), resource_type)
+        coverage_for_resource_type(extract_entries(bundle), resource_type, inquiry_date)
       end
 
       def eligibility_hash(coverage, answered_on, defaulted)
@@ -1479,11 +1481,33 @@ module Corvid
 
       # A nil, empty, or whitespace-only resource_type is undetermined:
       # nil, never the first coverage. A requested type that matches
-      # nothing is unknown — never another type's coverage.
-      def coverage_for_resource_type(coverages, resource_type)
+      # nothing is unknown — never another type's coverage. An active
+      # match whose period covers the inquiry is preferred.
+      def coverage_for_resource_type(coverages, resource_type, inquiry_date = nil)
         return nil if resource_type.to_s.strip.empty?
 
-        coverages.find { |coverage| coverage_type_matches?(coverage, resource_type) }
+        matches = matching_coverages(coverages, resource_type)
+        return if matches.empty?
+
+        matches.find { |coverage| active_period_covers?(coverage, inquiry_date) } || matches.first
+      end
+
+      def matching_coverages(coverages, resource_type)
+        return [] unless coverages.respond_to?(:select)
+
+        coverages.select { |coverage| coverage_type_matches?(coverage, resource_type) }
+      end
+
+      # Active, and the period covers the inquiry. Missing bounds cover.
+      def active_period_covers?(coverage, inquiry_date)
+        return false unless coverage.is_a?(Hash) && coverage["status"] == "active"
+        return false unless inquiry_date.instance_of?(Date)
+
+        period_covers_inquiry?(
+          parse_period_date(coverage.dig("period", "start"), :start),
+          parse_period_date(coverage.dig("period", "end"), :end),
+          inquiry_date
+        )
       end
 
       def coverage_type_matches?(coverage, resource_type)
