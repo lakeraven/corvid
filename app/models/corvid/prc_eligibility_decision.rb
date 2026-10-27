@@ -28,6 +28,11 @@ module Corvid
     validates :decided_at, presence: true
     validates :as_of_date, presence: true
     validates :eligible, inclusion: { in: [ true, false ] }
+
+    # Adapters::Base::TRIBAL_CONFIDENCE_VALUES. Null when enrolled is not exactly true or false.
+    # Same set as corvid_prc_eligibility_decisions_provider_confidence_check (ADR 0002).
+    PROVIDER_CONFIDENCES = %w[verified stale unavailable].freeze
+    validates :provider_confidence, inclusion: { in: PROVIDER_CONFIDENCES }, allow_nil: true
     validates :verification_snapshot_key_version,
               presence: true,
               if: -> { verification_snapshot_hash.present? && will_save_change_to_verification_snapshot_hash? }
