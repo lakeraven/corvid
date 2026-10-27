@@ -1,9 +1,13 @@
 # frozen_string_literal: true
 
 require "minitest/autorun"
+require "active_support/all"
+require "active_support/testing/time_helpers"
 require "corvid/adapters/mock_adapter"
 
 class Corvid::Adapters::MockAdapterTest < Minitest::Test
+  include ActiveSupport::Testing::TimeHelpers
+
   def setup
     @adapter = Corvid::Adapters::MockAdapter.new
   end
@@ -460,5 +464,108 @@ class Corvid::Adapters::MockAdapterTest < Minitest::Test
       second = @adapter.get_medications("pt_001").first
       assert_equal expected_display, second.display
     end
+  end
+
+  # -- Issue #712: date_of_service on eligibility reads ----------------------------
+
+  def test_verify_eligibility_without_date_of_service_sets_defaulted_flag
+    assert @adapter.method(:verify_eligibility).parameters.any? { |type, name|
+      type == :key && name == :date_of_service
+    }, "verify_eligibility must accept date_of_service: keyword (issue #712)"
+
+    @adapter.add_coverage(
+      "pt-712-001",
+      coverage_type: "medicaid",
+      payer_name: "MOCK MEDICAID PAYER",
+      plan_name: "TEST PLAN 712",
+      eligible: true
+    )
+
+    travel_to Time.zone.local(2026, 10, 27, 9, 0, 0) do
+      result = @adapter.verify_eligibility("pt-712-001", "medicaid")
+      assert_equal Date.new(2026, 10, 27), result[:date_of_service]
+      assert result[:date_of_service_defaulted]
+    end
+  end
+
+  def test_verify_eligibility_with_explicit_date_of_service_clears_defaulted_flag
+    assert @adapter.method(:verify_eligibility).parameters.any? { |type, name|
+      type == :key && name == :date_of_service
+    }, "verify_eligibility must accept date_of_service: keyword (issue #712)"
+
+    @adapter.add_coverage(
+      "pt-712-001",
+      coverage_type: "medicaid",
+      payer_name: "MOCK MEDICAID PAYER",
+      plan_name: "TEST PLAN 712",
+      eligible: true
+    )
+    explicit = Date.new(2026, 10, 15)
+
+    result = @adapter.verify_eligibility("pt-712-001", "medicaid", date_of_service: explicit)
+
+    assert_equal explicit, result[:date_of_service]
+    refute result[:date_of_service_defaulted]
+  end
+
+  def test_verify_eligibility_rejects_non_date_date_of_service
+    params = @adapter.method(:verify_eligibility).parameters
+    assert params.any? { |type, name| type == :key && name == :date_of_service },
+           "verify_eligibility must accept date_of_service: keyword (issue #712)"
+
+    @adapter.add_coverage("pt-712-001", coverage_type: "medicaid", eligible: true)
+
+    assert_raises(ArgumentError) do
+      @adapter.verify_eligibility("pt-712-001", "medicaid", date_of_service: "2026-10-15")
+    end
+  end
+
+  # -- Issue #712: MockAdapter eligibility scenarios -----------------------------
+
+  SCENARIO_PATIENT = "pt-712-scenario"
+
+  def test_seed_medicaid_eligibility_scenario_active_this_month_only
+    assert_respond_to @adapter, :seed_medicaid_eligibility_scenario
+
+    inquiry = Date.new(2026, 10, 20)
+    @adapter.seed_medicaid_eligibility_scenario(SCENARIO_PATIENT, :active_this_month_only)
+    result = @adapter.verify_eligibility(SCENARIO_PATIENT, "medicaid", date_of_service: inquiry)
+
+    assert result[:eligible]
+    assert_equal Date.new(2026, 10, 31), result[:coverage_end]
+    assert_equal inquiry, result[:date_of_service]
+  end
+
+  def test_seed_medicaid_eligibility_scenario_mid_month_end
+    assert_respond_to @adapter, :seed_medicaid_eligibility_scenario
+
+    inquiry = Date.new(2026, 10, 20)
+    @adapter.seed_medicaid_eligibility_scenario(SCENARIO_PATIENT, :mid_month_end)
+    result = @adapter.verify_eligibility(SCENARIO_PATIENT, "medicaid", date_of_service: inquiry)
+
+    assert result[:eligible]
+    assert_equal Date.new(2026, 10, 14), result[:coverage_end]
+  end
+
+  def test_seed_medicaid_eligibility_scenario_placeholder_end
+    assert_respond_to @adapter, :seed_medicaid_eligibility_scenario
+
+    inquiry = Date.new(2026, 10, 1)
+    @adapter.seed_medicaid_eligibility_scenario(SCENARIO_PATIENT, :placeholder_end)
+    result = @adapter.verify_eligibility(SCENARIO_PATIENT, "medicaid", date_of_service: inquiry)
+
+    assert result[:eligible]
+    assert_equal Date.new(9999, 12, 31), result[:coverage_end]
+  end
+
+  def test_seed_medicaid_eligibility_scenario_inactive_with_covering_dates
+    assert_respond_to @adapter, :seed_medicaid_eligibility_scenario
+
+    inquiry = Date.new(2026, 10, 10)
+    @adapter.seed_medicaid_eligibility_scenario(SCENARIO_PATIENT, :inactive_with_covering_dates)
+    result = @adapter.verify_eligibility(SCENARIO_PATIENT, "medicaid", date_of_service: inquiry)
+
+    assert result[:eligible], "inactive service scenario still has covering plan dates at payer level"
+    assert_equal false, result[:service_active]
   end
 end
