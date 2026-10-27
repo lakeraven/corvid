@@ -6,6 +6,10 @@ module Corvid
   #
   # Hosts can register custom mappings from an initializer to cover their
   # local PRC facility codes.
+  #
+  # `.cbsa_for` resolves a facility ZIP to a CMS wage area from
+  # ZipCbsaCrosswalk. With no row for that fiscal year it returns nil,
+  # and institutional pricing stays on the NATIONAL wage index.
   module PrcFacilityDictionary
     Entry = Struct.new(:code, :name, :city, :state, :zip, :locality, keyword_init: true)
 
@@ -38,10 +42,47 @@ module Corvid
       def reset!
         @entries = nil
         @loaded = false
+        @cbsa_cache = nil
         ensure_loaded
       end
 
+      # CMS wage area for a facility ZIP in the federal fiscal year of
+      # `on` (FY starts October 1; omitted `on` is Date.current).
+      # Accepts "#####" or "#####-####". Anything else, or a year with
+      # no crosswalk row, returns nil. Memoized until reset!.
+      def cbsa_for(zip:, on: nil)
+        normalized = normalized_zip(zip)
+        return if normalized.nil?
+
+        year = fiscal_year_for(service_date(on))
+        key = [ year, normalized ]
+        return cbsa_cache[key] if cbsa_cache.key?(key)
+
+        cbsa_cache[key] = ZipCbsaCrosswalk.find_by(fiscal_year: year, zip: normalized)&.cbsa
+      end
+
       private
+
+      def normalized_zip(zip)
+        return unless zip.is_a?(String) && zip.match?(/\A[0-9]{5}(?:-[0-9]{4})?\z/)
+
+        zip[0, 5]
+      end
+
+      def service_date(on)
+        return Date.current if on.nil?
+        return on if on.is_a?(Date)
+
+        raise ArgumentError, "on must be a Date"
+      end
+
+      def fiscal_year_for(date)
+        date.month >= 10 ? date.year + 1 : date.year
+      end
+
+      def cbsa_cache
+        @cbsa_cache ||= {}
+      end
 
       def ensure_loaded
         return if @loaded

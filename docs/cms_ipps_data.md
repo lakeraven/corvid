@@ -239,7 +239,36 @@ Remaining in this cluster:
   `corvid_opps_conversion_factors` / `corvid_asc_conversion_factors`
   (kept in this PR to avoid a data-loss migration before #369 is
   proven in production).
-- **#372** — resolve `facility.locality` to a real CBSA code from the
-  facility ZIP so the per-CBSA wage index in this table actually
-  changes OPPS/ASC pricing on production obligations, not just in
-  direct rate-provider calls.
+- **#372** — pass `PrcFacilityDictionary.cbsa_for` into institutional
+  pricing so a loaded crosswalk changes OPPS/ASC/IPPS wage indexes
+  on production obligations, not just in direct `cbsa_for` calls.
+
+## ZIP to CBSA crosswalk (#371)
+
+Wage-index rows are keyed by CMS wage area (5-digit CBSA or 2-digit
+rural-state code), not by ZIP. `corvid_zip_cbsa_crosswalks` holds that
+crosswalk, one row per ZIP per federal fiscal year. The canonical CSV
+uses the same leading `#` comments as the IPPS files. The header is
+`zip,cbsa`:
+
+```csv
+# ZIP to CBSA crosswalk, FY 2026
+# release_label: synthetic_example
+zip,cbsa
+88101,98765
+88202,12
+```
+
+`zip` is exactly five ASCII digits. `cbsa` is five digits (urban CBSA)
+or two digits (CMS rural state code). `#` lines are ignored. Import
+replaces that fiscal year's rows in one transaction:
+
+```bash
+rake "cms:zip_cbsa:import[2026,/tmp/zip_cbsa_FY2026.csv,synthetic_example]"
+```
+
+`Corvid::PrcFacilityDictionary.cbsa_for(zip:, on:)` accepts `#####` or
+`#####-####` and returns the wage area for the federal fiscal year of
+`on` (October 1 starts the next FY). Any other ZIP shape returns nil.
+With no row loaded for that year, `cbsa_for` returns nil and
+institutional pricing stays on the NATIONAL wage index.
