@@ -42,10 +42,10 @@ module Corvid
     attr_accessor :adapter, :edi_adapter, :phi_sanitizer, :on_provenance, :fetch_provenance
     attr_accessor :verification_snapshot_keys, :verification_snapshot_key_version
 
-    # Dates an eligibility response uses for "no real end". verify! stores
-    # those coverage_end and renewal_date values as nil (open) only when
-    # this is an Array. 9999-12-31 is always open. Default includes that
-    # sentinel (#712).
+    # Dates an eligibility response uses for "no real end". An Array may
+    # hold exact Dates and ISO 8601 strings (Date.iso8601). Other elements
+    # and a non-Array are ignored and do not raise. 9999-12-31 is always
+    # open. Default includes that sentinel (#712).
     attr_accessor :placeholder_coverage_end_dates
 
     # A coverage_end or renewal_date more than this many years after the

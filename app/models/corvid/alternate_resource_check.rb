@@ -160,12 +160,18 @@ module Corvid
       end
     end
 
-    # date_of_service is the inquiry date sent to the adapter. When it is
-    # omitted, the referral service_date is sent if that column holds a
-    # Date. No other date is invented. inquiry_date_of_service stores the
-    # adapter's exact Date, else that asked date, else nil. A non-nil
-    # adapter date other than an explicit date_of_service is unreadable.
+    # date_of_service is the inquiry date sent to the adapter. It must be
+    # nil or an exact Date; anything else raises ArgumentError before the
+    # adapter is called, and the message does not include the value. When
+    # it is omitted, the referral service_date is sent if that column holds
+    # a Date. No other date is invented. When a date was asked, the adapter
+    # must echo that exact Date. A missing, nil, or different
+    # :date_of_service is not an answer. inquiry_date_of_service stores the
+    # asked date. When nothing was asked, it stores the adapter's exact
+    # Date, else nil.
     def verify!(date_of_service: nil)
+      reject_non_date_inquiry!(date_of_service)
+
       patient_identifier = prc_referral.case&.patient_identifier
       return false unless patient_identifier
 
@@ -175,7 +181,7 @@ module Corvid
       # coverage_start, coverage_end, and renewal_date must be an exact
       # Date or nil. Any other type updates nothing. Absent keys store nil.
       # A present service_active must be true, false, or nil.
-      return false unless readable_answer?(result, date_of_service)
+      return false unless readable_answer?(result, asked)
 
       next_status = status_for_eligibility(result)
       return false if next_status.nil?
@@ -376,11 +382,11 @@ module Corvid
       referral.service_date
     end
 
-    def readable_answer?(result, date_of_service)
+    def readable_answer?(result, asked)
       return false unless result.is_a?(Hash)
       return false unless result[:eligible] == true || result[:eligible] == false
       return false unless readable_service_active?(result)
-      return false unless readable_inquiry_date?(result, date_of_service)
+      return false unless readable_inquiry_date?(result, asked)
 
       readable_coverage_dates?(result)
     end
@@ -394,24 +400,24 @@ module Corvid
       value.nil? || value == true || value == false
     end
 
-    # Absent or nil stores the asked date. A present value must be an
-    # exact Date or nil. A non-nil date must match an explicit keyword.
-    def readable_inquiry_date?(result, date_of_service)
+    # A date that was asked must come back as that exact Date. Missing,
+    # nil, or a different value is not an answer. A present echo that is
+    # not an exact Date or nil is not an answer either.
+    def readable_inquiry_date?(result, asked)
       echoed = result[:date_of_service]
       return false if result.key?(:date_of_service) && !exact_date_or_nil?(echoed)
-      return true if echoed.nil? || !date_of_service.instance_of?(Date)
+      return true unless asked.instance_of?(Date)
 
-      echoed == date_of_service
+      echoed.instance_of?(Date) && echoed == asked
     end
 
-    # Adapter Date wins. Otherwise the date verify! asked the adapter
-    # about. Otherwise nil, which clears a previous inquiry on re-verify.
+    # The asked date is the echo. With no asked date, store an exact Date
+    # from the adapter, else nil, which clears a previous inquiry.
     def stored_inquiry_date(result, asked)
-      echoed = result[:date_of_service]
-      return echoed if echoed.instance_of?(Date)
       return asked if asked.instance_of?(Date)
 
-      nil
+      echoed = result[:date_of_service]
+      echoed if echoed.instance_of?(Date)
     end
 
     # Nil and a missing key are nil. DateTime is a Date subclass and is
@@ -422,6 +428,13 @@ module Corvid
 
     def exact_date_or_nil?(value)
       value.nil? || value.instance_of?(Date)
+    end
+
+    # A non-Date inquiry is rejected before any lookup. nil is omitted.
+    def reject_non_date_inquiry!(date_of_service)
+      return if date_of_service.nil? || date_of_service.instance_of?(Date)
+
+      raise ArgumentError, "date_of_service must be a Date"
     end
 
     # The keyword is omitted when the asked date is not a Date so existing
@@ -458,13 +471,23 @@ module Corvid
       configured_placeholder_date?(date)
     end
 
-    # Only an Array adds dates. A String or nil must not be asked
-    # include?, and must not raise.
+    # Only an Array adds dates. Exact Dates count. A String counts when
+    # Date.iso8601 parses it. Anything else is ignored and does not raise.
     def configured_placeholder_date?(date)
       dates = Corvid.configuration.placeholder_coverage_end_dates
       return false unless dates.is_a?(Array)
 
-      dates.include?(date)
+      dates.any? { |element| placeholder_list_date(element) == date }
+    end
+
+    def placeholder_list_date(element)
+      return element if element.instance_of?(Date)
+      return unless element.instance_of?(String)
+
+      parsed = Date.iso8601(element)
+      parsed if parsed.instance_of?(Date)
+    rescue ArgumentError
+      nil
     end
 
     # Strictly past the horizon. With no inquiry date, measure from the

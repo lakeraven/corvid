@@ -392,9 +392,13 @@ module Corvid
       end
 
       # A check that names no payer is undetermined, never the first coverage.
+      # Plan dates that miss the inquiry are not eligible, same rule as
+      # verify_eligibility.
       def check_eligibility_detailed(patient_identifier, payer_identifier, date_of_service: nil)
         answered_on, defaulted = resolve_inquiry_date(date_of_service)
-        detailed_eligibility_result(patient_identifier, payer_identifier).merge(
+        result = detailed_eligibility_result(patient_identifier, payer_identifier)
+        mark_ineligible_outside_inquiry!(result, answered_on)
+        result.merge(
           date_of_service: answered_on,
           date_of_service_defaulted: defaulted
         )
@@ -645,8 +649,9 @@ module Corvid
         result[:service_active] = false if scenario == :inactive_with_covering_dates
       end
 
-      # Plan dates that miss the inquiry are not eligible. A seeded
-      # scenario is checked the same way as a recorded row.
+      # Plan dates that miss the inquiry are not eligible. verify_eligibility
+      # and check_eligibility_detailed share this, including a seeded
+      # scenario.
       def mark_ineligible_outside_inquiry!(result, inquiry_date)
         return unless result[:eligible] == true
         return unless outside_inquiry_period?(result[:coverage_start], result[:coverage_end], inquiry_date)
