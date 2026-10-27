@@ -1956,6 +1956,64 @@ class Corvid::Adapters::FhirAdapterTest < Minitest::Test
     assert_nil result[:coverage_end]
   end
 
+  # Issue #712 R11 / R12: pick covering active Coverage; period bounds vs inquiry date.
+  def test_verify_eligibility_prefers_active_coverage_covering_inquiry_over_ended_first_match
+    bundle = {
+      "resourceType" => "Bundle",
+      "entry" => [
+        {
+          "resource" => {
+            "resourceType" => "Coverage",
+            "id" => "cov_ended",
+            "status" => "active",
+            "type" => { "coding" => [ { "code" => "MCDSC" } ] },
+            "payor" => [ { "display" => "ENDED PAYER" } ],
+            "period" => { "start" => "2025-01-01", "end" => "2025-12-31" }
+          }
+        },
+        {
+          "resource" => {
+            "resourceType" => "Coverage",
+            "id" => "cov_active",
+            "status" => "active",
+            "type" => { "coding" => [ { "code" => "MCDSC" } ] },
+            "payor" => [ { "display" => "ACTIVE PAYER 712" } ],
+            "period" => { "start" => "2026-01-01", "end" => "2026-12-31" }
+          }
+        }
+      ]
+    }
+    inquiry = Date.new(2026, 10, 15)
+
+    @adapter.stub(:fhir_search, bundle) do
+      result = @adapter.verify_eligibility("pt_test_001", "medicaid", date_of_service: inquiry)
+      assert result[:eligible], "Must answer from coverage whose period covers the inquiry (issue #712 R11)"
+      assert_equal "ACTIVE PAYER 712", result[:payer_name]
+      assert_equal Date.new(2026, 1, 1), result[:coverage_start]
+      assert_equal Date.new(2026, 12, 31), result[:coverage_end]
+    end
+  end
+
+  def test_verify_eligibility_false_when_period_start_is_after_inquiry_date
+    bundle = coverage_bundle("start" => "2026-11-01", "end" => "2026-12-31")
+    bundle["entry"].first["resource"]["status"] = "active"
+
+    @adapter.stub(:fhir_search, bundle) do
+      result = @adapter.verify_eligibility("pt_test_001", "medicaid", date_of_service: Date.new(2026, 10, 15))
+      refute result[:eligible]
+    end
+  end
+
+  def test_verify_eligibility_false_when_period_end_is_before_inquiry_date
+    bundle = coverage_bundle("start" => "2026-01-01", "end" => "2026-09-30")
+    bundle["entry"].first["resource"]["status"] = "active"
+
+    @adapter.stub(:fhir_search, bundle) do
+      result = @adapter.verify_eligibility("pt_test_001", "medicaid", date_of_service: Date.new(2026, 10, 15))
+      refute result[:eligible]
+    end
+  end
+
   def test_partial_birth_date_still_parses_to_nil
     resource = { "id" => "pt_test_001", "birthDate" => "1980", "name" => [ { "family" => "TEST", "given" => [ "PATIENT" ] } ] }
     @adapter.stub(:fhir_read, resource) do

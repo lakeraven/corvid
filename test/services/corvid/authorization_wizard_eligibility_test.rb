@@ -369,6 +369,36 @@ class Corvid::AuthorizationWizardEligibilityTest < ActiveSupport::TestCase
     end
   end
 
+  test "service_active false yields not_enrolled even when eligible true via verify_all_enrollment" do
+    Corvid.configure do |c|
+      c.adapter = EligibilityControllingAdapter.new(
+        default: { eligible: true, service_active: false }
+      )
+    end
+
+    with_tenant(TENANT) do
+      wizard = build_wizard
+      wizard.verify_all_enrollment!
+
+      Corvid::AlternateResourceCheck::RESOURCE_TYPES.each do |type|
+        assert_equal :not_enrolled, wizard.alternate_resources[type][:status], type
+      end
+    end
+  end
+
+  test "non-boolean service_active leaves resource not_checked via verify_all_enrollment" do
+    Corvid.configure do |c|
+      c.adapter = EligibilityControllingAdapter.new(default: { eligible: true, service_active: "false" })
+    end
+
+    with_tenant(TENANT) do
+      wizard = build_wizard
+      wizard.verify_all_enrollment!
+
+      assert_all_resources_undetermined!(wizard)
+    end
+  end
+
   test "submit! after total outage persists not_checked and no not_enrolled rows" do
     Corvid.configure { |c| c.adapter = EligibilityControllingAdapter.new(default: nil) }
 

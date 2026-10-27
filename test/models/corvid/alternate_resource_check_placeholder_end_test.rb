@@ -8,6 +8,18 @@ class Corvid::AlternateResourceCheckPlaceholderEndTest < ActiveSupport::TestCase
   PATIENT = "pt-712-002"
   INQUIRY_DOS = Date.new(2026, 10, 15)
 
+  setup do
+    @config_snapshot = {
+      placeholder_dates: Corvid.configuration.placeholder_coverage_end_dates,
+      horizon_years: Corvid.configuration.placeholder_coverage_end_horizon_years
+    }
+  end
+
+  teardown do
+    Corvid.configuration.placeholder_coverage_end_dates = @config_snapshot[:placeholder_dates]
+    Corvid.configuration.placeholder_coverage_end_horizon_years = @config_snapshot[:horizon_years]
+  end
+
   test "default placeholder_coverage_end_dates includes 9999-12-31" do
     assert_respond_to Corvid.configuration, :placeholder_coverage_end_dates,
                       "placeholder_coverage_end_dates configuration required (issue #712)"
@@ -93,6 +105,67 @@ class Corvid::AlternateResourceCheckPlaceholderEndTest < ActiveSupport::TestCase
     end
   end
 
+  test "9999-12-31 is placeholder when placeholder_coverage_end_dates is nil" do
+    Corvid.configuration.placeholder_coverage_end_dates = nil
+    inquiry = Date.new(9974, 12, 31)
+
+    with_tenant(TENANT) do
+      check = medicaid_check_for(create_referral)
+      stub_verify_result(coverage_end: Date.new(9999, 12, 31), renewal_date: nil, inquiry: inquiry)
+
+      assert verify_with_dos!(check, inquiry)
+      check.reload
+
+      assert_nil check.coverage_end,
+                 "Built-in sentinel must nil 9999-12-31 even when placeholder_coverage_end_dates is nil (issue #712 R3)"
+    end
+  end
+
+  test "9999-12-31 is placeholder when placeholder_coverage_end_dates is a String" do
+    Corvid.configuration.placeholder_coverage_end_dates = "ignored"
+    inquiry = Date.new(9974, 12, 31)
+
+    with_tenant(TENANT) do
+      check = medicaid_check_for(create_referral)
+      stub_verify_result(coverage_end: Date.new(9999, 12, 31), renewal_date: nil, inquiry: inquiry)
+
+      travel_to Time.zone.local(9974, 12, 31, 10, 0, 0) do
+        assert verify_with_dos!(check, inquiry)
+      end
+      check.reload
+
+      assert_nil check.coverage_end,
+                 "Built-in sentinel must nil 9999-12-31 when config is not an enumerable (issue #712 R3)"
+    end
+  end
+
+  test "verify! does not raise when placeholder_coverage_end_dates is a String" do
+    Corvid.configuration.placeholder_coverage_end_dates = "not-an-array"
+
+    with_tenant(TENANT) do
+      check = medicaid_check_for(create_referral)
+      stub_verify_result(coverage_end: Date.new(2026, 12, 31), renewal_date: nil)
+
+      assert verify_with_dos!(check, INQUIRY_DOS)
+    end
+  end
+
+  test "horizon string 25 falls back and nils end 30 years after inquiry" do
+    Corvid.configuration.placeholder_coverage_end_horizon_years = "25"
+    far_end = INQUIRY_DOS + 30.years
+
+    with_tenant(TENANT) do
+      check = medicaid_check_for(create_referral)
+      stub_verify_result(coverage_end: far_end, renewal_date: nil)
+
+      assert verify_with_dos!(check, INQUIRY_DOS)
+      check.reload
+
+      assert_nil check.coverage_end,
+                 "Non-integer horizon must fall back to 25 years (issue #712 R3)"
+    end
+  end
+
   test "renewal tracking does not treat a stored placeholder renewal as current" do
     with_tenant(TENANT) do
       check = medicaid_check_for(create_referral)
@@ -141,16 +214,16 @@ class Corvid::AlternateResourceCheckPlaceholderEndTest < ActiveSupport::TestCase
     check.verify!(date_of_service: date_of_service)
   end
 
-  def stub_verify_result(coverage_end:, renewal_date:)
+  def stub_verify_result(coverage_end:, renewal_date:, inquiry: INQUIRY_DOS)
     Corvid.adapter.define_singleton_method(:verify_eligibility) do |_pid, _type, date_of_service: nil|
-      dos = date_of_service || Date.current
+      dos = date_of_service || inquiry
       {
         eligible: true,
         coverage_start: Date.new(dos.year, dos.month, 1),
         coverage_end: coverage_end,
         renewal_date: renewal_date,
         date_of_service: dos,
-        date_of_service_defaulted: date_of_service.nil?
+        date_of_service_defaulted: false
       }
     end
   end

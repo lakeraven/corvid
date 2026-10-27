@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "minitest/autorun"
+require "open3"
 require "active_support/all"
 require "active_support/testing/time_helpers"
 require "corvid/adapters/mock_adapter"
@@ -9,7 +10,12 @@ class Corvid::Adapters::MockAdapterTest < Minitest::Test
   include ActiveSupport::Testing::TimeHelpers
 
   def setup
+    @saved_time_zone = Time.zone
     @adapter = Corvid::Adapters::MockAdapter.new
+  end
+
+  def teardown
+    Time.zone = @saved_time_zone
   end
 
   # -- Vault: store_text + fetch_text round-trip ------------------------------
@@ -466,6 +472,71 @@ class Corvid::Adapters::MockAdapterTest < Minitest::Test
     end
   end
 
+  def test_instantiating_mock_adapter_does_not_change_time_zone
+    saved = Time.zone
+    Time.zone = "Pacific/Honolulu"
+    begin
+      Corvid::Adapters::MockAdapter.new
+      assert_equal "Pacific/Honolulu", Time.zone.tzinfo.name,
+                   "MockAdapter must not assign Time.zone (issue #712 R10)"
+    ensure
+      Time.zone = saved
+    end
+  end
+
+  def test_loading_mock_adapter_does_not_assign_time_zone_when_zone_is_already_set
+    adapter_path = File.expand_path("../../../lib/corvid/adapters/mock_adapter.rb", __dir__)
+    script = <<~RUBY
+      require "active_support/all"
+      Time.zone = "Pacific/Honolulu"
+      load #{adapter_path.inspect}
+      puts Time.zone.tzinfo.name
+    RUBY
+    output, = capture_mock_adapter_load_subprocess(script)
+    zone_name = output.strip
+    assert_equal "Pacific/Honolulu", zone_name,
+                 "mock_adapter.rb must not assign Time.zone on load (issue #712 R10); child output: #{output}"
+  end
+
+  def test_loading_mock_adapter_leaves_time_zone_nil_when_it_was_nil
+    adapter_path = File.expand_path("../../../lib/corvid/adapters/mock_adapter.rb", __dir__)
+    script = <<~RUBY
+      require "active_support/all"
+      load #{adapter_path.inspect}
+      puts(Time.zone.nil? ? "nil" : Time.zone.tzinfo.name)
+    RUBY
+    output, = capture_mock_adapter_load_subprocess(script)
+    zone_label = output.strip
+    assert_equal "nil", zone_label,
+                 "mock_adapter.rb must not default Time.zone to UTC on load (issue #712 R10); child output: #{output}"
+  end
+
+  def test_verify_eligibility_false_when_coverage_end_before_inquiry_date
+    @adapter.add_coverage(
+      "pt-712-inquiry",
+      coverage_type: "medicaid",
+      eligible: true,
+      coverage_start: Date.new(2026, 1, 1),
+      coverage_end: Date.new(2026, 9, 30)
+    )
+
+    result = @adapter.verify_eligibility("pt-712-inquiry", "medicaid", date_of_service: Date.new(2026, 10, 15))
+    refute result[:eligible], "Coverage ending before inquiry must not be eligible (issue #712 R9)"
+  end
+
+  def test_verify_eligibility_true_when_coverage_covers_inquiry_date
+    @adapter.add_coverage(
+      "pt-712-inquiry",
+      coverage_type: "medicaid",
+      eligible: true,
+      coverage_start: Date.new(2026, 1, 1),
+      coverage_end: Date.new(2026, 9, 30)
+    )
+
+    result = @adapter.verify_eligibility("pt-712-inquiry", "medicaid", date_of_service: Date.new(2026, 9, 15))
+    assert result[:eligible]
+  end
+
   # -- Issue #712: date_of_service on eligibility reads ----------------------------
 
   def test_verify_eligibility_without_date_of_service_sets_defaulted_flag
@@ -544,6 +615,8 @@ class Corvid::Adapters::MockAdapterTest < Minitest::Test
     result = @adapter.verify_eligibility(SCENARIO_PATIENT, "medicaid", date_of_service: inquiry)
 
     assert result[:eligible]
+    assert_equal Date.new(2026, 10, 1), result[:coverage_start],
+                 "mid_month_end must start coverage on the first of the inquiry month (issue #712 R12)"
     assert_equal Date.new(2026, 10, 14), result[:coverage_end]
   end
 
@@ -568,4 +641,10 @@ class Corvid::Adapters::MockAdapterTest < Minitest::Test
     assert result[:eligible], "inactive service scenario still has covering plan dates at payer level"
     assert_equal false, result[:service_active]
   end
+
+  def capture_mock_adapter_load_subprocess(script)
+    lib_dir = File.expand_path("../../../lib", __dir__)
+    Open3.capture2e(RbConfig.ruby, "-I", lib_dir, "-e", script)
+  end
+  private :capture_mock_adapter_load_subprocess
 end

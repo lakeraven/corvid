@@ -820,11 +820,22 @@ module AdapterContractTests
       assert_instance_of Date, defaulted[:date_of_service]
       assert defaulted[:date_of_service_defaulted], "#{method} must set date_of_service_defaulted true when DOS omitted"
 
-      [ "2026-06-15", Time.utc(2026, 6, 15, 12, 0, 0) ].each do |invalid_dos|
+      [ "2026-06-15", Time.utc(2026, 6, 15, 12, 0, 0), DateTime.new(2026, 6, 15, 12, 0, 0) ].each do |invalid_dos|
         assert_raises(ArgumentError) do
           adapter.public_send(method, *args, date_of_service: invalid_dos)
         end
       end
+
+      saved_zone = Time.zone
+      Time.zone = "Pacific/Kiritimati"
+      travel_to Time.utc(2025, 12, 31, 12, 0, 0) do
+        zoned = adapter.public_send(method, *args)
+        assert_equal Date.current, zoned[:date_of_service],
+                     "#{method} default date_of_service must be Date.current in Time.zone, not Date.today (issue #712)"
+        refute_equal Date.today, zoned[:date_of_service] if Date.today != Date.current
+      end
+    ensure
+      Time.zone = saved_zone
     end
 
     def assert_verify_eligibility_unknown(result)
