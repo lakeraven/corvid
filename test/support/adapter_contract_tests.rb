@@ -4,8 +4,9 @@ require "corvid/adapters/base"
 require "corvid/value_objects"
 
 # Shared behavior contract for Corvid::Adapters::Base implementations.
-# Including classes must define contract_adapter, contract_seed!, and
-# contract_unsupported (Hash of method_name => reason). Optional
+# Including classes must define contract_adapter, contract_seed! (taking
+# coverage_answer_as_of:, the source answer time to seed on the active
+# coverage, nil for none), and contract_unsupported (Hash of method_name => reason). Optional
 # contract_fail_closed_stubs documents methods that return a fail-closed
 # stub instead of raising (Hash of method_name => reason, default {}).
 #
@@ -60,6 +61,11 @@ module AdapterContractTests
   # Seed keys that used to switch seeded checks off. A seed that still
   # sends one is rejected: list the method in contract_unsupported instead.
   RETIRED_SEED_FLAGS = %i[care_team_seeded claims_listable obligation_seeded].freeze
+
+  # Seeded on the active coverage so every adapter must carry a known
+  # source answer time through, not only report nil.
+  KNOWN_COVERAGE_ANSWER_AS_OF = Time.utc(2026, 3, 15, 9, 0, 0)
+  COVERAGE_ANSWER_READS = %i[get_coverages verify_eligibility].freeze
 
   UPDATED_REFERRAL_STATUS = "on-hold"
   UPDATED_OBLIGATION_STATUS = "PARTIAL"
@@ -218,6 +224,15 @@ module AdapterContractTests
         unknown = accounted - base_methods
         assert_empty unknown,
                      "unknown identifier policy lists methods that are not Base public API: #{unknown.inspect}"
+      end
+
+      define_method(:test_contract_coverage_answer_as_of_known_time) do
+        validate_contract_hooks!
+        reads = AdapterContractTests::COVERAGE_ANSWER_READS.reject { |m| contract_unsupported.key?(m) }
+        next if reads.empty?
+
+        seed = contract_seed_with_known_answer_time!
+        assert_seeded_known_answer_time(reads, seed)
       end
 
       base_methods.each do |method_name|
@@ -626,6 +641,23 @@ module AdapterContractTests
                       "dereference(seeded patient) must return that patient's record"
     end
 
+    def contract_seed_with_known_answer_time!
+      unless method(:contract_seed!).parameters.include?([ :key, :coverage_answer_as_of ])
+        flunk("contract_seed! must take coverage_answer_as_of: and seed it on the active coverage")
+      end
+
+      known = AdapterContractTests::KNOWN_COVERAGE_ANSWER_AS_OF
+      seed = contract_seed!(coverage_answer_as_of: known)
+      validate_required_seed_keys!(seed)
+      seed.merge(coverage_answer_as_of: known)
+    end
+
+    def assert_seeded_known_answer_time(reads, seed)
+      # An adapter whose get_coverages returns [] (FhirAdapter) has no row to check.
+      assert_get_coverages_answer_as_of_policy(seed) if reads.include?(:get_coverages)
+      assert_verify_eligibility_answer_as_of_policy(seed) if reads.include?(:verify_eligibility)
+    end
+
     def expected_coverage_answer_as_of(seed)
       seed.fetch(:coverage_answer_as_of, nil)
     end
@@ -651,7 +683,7 @@ module AdapterContractTests
                    "get_coverages must include a row for coverage_resource_type #{active_type.inspect}"
       active_rows.each do |row|
         assert_expected_answer_as_of(row[:as_of], expected,
-                                   "get_coverages active #{active_type.inspect} row must not invent an answer time")
+                                   "get_coverages active #{active_type.inspect} row must return the seeded answer time, nil when unset")
       end
 
       inactive_rows = coverages.select { |row| coverage_row_resource_type(row) == inactive_type.to_s }
@@ -671,7 +703,7 @@ module AdapterContractTests
       match = adapter.verify_eligibility(patient, active_type)
       assert_instance_of Hash, match
       assert_expected_answer_as_of(match[:as_of], expected,
-                                   "verify_eligibility(#{active_type.inspect}) must not invent an answer time")
+                                   "verify_eligibility(#{active_type.inspect}) must return the seeded answer time, nil when unset")
 
       inactive = adapter.verify_eligibility(patient, inactive_type)
       assert_instance_of Hash, inactive

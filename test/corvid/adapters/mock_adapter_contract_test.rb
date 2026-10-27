@@ -24,7 +24,7 @@ class Corvid::Adapters::MockAdapterContractTest < Minitest::Test
     AdapterContractTests::LIST_SEARCH_READS.index_with { IN_MEMORY_NO_FAILED_SEARCH_REASON }
   end
 
-  def contract_seed!
+  def contract_seed!(coverage_answer_as_of: nil)
     adapter = contract_adapter
     adapter.reset!
 
@@ -84,14 +84,15 @@ class Corvid::Adapters::MockAdapterContractTest < Minitest::Test
       tribe_code: "TST",
       member_status: "enrolled"
     )
-    adapter.add_coverage(
-      "pt_contract_001",
+    medicaid = {
       coverage_type: "medicaid",
       payer_identifier: "MOCK_PAYER",
       payer_name: "MOCK MEDICAID PAYER",
       plan_name: "Mock Medicaid",
       eligible: true
-    )
+    }
+    medicaid[:as_of] = coverage_answer_as_of if coverage_answer_as_of
+    adapter.add_coverage("pt_contract_001", medicaid)
     adapter.add_coverage(
       "pt_contract_001",
       coverage_type: "va_benefits",
