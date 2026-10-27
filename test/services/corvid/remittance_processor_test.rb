@@ -632,6 +632,43 @@ class Corvid::RemittanceProcessorTest < ActiveSupport::TestCase
     end
   end
 
+  test "each claim is summed over only the remittances that name it, not the whole history" do
+    with_tenant(TENANT) do
+      claims = %w[CLM-R-IDX-1 CLM-R-IDX-2 CLM-R-IDX-3].map { |id| create_claim(id) }
+      unrelated = (1..30).map do |n|
+        remittance(remittance_identifier: "REM-IDX-OTHER-#{n}", claim_identifier: "CLM-R-IDX-ELSEWHERE-#{n}",
+                   paid_amount: 1.0)
+      end
+      history = unrelated + [
+        remittance(remittance_identifier: "REM-IDX-H1", payment_date: Date.new(2026, 9, 1),
+                   claim_identifier: " CLM-R-IDX-1 ", paid_amount: 100.0),
+        # Same remittance as the batch's, with a stale amount: the batch copy wins.
+        remittance(remittance_identifier: "REM-IDX-B-CLM-R-IDX-2", claim_identifier: "CLM-R-IDX-2",
+                   paid_amount: 999.0)
+      ]
+      batch = claims.map do |claim|
+        remittance(remittance_identifier: "REM-IDX-B-#{claim.claim_identifier}",
+                   claim_identifier: claim.claim_identifier, paid_amount: 25.0)
+      end
+
+      seen = Hash.new { |hash, key| hash[key] = [] }
+      original = Corvid::RemittanceAmounts.method(:call)
+      spy = lambda do |claim:, remittances:|
+        seen[claim.claim_identifier].concat(remittances.map { |r| r[:remittance_identifier] })
+        original.call(claim: claim, remittances: remittances)
+      end
+
+      Corvid::RemittanceAmounts.stub(:call, spy) do
+        call_processor(batch, adapter: HistoryAdapter.new(history: history))
+      end
+
+      assert_equal %w[REM-IDX-B-CLM-R-IDX-1 REM-IDX-H1], seen["CLM-R-IDX-1"]
+      assert_equal %w[REM-IDX-B-CLM-R-IDX-2], seen["CLM-R-IDX-2"]
+      assert_equal %w[REM-IDX-B-CLM-R-IDX-3], seen["CLM-R-IDX-3"]
+      assert_equal [ 12_500, 2_500, 2_500 ], claims.map { |claim| claim.reload.paid_amount_cents }
+    end
+  end
+
   private
 
   def call_processor(remittances, adapter: Corvid.adapter)
