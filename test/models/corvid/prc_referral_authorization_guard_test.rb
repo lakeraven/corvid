@@ -322,6 +322,50 @@ module Corvid
       end
     end
 
+    test "requires_committee? treats EHR estimated_cost $60,000 as above threshold" do
+      with_tenant("tnt_test") do
+        referral = referral_at_priority_assignment
+        referral.update_columns(estimated_cost_cents: nil, medical_priority: 2, flagged_for_review: false)
+        seed_adapter(referral, medical_priority_level: 2)
+        Corvid.adapter.add_referral(
+          referral.referral_identifier,
+          patient_identifier: PATIENT,
+          status: "pending",
+          estimated_cost: "$60,000",
+          medical_priority_level: 2,
+          emergent: false,
+          urgent: false,
+          chs_approval_status: "P",
+          service_requested: "TEST"
+        )
+        referral.reload
+
+        assert referral.requires_committee?,
+          "formatted EHR cost must not coerce to zero and skip committee review"
+      end
+    end
+
+    test "requires_committee? does not raise when EHR medical_priority_level is string digits" do
+      with_tenant("tnt_test") do
+        referral = referral_at_priority_assignment
+        referral.update_columns(medical_priority: 2, flagged_for_review: false, estimated_cost_cents: 500_000)
+        Corvid.adapter.add_referral(
+          referral.referral_identifier,
+          patient_identifier: PATIENT,
+          status: "pending",
+          estimated_cost: referral.estimated_cost,
+          medical_priority_level: "2",
+          emergent: false,
+          urgent: false,
+          chs_approval_status: "P",
+          service_requested: "TEST"
+        )
+        referral.reload
+
+        assert_nothing_raised { refute referral.requires_committee? }
+      end
+    end
+
     test "requires_committee? does not persist medical_priority from the EHR" do
       with_tenant(TENANT) do
         referral = referral_at_priority_assignment

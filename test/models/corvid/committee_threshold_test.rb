@@ -80,6 +80,41 @@ module Corvid
       end
     end
 
+    # Issue #675: local cost exactness (ADR 0004) and EHR fallback via shared gate.
+    test "local BigDecimal cost at threshold requires committee" do
+      with_tenant("tnt_test") do
+        assert build_referral(estimated_cost: BigDecimal("50000"), medical_priority: 2).requires_committee?
+      end
+    end
+
+    test "local Float cost at threshold requires committee via exact string form" do
+      with_tenant("tnt_test") do
+        assert build_referral(estimated_cost: 50_000.0, medical_priority: 2).requires_committee?
+      end
+    end
+
+    test "EHR dollar string cost at threshold requires committee when local cost is nil" do
+      with_tenant("tnt_test") do
+        Corvid.adapter.reset! if Corvid.adapter.respond_to?(:reset!)
+        r = build_referral(estimated_cost: nil, medical_priority: 2)
+        Corvid.adapter.add_referral(
+          r.referral_identifier,
+          patient_identifier: "pt_thr",
+          status: "pending",
+          estimated_cost: "$60,000",
+          medical_priority_level: 2,
+          emergent: false,
+          urgent: false,
+          chs_approval_status: "P",
+          service_requested: "TEST"
+        )
+        r.reload
+
+        assert r.requires_committee?
+        assert_equal r.requires_committee?, CommitteeReview.requires_committee_review?(r)
+      end
+    end
+
     private
 
     def build_referral(estimated_cost: nil, medical_priority: 1, flagged_for_review: false)

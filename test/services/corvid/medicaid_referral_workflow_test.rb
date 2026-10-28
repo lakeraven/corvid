@@ -601,6 +601,101 @@ module Corvid
       end
     end
 
+    test "authorize_with_medicaid_primary! refuses when EHR estimated_cost is formatted $60,000" do
+      with_tenant(TENANT) do
+        referral = referral_ready_for_medicaid_primary_authorization
+        referral.update_columns(estimated_cost_cents: nil, medical_priority: 2, flagged_for_review: false)
+        Corvid.adapter.add_referral(
+          referral.referral_identifier,
+          patient_identifier: PATIENT,
+          status: "pending",
+          estimated_cost: "$60,000",
+          medical_priority_level: 2,
+          emergent: false,
+          urgent: false,
+          chs_approval_status: "P",
+          service_requested: "TEST"
+        )
+        referral.reload
+        medicaid = referral.alternate_resource_checks.find_by!(resource_type: "medicaid")
+
+        assert referral.requires_committee?,
+          "formatted EHR cost must require committee before medicaid primary authorization"
+
+        workflow = Corvid::MedicaidReferralWorkflow.new
+        error = assert_raises(Corvid::MedicaidReferralWorkflow::Refused) do
+          workflow.authorize_with_medicaid_primary!(referral)
+        end
+
+        assert_match(/committee review/i, error.message)
+        refute medicaid.reload.coordinated?
+        refute referral.reload.authorized?
+      end
+    end
+
+    test "authorize_with_medicaid_primary! refuses committee review when EHR priority is string digits above threshold" do
+      with_tenant(TENANT) do
+        referral = referral_ready_for_medicaid_primary_authorization
+        referral.update_columns(medical_priority: nil, flagged_for_review: false)
+        Corvid.adapter.add_referral(
+          referral.referral_identifier,
+          patient_identifier: PATIENT,
+          status: "pending",
+          estimated_cost: referral.estimated_cost,
+          medical_priority_level: "4",
+          emergent: false,
+          urgent: false,
+          chs_approval_status: "P",
+          service_requested: "TEST"
+        )
+        referral.reload
+        medicaid = referral.alternate_resource_checks.find_by!(resource_type: "medicaid")
+
+        assert_nothing_raised { assert referral.requires_committee? }
+
+        workflow = Corvid::MedicaidReferralWorkflow.new
+        error = assert_raises(Corvid::MedicaidReferralWorkflow::Refused) do
+          workflow.authorize_with_medicaid_primary!(referral)
+        end
+
+        assert_match(/committee review/i, error.message)
+        refute medicaid.reload.coordinated?
+        refute referral.reload.authorized?
+      end
+    end
+
+    test "authorize_with_medicaid_primary! succeeds when MedicaidEligibilityGroupService#record! aborts the database inside an outer transaction" do
+      with_tenant(TENANT) do
+        referral = referral_ready_for_medicaid_primary_authorization
+        medicaid = referral.alternate_resource_checks.find_by!(resource_type: "medicaid")
+        medicaid.update_columns(
+          checked_at: 60.days.ago,
+          coverage_start: Date.new(2020, 1, 1),
+          coverage_end: Date.new(2020, 12, 31)
+        )
+        refute medicaid.reload.current_for?(Date.current)
+
+        adapter = medicaid_injected_adapter
+        seed_fresh_medicaid_coverage!(adapter, PATIENT)
+        failing_service = StatementInvalidMedicaidEligibilityGroupService.new
+
+        log_io = capture_workflow_warn_log do
+          Corvid::MedicaidEligibilityGroupService.stub(:new, ->(**) { failing_service }) do
+            workflow = Corvid::MedicaidReferralWorkflow.new(adapter: adapter)
+            ActiveRecord::Base.transaction do
+              workflow.authorize_with_medicaid_primary!(referral)
+              referral.update_columns(updated_at: Time.current)
+            end
+          end
+        end
+
+        assert_equal "authorized", referral.reload.status
+        assert medicaid.reload.coordinated?
+        assert_includes log_io.string, Corvid::AlternateResourceCheck::VERIFY_MEDICAID_ELIGIBILITY_GROUP_WARNING
+        refute_includes log_io.string, PATIENT
+      end
+    end
+
     test "authorize_with_medicaid_primary! leaves medicaid enrolled when Refused is rescued in an outer transaction" do
       with_tenant(TENANT) do
         referral = referral_ready_for_medicaid_primary_authorization
@@ -624,6 +719,26 @@ module Corvid
     end
 
     private
+
+    class StatementInvalidMedicaidEligibilityGroupService
+      def record!(*)
+        Corvid::AlternateResourceCheck.connection.execute(
+          "SELECT 1 FROM corvid_nonexistent_eligibility_group_stub"
+        )
+      end
+    end
+
+    def capture_workflow_warn_log
+      log_io = StringIO.new
+      original_logger = Rails.logger
+      logger = ActiveSupport::Logger.new(log_io)
+      logger.level = ::Logger::WARN
+      Rails.logger = logger
+      yield
+      log_io
+    ensure
+      Rails.logger = original_logger if original_logger
+    end
 
     class MedicaidInjectedAdapter < Corvid::Adapters::MockAdapter
       attr_reader :verify_eligibility_calls
