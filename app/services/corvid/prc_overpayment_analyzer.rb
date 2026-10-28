@@ -184,7 +184,7 @@ module Corvid
         # mark :clear / :real.
         lookup = Corvid::IppsRateProvider.lookup_for(
           drg_code: proc_info.drg,
-          locality: wage_area(facility),
+          locality: wage_area(facility, obligation.service_date),
           date: obligation.service_date
         )
 
@@ -209,7 +209,7 @@ module Corvid
         else
           stub_rate = Corvid::IppsStubRateProvider.rate_for(
             drg_code: proc_info.drg,
-            locality: facility.locality,
+            locality: wage_area(facility, obligation.service_date),
             date: obligation.service_date
           )
           Result.new(
@@ -259,7 +259,7 @@ module Corvid
         )
         asc_lookup = is_asc ? Corvid::AscRateProvider.lookup_for(
           hcpcs_code: proc_info.hcpcs,
-          locality: wage_area(facility),
+          locality: wage_area(facility, obligation.service_date),
           date: obligation.service_date
         ) : nil
 
@@ -284,7 +284,7 @@ module Corvid
 
         lookup = Corvid::OppsRateProvider.lookup_for(
           apc_code: proc_info.apc,
-          locality: wage_area(facility),
+          locality: wage_area(facility, obligation.service_date),
           date: obligation.service_date
         )
 
@@ -308,7 +308,7 @@ module Corvid
         else
           stub_rate = Corvid::OppsStubRateProvider.rate_for(
             apc_code: proc_info.apc,
-            locality: facility.locality,
+            locality: wage_area(facility, obligation.service_date),
             date: obligation.service_date
           )
           Result.new(
@@ -374,15 +374,20 @@ module Corvid
         )
       end
 
-      # The IPPS/OPPS/ASC providers key their wage index by CMS wage
-      # area (5-digit CBSA or 2-digit rural-state code), not by the PFS
-      # locality the facility dictionary carries, and the two code
-      # systems overlap (PFS "02" Seattle vs. wage area "02" rural
-      # Alaska). Until a facility resolves to a real CBSA (#372), price
-      # institutional claims at the NATIONAL wage row (nil normalizes to
-      # NATIONAL) rather than at a wage area that merely shares digits.
-      def wage_area(_facility)
-        nil
+      # CMS wage area for IPPS, OPPS, and ASC: the 5-digit CBSA or
+      # 2-digit rural-state code from the ZIP→CBSA crosswalk for the
+      # obligation's service date. PFS locality codes are a separate
+      # numbering system and overlap those wage areas (PFS "02" is
+      # Seattle; wage area "02" is rural Alaska), so this returns
+      # PrcFacilityDictionary.cbsa_for and never facility.locality.
+      # A nil result — no crosswalk row for that fiscal year, no ZIP,
+      # a malformed ZIP, or a ZIP that is not a String — is passed
+      # through. The rate providers treat a nil locality as NATIONAL.
+      def wage_area(facility, service_date)
+        zip = facility.zip
+        return nil unless zip.is_a?(String)
+
+        Corvid::PrcFacilityDictionary.cbsa_for(zip: zip, on: service_date)
       end
 
       def base_fields(obligation, proc_info, facility)

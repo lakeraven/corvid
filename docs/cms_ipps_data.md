@@ -229,19 +229,17 @@ above for each fiscal year and `gh release upload` the result.
 this table (#369). The table is keyed by CMS wage area (5-digit CBSA
 or 2-digit rural-state code), which overlaps the PFS locality codes
 in `PrcFacilityDictionary` (PFS "02" is Seattle; wage area "02" is
-rural Alaska). So `PrcOverpaymentAnalyzer` deliberately prices IPPS,
-OPPS and ASC claims at the NATIONAL wage row until a facility
-resolves to a real CBSA (#372's ZIP→CBSA resolution); passing the PFS
-locality would silently apply whichever wage area shares its digits.
+rural Alaska). `PrcOverpaymentAnalyzer` passes the wage area from
+`PrcFacilityDictionary.cbsa_for` into IPPS, OPPS, and ASC lookups
+(#372). The wage-area argument is that crosswalk result. With no row
+for the service date's fiscal year, pricing stays on the NATIONAL
+wage row.
 
 Remaining in this cluster:
 - **#370** — drop the now-unused `wage_index` column from
   `corvid_opps_conversion_factors` / `corvid_asc_conversion_factors`
   (kept in this PR to avoid a data-loss migration before #369 is
   proven in production).
-- **#372** — pass `PrcFacilityDictionary.cbsa_for` into institutional
-  pricing so a loaded crosswalk changes OPPS/ASC/IPPS wage indexes
-  on production obligations, not just in direct `cbsa_for` calls.
 
 ## ZIP to CBSA crosswalk (#371)
 
@@ -283,3 +281,10 @@ rake "cms:zip_cbsa:import[2026,/tmp/zip_cbsa_FY2026.csv,synthetic_example]"
 Each call is one indexed query; nothing is cached. With no row loaded
 for that year, `cbsa_for` returns nil and institutional pricing stays
 on the NATIONAL wage index.
+
+Once a crosswalk for that fiscal year is imported,
+`PrcOverpaymentAnalyzer` uses the facility's wage area for IPPS, OPPS,
+and ASC (#372). Professional PFS pricing still uses the facility's
+PFS locality. A nil `cbsa_for` result (no row, no ZIP, a malformed ZIP,
+or a ZIP that is not a String) leaves those institutional lookups on
+the NATIONAL wage index.

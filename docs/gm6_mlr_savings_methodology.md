@@ -51,14 +51,14 @@ none of it is stub/estimated.
 | IPPS (inpatient) | DRG relative weight × $6,752.61 national base rate × wage index 1.0 | CMS FY2026 IPPS Final Rule (CMS-1833-F), `ipps_drg_weights_FY2026.csv` / `ipps_hospital_rates_FY2026.csv` (pulled live via `rake cms:ipps:fetch_release[2026]` and independently cross-checked against CMS's published FY2026 payment brief) |
 | OPPS (hospital outpatient) | APC relative weight × $91.4150 national conversion factor × wage index 1.0 | CMS CY2026 OPPS Final Rule (CMS-1834-FC), `opps_apc_weights_CY2026.csv` / `opps_conversion_factors_CY2026.csv` (pulled live via `rake cms:opps:fetch_release[2026]`, cross-checked against CMS's CY2026 OPPS fact sheet) |
 
-Wage index is 1.0 (NATIONAL) for IPPS/OPPS rather than Billings, MT's real
-per-CBSA wage index (0.8961, CBSA 13740, validated in PR #467) — production
-doesn't yet resolve a facility ZIP to a CBSA row (tracked separately as
-#372), so this demo matches current production behavior instead of
-hand-wiring a shortcut around it. Because Billings' real wage index is
-**below** 1.0, the true CBSA-adjusted MLR would be **lower**, and the
-savings number **higher** — this demo undersells the number it could show
-once #372 lands, not the other way around.
+Wage index is 1.0 (NATIONAL) for IPPS/OPPS in this demo rather than
+Billings, MT's real per-CBSA wage index (0.8961, CBSA 13740, validated
+in PR #467). The demo does not load a ZIP→CBSA crosswalk, so its
+published figures stay on NATIONAL. Production institutional pricing
+uses the facility wage area once that crosswalk is imported (#372).
+Because Billings' real wage index is **below** 1.0, a CBSA-adjusted
+MLR would be **lower**, and the savings number **higher**. This demo
+undersells the number a loaded crosswalk would show.
 
 **Representative / synthetic** (clearly bounded to this one input):
 

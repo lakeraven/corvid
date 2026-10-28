@@ -207,20 +207,17 @@ The `wage_index` column on `corvid_opps_conversion_factors` is now
 dead weight (unread by the rate provider) but still present in the
 schema; dropping it is #370, sequenced after #369 proves out.
 
-Passing a real CBSA `locality:` into `OppsRateProvider.rate_for` from
-the analyzer is a separate follow-up, #372. Until that lands the
-analyzer passes no wage area (NATIONAL), not the PFS-style locality
-`PrcFacilityDictionary` resolves, because PFS and wage-area codes
-overlap ("02" is Seattle in PFS and rural Alaska as a wage area). So
-this refactor is plumbing without a change in production analyzer
-output; it's a correctness/architecture fix
-(single source of truth for wage index) that also happens to unlock
-real per-CBSA OPPS pricing the moment #372 wires the locality through.
+`PrcOverpaymentAnalyzer` passes the facility wage area from
+`PrcFacilityDictionary.cbsa_for` into `OppsRateProvider` (#372).
+PFS locality codes overlap wage-area codes ("02" is Seattle in PFS
+and rural Alaska as a wage area), so the wage-area argument is the
+crosswalk result. Once a crosswalk is imported for the service date's
+fiscal year, outpatient claims use that wage index. With no row, they
+stay on the NATIONAL wage index.
 
 For tribal PRC recovery in rural/non-metro areas, the wage adjustment
 can be material — e.g. Billings, MT's real FY2026 wage index (0.8961)
 moves an OPPS APC screening rate ~10% below the flat-NATIONAL figure.
-NATIONAL CF/wage-index is "directionally correct" until #372 lands.
 
 ## ASC parity
 

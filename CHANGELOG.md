@@ -22,6 +22,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   instead of `denial_reason_token`.
 
 ### Added
+- Institutional IPPS, OPPS, and ASC pricing uses the facility's CMS
+  wage area (#372). `PrcOverpaymentAnalyzer` resolves it with
+  `PrcFacilityDictionary.cbsa_for` for the facility ZIP and the
+  obligation's service date, then passes that code into the IPPS, OPPS,
+  and ASC lookups. Once a ZIP-to-CBSA crosswalk is imported, those
+  rates follow that area's wage index. Professional PFS pricing still
+  uses the facility's PFS locality. A missing row for the fiscal year,
+  a missing or malformed ZIP, or a ZIP that is not a String leaves
+  institutional pricing on the NATIONAL wage index. PFS locality codes
+  overlap wage-area codes (PFS "02" is Seattle; wage area "02" is rural
+  Alaska), so the wage-area argument is only the crosswalk result.
 - ZIP-to-CBSA wage-area crosswalk (#371). `corvid_zip_cbsa_crosswalks`
   stores the CMS crosswalk by federal fiscal year (`zip` is five ASCII
   digits; `cbsa` is a five-digit CBSA or a two-digit rural-state code;
