@@ -97,6 +97,7 @@ class Corvid::ClaimSubmissionMedicaidHoldConcurrencyTest < ActiveSupport::TestCa
   test "medicaid check update waits until submit! adapter call finishes for same patient" do
     claim = nil
     medicaid = nil
+    submit_thread = nil
     with_tenant(TENANT) do
       claim, medicaid = held_claim_with_override!
       @records[:claim_ids] << claim.id
@@ -142,7 +143,7 @@ class Corvid::ClaimSubmissionMedicaidHoldConcurrencyTest < ActiveSupport::TestCa
       end
     end
 
-    adapter_started.pop
+    pop_adapter_started!(submit_thread, adapter_started)
 
     writer_go.push(true)
 
@@ -154,10 +155,9 @@ class Corvid::ClaimSubmissionMedicaidHoldConcurrencyTest < ActiveSupport::TestCa
       "concurrent Medicaid update must block until submission completes (writer finished too early)"
 
     release_adapter.push(true)
-    submit_thread.join(5)
+    assert submit_thread.join(5), "submit thread should finish"
     writer.join(5)
 
-    assert submit_thread.join(5), "submit thread should finish"
     assert_equal :done, writer_finished.pop
     assert_nil writer_error
 
@@ -171,14 +171,33 @@ class Corvid::ClaimSubmissionMedicaidHoldConcurrencyTest < ActiveSupport::TestCa
 
   private
 
+  def pop_adapter_started!(submit_thread, queue, timeout: 10)
+    deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + timeout
+    loop do
+      return queue.pop(true) unless queue.empty?
+
+      unless submit_thread.alive?
+        submit_thread.join(0.5)
+        flunk "submit! thread died before adapter call (#{submit_thread.status})"
+      end
+      if Process.clock_gettime(Process::CLOCK_MONOTONIC) >= deadline
+        flunk "timed out waiting for adapter call to start"
+      end
+      sleep 0.01
+    end
+  end
+
   def held_claim_with_override!
     referral = referral_at("fac_test", "REF-CONC-#{SecureRandom.hex(3)}")
     @records[:referral_ids] << referral.id
     @records[:case_ids] << referral.case_id
     authorize!(referral)
-    medicaid = referral.alternate_resource_checks.find_by!(resource_type: "medicaid")
-    medicaid.update!(
-      status: "pending_enrollment",
+    service_date = Date.new(2027, 2, 1)
+    exhaust_alternate_resources!(referral, date_of_service: service_date, as_of: Time.current)
+    referral.alternate_resource_checks.find_by!(resource_type: "medicaid").update!(status: "not_enrolled")
+    pending_referral = seed_patient_pending_medicaid_on_referral!(
+      patient_id: PATIENT,
+      referral_id: "REF-PEND-#{SecureRandom.hex(3)}",
       application_date: Date.new(2027, 3, 15),
       application_date_source: "staff_entry",
       medicaid_state_code: "XA",
@@ -186,13 +205,16 @@ class Corvid::ClaimSubmissionMedicaidHoldConcurrencyTest < ActiveSupport::TestCa
       eligibility_group_source: "staff_entry",
       eligibility_group_set_at: Time.current
     )
+    @records[:referral_ids] << pending_referral.id
+    @records[:case_ids] << pending_referral.case_id
+    medicaid = pending_referral.alternate_resource_checks.find_by!(resource_type: "medicaid")
     claim = Corvid::ClaimSubmission.create!(
       tenant_identifier: TENANT,
       facility_identifier: referral.facility_identifier,
       patient_identifier: referral.case.patient_identifier,
       referral_identifier: referral.referral_identifier,
       claim_type: "professional",
-      service_date: Date.new(2027, 2, 1),
+      service_date: service_date,
       billed_amount: 100.0,
       status: "draft"
     )
@@ -201,6 +223,28 @@ class Corvid::ClaimSubmissionMedicaidHoldConcurrencyTest < ActiveSupport::TestCa
       by_identifier: "usr_billing_spec"
     )
     [ claim, medicaid ]
+  end
+
+  def seed_patient_pending_medicaid_on_referral!(patient_id:, referral_id:, **medicaid_attrs)
+    kase = Corvid::Case.create!(
+      patient_identifier: patient_id,
+      facility_identifier: "fac_test"
+    )
+    pending_referral = Corvid::PrcReferral.create!(
+      case: kase,
+      referral_identifier: referral_id,
+      facility_identifier: "fac_test"
+    )
+    medicaid = pending_referral.alternate_resource_checks.find_or_create_by!(resource_type: "medicaid") do |check|
+      check.status = "not_checked"
+    end
+    medicaid.update!(
+      status: "pending_enrollment",
+      eligibility_group_source: "staff_entry",
+      eligibility_group_set_at: Time.current,
+      **medicaid_attrs
+    )
+    pending_referral
   end
 
   def delete_created_records!

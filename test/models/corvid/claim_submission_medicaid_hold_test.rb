@@ -89,13 +89,25 @@ class Corvid::ClaimSubmissionMedicaidHoldTest < ActiveSupport::TestCase
 
   test "submit! holds when claim service_date is missing" do
     with_tenant(TENANT) do
-      claim, = authorized_claim_with_pending_medicaid!(
+      patient_id = "pt-mca-hold-no-dos-#{SecureRandom.hex(2)}"
+      seed_patient_pending_medicaid_on_referral!(
+        patient_id: patient_id,
+        referral_id: "REF-PEND-#{SecureRandom.hex(2)}",
         application_date: Date.new(2027, 3, 15),
         application_date_source: "staff_entry",
         medicaid_state_code: "XA",
-        eligibility_group: "expansion_adult",
-        service_date: nil
+        eligibility_group: "expansion_adult"
       )
+      claim = Corvid::ClaimSubmission.new(
+        tenant_identifier: TENANT,
+        facility_identifier: "fac_a",
+        patient_identifier: patient_id,
+        claim_type: "professional",
+        service_date: nil,
+        billed_amount: 100.0,
+        status: "draft"
+      )
+      claim.save!
       submit_calls = stub_submit_claim!
 
       assert_raises(Corvid::ClaimSubmission::HeldForPendingMedicaid) { claim.submit! }
@@ -1016,6 +1028,39 @@ class Corvid::ClaimSubmissionMedicaidHoldTest < ActiveSupport::TestCase
     end
   end
 
+  test "submit! raises AlternateResourcesNotCurrent when pending Medicaid is on claims own PRC referral even with override recorded" do
+    with_tenant(TENANT) do
+      referral = referral_at("fac_a", "REF-OWN-PEND-#{SecureRandom.hex(3)}")
+      authorize!(referral)
+      medicaid = referral.alternate_resource_checks.find_by!(resource_type: "medicaid")
+      medicaid.update!(
+        status: "pending_enrollment",
+        application_date: Date.new(2027, 3, 15),
+        application_date_source: "staff_entry",
+        medicaid_state_code: "XA",
+        eligibility_group: "expansion_adult",
+        eligibility_group_source: "staff_entry",
+        eligibility_group_set_at: Time.current
+      )
+      claim = build_claim_for(referral, service_date: Date.new(2027, 2, 1))
+      claim.save!
+      claim.override_medicaid_hold!(
+        reason_token: "rt_medicaid_hold_override",
+        by_identifier: "usr_billing_spec"
+      )
+      override_token = claim.medicaid_hold_override_reason_token
+      submit_calls = stub_submit_claim!
+
+      assert_raises(Corvid::ClaimSubmission::AlternateResourcesNotCurrent) { claim.submit! }
+
+      assert_empty submit_calls
+      claim.reload
+      assert_equal override_token, claim.medicaid_hold_override_reason_token
+      assert_equal "draft", claim.status
+      assert_nil claim.claim_identifier
+    end
+  end
+
   test "submit! held again when case patient_identifier is corrected to claim patient after override" do
     with_tenant(TENANT) do
       claim, referral, = authorized_claim_with_pending_medicaid!(
@@ -1067,18 +1112,31 @@ class Corvid::ClaimSubmissionMedicaidHoldTest < ActiveSupport::TestCase
   private
 
   def authorized_claim_with_pending_medicaid!(medicaid_status: "pending_enrollment", service_date:, **medicaid_attrs)
-    referral = referral_at("fac_a", "REF-MCAID-#{SecureRandom.hex(3)}")
-    authorize!(referral)
-    medicaid = referral.alternate_resource_checks.find_by!(resource_type: "medicaid")
+    patient_id = "pt-test-#{SecureRandom.hex(3)}"
+    billing_referral = referral_at("fac_a", "REF-MCAID-#{SecureRandom.hex(3)}", patient_id: patient_id)
+    authorize!(billing_referral)
+    dos = service_date || Date.new(2027, 2, 1)
+    exhaust_alternate_resources!(billing_referral, date_of_service: dos, as_of: Time.current)
+    billing_referral.alternate_resource_checks.find_by!(resource_type: "medicaid").update!(status: "not_enrolled")
+
+    pending_referral = seed_patient_pending_medicaid_on_referral!(
+      patient_id: patient_id,
+      referral_id: "REF-PEND-#{SecureRandom.hex(3)}",
+      medicaid_state_code: "XA",
+      eligibility_group: "expansion_adult",
+      **medicaid_attrs
+    )
+    medicaid = pending_referral.alternate_resource_checks.find_by!(resource_type: "medicaid")
     medicaid.update!(
       status: medicaid_status,
       eligibility_group_source: "staff_entry",
       eligibility_group_set_at: Time.current,
       **medicaid_attrs
     )
-    claim = build_claim_for(referral, service_date: service_date)
+
+    claim = build_claim_for(billing_referral, service_date: service_date)
     claim.save!
-    [ claim, referral, medicaid ]
+    [ claim, billing_referral, medicaid ]
   end
 
   def build_claim_for(referral, service_date:)

@@ -395,17 +395,40 @@ class Corvid::ClaimSubmissionOverrideSubmitFindingsTest < ActiveSupport::TestCas
   def held_draft_claim!
     referral = referral_at("fac_test", "REF-FIND-#{SecureRandom.hex(3)}")
     authorize!(referral)
-    medicaid = referral.alternate_resource_checks.find_by!(resource_type: "medicaid")
-    medicaid.update!(
-      status: "pending_enrollment",
+    service_date = Date.new(2027, 2, 1)
+    exhaust_alternate_resources!(referral, date_of_service: service_date, as_of: Time.current)
+    referral.alternate_resource_checks.find_by!(resource_type: "medicaid").update!(status: "not_enrolled")
+    seed_patient_pending_medicaid_on_referral!(
+      patient_id: referral.case.patient_identifier,
+      referral_id: "REF-PEND-#{SecureRandom.hex(3)}",
       application_date: Date.new(2027, 3, 15),
       application_date_source: "staff_entry",
       medicaid_state_code: "XA",
-      eligibility_group: "expansion_adult",
-      eligibility_group_source: "staff_entry",
-      eligibility_group_set_at: Time.current
+      eligibility_group: "expansion_adult"
     )
-    build_claim_for(referral).tap(&:save!)
+    build_claim_for(referral, service_date: service_date).tap(&:save!)
+  end
+
+  def seed_patient_pending_medicaid_on_referral!(patient_id:, referral_id:, **medicaid_attrs)
+    kase = Corvid::Case.create!(
+      patient_identifier: patient_id,
+      facility_identifier: "fac_test"
+    )
+    pending_referral = Corvid::PrcReferral.create!(
+      case: kase,
+      referral_identifier: referral_id,
+      facility_identifier: "fac_test"
+    )
+    medicaid = pending_referral.alternate_resource_checks.find_or_create_by!(resource_type: "medicaid") do |check|
+      check.status = "not_checked"
+    end
+    medicaid.update!(
+      status: "pending_enrollment",
+      eligibility_group_source: "staff_entry",
+      eligibility_group_set_at: Time.current,
+      **medicaid_attrs
+    )
+    pending_referral
   end
 
   def seed_submitted_claim!(claim_identifier:)
