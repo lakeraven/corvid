@@ -105,7 +105,7 @@ class Corvid::ClaimSubmissionMedicaidHoldOverrideSubmitTest < ActiveSupport::Tes
         if submit_calls.size == 1
           begin
             copy_b.submit!
-          rescue Corvid::ClaimSubmission::HeldForPendingMedicaid => error
+          rescue Corvid::ClaimSubmission::SubmissionOutcomeUnknown => error
             nested_error = error
           end
         end
@@ -114,7 +114,7 @@ class Corvid::ClaimSubmissionMedicaidHoldOverrideSubmitTest < ActiveSupport::Tes
 
       copy_a.submit!
 
-      assert_instance_of Corvid::ClaimSubmission::HeldForPendingMedicaid, nested_error
+      assert_instance_of Corvid::ClaimSubmission::SubmissionOutcomeUnknown, nested_error
       assert_equal 1, submit_calls.size
       assert_equal "submitted", fresh_claim_row(claim.id).status
     end

@@ -206,7 +206,7 @@ class Corvid::ClaimSubmissionPhaseBRecheckTest < ActiveSupport::TestCase
     with_tenant(TENANT) do
       claim = held_draft_claim!
       submit_calls = stub_submit_claim!
-      inject_override_before_no_override_lock!(claim.id)
+      inject_override_before_no_override_lock_on_peer_connection!(claim.id)
 
       assert_raises(Corvid::ClaimSubmission::OverrideRequiresTopLevelSubmit) do
         Corvid::ClaimSubmission.transaction(joinable: false) { claim.submit! }
@@ -225,12 +225,13 @@ class Corvid::ClaimSubmissionPhaseBRecheckTest < ActiveSupport::TestCase
     with_tenant(TENANT) do
       claim = held_draft_with_override!
       Corvid.adapter.define_singleton_method(:submit_claim) do |_data|
-        throw :halt_adapter
+        throw :halt_adapter, :halted
       end
 
       caught = catch(:halt_adapter) { claim.submit! }
 
-      assert_equal :halt_adapter, caught
+      assert_equal :halted, caught,
+        "adapter throw must halt send without recording acceptance (got #{caught.inspect})"
       row = fresh_claim_row(claim.id)
       assert_override_spent_row!(row)
       assert submission_outcome_unknown_row?(row),
@@ -469,12 +470,12 @@ class Corvid::ClaimSubmissionPhaseBRecheckTest < ActiveSupport::TestCase
   def install_submit_in_flight_hook!(claim_id)
     gap_done = false
     original = submit_in_flight_original_method
-    Corvid::ClaimSubmission.define_method(:submit_in_flight_claim!) do
+    Corvid::ClaimSubmission.define_method(:submit_in_flight_claim!) do |*args, **kwargs, &block|
       unless gap_done
         gap_done = true
         yield claim_id
       end
-      original.bind_call(self)
+      original.bind_call(self, *args, **kwargs, &block)
     end
   end
 
@@ -510,6 +511,31 @@ class Corvid::ClaimSubmissionPhaseBRecheckTest < ActiveSupport::TestCase
           reason_token: "rt_concurrent_before_lock",
           by_identifier: "usr_concurrent_before_lock"
         )
+      end
+      original.bind_call(self)
+    end
+  end
+
+  # Concurrent override from another process commits on its own connection;
+  # the caller's rollback must not erase it.
+  def inject_override_before_no_override_lock_on_peer_connection!(claim_id)
+    injected = false
+    tenant = TENANT
+    original = self.class.submit_without_override_original ||=
+      Corvid::ClaimSubmission.instance_method(:submit_without_override!)
+    Corvid::ClaimSubmission.define_method(:submit_without_override!) do
+      unless injected
+        injected = true
+        Thread.new do
+          ActiveRecord::Base.connection_pool.with_connection do
+            Corvid::TenantContext.with_tenant(tenant) do
+              Corvid::ClaimSubmission.find(claim_id).override_medicaid_hold!(
+                reason_token: "rt_concurrent_before_lock",
+                by_identifier: "usr_concurrent_before_lock"
+              )
+            end
+          end
+        end.join(10)
       end
       original.bind_call(self)
     end
