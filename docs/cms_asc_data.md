@@ -5,9 +5,11 @@ The PRC overpayment analyzer routes outpatient (APC-mapped) claims to
 on the CMS Ambulatory Surgical Center registry on the service date.
 That lookup receives the facility's CMS wage area, resolved once for
 the obligation from the ZIP→CBSA crosswalk and shared with OPPS if
-ASC pricing misses (#372). Notes name that crosswalk release. A
-release label that starts with `stub` keeps the ASC result a stub
-estimate even when the ASC rows are real CMS data. See
+ASC pricing misses (#372). Notes keep the real-rule pricing sentence
+when the ASC rows are real CMS data, then name the crosswalk release.
+A release label that starts with `stub` keeps the ASC result a stub
+estimate, and on the real path that label is `rate_source_release`.
+See
 [ZIP to CBSA crosswalk](cms_ipps_data.md#zip-to-cbsa-crosswalk-371).
 
 This doc covers the ASC **facility registry** sourcing. The ASC APC

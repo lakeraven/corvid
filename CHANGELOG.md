@@ -120,8 +120,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   The sentence stays last, after any CAH multiplier text, and never
   includes the facility ZIP. A crosswalk `release_label` that starts
   with `stub` marks the institutional result `:stub` /
-  `:stub_estimate` even when the rate rows are real CMS data;
-  `rate_source_release` stays the rate row's label. Professional PFS
+  `:stub_estimate` even when the rate rows are real CMS data. On the
+  IPPS, OPPS, and ASC real paths that stub label is
+  `rate_source_release` (if any input row is stub-derived, the stub
+  label wins). The pricing sentence keeps the real-rule wording and
+  the real provider release; the wage-area sentence names the
+  crosswalk release. A loaded stub label, from a rate row or from
+  the crosswalk, is `stub_data_loaded`; nil `rate_source_release`
+  is the in-code fallback. Professional PFS
   pricing still uses the facility's PFS locality, and professional
   notes are unchanged. A missing crosswalk row for the fiscal year, a
   missing or malformed ZIP, or a ZIP that is not a String leaves

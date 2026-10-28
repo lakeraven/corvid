@@ -57,8 +57,10 @@ in PR #467). The demo does not load a ZIP→CBSA crosswalk, so its
 published figures stay on NATIONAL. Production institutional pricing
 resolves the facility wage area once per obligation from that
 crosswalk (#372). Results record the wage area, and notes name the
-crosswalk release. A release label that starts with `stub` keeps the
-result a stub estimate even when the rate rows are real CMS data.
+crosswalk release after the pricing sentence. A release label that
+starts with `stub` keeps the result a stub estimate even when the
+rate rows are real CMS data, and on the real paths that label is
+`rate_source_release`.
 Pricing still falls back to NATIONAL when the resolved wage area has
 no wage-index row.
 Because Billings' real wage index is **below** 1.0, a CBSA-adjusted

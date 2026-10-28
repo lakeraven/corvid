@@ -248,8 +248,14 @@ crosswalk row for the facility ZIP in FY <year>).` The sentence stays
 last, after any CAH text. Notes do not include the facility ZIP. A
 crosswalk `release_label` that starts with `stub` marks the
 institutional result `:stub` / `:stub_estimate` even when the rate
-rows are real CMS data. Professional PFS results leave `wage_area`
-nil and do not add that sentence.
+rows are real CMS data. On the IPPS, OPPS, and ASC real paths that
+stub label is `rate_source_release` (if any input row is
+stub-derived, the stub label wins). The pricing sentence keeps the
+real-rule wording and the real provider release; the wage-area
+sentence names the crosswalk release. A loaded stub label, from a
+rate row or from the crosswalk, is `stub_data_loaded`. Nil
+`rate_source_release` is the in-code fallback. Professional PFS
+results leave `wage_area` nil and do not add that sentence.
 
 Remaining in this cluster:
 - **#370** — drop the now-unused `wage_index` column from
@@ -295,7 +301,12 @@ The example label starts with `stub_` because the file is synthetic.
 A crosswalk `release_label` with that prefix is stub-derived provenance:
 institutional IPPS, OPPS, and ASC results that use the row are
 `:stub` / `:stub_estimate` even when the rate rows themselves are real
-CMS data. `rate_source_release` stays the rate row's label.
+CMS data. On those real paths `rate_source_release` is the crosswalk's
+label. The pricing sentence keeps the real-rule wording and the real
+provider release; the wage-area sentence names the crosswalk release.
+A loaded stub label, from a rate row or from the crosswalk, means
+`stub_data_loaded`. Nil `rate_source_release` means the in-code
+fallback.
 
 `Corvid::PrcFacilityDictionary.crosswalk_for(zip:, on:)` accepts
 `#####` or `#####-####` and returns the `ZipCbsaCrosswalk` row for the

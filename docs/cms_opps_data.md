@@ -226,7 +226,9 @@ missing or malformed).` when the ZIP is missing or malformed, or
 sentence stays last, after any CAH text. Notes do not include the
 facility ZIP. A crosswalk `release_label` that starts with `stub`
 marks the result `:stub` / `:stub_estimate` even when the OPPS or ASC
-rows are real CMS data. See
+rows are real CMS data. On those real paths that label is
+`rate_source_release`. The pricing sentence keeps the real-rule
+wording and the real provider release. See
 [ZIP to CBSA crosswalk](cms_ipps_data.md#zip-to-cbsa-crosswalk-371).
 
 For tribal PRC recovery in rural/non-metro areas, the wage adjustment

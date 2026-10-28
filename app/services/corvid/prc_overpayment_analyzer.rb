@@ -56,7 +56,12 @@ module Corvid
   #     prices on the NATIONAL wage index. A crosswalk release_label
   #     that starts with "stub" marks the institutional result :stub
   #     and :stub_estimate even when the rate rows are real CMS data.
-  #     rate_source_release stays the rate row's label.
+  #     On the IPPS, OPPS, and ASC real paths that stub label is
+  #     rate_source_release: if any input row is stub-derived, the
+  #     stub label wins, the same rule the rate providers use. The
+  #     pricing sentence keeps the real-rule wording and the rate
+  #     row's release; the wage-area sentence names the crosswalk
+  #     release.
   #   - Summary exposes total_overpayment_known (sum where confidence is
   #     :clear) and total_overpayment_stub_estimate (sum where confidence
   #     is :stub_estimate). total_medicare_equivalent intentionally
@@ -69,7 +74,9 @@ module Corvid
     # IppsDrgWeight/IppsHospitalRate, OppsApcWeight/OppsConversionFactor)
     # so PrcImporter.reanalyze can persist provenance and the audit
     # packet's methodology.json can attribute each recoverable dollar
-    # to a specific CMS release. Nil for in-code stub fallback or
+    # to a specific CMS release. On the IPPS, OPPS, and ASC real
+    # paths, a crosswalk release_label that starts with "stub" wins
+    # over that rate-row label. Nil for in-code stub fallback or
     # exception paths (no source release to attribute).
     # wage_area is the crosswalk code for institutional results, or
     # nil when the ZIP is missing, malformed, or that fiscal year has
@@ -223,7 +230,8 @@ module Corvid
         if lookup
           # A stub-labelled crosswalk downgrades a real rate row the
           # same way a stub-labelled rate row does. The pricing note
-          # and rate_source_release still describe the rate row.
+          # still names the rate row's release. rate_source_release
+          # is the crosswalk label when that label starts with "stub".
           provider_stub = stub_release?(lookup.release_label)
           stub_derived = provider_stub || stub_release?(crosswalk&.release_label)
           Result.new(
@@ -233,7 +241,7 @@ module Corvid
               payment_system: :ipps,
               rate_source: stub_derived ? :stub : :real,
               recovery_confidence: stub_derived ? :stub_estimate : :clear,
-              rate_source_release: lookup.release_label.presence,
+              rate_source_release: institutional_rate_source_release(lookup.release_label, crosswalk),
               wage_area: area,
               notes: provider_stub ?
                 "Inpatient hospital claim (DRG #{proc_info.drg}). Priced via " \
@@ -288,7 +296,8 @@ module Corvid
         # stub provider when no row is loaded. Mirrors the IPPS analyze_
         # inpatient pattern — the rate row's release_label drives the
         # pricing note, and a "stub" prefix on that label or on the
-        # crosswalk release downgrades confidence.
+        # crosswalk release downgrades confidence. On these real paths
+        # a stub-prefixed crosswalk label is rate_source_release.
         #
         # ASC routing (#278): when the obligation's vendor is in the
         # corvid_asc_facilities registry on the service date, route to
@@ -317,7 +326,7 @@ module Corvid
               payment_system: :asc,
               rate_source: stub_derived ? :stub : :real,
               recovery_confidence: stub_derived ? :stub_estimate : :clear,
-              rate_source_release: asc_lookup.release_label.presence,
+              rate_source_release: institutional_rate_source_release(asc_lookup.release_label, crosswalk),
               wage_area: area,
               notes: provider_stub ?
                 "Ambulatory surgical center (HCPCS #{proc_info.hcpcs}). Priced via " \
@@ -344,7 +353,7 @@ module Corvid
               payment_system: :opps,
               rate_source: stub_derived ? :stub : :real,
               recovery_confidence: stub_derived ? :stub_estimate : :clear,
-              rate_source_release: lookup.release_label.presence,
+              rate_source_release: institutional_rate_source_release(lookup.release_label, crosswalk),
               wage_area: area,
               notes: provider_stub ?
                 "Hospital outpatient (APC #{proc_info.apc}). Priced via " \
@@ -464,13 +473,30 @@ module Corvid
       # A crosswalk release_label that starts with "stub" marks the
       # institutional result rate_source :stub and recovery_confidence
       # :stub_estimate even when the rate rows are real CMS data.
-      # rate_source_release stays the rate row's label.
+      # On the real paths that label is rate_source_release. The
+      # pricing sentence still names the rate row's release.
       def wage_area(crosswalk)
         crosswalk&.cbsa
       end
 
       def stub_release?(label)
         label.to_s.start_with?("stub")
+      end
+
+      # IPPS, OPPS, and ASC real paths. Same rule as the rate
+      # providers: if any input row is stub-derived, the stub label
+      # wins. A crosswalk release_label that starts with "stub" is
+      # that label, even when the rate row's label is a real CMS
+      # release. Otherwise the rate row's label stands. Blank labels
+      # collapse to nil. The in-code fallback does not call this and
+      # leaves rate_source_release nil.
+      def institutional_rate_source_release(provider_label, crosswalk)
+        crosswalk_label = crosswalk&.release_label
+        if stub_release?(crosswalk_label)
+          crosswalk_label.presence
+        else
+          provider_label.presence
+        end
       end
 
       # Institutional notes end with the wage-area sentence. Called

@@ -322,10 +322,10 @@ module Corvid
         confidence = row[:recovery_confidence].to_s
         case confidence
         when "stub_estimate"
-          # Both stub paths in PrcOverpaymentAnalyzer set rate_source: :stub,
-          # so it can't distinguish loaded canonical stub data from the
-          # in-code fallback. rate_source_release is set only on the loaded
-          # path (e.g., "stub_v1") and is nil for the fallback path.
+          # A loaded stub label, from a rate row or from the crosswalk,
+          # means stub_data_loaded. Nil means the in-code fallback:
+          # PrcOverpaymentAnalyzer leaves rate_source_release unset
+          # on that path.
           release = row[:rate_source_release].to_s
           release.start_with?("stub") ? "stub_data_loaded" : "stub_fallback"
         when "unmapped_procedure", "unmapped_facility", "no_rate_for_year",
