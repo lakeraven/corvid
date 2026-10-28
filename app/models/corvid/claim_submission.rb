@@ -101,6 +101,21 @@ module Corvid
       end
     end
 
+    # Raised by phase B of an override submit when the locked row or
+    # the patient's Medicaid records changed after phase A committed.
+    # The clearinghouse is not called. The message names no patient
+    # data (ADR 0003). The reported name is the leaf. Callers match
+    # that string, and Module#name would otherwise be the full nesting.
+    class InFlightSubmissionChanged < StandardError
+      def self.name
+        "InFlightSubmissionChanged"
+      end
+
+      def initialize
+        super("in-flight submission changed before the clearinghouse was called")
+      end
+    end
+
     # Raised when this claim bills a PRC referral whose alternate-resource
     # checks are not current, exhausted determinations for service_date.
     # A missing service date fails closed. No patient, payer, or policy data.
@@ -155,6 +170,28 @@ module Corvid
     # only the resulting integers, never the tenant or patient token.
     MEDICAID_SUBMISSION_LOCK_PREFIX = "corvid.medicaid_submission.v1"
     private_constant :MEDICAID_SUBMISSION_LOCK_PREFIX
+
+    # Sentinel from the no-override path when a complete override is
+    # present under the locks. The lock transaction ends before the
+    # two-phase submit, which refuses any open caller transaction.
+    RESTART_WITH_MEDICAID_HOLD_OVERRIDE = :restart_with_medicaid_hold_override
+    private_constant :RESTART_WITH_MEDICAID_HOLD_OVERRIDE
+
+    # Hold basis captured with phase A's committed row. Phase B aborts
+    # when any of these differ from that snapshot.
+    IN_FLIGHT_BASIS_COLUMNS = %i[
+      service_date
+      patient_identifier
+      referral_identifier
+      prc_referral_id
+    ].freeze
+    private_constant :IN_FLIGHT_BASIS_COLUMNS
+
+    IN_FLIGHT_SNAPSHOT_COLUMNS = (
+      %i[submission_outcome_unknown_at status claim_identifier] +
+      IN_FLIGHT_BASIS_COLUMNS
+    ).freeze
+    private_constant :IN_FLIGHT_SNAPSHOT_COLUMNS
 
     # The link is derived from referral_identifier + facility_identifier +
     # patient_identifier, so it is recomputed whenever any of those change.
@@ -366,10 +403,13 @@ module Corvid
     # then sends in a second transaction. The marker is committed
     # first so a killed process, an aborted database transaction, or
     # a failed result save cannot restore the override or hide that
-    # the outcome is unknown. Between those phases the marker blocks
-    # any other submit or override of this claim. A submit with no
-    # override in force stays one transaction: an adapter error rolls
-    # back and nothing is marked.
+    # the outcome is unknown. Phase B re-reads that committed row
+    # under the same locks and does not call the clearinghouse if it
+    # changed. Between those phases the marker blocks any other submit
+    # or override of this claim. A submit with no override in force
+    # stays one transaction: an adapter error rolls back and nothing
+    # is marked. An override recorded after that choice is not sent
+    # in the open transaction; submit! restarts on the two-phase path.
     def submit!
       refuse_unknown_submission_outcome!
       prepare_for_clearinghouse_submit!
@@ -1082,12 +1122,15 @@ module Corvid
     # clearinghouse had accepted the claim.
     def submit_spending_medicaid_hold_override!
       refuse_override_submit_inside_open_transaction!
-      return submit_without_override! unless commit_in_flight_override_spend!
+      snapshot = commit_in_flight_override_spend!
+      return submit_without_override! if snapshot == false
 
       # Phase A has committed the spend and the in-flight marker.
-      # Until phase B commits, that marker blocks any other submit
-      # or override of this claim. Phase B rolls back alone.
-      submit_in_flight_claim!
+      # That row is the snapshot passed into phase B. Phase B rolls
+      # back alone if the send fails. A change aborts before the
+      # adapter; the marker clear commits, and the error is raised
+      # after that.
+      submit_in_flight_claim!(snapshot)
     end
 
     def refuse_override_submit_inside_open_transaction!
@@ -1106,9 +1149,28 @@ module Corvid
 
     # Phase A. The marker is committed before the send so a crash
     # during the adapter call, or a rollback of phase B, leaves the
-    # override spent and the outcome unknown.
+    # override spent and the outcome unknown. The snapshot is the
+    # marker, status, claim_identifier, and hold basis just written.
+    # False means there was no complete override to spend.
     def commit_in_flight_override_spend!
-      with_medicaid_submission_lock { mark_in_flight_override_spend! }
+      with_medicaid_submission_lock do
+        mark_in_flight_override_spend! && capture_in_flight_submission_snapshot
+      end
+    end
+
+    # Read back what this transaction wrote. The id set is the
+    # patient rows that existed at commit. patient_records_changed_since?
+    # uses a strict greater-than, so a row created at the same
+    # timestamp is visible only as a new id.
+    def capture_in_flight_submission_snapshot
+      self.class.uncached do
+        values = self.class.unscoped.where(id: id).pick(*IN_FLIGHT_SNAPSHOT_COLUMNS)
+        next unless values
+
+        IN_FLIGHT_SNAPSHOT_COLUMNS.zip(values).to_h.merge(
+          patient_record_ids: patient_record_ids_for_in_flight
+        )
+      end
     end
 
     def mark_in_flight_override_spend!
@@ -1136,27 +1198,113 @@ module Corvid
     end
 
     # Phase B. A new transaction, the same patient advisory lock, and
-    # the row lock. The accepted result and the cleared marker commit
-    # in one save. Any exception rolls this phase back only and is
-    # re-raised as itself. The same-connection clear before the
-    # adapter is uncommitted, so other transactions still see the marker.
-    def submit_in_flight_claim!
-      with_medicaid_submission_lock { send_in_flight_claim! }
+    # the row lock. Re-read the phase A snapshot before the
+    # clearinghouse call. The accepted result and the cleared marker
+    # commit in one save. Any exception from the send rolls this
+    # phase back only and is re-raised as itself. A throw is not
+    # caught, so this transaction follows Rails for a non-local exit.
+    # An abort clears the marker only when it is still phase A's
+    # value, commits that clear, then raises. The marker is not
+    # cleared before the adapter returns, so the one phase A
+    # committed stays set when the send does not finish.
+    # record_claim_submission! clears it with the result.
+    def submit_in_flight_claim!(snapshot)
+      aborted = false
+      result = with_medicaid_submission_lock do
+        if abort_in_flight_submission?(snapshot)
+          aborted = true
+        else
+          send_in_flight_claim!
+        end
+      end
+      raise InFlightSubmissionChanged if aborted
+
+      result
+    end
+
+    def abort_in_flight_submission?(snapshot)
+      self.class.uncached do
+        row = self.class.unscoped.find_by(id: id)
+        next false unless in_flight_submission_changed?(row, snapshot)
+
+        clear_phase_a_marker_if_still!(row, snapshot)
+        true
+      end
+    end
+
+    def in_flight_submission_changed?(row, snapshot)
+      return true if row.nil? || snapshot.nil?
+
+      in_flight_row_changed?(row, snapshot) || in_flight_patient_records_changed?(snapshot)
+    end
+
+    def in_flight_row_changed?(row, snapshot)
+      return true if row.submission_outcome_unknown_at != snapshot[:submission_outcome_unknown_at]
+      return true if row.claim_identifier.present?
+      return true if row.status != snapshot[:status]
+
+      in_flight_basis_changed?(row, snapshot)
+    end
+
+    def in_flight_basis_changed?(row, snapshot)
+      IN_FLIGHT_BASIS_COLUMNS.any? { |name| row.public_send(name) != snapshot[name] }
+    end
+
+    # Cases, referrals, and Medicaid checks for this patient in the
+    # claim's tenant. The timestamp check is phase A's marker. The id
+    # set catches rows inserted at that same timestamp.
+    def in_flight_patient_records_changed?(snapshot)
+      at = snapshot[:submission_outcome_unknown_at]
+      recorded_ids = snapshot[:patient_record_ids]
+      return true if at.nil? || recorded_ids.nil?
+
+      patient_records_changed_since?(at) || patient_record_ids_for_in_flight != recorded_ids
+    end
+
+    def patient_record_ids_for_in_flight
+      {
+        cases: patient_cases.order(:id).pluck(:id),
+        referrals: patient_referrals.order(:id).pluck(:id),
+        checks: patient_medicaid_checks.order(:id).pluck(:id)
+      }
+    end
+
+    # Nothing was sent. Clear only the marker phase A wrote, so a
+    # reconcile that already changed it is left alone. The override
+    # stays spent. The next submit! is held again.
+    def clear_phase_a_marker_if_still!(row, snapshot)
+      return if row.nil? || snapshot.nil?
+
+      marker = snapshot[:submission_outcome_unknown_at]
+      return if marker.nil?
+      return unless row.submission_outcome_unknown_at == marker
+
+      clear_submission_outcome_unknown!
     end
 
     def send_in_flight_claim!
-      clear_submission_outcome_unknown!
       result = Corvid.adapter.submit_claim(to_claim_data)
       record_accepted_submission!(result)
       result
     end
 
+    # One transaction when no override is in force. A complete override
+    # recorded after the unlocked check is not sent here. Leave the
+    # transaction, then restart on the two-phase path.
     def submit_without_override!
-      with_medicaid_submission_lock { send_claim_without_override! }
+      outcome = with_medicaid_submission_lock { send_claim_without_override! }
+      return outcome unless outcome == RESTART_WITH_MEDICAID_HOLD_OVERRIDE
+
+      submit_spending_medicaid_hold_override!
     end
 
+    # A complete override that showed up after the unlocked check, and
+    # that would release the hold, is not sent in this transaction.
+    # A stale override still holds: do not restart onto the two-phase path.
     def send_claim_without_override!
       refuse_unknown_submission_outcome!
+      return RESTART_WITH_MEDICAID_HOLD_OVERRIDE if medicaid_hold_override_to_spend?
+
       enforce_pending_medicaid_hold!
       result = Corvid.adapter.submit_claim(to_claim_data)
       record_accepted_submission!(result)
