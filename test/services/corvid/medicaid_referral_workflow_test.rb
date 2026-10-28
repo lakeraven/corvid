@@ -633,6 +633,49 @@ module Corvid
       end
     end
 
+    {
+      BigDecimal("NaN") => "BigDecimal NaN",
+      -75_000 => "negative integer -75_000",
+      Money.from_amount(40_000, "KWD") => "Money KWD 40,000"
+    }.each do |ehr_cost, label|
+      test "authorize_with_medicaid_primary! refuses committee review for unknown EHR cost #{label}" do
+        with_tenant(TENANT) do
+          referral = referral_ready_for_medicaid_primary_authorization
+          referral.update_columns(estimated_cost_cents: nil, medical_priority: nil, flagged_for_review: false)
+          Corvid.adapter.add_referral(
+            referral.referral_identifier,
+            patient_identifier: PATIENT,
+            status: "pending",
+            estimated_cost: ehr_cost,
+            medical_priority_level: 2,
+            emergent: false,
+            urgent: false,
+            chs_approval_status: "P",
+            service_requested: "TEST"
+          )
+          referral.reload
+          medicaid = referral.alternate_resource_checks.find_by!(resource_type: "medicaid")
+          status_before = referral.status
+
+          assert referral.requires_committee?,
+            "unknown EHR cost #{label} must require committee before medicaid primary authorization"
+
+          workflow = Corvid::MedicaidReferralWorkflow.new
+          error = assert_raises(Corvid::MedicaidReferralWorkflow::Refused) do
+            workflow.authorize_with_medicaid_primary!(referral)
+          end
+
+          assert_match(/committee review/i, error.message)
+          refute medicaid.reload.coordinated?
+          refute referral.reload.authorized?
+          assert_equal status_before, referral.status
+          assert_equal 0, referral.committee_reviews.count
+          ehr = Corvid.adapter.find_referral(referral.referral_identifier)
+          refute_equal "A", ehr.chs_approval_status
+        end
+      end
+    end
+
     test "authorize_with_medicaid_primary! refuses committee review when EHR priority is string digits above threshold" do
       with_tenant(TENANT) do
         referral = referral_ready_for_medicaid_primary_authorization
