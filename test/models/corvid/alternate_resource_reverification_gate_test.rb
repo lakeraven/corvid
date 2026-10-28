@@ -12,11 +12,7 @@ module Corvid
     setup do
       Corvid.adapter.reset! if Corvid.adapter.respond_to?(:reset!)
       @verify_calls = []
-      calls = @verify_calls
-      Corvid.adapter.define_singleton_method(:verify_eligibility) do |patient_identifier, resource_type|
-        calls << [ patient_identifier, resource_type ]
-        { eligible: false }
-      end
+      install_verify_eligibility_stub(calls: @verify_calls, eligible: false)
     end
 
     test "verify_alternate_resources! re-verifies stale medicaid then proceeds when exhausted" do
@@ -30,7 +26,7 @@ module Corvid
           @verify_calls.clear
           assert referral.verify_alternate_resources!
           assert_equal "priority_assignment", referral.status
-          assert_includes @verify_calls.map(&:last), "medicaid"
+          assert_includes @verify_calls.map { |c| c[1] }, "medicaid"
         end
       end
     end
@@ -42,7 +38,9 @@ module Corvid
           create_all_determined_checks(referral)
           referral.alternate_resource_checks.find_by!(resource_type: "medicaid").update!(checked_at: 31.days.ago)
 
-          Corvid.adapter.define_singleton_method(:verify_eligibility) { |_pid, _type| nil }
+          Corvid.adapter.define_singleton_method(:verify_eligibility) do |_pid, _type, date_of_service: nil|
+            nil
+          end
 
           refute referral.verify_alternate_resources!
           assert_equal "alternate_resource_review", referral.reload.status
@@ -63,7 +61,7 @@ module Corvid
 
           assert referral.complete_priority_assignment!
           assert_equal "authorized", referral.status
-          assert_includes @verify_calls.map(&:last), "medicare_a"
+          assert_includes @verify_calls.map { |c| c[1] }, "medicare_a"
         end
       end
     end
@@ -79,7 +77,9 @@ module Corvid
           referral.update_column(:status, "priority_assignment")
 
           referral.alternate_resource_checks.find_by!(resource_type: "private_insurance").update!(checked_at: 91.days.ago)
-          Corvid.adapter.define_singleton_method(:verify_eligibility) { |_pid, _type| { error: "unreadable" } }
+          install_verify_eligibility_stub do |_pid, _type, _date_of_service: nil|
+            { error: "unreadable" }
+          end
 
           refute referral.authorize!
           assert_equal "priority_assignment", referral.reload.status
@@ -98,7 +98,9 @@ module Corvid
           assert_equal "committee_review", referral.status
 
           referral.alternate_resource_checks.find_by!(resource_type: "medicaid").update!(checked_at: 31.days.ago)
-          Corvid.adapter.define_singleton_method(:verify_eligibility) { |_pid, _type| nil }
+          Corvid.adapter.define_singleton_method(:verify_eligibility) do |_pid, _type, date_of_service: nil|
+            nil
+          end
 
           review = CommitteeReview.create!(
             prc_referral: referral,
@@ -120,13 +122,15 @@ module Corvid
         travel_to Time.zone.parse("2025-07-01 12:00:00 UTC") do
           referral = referral_at("fac_a", "REF-STALE-CLAIM")
           authorize_referral!(referral)
+          claim_service_date = Date.new(2025, 6, 15)
+          stamp_alternate_resources_for_claim_service_date!(referral, claim_service_date)
           referral.alternate_resource_checks.find_by!(resource_type: "medicaid").update!(checked_at: 31.days.ago)
 
           claim = build_claim(
             facility: "fac_a",
             referral_identifier: "REF-STALE-CLAIM",
             patient: referral.case.patient_identifier,
-            service_date: Date.new(2025, 6, 15)
+            service_date: claim_service_date
           )
           claim.save!
 
@@ -141,7 +145,7 @@ module Corvid
 
           assert_equal 1, submit_calls
           assert_equal "submitted", claim.reload.status
-          assert_includes @verify_calls.map(&:last), "medicaid"
+          assert_includes @verify_calls.map { |c| c[1] }, "medicaid"
         end
       end
     end
@@ -151,17 +155,21 @@ module Corvid
         travel_to Time.zone.parse("2025-07-01 12:00:00 UTC") do
           referral = referral_at("fac_a", "REF-UNCONF-CLAIM")
           authorize_referral!(referral)
+          claim_service_date = Date.new(2025, 6, 15)
+          stamp_alternate_resources_for_claim_service_date!(referral, claim_service_date)
           referral.alternate_resource_checks.find_by!(resource_type: "medicaid").update!(checked_at: 31.days.ago)
 
           claim = build_claim(
             facility: "fac_a",
             referral_identifier: "REF-UNCONF-CLAIM",
             patient: referral.case.patient_identifier,
-            service_date: Date.new(2025, 6, 15)
+            service_date: claim_service_date
           )
           claim.save!
 
-          Corvid.adapter.define_singleton_method(:verify_eligibility) { |_pid, _type| nil }
+          Corvid.adapter.define_singleton_method(:verify_eligibility) do |_pid, _type, date_of_service: nil|
+            nil
+          end
           submit_calls = 0
           Corvid.adapter.define_singleton_method(:submit_claim) do |_data|
             submit_calls += 1
@@ -182,13 +190,15 @@ module Corvid
         travel_to Time.zone.parse("2025-07-01 12:00:00 UTC") do
           referral = referral_at("fac_a", "REF-MARK-REVER")
           authorize_referral!(referral)
+          claim_service_date = Date.new(2025, 6, 15)
+          stamp_alternate_resources_for_claim_service_date!(referral, claim_service_date)
           referral.alternate_resource_checks.find_by!(resource_type: "medicaid").update!(checked_at: 31.days.ago)
 
           claim = build_claim(
             facility: "fac_a",
             referral_identifier: "REF-MARK-REVER",
             patient: referral.case.patient_identifier,
-            service_date: Date.new(2025, 6, 15)
+            service_date: claim_service_date
           )
           claim.save!
 
@@ -197,7 +207,7 @@ module Corvid
 
           assert_equal "submitted", claim.reload.status
           assert_equal "EXT-CLM-REVER", claim.claim_identifier
-          assert_includes @verify_calls.map(&:last), "medicaid"
+          assert_includes @verify_calls.map { |c| c[1] }, "medicaid"
         end
       end
     end
@@ -223,17 +233,21 @@ module Corvid
         travel_to Time.zone.parse("2025-07-01 12:00:00 UTC") do
           referral = referral_at("fac_a", "REF-MARK-SUB")
           authorize_referral!(referral)
+          claim_service_date = Date.new(2025, 6, 15)
+          stamp_alternate_resources_for_claim_service_date!(referral, claim_service_date)
           referral.alternate_resource_checks.find_by!(resource_type: "medicaid").update!(checked_at: 31.days.ago)
 
           claim = build_claim(
             facility: "fac_a",
             referral_identifier: "REF-MARK-SUB",
             patient: referral.case.patient_identifier,
-            service_date: Date.new(2025, 6, 15)
+            service_date: claim_service_date
           )
           claim.save!
 
-          Corvid.adapter.define_singleton_method(:verify_eligibility) { |_pid, _type| raise "payer down" }
+          install_verify_eligibility_stub do |_pid, _type, _date_of_service: nil|
+            raise "payer down"
+          end
 
           assert_raises(Corvid::ClaimSubmission::AlternateResourcesNotCurrent) do
             claim.mark_submitted!(claim_identifier: "EXT-CLM-001")
@@ -255,7 +269,9 @@ module Corvid
 
           exhaust_alternate_resources!(referral, date_of_service: Date.current, as_of: Time.current)
           referral.alternate_resource_checks.find_by!(resource_type: "medicaid").update!(checked_at: 31.days.ago)
-          Corvid.adapter.define_singleton_method(:verify_eligibility) { |_pid, _type| raise "unreadable" }
+          install_verify_eligibility_stub do |_pid, _type, _date_of_service: nil|
+            raise "unreadable"
+          end
 
           blockers = referral.authorization_blockers
           assert_includes blockers, "medicaid: not current"
@@ -278,7 +294,9 @@ module Corvid
           assert referral.complete_priority_assignment!
           exhaust_alternate_resources!(referral, date_of_service: Date.current, as_of: Time.current)
           referral.alternate_resource_checks.find_by!(resource_type: "medicaid").update!(checked_at: 31.days.ago)
-          Corvid.adapter.define_singleton_method(:verify_eligibility) { |_pid, _type| nil }
+          Corvid.adapter.define_singleton_method(:verify_eligibility) do |_pid, _type, date_of_service: nil|
+            nil
+          end
 
           review = CommitteeReview.create!(
             prc_referral: referral,
@@ -492,13 +510,15 @@ module Corvid
         travel_to Time.zone.parse("2025-07-01 12:00:00 UTC") do
           referral = referral_at("fac_a", "REF-VA-45")
           authorize_referral!(referral)
+          claim_service_date = Date.new(2025, 6, 15)
+          stamp_alternate_resources_for_claim_service_date!(referral, claim_service_date)
           referral.alternate_resource_checks.find_by!(resource_type: "va_benefits").update!(checked_at: 45.days.ago)
 
           claim = build_claim(
             facility: "fac_a",
             referral_identifier: "REF-VA-45",
             patient: referral.case.patient_identifier,
-            service_date: Date.new(2025, 6, 15)
+            service_date: claim_service_date
           )
           claim.save!
 
@@ -506,7 +526,7 @@ module Corvid
           claim.submit!
 
           assert_equal "submitted", claim.reload.status
-          refute_includes @verify_calls.map(&:last), "va_benefits"
+          refute_includes @verify_calls.map { |c| c[1] }, "va_benefits"
         end
       end
     end
@@ -520,13 +540,15 @@ module Corvid
         travel_to Time.zone.parse("2025-07-01 12:00:00 UTC") do
           referral = referral_at("fac_a", "REF-VA-OVERRIDE")
           authorize_referral!(referral)
+          claim_service_date = Date.new(2025, 6, 15)
+          stamp_alternate_resources_for_claim_service_date!(referral, claim_service_date)
           referral.alternate_resource_checks.find_by!(resource_type: "va_benefits").update!(checked_at: 61.days.ago)
 
           claim = build_claim(
             facility: "fac_a",
             referral_identifier: "REF-VA-OVERRIDE",
             patient: referral.case.patient_identifier,
-            service_date: Date.new(2025, 6, 15)
+            service_date: claim_service_date
           )
           claim.save!
 
@@ -534,7 +556,7 @@ module Corvid
           claim.submit!
 
           assert_equal "submitted", claim.reload.status
-          assert_includes @verify_calls.map(&:last), "va_benefits"
+          assert_includes @verify_calls.map { |c| c[1] }, "va_benefits"
         end
       end
     ensure
@@ -546,10 +568,11 @@ module Corvid
         travel_to Time.zone.parse("2025-07-01 12:00:00 UTC") do
           referral = referral_at("fac_a", "REF-MCD-31")
           authorize_referral!(referral)
+          dos = Date.new(2025, 6, 15)
+          stamp_alternate_resources_for_claim_service_date!(referral, dos)
           medicaid = referral.alternate_resource_checks.find_by!(resource_type: "medicaid")
           medicaid.update!(checked_at: 31.days.ago)
 
-          dos = Date.new(2025, 6, 15)
           refute medicaid.current_for?(dos, as_of: Time.current)
 
           claim = build_claim(
@@ -564,7 +587,7 @@ module Corvid
           claim.submit!
 
           assert_equal "submitted", claim.reload.status
-          assert_includes @verify_calls.map(&:last), "medicaid"
+          assert_includes @verify_calls.map { |c| c[1] }, "medicaid"
         end
       end
     end
@@ -620,7 +643,7 @@ module Corvid
         check = referral.alternate_resource_checks.find_or_initialize_by(resource_type: type)
         check.status = status_overrides.fetch(type, "not_enrolled")
         check.save!
-        stamp_alternate_resource_check_current!(check) unless check.not_checked? || check.checking?
+        stamp_alternate_resource_check_current!(check, date_of_service: Date.current) unless check.not_checked? || check.checking?
       end
       referral.alternate_resource_checks.reload
     end
@@ -696,13 +719,14 @@ module Corvid
     def sync_recording_adapter
       verify_calls = []
       Class.new do
+        include EchoingVerifyEligibilityHelper
         define_method(:initialize) { @verify_calls = verify_calls }
         define_method(:verify_calls) { @verify_calls }
         define_method(:update_referral) { |_id, _params| true }
         define_method(:fetch_text) { |_token| "" }
-        define_method(:verify_eligibility) do |patient_identifier, resource_type|
-          @verify_calls << [ patient_identifier, resource_type ]
-          { eligible: false }
+        define_method(:verify_eligibility) do |patient_identifier, resource_type, date_of_service: nil|
+          @verify_calls << [ patient_identifier, resource_type, date_of_service ]
+          echo_verify_eligibility_date({ eligible: false }, date_of_service)
         end
       end.new
     end

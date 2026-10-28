@@ -754,6 +754,57 @@ class Corvid::Adapters::MockAdapterTest < Minitest::Test
     assert_equal false, result[:service_active]
   end
 
+  # Issue #712 B3: check_eligibility_detailed must match verify_eligibility for the same row and date.
+  def test_check_eligibility_detailed_matches_verify_eligibility_for_mid_month_end_scenario
+    inquiry = Date.new(2026, 10, 20)
+    @adapter.seed_medicaid_eligibility_scenario(SCENARIO_PATIENT, :mid_month_end)
+
+    verify = @adapter.verify_eligibility(SCENARIO_PATIENT, "medicaid", date_of_service: inquiry)
+    detailed = @adapter.check_eligibility_detailed(SCENARIO_PATIENT, "medicaid", date_of_service: inquiry)
+
+    assert_equal verify[:eligible], detailed[:eligible],
+                 "mid_month_end inquiry on the 20th must match between verify and detailed (issue #712 B3)"
+    refute detailed[:eligible], "mid_month_end plan ends before the 20th (issue #712 B3)"
+  end
+
+  def test_check_eligibility_detailed_keeps_explicit_nil_coverage_end_like_verify_eligibility
+    patient = "pt-712-nil-end"
+    start_date = Date.new(2025, 1, 1)
+    @adapter.add_coverage(
+      patient,
+      coverage_type: "medicaid",
+      eligible: true,
+      coverage_start: start_date,
+      coverage_end: nil
+    )
+    inquiry = Date.new(2026, 10, 15)
+
+    verify = @adapter.verify_eligibility(patient, "medicaid", date_of_service: inquiry)
+    detailed = @adapter.check_eligibility_detailed(patient, "medicaid", date_of_service: inquiry)
+
+    assert verify[:eligible], "Open-ended coverage_end must remain eligible for a future-month inquiry (issue #712 B3)"
+    assert_equal verify[:eligible], detailed[:eligible]
+    assert_nil verify[:coverage_end]
+    assert_nil detailed[:coverage_end]
+  end
+
+  def test_check_eligibility_detailed_non_boolean_service_active_is_undetermined_like_verify
+    patient = "pt-712-svc-active"
+    @adapter.add_coverage(
+      patient,
+      coverage_type: "medicaid",
+      eligible: true,
+      service_active: "yes"
+    )
+    inquiry = Date.new(2026, 10, 15)
+
+    verify = @adapter.verify_eligibility(patient, "medicaid", date_of_service: inquiry)
+    detailed = @adapter.check_eligibility_detailed(patient, "medicaid", date_of_service: inquiry)
+
+    assert_nil verify, "Non-boolean service_active must make verify_eligibility undetermined (issue #712 B3)"
+    assert_nil detailed[:eligible], "Non-boolean service_active must make detailed eligibility undetermined (issue #712 B3)"
+  end
+
   def capture_mock_adapter_load_subprocess(script)
     lib_dir = File.expand_path("../../../lib", __dir__)
     Open3.capture2e(RbConfig.ruby, "-I", lib_dir, "-e", script)

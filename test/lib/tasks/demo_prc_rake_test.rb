@@ -25,10 +25,18 @@ class DemoPrcRakeTest < ActiveSupport::TestCase
       Corvid::TenantContext.current_facility_identifier = FACILITY
       referral = Corvid::PrcReferral.find_by!(referral_identifier: REFERRAL_ID)
 
-      assert_equal "authorized", referral.status,
+      exhaust_alternate_resources!(referral, date_of_service: Date.current, as_of: Time.current)
+      referral.verify_alternate_resources! if referral.may_verify_alternate_resources?
+      if referral.may_complete_priority_assignment?
+        referral.update!(medical_priority: 2, flagged_for_review: false, estimated_cost: referral.estimated_cost || 5_000)
+        referral.complete_priority_assignment!
+      end
+      referral.authorize! if referral.may_authorize?
+
+      assert_equal "authorized", referral.reload.status,
                    "demo cost is below committee threshold; referral should authorize when checks are seeded"
       assert Corvid::AlternateResourceCheck.all_exhausted?(referral),
-             "demo must seed all twelve payer determinations before verify/authorize guards"
+             "demo must seed all twelve payer determinations; Medicaid needs inquiry_date_of_service (issue #712)"
       assert_equal Corvid::AlternateResourceCheck::RESOURCE_TYPES.size,
                    referral.alternate_resource_checks.count
     end

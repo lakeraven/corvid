@@ -8,10 +8,30 @@ class Corvid::AlternateResourceReverificationTest < ActiveSupport::TestCase
 
   setup do
     @verify_calls = []
-    calls = @verify_calls
-    Corvid.adapter.define_singleton_method(:verify_eligibility) do |patient_identifier, resource_type|
-      calls << [ patient_identifier, resource_type ]
-      { eligible: false }
+    install_verify_eligibility_stub(calls: @verify_calls, eligible: false)
+  end
+
+  test "reverify_stale! passes judged date_of_service to the adapter via verify!" do
+    with_tenant(TENANT) do
+      travel_to Time.zone.local(2026, 10, 27, 12, 0, 0) do
+        referral = create_referral
+        dos = Date.new(2026, 10, 15)
+        exhaust_alternate_resources!(referral, date_of_service: dos, as_of: Time.current)
+
+        medicaid = referral.alternate_resource_checks.find_by!(resource_type: "medicaid")
+        medicaid.update!(checked_at: 31.days.ago)
+
+        received_dates = []
+        install_verify_eligibility_stub do |_pid, type, date_of_service: nil|
+          received_dates << date_of_service if type == "medicaid"
+          { eligible: false }
+        end
+
+        Corvid::AlternateResourceReverification.reverify_stale!(referral, date_of_service: dos)
+
+        assert_equal [ dos ], received_dates,
+                     "re-verification must ask the adapter for the date of service being judged (issue #712 / #689 A1)"
+      end
     end
   end
 
@@ -28,7 +48,7 @@ class Corvid::AlternateResourceReverificationTest < ActiveSupport::TestCase
         @verify_calls.clear
         Corvid::AlternateResourceReverification.reverify_stale!(referral, date_of_service: dos)
 
-        assert_equal [ [ referral.case.patient_identifier, "medicaid" ] ], @verify_calls
+        assert_equal [ [ referral.case.patient_identifier, "medicaid" ] ], @verify_calls.map { |c| c.first(2) }
       end
     end
   end
@@ -63,7 +83,7 @@ class Corvid::AlternateResourceReverificationTest < ActiveSupport::TestCase
         @verify_calls.clear
         Corvid::AlternateResourceReverification.reverify_stale!(referral, date_of_service: dos)
 
-        assert_includes @verify_calls.map(&:last), "medicare_a"
+        assert_includes @verify_calls.map { |c| c[1] }, "medicare_a"
       end
     end
   end
@@ -75,7 +95,7 @@ class Corvid::AlternateResourceReverificationTest < ActiveSupport::TestCase
         dos = Date.new(2025, 6, 15)
         exhaust_alternate_resources!(referral, date_of_service: dos)
 
-        Corvid.adapter.define_singleton_method(:verify_eligibility) do |_pid, _type|
+        Corvid.adapter.define_singleton_method(:verify_eligibility) do |_pid, _type, date_of_service: nil|
           raise StandardError, "adapter down"
         end
 
@@ -97,7 +117,7 @@ class Corvid::AlternateResourceReverificationTest < ActiveSupport::TestCase
         medicaid = referral.alternate_resource_checks.find_by!(resource_type: "medicaid")
         medicaid.update!(checked_at: 31.days.ago, status: "not_enrolled")
 
-        Corvid.adapter.define_singleton_method(:verify_eligibility) do |_pid, type|
+        install_verify_eligibility_stub do |_pid, type, date_of_service: nil|
           type == "medicaid" ? { error: "timeout" } : { eligible: false }
         end
 
@@ -119,7 +139,7 @@ class Corvid::AlternateResourceReverificationTest < ActiveSupport::TestCase
         medicaid = referral.alternate_resource_checks.find_by!(resource_type: "medicaid")
         medicaid.update!(checked_at: 31.days.ago)
 
-        Corvid.adapter.define_singleton_method(:verify_eligibility) do |_pid, _type|
+        Corvid.adapter.define_singleton_method(:verify_eligibility) do |_pid, _type, date_of_service: nil|
           nil
         end
 

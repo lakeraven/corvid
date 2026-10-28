@@ -336,24 +336,28 @@ end
 
 Given("only {int} checks have been verified") do |count|
   @referral.alternate_resource_checks.order(:id).limit(count).each do |check|
-    check.update!(status: :not_enrolled, checked_at: Time.current)
+    check.update!(status: :not_enrolled)
+    stamp_alternate_resource_check_current!(check)
   end
 end
 
 Given("all checks are verified as not enrolled or exhausted") do
   @referral.alternate_resource_checks.each do |check|
-    check.update!(status: :not_enrolled, checked_at: Time.current)
+    check.update!(status: :not_enrolled)
+    stamp_alternate_resource_check_current!(check)
   end
 end
 
 Given("{string} is verified as enrolled") do |resource_type|
   check = @referral.alternate_resource_checks.find_by!(resource_type: resource_type)
-  check.update!(status: :enrolled, checked_at: Time.current)
+  check.update!(status: :enrolled)
+  stamp_alternate_resource_check_current!(check)
 end
 
 Given("all other checks are verified as not enrolled") do
   @referral.alternate_resource_checks.where.not(status: :enrolled).each do |check|
-    check.update!(status: :not_enrolled, checked_at: Time.current)
+    check.update!(status: :not_enrolled)
+    stamp_alternate_resource_check_current!(check)
   end
 end
 

@@ -37,7 +37,9 @@ class Corvid::CommitteeReviewSyncServiceTest < ActiveSupport::TestCase
         referral = review.prc_referral
         exhaust_alternate_resources!(referral, date_of_service: Date.current, as_of: Time.current)
         referral.alternate_resource_checks.find_by!(resource_type: "medicaid").update!(checked_at: 31.days.ago)
-        Corvid.adapter.define_singleton_method(:verify_eligibility) { |_pid, _type| raise "unreadable" }
+        Corvid.adapter.define_singleton_method(:verify_eligibility) do |_pid, _type, date_of_service: nil|
+          raise "unreadable"
+        end
 
         fake = RecordingAdapter.new
         result = Corvid::CommitteeReviewSyncService.sync_decision(review, adapter: fake)
