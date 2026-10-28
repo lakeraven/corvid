@@ -223,7 +223,9 @@ module Corvid
 
     # EHR cost when it is not nil, otherwise the local column. An unknown
     # cost or priority requires committee. Both costs absent does not.
-    # A known priority requires review at 3+. Nil priority does too.
+    # A known priority in 1..4 requires review at 3 or 4. Nil priority
+    # does too, and so does a priority outside 1..4. A non-finite,
+    # negative, or non-USD cost is unknown.
     def requires_committee?
       committee_cost_requires_review? || committee_priority_requires_review? || flagged_for_review?
     end
@@ -679,8 +681,7 @@ module Corvid
       )
     end
 
-    # Money -> amount. Integer and BigDecimal as-is. Float via
-    # BigDecimal(float.to_s). Anything else present is unknown (ADR 0004).
+    # Parsed dollars, or :unknown. Nil means both sources were absent.
     def committee_cost_requires_review?
       dollars = parse_committee_cost(committee_cost_value)
       return false if dollars.nil?
@@ -694,14 +695,40 @@ module Corvid
       ehr_cost.nil? ? estimated_cost : ehr_cost
     end
 
+    # USD Money contributes its amount. Integer and BigDecimal are taken
+    # as-is. Float uses BigDecimal(float.to_s). A string must match
+    # COMMITTEE_COST_FORMAT. A parsed amount that is non-finite (NaN or
+    # infinity) or negative is :unknown, and so is a Money whose currency
+    # is not USD. No conversion across currencies (ADR 0004). Anything
+    # else present is :unknown. The same rules apply to the EHR cost and
+    # the local cost.
     def parse_committee_cost(value)
       return nil if value.nil?
-      return value.amount if value.is_a?(Money)
+
+      amount = committee_cost_amount(value)
+      return :unknown if amount == :unknown
+      return :unknown unless finite_non_negative_committee_cost?(amount)
+
+      amount
+    end
+
+    def committee_cost_amount(value)
+      return usd_committee_money_amount(value) if value.is_a?(Money)
       return value if value.is_a?(Integer) || value.is_a?(BigDecimal)
       return BigDecimal(value.to_s) if value.is_a?(Float)
       return parse_committee_cost_string(value) if value.is_a?(String)
 
       :unknown
+    end
+
+    def usd_committee_money_amount(value)
+      return :unknown unless value.currency.iso_code == "USD"
+
+      value.amount
+    end
+
+    def finite_non_negative_committee_cost?(amount)
+      amount.finite? && !amount.negative?
     end
 
     def parse_committee_cost_string(value)
@@ -711,8 +738,10 @@ module Corvid
       BigDecimal(stripped.delete(",").delete_prefix("$"))
     end
 
-    # Integer as-is. ASCII digits, after strip, become an Integer.
-    # Any other present value is unknown. This does not raise.
+    # Nil is absent and requires review. An Integer in 1..4 is kept.
+    # ASCII digits, after strip, become an Integer and are kept only in
+    # 1..4. A parsed priority outside 1..4 is :unknown. Any other present
+    # value is :unknown. This does not raise.
     def committee_priority_requires_review?
       priority = parse_committee_priority(effective_medical_priority)
       return true unless priority.is_a?(Integer)
@@ -722,6 +751,15 @@ module Corvid
 
     def parse_committee_priority(value)
       return nil if value.nil?
+
+      parsed = raw_committee_priority(value)
+      return :unknown unless parsed.is_a?(Integer)
+      return :unknown unless parsed.between?(1, 4)
+
+      parsed
+    end
+
+    def raw_committee_priority(value)
       return value if value.is_a?(Integer)
       return parse_priority_digits(value) if value.is_a?(String)
 

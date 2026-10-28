@@ -552,9 +552,9 @@ module Corvid
       raise FulfilmentNotRecorded, fulfilment_not_recorded_message(current)
     end
 
-    # Shared by the authorization gate and the fulfilment gate. Reads
-    # the referral the current identifier will link, and does not assign
-    # the association.
+    # Shared by the authorization gate, the fulfilment gate, and the
+    # alternate-resource gate. Reads the referral the current identifier
+    # will link, and does not assign the association.
     def referral_for_submission_gates
       return unambiguous_patient_referral if referral_link_inputs_changed?
 
@@ -569,18 +569,19 @@ module Corvid
 
     # A linked referral is re-verified for service_date before the claim is
     # sent. No linked PRC referral is ordinary billing and skips this gate.
-    # A nil service date fails closed.
+    # A nil service date fails closed. The referral is
+    # referral_for_submission_gates, the same resolution the authorization
+    # and fulfilment gates use. The association is not assigned before
+    # deciding: a dirty referral_identifier must not be judged against the
+    # referral this claim used to name, and a refusal must not retarget
+    # the link. An already-sent unlinked claim is still not resolved when
+    # the identifier is unchanged.
     def enforce_alternate_resources_current!
-      referral = referral_for_alternate_resource_gate
+      referral = referral_for_submission_gates
       return if referral.nil?
       return if alternate_resources_current?(referral)
 
       raise AlternateResourcesNotCurrent
-    end
-
-    def referral_for_alternate_resource_gate
-      resolve_prc_referral_from_identifier if prc_referral.blank? && referral_identifier.present?
-      prc_referral
     end
 
     # Re-verify first, then decide. A stale row that comes back current and
