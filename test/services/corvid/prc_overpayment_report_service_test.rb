@@ -474,6 +474,62 @@ class Corvid::PrcOverpaymentReportServiceTest < ActiveSupport::TestCase
 
   # -- Obligations without analyses ------------------------------------------
 
+  test "detail reflects CBSA-adjusted medicare_equivalent after reanalyze" do
+    tenant = "tnt_cbsa_persist"
+    synth_zip = "77001"
+    synth_cbsa = "77077"
+    low_wage = BigDecimal("0.85")
+    service_date = Date.new(2026, 3, 1)
+    expected_medicare = (BigDecimal("25.4378") * 89.169 * low_wage).round(2).to_f
+
+    Corvid::PrcProcedureDictionary.register(
+      "OUTPATIENT_SCOPE",
+      hcpcs: "45380", apc: "5071",
+      description: "Hospital outpatient colonoscopy"
+    )
+    Corvid::ZipCbsaCrosswalk.create!(fiscal_year: 2026, zip: synth_zip, cbsa: synth_cbsa)
+    Corvid::IppsHospitalRate.create!(
+      fiscal_year: 2026, locality: "NATIONAL", base_rate: 6_000.0, wage_index: 1.0
+    )
+    Corvid::IppsHospitalRate.create!(
+      fiscal_year: 2026, locality: synth_cbsa, base_rate: 6_000.0, wage_index: low_wage
+    )
+    Corvid::OppsApcWeight.create!(
+      calendar_year: 2026, apc_code: "5071", relative_weight: 25.4378,
+      release_label: "cms_opps_cy2026_final_rule"
+    )
+    Corvid::OppsConversionFactor.create!(
+      calendar_year: 2026, locality: "NATIONAL",
+      conversion_factor: 89.169, wage_index: 1.0,
+      release_label: "cms_opps_cy2026_final_rule"
+    )
+    Corvid::PrcFacilityDictionary.register(
+      "RURA",
+      name: "Synthetic rural site", city: "Test", state: "TS",
+      zip: synth_zip, locality: "99"
+    )
+
+    export = <<~PRC
+      H^PRC_EXPORT^RURA^#{service_date.strftime("%Y%m%d")}^1
+      O^OBL-CBSA-PERSIST^DFN000456^VEND-HOSP^OUTPATIENT_SCOPE^#{service_date.strftime("%Y%m%d")}^A^5000.00^3000.00^2000.00^0.00^2026
+      T^1^1^0^3000.00^0.00
+    PRC
+
+    Corvid::TenantContext.with_tenant(tenant) do
+      Corvid::PrcImporter.import(export, source_file: "cbsa_opps.prc")
+      Corvid::PrcImporter.reanalyze(tenant: tenant)
+
+      rows = Corvid::PrcOverpaymentReportService.detail(tenant: tenant)
+      row = rows.find { |r| r[:obligation_id] == "OBL-CBSA-PERSIST" }
+      refute_nil row
+      assert_equal Money.from_amount(expected_medicare, "USD"), row[:medicare_equivalent]
+      assert_equal "clear", row[:recovery_confidence]
+    end
+  ensure
+    Corvid::PrcProcedureDictionary.reset!
+    Corvid::PrcFacilityDictionary.reset!
+  end
+
   test "obligations with no analysis row are excluded from the report" do
     Corvid::TenantContext.with_tenant(TENANT) do
       Corvid::PrcObligation.create!(
