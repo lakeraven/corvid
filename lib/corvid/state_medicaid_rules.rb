@@ -109,12 +109,12 @@ module Corvid
 
       private
 
-      # Read the string's own characters, or Symbol#name. String#to_s can be
-      # overridden and would resolve a different eligibility group.
+      # Same read as state_code_characters: case/when is Module#===, a Symbol
+      # is Symbol#name via bind_call, and a String is String.new. A caller
+      # is_a?, name, or to_s cannot select a different eligibility group.
+      # Anything else is nil, which group treats as an unknown group.
       def group_name(name)
-        return name.name if name.is_a?(Symbol)
-
-        String.new(name) if name.is_a?(String)
+        StateMedicaidRules.state_code_characters(name)
       end
 
       def plan_description(description)
@@ -162,7 +162,7 @@ module Corvid
       # Module#===, which a caller cannot override via is_a?, so a spoofed
       # is_a?, name, to_s, or to_str cannot alias another state. Lookup
       # still fails closed for those values; this only exposes the read
-      # lookup already uses.
+      # lookup already uses. Entry#group_name uses this same read.
       def state_code_characters(state_code)
         case state_code
         when Symbol then Symbol.instance_method(:name).bind_call(state_code)

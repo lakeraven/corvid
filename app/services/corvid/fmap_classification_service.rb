@@ -76,7 +76,7 @@ module Corvid
         # or a value that is not two ASCII letters, comes back nil and
         # is refused below, before any rule lookup.
         jurisdiction = canonical_jurisdiction(jurisdiction)
-        check_coverage_group!(coverage_group)
+        coverage_group = canonical_coverage_group(coverage_group)
         if received_through_basis.present? && !FmapRule::RECEIVED_THROUGH_BASES.include?(received_through_basis.to_s)
           raise ArgumentError, "received_through_basis is not recognized"
         end
@@ -184,7 +184,13 @@ module Corvid
         # Before any row is written. The message does not repeat the raw value.
         raise ArgumentError, "jurisdiction must be two letters" if jurisdiction.nil?
 
-        result = classify(evidence_refs: evidence_refs, **classify_opts, jurisdiction: jurisdiction)
+        coverage_group = canonical_coverage_group(classify_opts[:coverage_group])
+        result = classify(
+          evidence_refs: evidence_refs,
+          **classify_opts,
+          jurisdiction: jurisdiction,
+          coverage_group: coverage_group
+        )
         applied = result.facility_authority
 
         FmapDetermination.create!(
@@ -202,7 +208,7 @@ module Corvid
           received_through_basis: result.received_through_basis,
           facility_authority_id: applied&.id,
           authority_type: applied&.authority_type,
-          coverage_group: classify_opts[:coverage_group],
+          coverage_group: coverage_group,
           best_available_category: result.best_available_category,
           best_available_rule_key: result.best_available_rule_key,
           missing_evidence: result.missing_evidence,
@@ -258,9 +264,18 @@ module Corvid
         )
       end
 
-      def check_coverage_group!(coverage_group)
-        return if coverage_group.nil? || COVERAGE_GROUPS.include?(coverage_group.to_s)
-        raise ArgumentError, "coverage_group is not recognized"
+      # nil is no group. NilClass === does not send nil?. Any other value is
+      # read with state_code_characters (Module#===, Symbol#name, String.new),
+      # so a caller to_s, is_a?, or name cannot select a different group.
+      # A name outside the list is rejected. Matching and persistence use
+      # the string returned here, never the caller's object.
+      def canonical_coverage_group(coverage_group)
+        return if NilClass === coverage_group
+
+        text = StateMedicaidRules.state_code_characters(coverage_group)
+        raise ArgumentError, "coverage_group is not recognized" unless text && COVERAGE_GROUPS.include?(text)
+
+        text
       end
 
       # The authority as stored for the current tenant. An unsaved record,
@@ -331,12 +346,14 @@ module Corvid
       # to_s is never called. Anything else is not a code and comes back
       # nil. Unicode spaces stay in the string, and the letters are
       # checked before upcase, so a full Unicode upcase cannot turn a
-      # lookalike into a configured state. Nil, and a String or Symbol
-      # that is empty after the strip, is refused: federal rows alone
-      # would read as a complete answer. The raw characters are not
-      # returned, and neither is the caller's value.
+      # lookalike into a configured state. Nil is missing, and that check
+      # is NilClass === so a caller nil? is not consulted: a BasicObject
+      # or an object that overrides nil? is malformed and comes back nil.
+      # A String or Symbol that is empty after the strip is refused:
+      # federal rows alone would read as a complete answer. The raw
+      # characters are not returned, and neither is the caller's value.
       def canonical_jurisdiction(jurisdiction)
-        raise ArgumentError, "jurisdiction is required" if jurisdiction.nil?
+        raise ArgumentError, "jurisdiction is required" if NilClass === jurisdiction
 
         raw = StateMedicaidRules.state_code_characters(jurisdiction)
         return if raw.nil?
