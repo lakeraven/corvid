@@ -121,13 +121,10 @@ module Corvid
 
       event :complete_priority_assignment, before: :reverify_before_complete_priority_assignment do
         transitions from: :priority_assignment, to: :committee_review, guard: :requires_committee?
-        # success, not after: a transition after runs before status is
-        # authorized, so sync_status_to_ehr would record P. authorize's
-        # event after calls the same method once status is authorized.
-        # committee_review does not sync.
+        # The authorized sync is published once after commit
+        # (publish_committed_referral_status); committee_review does not sync.
         transitions from: :priority_assignment, to: :authorized,
-                    guard: :alternate_resources_exhausted?,
-                    success: :sync_status_to_ehr
+                    guard: :alternate_resources_exhausted?
       end
 
       event :authorize, before: :reverify_before_authorize do
@@ -171,15 +168,6 @@ module Corvid
 
     def service_request
       @service_request ||= Corvid.adapter.find_referral(referral_identifier) if referral_identifier.present?
-    end
-
-    # ActiveRecord reload refreshes columns only. Committee routing reads
-    # priority and cost from this memo, so a reload must drop it and take
-    # the EHR's current service request on the next read.
-    def reload(options = nil)
-      result = super
-      @service_request = nil
-      result
     end
 
     # 42 CFR 136.61 — PRC pays last. True only when every alternate resource
@@ -474,8 +462,15 @@ module Corvid
       result
     end
 
+    # ActiveRecord reload refreshes columns only. Committee routing reads
+    # priority and cost from the service-request memo, so a reload drops it
+    # and takes the EHR's current service request on the next read. It also
+    # drops any pending publication mark.
     def reload(...)
-      super.tap { reset_referral_publication_mark }
+      super.tap do
+        @service_request = nil
+        reset_referral_publication_mark
+      end
     end
 
     # dup copies instance variables, including a mark left by an unsaved
