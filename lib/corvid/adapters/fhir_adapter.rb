@@ -631,9 +631,14 @@ module Corvid
       # payor[0].display, subscriberId, and any type.coding code, when
       # present but not a String, make the search nil. Integer 9 on the
       # X12 claim-filing-indicator system remains self-pay.
-      # Every Coverage resource is counted across all pages before the
-      # active and insurance filters. When a page includes total, it must
-      # be an Integer >= 0 and equal to the first page's total; a later
+      # A Coverage entry is counted only when it has no search, no mode, or
+      # mode "match", on every page, before the active and insurance
+      # filters. Any other search on a Coverage entry is malformed and the
+      # read is unknown: search present and not a Hash, a mode present and
+      # not a String, a mode that is not a FHIR search mode, or mode
+      # "include" or "outcome". A malformed search on any entry, on any
+      # page, is unknown. When a page includes total, it must be an
+      # Integer >= 0 and equal to the first page's total; a later
       # page may omit total. The first page's total must equal that count,
       # or the result is nil. An OperationOutcome entry is nil when issue
       # is missing, not an Array, empty, contains a non-Hash, or has a
@@ -666,7 +671,8 @@ module Corvid
       # An Array means the search finished ([] when nothing matched). nil
       # means unknown — a non-2xx page, bad JSON, a non-Bundle body, a
       # Bundle.type other than "searchset", a malformed link or entry, a
-      # missing or duplicate Coverage id, an untrusted beneficiary or
+      # malformed entry search, a missing or duplicate Coverage id, an
+      # untrusted beneficiary or
       # period, a malformed Coverage, a status outside the FHIR set, a
       # total that is not an Integer >= 0, differs from the first page,
       # or does not match the Coverage count, invalid encoding, an
@@ -683,8 +689,8 @@ module Corvid
       # SocketError, SystemCallError, OpenSSL::SSL::SSLError, IOError,
       # Net::ProtocolError, Net::HTTPBadResponse,
       # Net::HTTPHeaderSyntaxError, Zlib::Error, URI::Error, ArgumentError).
-      # A non-http(s) base_url raises ArgumentError inside Net::HTTP and
-      # yields nil. Callers fail closed; a partial page list is never returned.
+      # A non-http(s) base_url returns nil. Callers fail closed; a partial
+      # page list is never returned.
       # ----------------------------------------------------------------------
 
       def get_coverages(patient_identifier)
@@ -1913,6 +1919,7 @@ module Corvid
 
       def append_coverage_entry(entry, rows, patient_identifier, seen_ids)
         return nil unless well_formed_coverage_entry?(entry)
+        return nil if unknown_coverage_entry_search?(entry)
         return nil if unknown_coverage_outcome?(entry)
 
         resource = coverage_resource(entry)
@@ -1926,6 +1933,18 @@ module Corvid
         1
       rescue TypeError, NoMethodError, ArgumentError, EncodingError
         nil
+      end
+
+      # List reads (#entry_search_state) treat "include" and "outcome" as
+      # known non-matches and keep the read. A Coverage row counts only for
+      # :match (no search, no mode, or mode "match"); those two modes on a
+      # Coverage entry are unknown. Every other malformed search is the
+      # same predicate list reads use, and fails the whole read.
+      def unknown_coverage_entry_search?(entry)
+        return true if malformed_entry_search?(entry)
+        return false unless coverage_resource(entry)
+
+        entry_search_state(entry) != :match
       end
 
       # false fails the search. Inexact Coverage and OperationOutcome
