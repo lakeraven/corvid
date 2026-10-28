@@ -35,12 +35,10 @@ module Corvid
       { success: false, error: Corvid.sanitize_phi(e.message) }
     end
 
-    # KNOWN LIMITATION (#264): the `apply_to_referral!` half drives AASM
-    # state transitions on PrcReferral whose `after:` callbacks call
-    # `Corvid.adapter.update_referral` directly. Until #264 lands the
-    # apply half is NOT routed through the injected `@adapter` — the
-    # `sync_decision` half is. Per-tenant adapter routing for the
-    # combined flow isn't safe yet; see ADR 0005 §"Known limitation".
+    # KNOWN LIMITATION (#264): apply_to_referral! drives AASM transitions
+    # whose after callbacks call Corvid.adapter.update_referral directly.
+    # Re-verification inside apply uses the injected @adapter (ADR 0005).
+    # The EHR status sync in those after callbacks does not, until #264.
     #
     # Apply locally first. Sync the decision to the EHR only once the
     # referral has reached that state, so APPROVED is never written
@@ -81,10 +79,29 @@ module Corvid
     def blocked_authorization_result(committee_review)
       return unless committee_review.approved_or_modified?
 
-      blockers = committee_review.prc_referral.committee_approval_blockers
+      referral = committee_review.prc_referral
+      refresh_alternate_resources(referral)
+      blockers = blockers_after_refresh(referral)
       return if blockers.empty?
 
       { success: false, blocked: true, blockers: blockers }
+    end
+
+    # An authorized referral is already decided; refreshing it would change
+    # the answers a completed authorization relied on. Re-verification uses
+    # the injected adapter (ADR 0005). The model skips states authorize
+    # cannot leave, so cancelled, denied, and draft make no payer call.
+    def refresh_alternate_resources(referral)
+      return if referral.authorized?
+
+      referral.reverify_alternate_resources_for_decision(adapter: @adapter)
+    end
+
+    def blockers_after_refresh(referral)
+      blockers = referral.committee_approval_blockers
+      return blockers if blockers.any? || referral.authorized? || referral.alternate_resources_exhausted?
+
+      [ "referral: #{referral.status}" ]
     end
 
     def apply_blocked(blockers, backend_synced: false)
@@ -109,7 +126,7 @@ module Corvid
     # Updated only when the referral actually reached the decision's
     # state. A guard that returns false must not look like success.
     def apply_referral!(committee_review)
-      committee_review.apply_to_referral!
+      committee_review.apply_to_referral!(adapter: @adapter)
       referral_reached_decision?(committee_review)
     rescue AuthorizationBlockedError
       raise
