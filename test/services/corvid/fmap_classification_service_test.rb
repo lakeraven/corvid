@@ -267,5 +267,101 @@ module Corvid
 
       assert_equal "fmap_regular", result.category
     end
+
+    # Issue #680: state_code_characters must use Module#===, not caller is_a? /
+    # name / to_str, so a jurisdiction cannot alias configured expansion XA.
+    test "classify object is_a String spoof is undetermined with no_matching_rule not XA ninety percent" do
+      with_tenant("tnt_test") do
+        result = classify_expansion_adult(jurisdiction: object_is_a_string_to_str_spoof_xa)
+
+        assert result.undetermined?
+        assert_equal FmapClassificationService::UNDETERMINED, result.category
+        assert_equal FmapClassificationService::NO_MATCHING_RULE, result.determination_reason
+        assert_nil result.fmap_percent
+        refute_equal "fmap_90_expansion", result.category
+      end
+    end
+
+    test "classify string subclass is_a Symbol spoof uses XB rules not XA ninety percent tier" do
+      with_tenant("tnt_test") do
+        result = classify_expansion_adult(jurisdiction: string_subclass_is_a_symbol_spoof_xb)
+
+        assert result.undetermined?
+        assert_equal FmapClassificationService::UNDETERMINED, result.category
+        assert_equal FmapClassificationService::EXPANSION_STATE_NOT_CONFIGURED, result.determination_reason
+        assert_nil result.fmap_percent
+        refute_equal "fmap_90_expansion", result.category
+      end
+    end
+
+    test "classify! with jurisdiction spoofs never persists XA" do
+      dos = Date.new(2026, 3, 1)
+
+      with_tenant("tnt_test") do
+        xb_spoof = string_subclass_is_a_symbol_spoof_xb
+        determination = FmapClassificationService.classify!(
+          encounter_identifier: "enc_test_680_is_a_spoof_xb",
+          date_of_service: dos,
+          jurisdiction: xb_spoof,
+          coverage_group: "expansion_adult",
+          aian_verified: false
+        )
+
+        assert determination.persisted?
+        assert_equal "XB", determination.jurisdiction
+        refute_equal "XA", determination.jurisdiction
+
+        object_spoof = object_is_a_string_to_str_spoof_xa
+        before = FmapDetermination.count
+        assert_raises(ArgumentError) do
+          FmapClassificationService.classify!(
+            encounter_identifier: "enc_test_680_is_a_spoof_object",
+            date_of_service: dos,
+            jurisdiction: object_spoof,
+            coverage_group: "expansion_adult",
+            aian_verified: false
+          )
+        end
+        assert_equal before, FmapDetermination.count
+        refute FmapDetermination.where(jurisdiction: "XA", encounter_identifier: "enc_test_680_is_a_spoof_object").exists?
+      end
+    end
+
+    private
+
+    def classify_expansion_adult(jurisdiction:)
+      FmapClassificationService.classify(
+        date_of_service: Date.new(2026, 3, 1),
+        jurisdiction: jurisdiction,
+        coverage_group: "expansion_adult",
+        aian_verified: false
+      )
+    end
+
+    def string_subclass_is_a_symbol_spoof_xb
+      klass = Class.new(String) do
+        def is_a?(type)
+          return true if type == Symbol
+
+          super
+        end
+
+        def name
+          "XA"
+        end
+      end
+      klass.new("XB")
+    end
+
+    def object_is_a_string_to_str_spoof_xa
+      Object.new.tap do |value|
+        value.define_singleton_method(:is_a?) do |type|
+          return true if type == String
+
+          super(type)
+        end
+        value.define_singleton_method(:to_str) { "xa" }
+      end
+    end
   end
 end

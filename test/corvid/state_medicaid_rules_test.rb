@@ -695,6 +695,41 @@ class Corvid::StateMedicaidRulesTest < Minitest::Test
     refute qq_entry.expanded?
   end
 
+  # -- state_code_characters: is_a? / name / to_str must not alias (#680) ----
+
+  def test_state_code_characters_string_subclass_is_a_symbol_spoof_reads_own_characters
+    spoof = string_subclass_is_a_symbol_spoof_xb
+    assert_equal "XB", Corvid::StateMedicaidRules.state_code_characters(spoof)
+  end
+
+  def test_state_code_characters_object_is_a_string_spoof_is_not_a_code
+    spoof = object_is_a_string_to_str_spoof_xa
+    assert_nil Corvid::StateMedicaidRules.state_code_characters(spoof)
+  end
+
+  def test_lookup_string_subclass_is_a_symbol_spoof_does_not_return_xa_entry
+    register_sample_state("XA")
+    xa_entry = Corvid::StateMedicaidRules.lookup("XA")
+    spoof = string_subclass_is_a_symbol_spoof_xb
+
+    result = Corvid::StateMedicaidRules.lookup(spoof)
+
+    refute result.equal?(xa_entry)
+    refute_equal xa_entry.state_code, result.state_code if result.configured?
+  end
+
+  def test_lookup_object_is_a_string_spoof_does_not_return_xa_entry
+    register_sample_state("XA")
+    xa_entry = Corvid::StateMedicaidRules.lookup("XA")
+    spoof = object_is_a_string_to_str_spoof_xa
+
+    result = Corvid::StateMedicaidRules.lookup(spoof)
+
+    refute result.equal?(xa_entry)
+    refute result.configured?
+    assert_nil result.state_code
+  end
+
   # -- Entry#group -------------------------------------------------------------
 
   def test_group_returns_nil_for_known_group_not_configured_on_entry
@@ -1145,5 +1180,31 @@ class Corvid::StateMedicaidRulesTest < Minitest::Test
       field_names.any? { |name| error.message.include?(name) },
       "expected ArgumentError message to name one of #{field_names.inspect}, got #{error.message.inspect}"
     )
+  end
+
+  def string_subclass_is_a_symbol_spoof_xb
+    klass = Class.new(String) do
+      def is_a?(type)
+        return true if type == Symbol
+
+        super
+      end
+
+      def name
+        "XA"
+      end
+    end
+    klass.new("XB")
+  end
+
+  def object_is_a_string_to_str_spoof_xa
+    Object.new.tap do |value|
+      value.define_singleton_method(:is_a?) do |type|
+        return true if type == String
+
+        super(type)
+      end
+      value.define_singleton_method(:to_str) { "xa" }
+    end
   end
 end
