@@ -788,6 +788,24 @@ class Corvid::Adapters::MockAdapterTest < Minitest::Test
     assert_nil detailed[:coverage_end]
   end
 
+  def test_check_eligibility_detailed_non_boolean_eligible_is_undetermined_like_verify
+    patient = "pt-712-eligible-symbol"
+    @adapter.add_coverage(
+      patient,
+      coverage_type: "medicaid",
+      payer_identifier: "MOCK_PAYER",
+      eligible: :unknown
+    )
+    inquiry = Date.new(2026, 10, 15)
+
+    verify = @adapter.verify_eligibility(patient, "medicaid", date_of_service: inquiry)
+    detailed = @adapter.check_eligibility_detailed(patient, "MOCK_PAYER", date_of_service: inquiry)
+
+    assert_nil verify, "Non-boolean eligible must make verify_eligibility undetermined (issue #712 K5)"
+    assert_nil detailed[:eligible],
+               "Non-boolean eligible must make detailed eligibility undetermined, not eligible: false (issue #712 K5)"
+  end
+
   def test_check_eligibility_detailed_non_boolean_service_active_is_undetermined_like_verify
     patient = "pt-712-svc-active"
     @adapter.add_coverage(

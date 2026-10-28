@@ -77,7 +77,7 @@ module Corvid
           referral.update_column(:status, "priority_assignment")
 
           referral.alternate_resource_checks.find_by!(resource_type: "private_insurance").update!(checked_at: 91.days.ago)
-          install_verify_eligibility_stub do |_pid, _type, _date_of_service: nil|
+          install_verify_eligibility_stub do |_pid, _type, date_of_service:|
             { error: "unreadable" }
           end
 
@@ -245,7 +245,7 @@ module Corvid
           )
           claim.save!
 
-          install_verify_eligibility_stub do |_pid, _type, _date_of_service: nil|
+          install_verify_eligibility_stub do |_pid, _type, date_of_service:|
             raise "payer down"
           end
 
@@ -269,7 +269,7 @@ module Corvid
 
           exhaust_alternate_resources!(referral, date_of_service: Date.current, as_of: Time.current)
           referral.alternate_resource_checks.find_by!(resource_type: "medicaid").update!(checked_at: 31.days.ago)
-          install_verify_eligibility_stub do |_pid, _type, _date_of_service: nil|
+          install_verify_eligibility_stub do |_pid, _type, date_of_service:|
             raise "unreadable"
           end
 
