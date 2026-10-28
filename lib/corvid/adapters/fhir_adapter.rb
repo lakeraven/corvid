@@ -496,33 +496,38 @@ module Corvid
 
       # FHIR R4 Coverage search has no date parameter, so the inquiry
       # date cannot be sent to the server. Coverage.status is today's
-      # state. Missing data is never a negative answer. Matching
-      # Coverage entries are judged for the inquiry date. One
-      # determinable answer (eligible true or false) is used. Several
-      # that agree answer from the entry that covers the date: when all
-      # are true, an entry whose start and end contain the date supplies
-      # the payer and dates, otherwise any true entry; when all are
-      # false, any. Several that disagree are nil. None determinable is
-      # nil. An entry that still applies to the date but cannot be
-      # judged blocks a denial from a Coverage that does not cover the
-      # date. The first entry is never a fallback. A present period
-      # bound that excludes the inquiry is eligible: false for active
-      # or cancelled. Status active is eligible: true when the inquiry
-      # is in Date.current's year and month and the present bounds
-      # cover it, or when both bounds are present and cover the
-      # inquiry. Status cancelled is eligible: false when the inquiry
-      # is in the current month and the bounds cover it or are absent.
-      # A cancelled Coverage whose start and end cover an inquiry
-      # outside the current month is nil. An absent status, draft,
-      # entered-in-error, or any other status is nil. The asked date is
-      # echoed. No matching coverage, or a search that does not answer,
-      # stays nil: absence never verifies (42 CFR 136.61).
+      # state. Missing data is never a negative answer. A Coverage
+      # matches the requested type when any type.coding code is the
+      # type name or its mapped ActCode. Applicable rows are matches
+      # whose present period bounds do not exclude the inquiry date.
+      # When none apply, the answer is eligible: false from a matching
+      # Coverage whose bounds exclude the date. Any applicable row that
+      # cannot be judged makes the answer nil. Applicable rows that are
+      # determinable and agree answer from the row with the latest
+      # period start; a nil start sorts earliest. Disagreeing applicable
+      # rows are nil. The first entry is never a fallback. A false
+      # answer is nil when the type's ActCode is shared with another
+      # resource type in COVERAGE_TYPE_MAP. A present period bound that
+      # excludes the inquiry is eligible: false. Status active is
+      # eligible: true when the inquiry is in Date.current's year and
+      # month and the present bounds cover it, or when both bounds are
+      # present and cover the inquiry. Status cancelled is eligible:
+      # false when the inquiry is in the current month and the bounds
+      # cover it or are absent. A cancelled Coverage whose start and
+      # end cover an inquiry outside the current month is nil. An
+      # absent status, draft, entered-in-error, or any other status is
+      # nil when the bounds do not exclude the inquiry. The asked date
+      # is echoed. No matching coverage, or a search that does not
+      # answer, stays nil: absence never verifies (42 CFR 136.61).
       def verify_eligibility(patient_identifier, resource_type, date_of_service: nil)
         answered_on, defaulted = resolve_inquiry_date(date_of_service)
         coverage = eligibility_coverage(patient_identifier, resource_type, answered_on)
         return nil unless coverage
 
-        eligibility_hash(coverage, answered_on, defaulted)
+        result = eligibility_hash(coverage, answered_on, defaulted)
+        return nil if shared_denial?(result, resource_type)
+
+        result
       end
 
       # ----------------------------------------------------------------------
@@ -683,9 +688,9 @@ module Corvid
         }
       end
 
-      # true, false, or nil. A status other than active or cancelled is
-      # nil. A present bound that excludes the inquiry is false for
-      # active or cancelled. Active coverage is true for an inquiry in
+      # true, false, or nil. A present bound that excludes the inquiry
+      # is false for every status. Otherwise a status other than active
+      # or cancelled is nil. Active coverage is true for an inquiry in
       # the current year-month whose present bounds cover it, or when
       # both bounds are present and cover it. Cancelled is false for an
       # inquiry in the current month whose bounds cover it or are
@@ -693,8 +698,8 @@ module Corvid
       # inquiry outside the current month is nil. Missing data stays nil.
       def coverage_eligibility(coverage, coverage_start, coverage_end, inquiry_date)
         return nil unless inquiry_date.instance_of?(Date)
-        return nil if unknown_coverage_status?(coverage)
         return false if bound_excludes_inquiry?(coverage_start, coverage_end, inquiry_date)
+        return nil if unknown_coverage_status?(coverage)
         return true if active_on_inquiry?(coverage, coverage_start, coverage_end, inquiry_date)
         return false if cancelled_in_current_month?(coverage, coverage_start, coverage_end, inquiry_date)
 
@@ -1571,20 +1576,19 @@ module Corvid
         coverage_for_inquiry(matches, inquiry_date)
       end
 
-      # Entries whose bounds exclude the inquiry do not apply to that
-      # date. A determinable answer among those that apply is used.
-      # Agreement uses the entry that covers the date. Disagreement, or
-      # an applicable entry that cannot be judged, is nil — never the
-      # first entry, and never a denial from a Coverage that does not
-      # cover the date. When nothing applies, agreeing answers stand
-      # (one ended period is eligible false).
+      # Applicable rows are matches whose present bounds do not exclude
+      # the inquiry. Any applicable row that cannot be judged, or
+      # applicable rows that disagree, is nil. Agreement answers from
+      # the applicable row with the latest period start; a nil start
+      # sorts earliest. When nothing applies, a matching row whose
+      # bounds exclude the inquiry answers eligible: false. The first
+      # entry is not a fallback.
       def coverage_for_inquiry(matches, inquiry_date)
         judged = judged_coverages(matches, inquiry_date)
-        decided = applicable_decisions(judged)
-        return agreed_coverage(decided) if decided.any?
-        return nil if applicable_judgments(judged).any?
+        applicable = applicable_judgments(judged)
+        return coverage_when_none_apply(judged) if applicable.empty?
 
-        agreed_coverage(determinable_judgments(judged))
+        agreed_applicable_coverage(applicable)
       end
 
       def judged_coverages(matches, inquiry_date)
@@ -1599,7 +1603,7 @@ module Corvid
           coverage: coverage,
           eligible: coverage_eligibility(coverage, start_on, end_on, inquiry_date),
           covers: !bound_excludes_inquiry?(start_on, end_on, inquiry_date),
-          bounded: bounded_period_covers?(start_on, end_on, inquiry_date)
+          period_start: start_on
         }
       end
 
@@ -1610,42 +1614,43 @@ module Corvid
         ]
       end
 
-      def applicable_decisions(judged)
-        judged.select { |row| row[:covers] && determinable_eligible?(row[:eligible]) }
-      end
-
       def applicable_judgments(judged)
         judged.select { |row| row[:covers] }
       end
 
-      def determinable_judgments(judged)
-        judged.select { |row| determinable_eligible?(row[:eligible]) }
+      # Nothing covers the inquiry. Answer from a row whose bounds
+      # exclude it, using the latest period start. Nil when none were judged.
+      def coverage_when_none_apply(judged)
+        row = latest_period_start_row(judged)
+        row[:coverage] if row
+      end
+
+      def agreed_applicable_coverage(rows)
+        return if undetermined_applicable?(rows)
+        return if conflicting_eligibility?(rows)
+
+        latest_period_start_row(rows)[:coverage]
+      end
+
+      def undetermined_applicable?(rows)
+        rows.any? { |row| !determinable_eligible?(row[:eligible]) }
       end
 
       def determinable_eligible?(eligible)
         eligible == true || eligible == false
       end
 
-      def agreed_coverage(rows)
-        return nil if rows.empty? || conflicting_eligibility?(rows)
-
-        preferred_row(rows)[:coverage]
-      end
-
       def conflicting_eligibility?(rows)
         rows.map { |row| row[:eligible] }.uniq.size > 1
       end
 
-      def preferred_row(rows)
-        return preferred_true_row(rows) if rows.all? { |row| row[:eligible] == true }
-
-        rows.first
+      # A nil start sorts earliest, so any real start outranks it.
+      def latest_period_start_row(rows)
+        rows.max_by { |row| period_start_rank(row[:period_start]) }
       end
 
-      # When every answer is true, payer and dates come from an entry
-      # whose start and end contain the inquiry. Otherwise any true entry.
-      def preferred_true_row(rows)
-        rows.find { |row| row[:bounded] } || rows.first
+      def period_start_rank(start_on)
+        start_on.nil? ? [ 0 ] : [ 1, start_on ]
       end
 
       def matching_coverages(coverages, resource_type)
@@ -1654,12 +1659,41 @@ module Corvid
         coverages.select { |coverage| coverage_type_matches?(coverage, resource_type) }
       end
 
+      # Any coding counts. The code may be the resource type name or the
+      # mapped ActCode. A blank code does not match.
       def coverage_type_matches?(coverage, resource_type)
-        type_code = coverage.dig("type", "coding", 0, "code")
-        return false if type_code.nil? || type_code.to_s.empty?
-
+        codes = coverage_type_codes(coverage)
         requested = resource_type.to_s
-        type_code == requested || type_code == COVERAGE_TYPE_MAP[requested]
+        codes.include?(requested) || codes.include?(COVERAGE_TYPE_MAP[requested])
+      end
+
+      def coverage_type_codes(coverage)
+        codings = coverage.dig("type", "coding")
+        return [] unless codings.is_a?(Array)
+
+        codings.filter_map { |coding| coverage_coding_code(coding) }
+      end
+
+      def coverage_coding_code(coding)
+        return unless coding.is_a?(Hash)
+
+        code = coding["code"]
+        return if code.nil? || code.to_s.empty?
+
+        code
+      end
+
+      # False from a type whose ActCode is also another type's code.
+      # Shared codes are counted from COVERAGE_TYPE_MAP, not listed by hand.
+      def shared_denial?(result, resource_type)
+        result.is_a?(Hash) && result[:eligible] == false && shared_coverage_type?(resource_type)
+      end
+
+      def shared_coverage_type?(resource_type)
+        code = COVERAGE_TYPE_MAP[resource_type.to_s]
+        return false if code.nil?
+
+        COVERAGE_TYPE_MAP.values.count(code) > 1
       end
 
       def find_extension(resource, url)

@@ -396,7 +396,7 @@ module Corvid
       # dates apply, an explicit nil coverage_end stays nil, and plan dates
       # that miss the inquiry are not eligible. service_active is passed
       # only when it is exactly true or false. A non-boolean service_active
-      # is undetermined (eligible nil), not a denial.
+      # or a non-boolean eligible is undetermined (eligible nil), not a denial.
       def check_eligibility_detailed(patient_identifier, payer_identifier, date_of_service: nil)
         answered_on, defaulted = resolve_inquiry_date(date_of_service)
         result = detailed_eligibility_result(patient_identifier, payer_identifier, answered_on)
@@ -630,7 +630,7 @@ module Corvid
 
         coverage = coverage_for_detailed(patient_identifier, payer_identifier)
         return undetermined_detailed_eligibility unless coverage
-        return undetermined_service_detail if non_boolean_service_active?(coverage)
+        return undetermined_service_detail if undetermined_coverage_detail?(coverage)
 
         detailed_eligibility_from_coverage(payer_identifier, coverage, inquiry_date)
       end
@@ -640,6 +640,18 @@ module Corvid
       def coverage_for_detailed(patient_identifier, payer_identifier)
         coverage_for(patient_identifier, payer_identifier, :payer_identifier) ||
           coverage_for(patient_identifier, payer_identifier, :coverage_type)
+      end
+
+      def undetermined_coverage_detail?(coverage)
+        non_boolean_eligible?(coverage) || non_boolean_service_active?(coverage)
+      end
+
+      # A present eligible that is not exactly true or false, including nil.
+      def non_boolean_eligible?(coverage)
+        return false unless coverage.key?(:eligible)
+
+        value = coverage[:eligible]
+        value != true && value != false
       end
 
       def non_boolean_service_active?(coverage)
