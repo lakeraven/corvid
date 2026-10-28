@@ -13,8 +13,9 @@ module Corvid
       match = doc.match(/### 4\. Token format: prefixed ULIDs\n(.*?)### 5\./m)
       flunk "expected ADR 0003 section 4" if match.nil?
 
-      example_tokens = match[1].scan(/\b[a-z]{2,4}_[0-9A-HJKMNP-TV-Z]{26}\b/).uniq
-      refute_empty example_tokens, "expected prefixed ULID examples in ADR 0003 section 4"
+      example_tokens = match[1].scan(/\b[a-z]{2,4}_[0-9A-Z]{26}\b/).uniq
+      assert_operator example_tokens.size, :>=, 10,
+                      "expected at least 10 prefixed ULID examples in ADR 0003 section 4"
 
       example_tokens.each do |token|
         assert OpaqueToken.valid?(token),

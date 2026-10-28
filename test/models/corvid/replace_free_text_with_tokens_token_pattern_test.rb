@@ -10,6 +10,8 @@ module Corvid
       require @migration_path unless defined?(ReplaceFreeTextWithTokens)
       @pattern = ReplaceFreeTextWithTokens::TOKEN_PATTERN
       @ruby_pattern = OpaqueTokenCheckMutants.postgres_pattern_to_ruby(@pattern)
+      @clm_pattern = ReplaceFreeTextWithTokens::CLM_CLAIM_PATTERN
+      @clm_ruby_pattern = OpaqueTokenCheckMutants.postgres_pattern_to_ruby(@clm_pattern)
     end
 
     test "migration TOKEN_PATTERN rejects CHECK-regex mutant opaque token anchors" do
@@ -24,6 +26,20 @@ module Corvid
         refute OpaqueToken.valid?(bad), "fixture #{bad.inspect} should be invalid for OpaqueToken"
         refute_match @ruby_pattern, bad,
                      "expected migration TOKEN_PATTERN to reject #{bad.inspect}"
+      end
+    end
+
+    test "migration CLM_CLAIM_PATTERN rejects malformed CLM claim anchor mutants" do
+      OpaqueTokenCheckMutants.malformed_clm_claim_identifiers.each do |bad|
+        refute_match @clm_ruby_pattern, bad,
+                     "expected migration CLM_CLAIM_PATTERN to reject #{bad.inspect}"
+      end
+    end
+
+    test "FmapDetermination CLM_FORMAT rejects malformed CLM claim anchor mutants" do
+      OpaqueTokenCheckMutants.malformed_clm_claim_identifiers.each do |bad|
+        refute FmapDetermination::CLM_FORMAT.match?(bad),
+               "expected CLM_FORMAT to reject #{bad.inspect}"
       end
     end
 

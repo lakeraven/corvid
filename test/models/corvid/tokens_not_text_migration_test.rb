@@ -24,6 +24,10 @@ module Corvid
       @migration_path = require_tokens_migration!
     end
 
+    teardown do
+      clear_migration_schema_caches!
+    end
+
     test "down then up round-trips claim and activity columns" do
       with_migration_down do
         assert_includes fmap_columns, "claim_reference"
@@ -115,6 +119,26 @@ module Corvid
     ensure
       cleanup_determination!(determination_id)
       ensure_up!
+    end
+
+    test "up aborts on each malformed CLM claim_reference anchor with counts only" do
+      OpaqueTokenCheckMutants.malformed_clm_claim_identifiers.each do |bad_claim|
+        determination_id = nil
+        with_migration_down do
+          determination_id = insert_down_state_determination!(claim_reference: bad_claim)
+        end
+
+        error = assert_raises(StandardError) { migrate_tokens!(:up) }
+        refute_includes error.message, bad_claim
+        assert_equal(
+          "#{MIGRATION_ABORT_PREFIX}1 non-token claim_reference row(s), 0 row(s) with a non-token evidence ref",
+          error.message
+        )
+        assert_equal bad_claim, down_determination_claim_reference(determination_id)
+      ensure
+        cleanup_determination!(determination_id)
+        ensure_up!
+      end
     end
 
     test "up aborts on a non-token claim_reference with counts only and changes nothing" do
@@ -399,6 +423,13 @@ module Corvid
       ActiveRecord::Migration.suppress_messages do
         ReplaceFreeTextWithTokens.new.migrate(direction)
       end
+      clear_migration_schema_caches!
+    end
+
+    def clear_migration_schema_caches!
+      connection = ActiveRecord::Base.connection
+      connection.clear_cache!
+      connection.schema_cache.clear!
       FmapDetermination.reset_column_information
       PrcReferral.reset_column_information
     end

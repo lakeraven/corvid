@@ -32,12 +32,18 @@ module OpaqueTokenCheckMutants
   def malformed_clm_claim_identifiers(body: VALID_ULID_BODY)
     valid = "CLM_#{body}"
     anchors = [
+      "free text #{valid}",
+      "x\n#{valid}",
+      "#{valid}\nx",
+      "CLM_#{body.downcase}",
       "CLM_#{body[0, 25]}",
       "CLM-#{body}",
       "123456789",
       "clm_example_1",
       "#{valid}X"
     ]
+    clm_opaque = "clm_#{body}"
+    anchors << clm_opaque unless Corvid::OpaqueToken.valid?(clm_opaque)
     FORBIDDEN_ULID_LETTERS.each do |letter|
       anchors << valid.sub(/.$/, letter)
     end
