@@ -220,7 +220,7 @@ class Corvid::CaseTest < ActiveSupport::TestCase
     with_tenant(TEST_TENANT) do
       kase = Corvid::Case.create!(patient_identifier: "pt_prog")
       Corvid::CaseProgram.create!(
-        case: kase, program_name: "Hepatitis B Perinatal", program_code: "hep_b",
+        case: kase, program_code: "hep_b",
         enrollment_date: Date.current
       )
       assert kase.program_case?
@@ -245,7 +245,7 @@ class Corvid::CaseTest < ActiveSupport::TestCase
     with_tenant(TEST_TENANT) do
       enrolled = Corvid::Case.create!(patient_identifier: "pt_tb_enrolled")
       Corvid::CaseProgram.create!(
-        case: enrolled, program_name: "Tuberculosis", program_code: "tb",
+        case: enrolled, program_code: "tb",
         enrollment_date: Date.current
       )
       Corvid::Case.create!(patient_identifier: "pt_unenrolled")

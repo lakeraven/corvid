@@ -112,6 +112,53 @@ module Corvid
       assert determination.errors[:authority_type].any?
     end
 
+    test "an unknown best_available_rule_key is a validation error" do
+      determination = FmapDetermination.new(
+        **base_attrs,
+        category: "undetermined",
+        determination_reason: FmapClassificationService::NO_RULES_IN_FORCE,
+        best_available_rule_key: "no-such-rule"
+      )
+      refute determination.valid?
+      assert determination.errors[:best_available_rule_key].any?
+    end
+
+    test "supersede_with! rejects an unknown best_available_rule_key" do
+      original = arpa_determination
+      assert_raises(ActiveRecord::RecordInvalid) do
+        original.supersede_with!(best_available_rule_key: "no-such-rule")
+      end
+    end
+
+    test "an empty best_available_rule_key is a validation error" do
+      determination = FmapDetermination.new(
+        **base_attrs,
+        category: "undetermined",
+        determination_reason: FmapClassificationService::NO_RULES_IN_FORCE,
+        best_available_rule_key: ""
+      )
+      refute determination.valid?
+      assert determination.errors[:best_available_rule_key].any?
+    end
+
+    test "supersede_with! rejects an empty best_available_rule_key" do
+      original = arpa_determination
+      assert_raises(ActiveRecord::RecordInvalid) do
+        original.supersede_with!(best_available_rule_key: "")
+      end
+    end
+
+    test "nil and shipped rule keys are valid for best_available_rule_key" do
+      undetermined = {
+        **base_attrs,
+        category: "undetermined",
+        determination_reason: FmapClassificationService::NO_RULES_IN_FORCE,
+        determined_at: Time.current
+      }
+      assert FmapDetermination.new(**undetermined, best_available_rule_key: nil).valid?
+      assert FmapDetermination.new(**undetermined, best_available_rule_key: "us-regular").valid?
+    end
+
     test "the database rejects an unknown category" do
       original = arpa_determination
       assert_raises(ActiveRecord::StatementInvalid) { original.update_columns(category: "bogus") }

@@ -45,8 +45,12 @@ module Corvid
 
     validates :encounter_identifier, presence: true
     validates :date_of_service, presence: true
-    validates :jurisdiction, presence: true
+    # Two uppercase letters. Same shape as corvid_fmap_determinations_jurisdiction_check.
+    validates :jurisdiction, presence: true, format: { with: /\A[A-Z]{2}\z/ }
     validates :determined_at, presence: true
+    # FmapClassificationService::MISSING_EVIDENCE. Same set as
+    # corvid_fmap_determinations_missing_evidence_check.
+    validate :missing_evidence_in_vocabulary
     # "undetermined" is a determination outcome, not a statutory rule
     # category: it records that no in-force rule applied, or that a 100
     # percent tier was refused for want of evidence.
@@ -69,6 +73,11 @@ module Corvid
     validate :cites_applied_rule, if: :decision_changed?
     validate :evidence_backs_hundred_percent, if: :decision_changed?
     validate :authority_is_own_facilitys, if: :decision_changed?
+    # Not a decision field. The check runs when the key is written, so an
+    # unknown key fails here instead of the foreign key, which aborts the
+    # caller's transaction. The foreign key prevents a stored key from
+    # disappearing.
+    validate :cites_best_available_rule, if: :best_available_rule_key_written?
 
     scope :current, -> { where(superseded_by_id: nil) }
     scope :misclassified, -> {
@@ -134,6 +143,15 @@ module Corvid
       new_record? || DECISION_FIELDS.any? { |field| will_save_change_to_attribute?(field) }
     end
 
+    # The check runs when the key is written. Nil stays valid; any other
+    # value, including a blank string, must name a stored rule. The foreign
+    # key prevents a stored key from disappearing.
+    def best_available_rule_key_written?
+      return false if best_available_rule_key.nil?
+
+      new_record? || will_save_change_to_best_available_rule_key?
+    end
+
     def applied_rule
       return nil if rule_key.blank?
       @applied_rule = nil if @applied_rule&.rule_key != rule_key
@@ -169,6 +187,14 @@ module Corvid
       in_force = date_of_service && jurisdiction &&
                  FmapRule.in_force_on(date_of_service).for_jurisdiction(jurisdiction).exists?(rule.id)
       errors.add(:rule_key, "must be in force for the jurisdiction on the date of service") unless in_force
+    end
+
+    # A present best-available key names a stored FMAP rule. Existence
+    # only: classification may cite a rule it did not apply.
+    def cites_best_available_rule
+      return if FmapRule.find_by(rule_key: best_available_rule_key)
+
+      errors.add(:best_available_rule_key, "must name an existing FMAP rule")
     end
 
     # Backstop for the service rule: a persisted 100 percent
@@ -285,6 +311,14 @@ module Corvid
       return entry[key] if entry.key?(key)
 
       entry[key.to_sym] if entry.key?(key.to_sym)
+    end
+
+    def missing_evidence_in_vocabulary
+      gaps = missing_evidence
+      vocabulary = FmapClassificationService::MISSING_EVIDENCE
+      return if gaps.is_a?(Array) && gaps.all? { |item| vocabulary.include?(item) }
+
+      errors.add(:missing_evidence, "must be a list drawn from the evidence vocabulary")
     end
 
     def immutable_once_claimed

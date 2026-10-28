@@ -103,11 +103,14 @@ module Corvid
       conditions_data.size
     end
 
-    def apply_to_referral!
+    # adapter defaults to Corvid.adapter. CommitteeReviewSyncService passes
+    # its injected adapter so this re-verification does not use the global
+    # (ADR 0005). Model callers that omit it stay on Corvid.adapter (#264).
+    def apply_to_referral!(adapter: Corvid.adapter)
       return if pending?
 
       case decision
-      when "approved", "modified" then authorize_exhausted_referral!
+      when "approved", "modified" then authorize_exhausted_referral!(adapter: adapter)
       when "denied"               then prc_referral.mark_denied!
       when "deferred"             then prc_referral.mark_deferred!
       end
@@ -119,9 +122,10 @@ module Corvid
     # already authorized referral is a no-op. Refuse before authorize!,
     # and if it returns false raise with the blockers, or the state
     # name when that list is empty, so neither looks like success.
-    def authorize_exhausted_referral!
+    def authorize_exhausted_referral!(adapter:)
       return if prc_referral.authorized?
 
+      prc_referral.reverify_alternate_resources_for_decision(adapter: adapter)
       blockers = prc_referral.committee_approval_blockers
       raise AuthorizationBlockedError.new(blockers) if blockers.any?
 
