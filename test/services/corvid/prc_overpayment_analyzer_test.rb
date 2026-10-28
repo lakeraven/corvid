@@ -703,11 +703,11 @@ class Corvid::PrcOverpaymentAnalyzerTest < ActiveSupport::TestCase
     register_outpatient_procedure!
     register_facility_for_cbsa(code: "FYB", zip: SYNTH_ZIP_FY2026_ONLY)
     seed_cbsa_crosswalk_and_wage_area(fiscal_year: 2026, zip: SYNTH_ZIP_FY2026_ONLY, cbsa: SYNTH_CBSA)
-    seed_opps_national_rows(calendar_year: 2026)
+    seed_opps_national_rows(calendar_year: 2025)
 
     in_fy = analyze_with_facility(
       facility_code: "FYB", procedure: "OUTPATIENT_TEST", paid: 5_000,
-      service_date: Date.new(2026, 3, 1)
+      service_date: Date.new(2025, 10, 1)
     ).results.first
     before_fy = analyze_with_facility(
       facility_code: "FYB", procedure: "OUTPATIENT_TEST", paid: 5_000,
