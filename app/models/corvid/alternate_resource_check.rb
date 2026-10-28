@@ -447,14 +447,26 @@ module Corvid
       raise ArgumentError, "date_of_service must be a Date"
     end
 
-    # The keyword is omitted when the asked date is not a Date so existing
-    # adapters that lack the keyword still answer.
+    # The keyword is omitted when the asked date is not a Date, and when
+    # the adapter does not declare date_of_service:, so an older adapter
+    # still answers. A Date is passed when the adapter accepts it. An
+    # answer that does not echo an asked date is still unreadable.
     def eligibility_result(adapter, patient_identifier, inquiry)
-      if inquiry.nil?
-        adapter.verify_eligibility(patient_identifier, resource_type)
-      else
+      if pass_inquiry_date?(adapter, inquiry)
         adapter.verify_eligibility(patient_identifier, resource_type, date_of_service: inquiry)
+      else
+        adapter.verify_eligibility(patient_identifier, resource_type)
       end
+    end
+
+    def pass_inquiry_date?(adapter, inquiry)
+      inquiry.instance_of?(Date) && adapter_accepts_inquiry_date?(adapter)
+    end
+
+    def adapter_accepts_inquiry_date?(adapter)
+      adapter.method(:verify_eligibility).parameters.any? { |type, name|
+        type == :keyrest || (name == :date_of_service && (type == :key || type == :keyreq))
+      }
     end
 
     # Caller date wins. Otherwise the referral service_date when that

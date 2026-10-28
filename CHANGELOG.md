@@ -31,9 +31,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   raises `ArgumentError` before the adapter is called, and the message does
   not include the value. `verify_eligibility` and `check_eligibility_detailed`
   include `:date_of_service` (the date answered for, `Date.current` when
-  omitted) and `:date_of_service_defaulted`. `AlternateResourceCheck#verify!`
+  omitted) and `:date_of_service_defaulted`.   `AlternateResourceCheck#verify!`
   accepts the same keyword and passes a referral `service_date` when that
-  column holds a `Date`. When a date was asked, the adapter must echo that
+  column holds a `Date`. `AlternateResourceReverification` passes the judged
+  date into `verify!` unchanged. A non-Date raises `ArgumentError` from
+  `verify!` and is not coerced. An adapter that does not declare
+  `date_of_service:` is called without that keyword. When a date was asked, the adapter must echo that
   exact `Date`; a missing, nil, or different `:date_of_service` is not an
   answer and the row is unchanged. `inquiry_date_of_service` stores the asked
   date. When nothing was asked, it stores the adapter's exact `Date`,
@@ -54,21 +57,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `Time.current.to_date` when there is no inquiry date). An end exactly that
   many years out is kept. `service_active: false` records `not_enrolled`
   even when the plan dates cover the inquiry, and that check is not current.
-  A present non-boolean `service_active` is not an answer. Mock eligibility,
-  including `check_eligibility_detailed` and a seeded Medicaid scenario, is
-  false when the plan period misses the inquiry date.
-  `check_eligibility_detailed` passes through a recorded `service_active`.
-  `:active_this_month_only` stores the first and last day of the month of
-  `Date.current` at seeding; other seeded scenarios still follow the inquiry
-  month. FHIR `Coverage.status` is today's state. Missing data is never a
-  negative answer. A present period bound that excludes the inquiry is
-  eligible false. Eligible is true when status is active and either the
-  inquiry is in the current year-month and the present period bounds cover
-  it, or both start and end are present and cover the inquiry. A status
-  other than active is eligible false when the inquiry is in the current
-  month and the present bounds cover it. Otherwise FHIR `verify_eligibility`
-  returns nil and the check row stays unchanged. FHIR prefers an active
-  Coverage that covers that date.
+  A present non-boolean `service_active` is not an answer. Mock
+  `verify_eligibility` returns nil when `service_active` is present and not
+  exactly true, false, or nil. `check_eligibility_detailed` reads the same
+  coverage row and date, including a seeded Medicaid scenario, and keeps an
+  explicit nil `coverage_end` instead of defaulting that nil to December 31.
+  A non-boolean `service_active` leaves detailed `eligible` nil. Boolean
+  `service_active` is still passed through. Plan dates that miss the inquiry
+  are not eligible, for both reads. `:active_this_month_only` stores the
+  first and last day of the month of `Date.current` at seeding; other seeded
+  scenarios still follow the inquiry month. FHIR `Coverage.status` is today's
+  state. Missing data is never a negative answer. A present period bound that
+  excludes the inquiry is eligible false for `active` or `cancelled`. Eligible
+  is true when status is active and either the inquiry is in the current
+  year-month and the present period bounds cover it, or both start and end
+  are present and cover the inquiry. Explicit `cancelled` is eligible false
+  when the inquiry is in the current month and the bounds cover it or are
+  absent. A cancelled Coverage whose start and end cover an inquiry outside
+  the current month is nil. An absent status, `draft`, `entered-in-error`, or
+  any other status is nil. FHIR chooses among Coverage entries of the
+  requested type for the inquiry date. One determinable answer is used.
+  Several that agree answer from the entry that covers the date (when all are
+  true, that entry's payer and dates are used; when all are false, any).
+  Several that disagree, or none determinable, are nil. An entry that still
+  applies but cannot be judged blocks a denial taken from a Coverage that
+  does not cover the date. The first entry is never a fallback. Otherwise
+  FHIR `verify_eligibility` returns nil and the check row stays unchanged.
 - `corvid_claim_submissions.rejection_reason_token`, `denial_reason_codes`
   (CARC/RARC codes), `rejected_at` and `denied_at`. The timestamps are kept
   after the status moves on, so a claim rejected or denied and later paid
