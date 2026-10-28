@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "test_helper"
+require_relative "../../support/opaque_token_check_mutants"
 
 module Corvid
   # Issue #705 gate round 2: evidence_refs entries are exactly { supports, ref }
@@ -258,13 +259,7 @@ module Corvid
     private
 
     def malformed_evidence_ref_anchors
-      body = VALID_ULID_BODY
-      [
-        "free text ab_#{body}",
-        "abcde_#{body}",
-        "AB_#{body}",
-        "ab_#{body.downcase}"
-      ]
+      OpaqueTokenCheckMutants.malformed_opaque_token_anchors(prefix: "at")
     end
 
     def build_hundred_percent_determination(**attrs)

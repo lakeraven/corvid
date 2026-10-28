@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "test_helper"
+require_relative "../../support/opaque_token_check_mutants"
 
 module Corvid
   class FmapClassificationServiceTest < ActiveSupport::TestCase
@@ -166,6 +167,50 @@ module Corvid
       assert_equal "fmap_regular", correction.category
       assert_includes FmapDetermination.current, correction
       refute_includes FmapDetermination.current, determination
+    end
+
+    test "issue 705 classify! stores Corvid CLM_<ULID> claim_identifier" do
+      with_tenant("tnt_test") do
+        uio = FacilityAuthority.create!(
+          facility_identifier: "fac_clm_service",
+          authority_type: "uio",
+          air_eligible: true,
+          effective_on: Date.new(2020, 1, 1)
+        )
+        clm = "CLM_#{ULID.generate}"
+        determination = FmapClassificationService.classify!(
+          encounter_identifier: "enc_clm_service",
+          date_of_service: Date.new(2022, 6, 1),
+          jurisdiction: "XA",
+          facility_authority: uio,
+          aian_verified: true,
+          evidence_refs: [ AIAN_EVIDENCE ],
+          claim_identifier: clm
+        )
+        assert_equal clm, determination.claim_identifier
+      end
+    end
+
+    test "issue 705 classify! stores lowercase clm_<Crockford> opaque claim_identifier" do
+      with_tenant("tnt_test") do
+        uio = FacilityAuthority.create!(
+          facility_identifier: "fac_clm_opaque_service",
+          authority_type: "uio",
+          air_eligible: true,
+          effective_on: Date.new(2020, 1, 1)
+        )
+        clm = OpaqueTokenCheckMutants.valid_clm_opaque_claim_identifier
+        determination = FmapClassificationService.classify!(
+          encounter_identifier: "enc_clm_opaque_service",
+          date_of_service: Date.new(2022, 6, 1),
+          jurisdiction: "XA",
+          facility_authority: uio,
+          aian_verified: true,
+          evidence_refs: [ AIAN_EVIDENCE ],
+          claim_identifier: clm
+        )
+        assert_equal clm, determination.claim_identifier
+      end
     end
 
     # The governing invariant: an asserted input with no evidence behind

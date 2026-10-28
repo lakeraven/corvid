@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "test_helper"
+require_relative "../../support/opaque_token_check_mutants"
 
 module Corvid
   class TokensNotTextMigrationTest < ActiveSupport::TestCase
@@ -8,6 +9,8 @@ module Corvid
     FACILITY = "fac_tokens_mig"
     AIAN_EVIDENCE = { "supports" => "aian_status", "ref" => "at_01HK8B7Z9XCQVG3F8N5K0R4MWB" }.freeze
     CLAIM_TOKEN = "cl_01HK8B7Z9XCQVG3F8N5K0R4MWC"
+    CLM_CLAIM = "CLM_01HK8B7Z9XCQVG3F8N5K0R4MWB"
+    CLM_OPAQUE_CLAIM = OpaqueTokenCheckMutants.valid_clm_opaque_claim_identifier
     SUBMITTED_VIA_FHIR_TEXT = "Submitted via FHIR PAS"
     ASSIGNED_REVIEWER_TEXT = "Assigned to reviewer 12345"
     REVIEWER_TOKEN = "rv_01HK8B7Z9XCQVG3F8N5K0R4MWD"
@@ -78,6 +81,36 @@ module Corvid
       migrate_tokens!(:up)
       row = FmapDetermination.find(determination_id)
       assert_equal CLAIM_TOKEN, row.claim_identifier
+      refute_includes fmap_columns, "claim_reference"
+    ensure
+      cleanup_determination!(determination_id)
+      ensure_up!
+    end
+
+    test "up renames CLM_<ULID> claim_reference to claim_identifier without aborting" do
+      determination_id = nil
+      with_migration_down do
+        determination_id = insert_down_state_determination!(claim_reference: CLM_CLAIM)
+      end
+
+      migrate_tokens!(:up)
+      row = FmapDetermination.find(determination_id)
+      assert_equal CLM_CLAIM, row.claim_identifier
+      refute_includes fmap_columns, "claim_reference"
+    ensure
+      cleanup_determination!(determination_id)
+      ensure_up!
+    end
+
+    test "up renames clm_<Crockford> claim_reference to claim_identifier without aborting" do
+      determination_id = nil
+      with_migration_down do
+        determination_id = insert_down_state_determination!(claim_reference: CLM_OPAQUE_CLAIM)
+      end
+
+      migrate_tokens!(:up)
+      row = FmapDetermination.find(determination_id)
+      assert_equal CLM_OPAQUE_CLAIM, row.claim_identifier
       refute_includes fmap_columns, "claim_reference"
     ensure
       cleanup_determination!(determination_id)
@@ -226,12 +259,27 @@ module Corvid
       determination_id = insert_up_state_determination!
       row = FmapDetermination.find(determination_id)
 
-      malformed_token_anchors.each do |bad_claim|
+      OpaqueTokenCheckMutants.malformed_opaque_token_anchors(prefix: "ab").each do |bad_claim|
         assert_check_violation { row.update_columns(claim_identifier: bad_claim) }
         assert_nil row.reload.claim_identifier
       end
 
-      malformed_token_anchors.each do |bad_ref|
+      OpaqueTokenCheckMutants.malformed_clm_claim_identifiers.each do |bad_clm|
+        assert_check_violation { row.update_columns(claim_identifier: bad_clm) }
+        assert_nil row.reload.claim_identifier
+      end
+
+      FmapDetermination.transaction(requires_new: true) do
+        row.update_columns(claim_identifier: CLM_CLAIM)
+      end
+      assert_equal CLM_CLAIM, row.reload.claim_identifier
+
+      FmapDetermination.transaction(requires_new: true) do
+        row.update_columns(claim_identifier: CLM_OPAQUE_CLAIM)
+      end
+      assert_equal CLM_OPAQUE_CLAIM, row.reload.claim_identifier
+
+      OpaqueTokenCheckMutants.malformed_opaque_token_anchors(prefix: "ab").each do |bad_ref|
         bad_refs = [ AIAN_EVIDENCE.merge("ref" => bad_ref) ]
         assert_check_violation { row.update_columns(evidence_refs: bad_refs) }
         assert_equal [], row.reload.evidence_refs
@@ -397,13 +445,7 @@ module Corvid
     end
 
     def malformed_token_anchors
-      body = VALID_ULID_BODY
-      [
-        "free text ab_#{body}",
-        "abcde_#{body}",
-        "AB_#{body}",
-        "ab_#{body.downcase}"
-      ]
+      OpaqueTokenCheckMutants.malformed_opaque_token_anchors(prefix: "ab")
     end
 
     def insert_up_state_determination!

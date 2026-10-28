@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "test_helper"
+require_relative "../../support/opaque_token_check_mutants"
 
 module Corvid
   class PrcReferralCurrentActivityTest < ActiveSupport::TestCase
@@ -160,6 +161,30 @@ module Corvid
       end
     end
 
+    test "P2 database CHECK rejects malformed reviewer_identifier via insert_all" do
+      assert_activity_codes_implemented!
+      kase = Case.create!(patient_identifier: "pt_insert_all_#{SecureRandom.hex(2)}", facility_identifier: FACILITY)
+      bad_reviewer = OpaqueTokenCheckMutants.malformed_opaque_token_anchors(prefix: "rv").first
+      assert_raises(ActiveRecord::StatementInvalid, ActiveRecord::CheckViolation) do
+        PrcReferral.transaction(requires_new: true) do
+          PrcReferral.insert_all(
+            [ {
+              tenant_identifier: TENANT,
+              case_id: kase.id,
+              referral_identifier: "rf_insert_all_#{SecureRandom.hex(3)}",
+              facility_identifier: FACILITY,
+              status: "draft",
+              currency_iso: "USD",
+              current_activity_code: "assigned_to_reviewer",
+              reviewer_identifier: bad_reviewer,
+              created_at: Time.current,
+              updated_at: Time.current
+            } ]
+          )
+        end
+      end
+    end
+
     test "P3 database CHECK rejects unknown current_activity_code via raw SQL on normal schema" do
       assert_activity_codes_implemented!
       referral = create_referral!(current_activity_code: "submitted_via_fhir_pas")
@@ -182,13 +207,7 @@ module Corvid
     end
 
     def malformed_reviewer_anchor_tokens
-      body = VALID_ULID_BODY
-      [
-        "free text ab_#{body}",
-        "abcde_#{body}",
-        "AB_#{body}",
-        "ab_#{body.downcase}"
-      ]
+      OpaqueTokenCheckMutants.malformed_opaque_token_anchors(prefix: "rv")
     end
 
     def assert_reviewer_check_rejects!(referral, bad_reviewer)

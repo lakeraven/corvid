@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "test_helper"
+require_relative "../../support/opaque_token_check_mutants"
 
 module Corvid
   class OpaqueTokenTest < ActiveSupport::TestCase
@@ -12,6 +13,7 @@ module Corvid
       assert OpaqueToken.valid?(ADR_EXAMPLE)
       assert OpaqueToken.valid?("at_01HK8B7Z9XCQVG3F8N5K0R4MWC")
       assert OpaqueToken.valid?("cl_01HK8B7Z9XCQVG3F8N5K0R4MWD")
+      assert OpaqueToken.valid?(OpaqueTokenCheckMutants.valid_clm_opaque_claim_identifier)
     end
 
     test "legacy and human-readable strings are not opaque tokens" do
@@ -49,6 +51,13 @@ module Corvid
       refute OpaqueToken.valid?("abcde_#{ULID_BODY}")
       refute OpaqueToken.valid?("PT_#{ULID_BODY}")
       refute OpaqueToken.valid?("pt_#{ULID_BODY}X")
+    end
+
+    test "CHECK-regex mutant anchors are not opaque tokens" do
+      assert_opaque_token_implemented!
+      OpaqueTokenCheckMutants.malformed_opaque_token_anchors(prefix: "pt").each do |bad|
+        refute OpaqueToken.valid?(bad), "expected #{bad.inspect} to be rejected by OpaqueToken::FORMAT"
+      end
     end
 
     test "a ULID containing Crockford-forbidden letters is not an opaque token" do

@@ -1,12 +1,15 @@
 # frozen_string_literal: true
 
 require "test_helper"
+require_relative "../../support/opaque_token_check_mutants"
 
 module Corvid
   # Issue #705: claim_identifier and evidence_refs[].ref must be vault tokens.
   class FmapDeterminationIdentifiersTest < ActiveSupport::TestCase
     AIAN_EVIDENCE = { "supports" => "aian_status", "ref" => "at_01HK8B7Z9XCQVG3F8N5K0R4MWB" }.freeze
     CLAIM_TOKEN = "cl_01HK8B7Z9XCQVG3F8N5K0R4MWC"
+    CLM_CLAIM = "CLM_01HK8B7Z9XCQVG3F8N5K0R4MWC"
+    CLM_OPAQUE_CLAIM = OpaqueTokenCheckMutants.valid_clm_opaque_claim_identifier
     VALID_ULID_BODY = "01HK8B7Z9XCQVG3F8N5K0R4MWB"
     BAD_CLAIM = "clm_example_1"
     BAD_EVIDENCE_REF = "attestation:tok_example_aian"
@@ -241,7 +244,7 @@ module Corvid
     test "P2 database CHECK rejects malformed claim_identifier anchors on normal schema" do
       assert_opaque_token_implemented!
       row = classified_determination
-      malformed_claim_anchor_tokens.each do |bad_claim|
+      OpaqueTokenCheckMutants.malformed_opaque_token_anchors(prefix: "cl").each do |bad_claim|
         assert_raises(ActiveRecord::StatementInvalid, ActiveRecord::CheckViolation) do
           FmapDetermination.transaction(requires_new: true) do
             row.update_columns(claim_identifier: bad_claim)
@@ -249,6 +252,131 @@ module Corvid
         end
         assert_nil row.reload.read_attribute(:claim_identifier)
       end
+    end
+
+    test "issue 705 database CHECK rejects malformed CLM claim_identifier anchors on normal schema" do
+      assert_opaque_token_implemented!
+      row = classified_determination
+      OpaqueTokenCheckMutants.malformed_clm_claim_identifiers.each do |bad_claim|
+        assert_raises(ActiveRecord::StatementInvalid, ActiveRecord::CheckViolation) do
+          FmapDetermination.transaction(requires_new: true) do
+            row.update_columns(claim_identifier: bad_claim)
+          end
+        end
+        assert_nil row.reload.read_attribute(:claim_identifier)
+      end
+    end
+
+    test "issue 705 classify! persists Corvid CLM_<ULID> claim_identifier" do
+      with_tenant("tnt_test") do
+        assert_opaque_token_implemented!
+        uio = FacilityAuthority.create!(
+          facility_identifier: "fac_clm_classify",
+          authority_type: "uio",
+          effective_on: Date.new(2020, 1, 1)
+        )
+        clm = "CLM_#{ULID.generate}"
+        determination = FmapClassificationService.classify!(
+          encounter_identifier: "enc_clm_classify",
+          date_of_service: Date.new(2022, 6, 1),
+          jurisdiction: "XA",
+          facility_authority: uio,
+          aian_verified: true,
+          evidence_refs: [ AIAN_EVIDENCE ],
+          claim_identifier: clm
+        )
+        assert_equal clm, determination.claim_identifier
+      end
+    end
+
+    test "issue 705 classify! persists lowercase clm_<Crockford> opaque claim_identifier" do
+      with_tenant("tnt_test") do
+        assert_opaque_token_implemented!
+        uio = FacilityAuthority.create!(
+          facility_identifier: "fac_clm_opaque_classify",
+          authority_type: "uio",
+          effective_on: Date.new(2020, 1, 1)
+        )
+        clm = CLM_OPAQUE_CLAIM
+        determination = FmapClassificationService.classify!(
+          encounter_identifier: "enc_clm_opaque_classify",
+          date_of_service: Date.new(2022, 6, 1),
+          jurisdiction: "XA",
+          facility_authority: uio,
+          aian_verified: true,
+          evidence_refs: [ AIAN_EVIDENCE ],
+          claim_identifier: clm
+        )
+        assert_equal clm, determination.claim_identifier
+      end
+    end
+
+    test "issue 705 model accepts nil opaque token CLM_<ULID> or clm_<Crockford> claim_identifier" do
+      assert_opaque_token_implemented!
+
+      base_attrs = {
+        encounter_identifier: "enc_claim_shape",
+        date_of_service: Date.new(2022, 6, 1),
+        jurisdiction: "XA",
+        determined_at: Time.current,
+        category: FmapClassificationService::UNDETERMINED,
+        determination_reason: FmapClassificationService::NO_RULES_IN_FORCE,
+        evidence_refs: []
+      }
+
+      nil_claim = FmapDetermination.new(base_attrs.merge(claim_identifier: nil, encounter_identifier: "enc_nil_claim"))
+      assert_predicate nil_claim, :valid?
+
+      clm_claim = FmapDetermination.new(base_attrs.merge(claim_identifier: CLM_CLAIM, encounter_identifier: "enc_clm_claim"))
+      assert_predicate clm_claim, :valid?
+
+      clm_opaque = FmapDetermination.new(
+        base_attrs.merge(claim_identifier: CLM_OPAQUE_CLAIM, encounter_identifier: "enc_clm_opaque_claim")
+      )
+      assert_predicate clm_opaque, :valid?
+
+      token_claim = FmapDetermination.new(base_attrs.merge(claim_identifier: CLAIM_TOKEN, encounter_identifier: "enc_token_claim"))
+      assert_predicate token_claim, :valid?
+    end
+
+    test "issue 705 malformed CLM and non-token claim_identifier values are rejected without echoing the value" do
+      assert_opaque_token_implemented!
+      rule = FmapRule.find_by!(rule_key: "us-arpa-9815-uio-100")
+
+      (OpaqueTokenCheckMutants.malformed_clm_claim_identifiers + [ BAD_CLAIM ]).each do |bad_claim|
+        determination = FmapDetermination.new(
+          encounter_identifier: "enc_bad_clm_#{SecureRandom.hex(2)}",
+          date_of_service: Date.new(2022, 6, 1),
+          jurisdiction: "XA",
+          determined_at: Time.current,
+          category: rule.category,
+          rule_key: rule.rule_key,
+          fmap_percent: rule.fmap_percent,
+          rule_citations: [ rule.statutory_citation ],
+          aian_verified: true,
+          evidence_refs: [ AIAN_EVIDENCE ],
+          claim_identifier: bad_claim
+        )
+        refute determination.valid?
+        assert determination.errors[:claim_identifier].any?
+        determination.errors[:claim_identifier].each do |message|
+          refute_includes message, bad_claim
+        end
+      end
+    end
+
+    test "issue 705 database CHECK accepts CLM_<ULID> and clm_<Crockford> claim_identifier via update_columns" do
+      assert_opaque_token_implemented!
+      row = classified_determination
+      FmapDetermination.transaction(requires_new: true) do
+        row.update_columns(claim_identifier: CLM_CLAIM)
+      end
+      assert_equal CLM_CLAIM, row.reload.claim_identifier
+
+      FmapDetermination.transaction(requires_new: true) do
+        row.update_columns(claim_identifier: CLM_OPAQUE_CLAIM)
+      end
+      assert_equal CLM_OPAQUE_CLAIM, row.reload.claim_identifier
     end
 
     test "P6 unclaimed determination can be claimed and is immutable afterwards" do
@@ -267,13 +395,8 @@ module Corvid
     private
 
     def malformed_claim_anchor_tokens
-      body = VALID_ULID_BODY
-      [
-        "free text ab_#{body}",
-        "abcde_#{body}",
-        "AB_#{body}",
-        "ab_#{body.downcase}"
-      ]
+      OpaqueTokenCheckMutants.malformed_opaque_token_anchors(prefix: "cl") +
+        OpaqueTokenCheckMutants.malformed_clm_claim_identifiers
     end
 
     def assert_opaque_token_implemented!
