@@ -7,6 +7,10 @@ require "test_helper"
 class Corvid::AlternateResourceCheckFhirVerifyEligibilityTest < ActiveSupport::TestCase
   TENANT = "tnt_test"
   INQUIRY = Date.new(2026, 10, 15)
+  VERIFY_PERSISTED_KEYS = %w[
+    status checked_at inquiry_date_of_service policy_token
+    coverage_start coverage_end renewal_date
+  ].freeze
 
   test "verify! records enrolled when FHIR bundle selects applicable active medicaid coverage" do
     bundle = medicaid_selection_bundle(
@@ -37,7 +41,10 @@ class Corvid::AlternateResourceCheckFhirVerifyEligibilityTest < ActiveSupport::T
         check.reload
         assert_equal "enrolled", check.status
         assert_equal INQUIRY, check.inquiry_date_of_service
-        assert_equal "CURRENT PAYER 717", check.payer_name
+        assert_equal Date.new(2026, 1, 1), check.coverage_start
+        assert_equal Date.new(2026, 12, 31), check.coverage_end
+        assert_nil check.renewal_date
+        assert_not_nil check.checked_at
       end
     end
   end
@@ -62,14 +69,14 @@ class Corvid::AlternateResourceCheckFhirVerifyEligibilityTest < ActiveSupport::T
     with_tenant(TENANT) do
       travel_to Time.zone.local(2026, 10, 27, 9, 0, 0) do
         check = medicaid_check_for("pt_test_001")
-        before = check.attributes.slice("status", "checked_at", "inquiry_date_of_service", "payer_name")
+        before = check.attributes.slice(*VERIFY_PERSISTED_KEYS)
 
         adapter.stub(:fhir_search, bundle) do
           refute check.verify!(date_of_service: INQUIRY, adapter: adapter)
         end
 
         check.reload
-        assert_equal before, check.attributes.slice("status", "checked_at", "inquiry_date_of_service", "payer_name"),
+        assert_equal before, check.attributes.slice(*VERIFY_PERSISTED_KEYS),
                      "verify! must not persist when adapter answer is undetermined (K1b)"
       end
     end
@@ -110,14 +117,14 @@ class Corvid::AlternateResourceCheckFhirVerifyEligibilityTest < ActiveSupport::T
         check = referral.alternate_resource_checks.find_or_create_by!(resource_type: "medicaid") do |row|
           row.status = "checking"
         end
-        before = check.attributes.slice("status", "checked_at", "inquiry_date_of_service")
+        before = check.attributes.slice(*VERIFY_PERSISTED_KEYS)
 
         adapter.stub(:fhir_search, bundle) do
           refute check.verify!(date_of_service: inquiry, adapter: adapter)
         end
 
         check.reload
-        assert_equal before, check.attributes.slice("status", "checked_at", "inquiry_date_of_service"),
+        assert_equal before, check.attributes.slice(*VERIFY_PERSISTED_KEYS),
                      "verify! must not persist when adapter answer is undetermined (issue #712 B1)"
       end
     end
