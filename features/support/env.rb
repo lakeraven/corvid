@@ -5,10 +5,12 @@ ENV["RAILS_ENV"] = "test"
 # Load the dummy app (engine test host), not cucumber/rails which
 # expects config/environment at project root.
 require_relative "../../test/dummy/config/environment"
+require "active_support/testing/time_helpers"
 require "minitest/assertions"
 require_relative "alternate_resource_exhaustion_helper"
 
 World(Minitest::Assertions)
+World(ActiveSupport::Testing::TimeHelpers)
 
 def assertions
   @assertions ||= 0
@@ -52,6 +54,10 @@ def clean_corvid_tables!
   Corvid::Case.unscoped.delete_all
   Corvid::CareTeamMember.unscoped.delete_all
   Corvid::CareTeam.unscoped.delete_all
+end
+
+After do
+  travel_back
 end
 
 Before do

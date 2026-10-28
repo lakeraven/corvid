@@ -164,11 +164,13 @@ class Corvid::AlternateResourceServiceTest < ActiveSupport::TestCase
 
   def create_all_twelve_unavailable_checks(referral, status_overrides = {})
     Corvid::AlternateResourceCheck::RESOURCE_TYPES.each do |type|
-      Corvid::AlternateResourceCheck.create!(
+      status = status_overrides.fetch(type, "not_enrolled")
+      check = Corvid::AlternateResourceCheck.create!(
         prc_referral: referral,
         resource_type: type,
-        status: status_overrides.fetch(type, "not_enrolled")
+        status: status
       )
+      stamp_alternate_resource_check_current!(check) unless %w[not_checked checking].include?(status)
     end
   end
 

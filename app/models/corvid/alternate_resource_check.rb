@@ -105,17 +105,24 @@ module Corvid
       end
     end
 
-    # An absent determination never counts — PRC is payer of last resort (42 CFR 136.61).
-    def self.all_exhausted?(prc_referral)
-      checks = prc_referral.alternate_resource_checks
-      unavailable_types = checks.unavailable.distinct.pluck(:resource_type)
-
-      (RESOURCE_TYPES - unavailable_types).empty? &&
-        checks.where.not(status: UNAVAILABLE_STATUSES).none?
+    # PRC is payer of last resort (42 CFR 136.61). A row counts only when it
+    # is unavailable and current for the date of service. The default date is
+    # today — a referral has no service date — so an old or unstamped answer
+    # is not a determination.
+    def self.all_exhausted?(prc_referral, date_of_service: Date.current, as_of: Time.current)
+      by_type = indexed_checks(prc_referral)
+      RESOURCE_TYPES.all? { |type| unavailable_for?(by_type[type], date_of_service, as_of) }
     end
 
-    def self.any_pending?(prc_referral)
-      prc_referral.alternate_resource_checks.pending.exists?
+    # Without a date, pending is the status scope. With a date, a check that
+    # is not current for that date is pending too, including a stale
+    # not_enrolled row that could not be re-confirmed.
+    def self.any_pending?(prc_referral, date_of_service: nil, as_of: Time.current)
+      return prc_referral.alternate_resource_checks.pending.exists? if date_of_service.nil?
+
+      indexed_checks(prc_referral).each_value.any? do |check|
+        pending_for?(check, date_of_service, as_of)
+      end
     end
 
     def self.pending_resources(prc_referral)
@@ -169,14 +176,17 @@ module Corvid
     # :date_of_service is not an answer. inquiry_date_of_service stores the
     # asked date. When nothing was asked, it stores the adapter's exact
     # Date, else nil.
-    def verify!(date_of_service: nil)
+    # Per ADR 0005, services inject adapter: and pass it through. Model
+    # callers still default to Corvid.adapter; decoupling those paths
+    # from the global is #264.
+    def verify!(date_of_service: nil, adapter: Corvid.adapter)
       reject_non_date_inquiry!(date_of_service)
 
       patient_identifier = prc_referral.case&.patient_identifier
       return false unless patient_identifier
 
       asked = inquiry_date_for_adapter(date_of_service)
-      result = eligibility_result(patient_identifier, asked)
+      result = eligibility_result(adapter, patient_identifier, asked)
       # An unreadable answer is not a determination (42 CFR 136.61).
       # coverage_start, coverage_end, and renewal_date must be an exact
       # Date or nil. Any other type updates nothing. Absent keys store nil.
@@ -439,11 +449,11 @@ module Corvid
 
     # The keyword is omitted when the asked date is not a Date so existing
     # adapters that lack the keyword still answer.
-    def eligibility_result(patient_identifier, inquiry)
+    def eligibility_result(adapter, patient_identifier, inquiry)
       if inquiry.nil?
-        Corvid.adapter.verify_eligibility(patient_identifier, resource_type)
+        adapter.verify_eligibility(patient_identifier, resource_type)
       else
-        Corvid.adapter.verify_eligibility(patient_identifier, resource_type, date_of_service: inquiry)
+        adapter.verify_eligibility(patient_identifier, resource_type, date_of_service: inquiry)
       end
     end
 
@@ -639,6 +649,28 @@ module Corvid
       return if eligibility_group.nil? == eligibility_group_set_at.nil?
 
       errors.add(:eligibility_group_set_at, "must be present exactly when eligibility group is present")
+    end
+
+    class << self
+      private
+
+      def indexed_checks(prc_referral)
+        prc_referral.alternate_resource_checks.reload.index_by(&:resource_type)
+      end
+
+      # current_for? is the only freshness test: the configured per-type
+      # max age and the coverage period.
+      def unavailable_for?(check, date_of_service, as_of)
+        return false unless check&.exhausted_or_unavailable?
+
+        check.current_for?(date_of_service, as_of: as_of)
+      end
+
+      def pending_for?(check, date_of_service, as_of)
+        return true if check.not_checked? || check.checking? || check.pending_enrollment?
+
+        !check.current_for?(date_of_service, as_of: as_of)
+      end
     end
   end
 end

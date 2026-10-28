@@ -23,11 +23,12 @@ end
 
 Given("the following alternate resource checks exist:") do |table|
   table.hashes.each do |row|
-    Corvid::AlternateResourceCheck.create!(
+    check = Corvid::AlternateResourceCheck.create!(
       prc_referral: @referral,
       resource_type: row["resource_type"],
       status: row["status"]
     )
+    stamp_alternate_resource_check_current!(check) unless %w[not_checked checking].include?(row["status"])
   end
 end
 
