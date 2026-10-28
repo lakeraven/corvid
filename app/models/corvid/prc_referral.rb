@@ -48,6 +48,10 @@ module Corvid
     # MedicalPriorityService writes only this. Null until a priority is assigned.
     # Same set as corvid_prc_referrals_priority_system_check (ADR 0002).
     PRIORITY_SYSTEMS = %w[corvid_v1].freeze
+
+    # Optional "$", plain digits or comma-grouped thousands, optional cents.
+    COMMITTEE_COST_FORMAT = /\A\$?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d{1,2})?\z/
+    COMMITTEE_PRIORITY_FORMAT = /\A\d+\z/
     validates :priority_system, inclusion: { in: PRIORITY_SYSTEMS }, allow_nil: true
 
     # Referrals for a given patient. Joins the parent Case since the
@@ -217,17 +221,11 @@ module Corvid
       [ "referral: #{status}" ]
     end
 
+    # EHR cost when it is not nil, otherwise the local column. An unknown
+    # cost or priority requires committee. Both costs absent does not.
+    # A known priority requires review at 3+. Nil priority does too.
     def requires_committee?
-      # Money's `>=` is currency-aware (raises across mismatched currencies);
-      # the threshold is a numeric (USD-equivalent dollar amount) by
-      # convention, so coerce Money → BigDecimal-of-dollars for comparison.
-      cost = service_request&.estimated_cost || estimated_cost
-      cost_dollars = cost.respond_to?(:to_d) ? cost.to_d : cost
-      # Unknown priority fails closed. A known priority requires review at 3+.
-      priority = effective_medical_priority
-      (cost_dollars.present? && cost_dollars >= committee_threshold) ||
-        priority.nil? || priority >= 3 ||
-        flagged_for_review?
+      committee_cost_requires_review? || committee_priority_requires_review? || flagged_for_review?
     end
 
     def committee_threshold
@@ -293,12 +291,13 @@ module Corvid
       medical_priority_cached_at < CACHE_STALENESS_THRESHOLD_HOURS.hours.ago
     end
 
-    # Priority for a decision. The service request's level when it has one,
-    # otherwise the local column. This is a read: it does not refresh the
-    # cache the way cached_medical_priority does.
+    # Priority for a decision. The service request's level when it is
+    # not nil, otherwise the local column. Blank and other present
+    # values are kept. This is a read: it does not refresh the cache
+    # the way cached_medical_priority does.
     def effective_medical_priority
       rcis_priority = service_request&.medical_priority_level
-      rcis_priority.present? ? rcis_priority : medical_priority
+      rcis_priority.nil? ? medical_priority : rcis_priority
     end
 
     def cached_medical_priority
@@ -678,6 +677,62 @@ module Corvid
         medical_priority: priority_value,
         medical_priority_cached_at: Time.current
       )
+    end
+
+    # Money -> amount. Integer and BigDecimal as-is. Float via
+    # BigDecimal(float.to_s). Anything else present is unknown (ADR 0004).
+    def committee_cost_requires_review?
+      dollars = parse_committee_cost(committee_cost_value)
+      return false if dollars.nil?
+      return true if dollars == :unknown
+
+      dollars >= committee_threshold
+    end
+
+    def committee_cost_value
+      ehr_cost = service_request&.estimated_cost
+      ehr_cost.nil? ? estimated_cost : ehr_cost
+    end
+
+    def parse_committee_cost(value)
+      return nil if value.nil?
+      return value.amount if value.is_a?(Money)
+      return value if value.is_a?(Integer) || value.is_a?(BigDecimal)
+      return BigDecimal(value.to_s) if value.is_a?(Float)
+      return parse_committee_cost_string(value) if value.is_a?(String)
+
+      :unknown
+    end
+
+    def parse_committee_cost_string(value)
+      stripped = value.strip
+      return :unknown unless stripped.match?(COMMITTEE_COST_FORMAT)
+
+      BigDecimal(stripped.delete(",").delete_prefix("$"))
+    end
+
+    # Integer as-is. ASCII digits, after strip, become an Integer.
+    # Any other present value is unknown. This does not raise.
+    def committee_priority_requires_review?
+      priority = parse_committee_priority(effective_medical_priority)
+      return true unless priority.is_a?(Integer)
+
+      priority >= 3
+    end
+
+    def parse_committee_priority(value)
+      return nil if value.nil?
+      return value if value.is_a?(Integer)
+      return parse_priority_digits(value) if value.is_a?(String)
+
+      :unknown
+    end
+
+    def parse_priority_digits(value)
+      digits = value.strip
+      return :unknown unless digits.match?(COMMITTEE_PRIORITY_FORMAT)
+
+      digits.to_i
     end
 
     def refresh_authorization_number_cache!(auth_number_value)

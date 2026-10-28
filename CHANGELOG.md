@@ -83,6 +83,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   nullable column and cannot restore values. (#702)
 
 ### Changed
+- Committee review parses estimated cost and medical priority strictly.
+  An unknown cost or an unknown priority requires committee. Money
+  contributes its amount; Integer and BigDecimal are compared as-is;
+  Float uses `BigDecimal(float.to_s)`. A cost string must be an optional
+  `$`, plain or comma-grouped digits, and optional cents. A priority
+  string must be ASCII digits. Recording the Medicaid eligibility group
+  from `AlternateResourceCheck#verify!` runs in its own savepoint, so a
+  database error rolls back only that savepoint and does not abort the
+  caller's transaction. (#675)
 - Postgres CHECK constraints and foreign keys now bound columns that
   accepted any string. Value lists: `corvid_prc_referrals.priority_system`
   (`corvid_v1`), `corvid_prc_eligibility_decisions.provider_confidence`

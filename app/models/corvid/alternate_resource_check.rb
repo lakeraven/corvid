@@ -259,18 +259,23 @@ module Corvid
     # real group, asks record! to replace the pin. The pin is that
     # group, source, and set_at. A later write changes set_at, so the
     # locked comparison leaves the stored group. A failed inference
-    # leaves the previous group. A staff entry stays.
+    # leaves the previous group. A staff entry stays. Recording runs
+    # in its own savepoint. A database error rolls back only that
+    # savepoint and is logged as the fixed warning, with no exception
+    # text, so the caller's transaction stays usable.
     def record_medicaid_eligibility_group(adapter)
       return unless resource_type == "medicaid"
 
-      pinned = pinned_stated_group
-      coverage = medicaid_group_coverage(adapter)
-      MedicaidEligibilityGroupService.new(adapter: adapter).record!(
-        self,
-        coverage: coverage,
-        date_of_service: medicaid_group_date_of_service,
-        **stated_group_supersede(coverage, pinned)
-      )
+      transaction(requires_new: true) do
+        pinned = pinned_stated_group
+        coverage = medicaid_group_coverage(adapter)
+        MedicaidEligibilityGroupService.new(adapter: adapter).record!(
+          self,
+          coverage: coverage,
+          date_of_service: medicaid_group_date_of_service,
+          **stated_group_supersede(coverage, pinned)
+        )
+      end
     rescue StandardError
       Rails.logger.warn(VERIFY_MEDICAID_ELIGIBILITY_GROUP_WARNING)
     end
