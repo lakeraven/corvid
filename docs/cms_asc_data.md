@@ -4,8 +4,11 @@ The PRC overpayment analyzer routes outpatient (APC-mapped) claims to
 **ASC pricing** (lower CF than OPPS) when the obligation's vendor is
 on the CMS Ambulatory Surgical Center registry on the service date.
 That lookup receives the facility's CMS wage area, resolved once for
-the obligation and shared with OPPS if ASC pricing misses (#372).
-See [ZIP to CBSA crosswalk](cms_ipps_data.md#zip-to-cbsa-crosswalk-371).
+the obligation from the ZIP→CBSA crosswalk and shared with OPPS if
+ASC pricing misses (#372). Notes name that crosswalk release. A
+release label that starts with `stub` keeps the ASC result a stub
+estimate even when the ASC rows are real CMS data. See
+[ZIP to CBSA crosswalk](cms_ipps_data.md#zip-to-cbsa-crosswalk-371).
 
 This doc covers the ASC **facility registry** sourcing. The ASC APC
 weight + conversion factor data is a separate slice — Addendum AA

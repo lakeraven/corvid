@@ -100,14 +100,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 - Institutional IPPS, OPPS, and ASC pricing uses the facility's CMS
-  wage area (#372). `PrcOverpaymentAnalyzer` resolves it once per
-  obligation with `PrcFacilityDictionary.cbsa_for` (facility ZIP and
-  service date) and passes that same code into the IPPS, OPPS, ASC,
-  and stub lookups. Once a ZIP-to-CBSA crosswalk is imported, those
-  rates follow that area's wage index. Pricing still falls back to
-  NATIONAL when the resolved wage area has no wage-index row.
-  `Result#wage_area` and the notes record the wage area: the resolved
-  code, or NATIONAL when the crosswalk has no row. Professional PFS
+  wage area (#372). `PrcOverpaymentAnalyzer` resolves the
+  `ZipCbsaCrosswalk` row once per institutional obligation with
+  `PrcFacilityDictionary.crosswalk_for` (facility ZIP and service
+  date) and passes that row's CBSA into the IPPS, OPPS, ASC, and stub
+  lookups. `cbsa_for` is `crosswalk_for(...)&.cbsa`. `normalized_zip`
+  and `fiscal_year_for` are the shared ZIP and fiscal-year rules.
+  Once a ZIP-to-CBSA crosswalk is imported, those rates follow that
+  area's wage index. Pricing still falls back to NATIONAL when the
+  resolved wage area has no wage-index row. `Result#wage_area` is the
+  resolved code, or nil when the ZIP is missing, malformed, or that
+  fiscal year has no row. Institutional notes end with `Wage area:
+  <code> (crosswalk release <label>).` when the row has a release
+  label, or `Wage area: <code>.` when that label is blank. A missing
+  or malformed ZIP (nil, non-String, or not `#####` / `#####-####`)
+  ends with `Wage area: NATIONAL (facility ZIP missing or
+  malformed).` A well-formed ZIP with no row ends with `Wage area:
+  NATIONAL (no crosswalk row for the facility ZIP in FY <year>).`
+  The sentence stays last, after any CAH multiplier text, and never
+  includes the facility ZIP. A crosswalk `release_label` that starts
+  with `stub` marks the institutional result `:stub` /
+  `:stub_estimate` even when the rate rows are real CMS data;
+  `rate_source_release` stays the rate row's label. Professional PFS
   pricing still uses the facility's PFS locality, and professional
   notes are unchanged. A missing crosswalk row for the fiscal year, a
   missing or malformed ZIP, or a ZIP that is not a String leaves

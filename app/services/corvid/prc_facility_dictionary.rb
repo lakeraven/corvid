@@ -7,10 +7,12 @@ module Corvid
   # Hosts can register custom mappings from an initializer to cover their
   # local PRC facility codes.
   #
-  # `.cbsa_for` resolves a facility ZIP to a CMS wage area from
-  # ZipCbsaCrosswalk, one indexed query per call. With no row for that
-  # fiscal year it returns nil, and institutional pricing stays on the
-  # NATIONAL wage index.
+  # `.crosswalk_for` loads the ZipCbsaCrosswalk row for a facility ZIP
+  # in the federal fiscal year of the service date, one indexed query
+  # per call. `.cbsa_for` returns that row's wage area. With no row for
+  # that fiscal year either method returns nil, and institutional
+  # pricing stays on the NATIONAL wage index. `.normalized_zip` and
+  # `.fiscal_year_for` are the shared ZIP and fiscal-year rules.
   module PrcFacilityDictionary
     Entry = Struct.new(:code, :name, :city, :state, :zip, :locality, keyword_init: true)
 
@@ -46,35 +48,47 @@ module Corvid
         ensure_loaded
       end
 
-      # CMS wage area for a facility ZIP in the federal fiscal year of
-      # `on` (FY starts October 1; omitted `on` is Date.current).
+      # ZipCbsaCrosswalk row for a facility ZIP in the federal fiscal
+      # year of `on` (FY starts October 1; omitted `on` is Date.current).
       # Accepts "#####" or "#####-####". Anything else, or a year with
-      # no crosswalk row, returns nil. Each call is one indexed query.
-      def cbsa_for(zip:, on: nil)
+      # no row, returns nil. Each call is one indexed query; nothing
+      # is cached.
+      def crosswalk_for(zip:, on: nil)
         normalized = normalized_zip(zip)
         return if normalized.nil?
 
-        year = fiscal_year_for(service_date(on))
-        ZipCbsaCrosswalk.find_by(fiscal_year: year, zip: normalized)&.cbsa
+        ZipCbsaCrosswalk.find_by(
+          fiscal_year: fiscal_year_for(service_date(on)),
+          zip: normalized
+        )
       end
 
-      private
+      # CMS wage area for a facility ZIP. Same ZIP and fiscal-year rules
+      # as crosswalk_for; the wage area is that row's cbsa.
+      def cbsa_for(zip:, on: nil)
+        crosswalk_for(zip: zip, on: on)&.cbsa
+      end
 
+      # Five-digit ZIP when `zip` is "#####" or "#####-####"; otherwise
+      # nil. Non-strings (nil, integers) are nil. Does not query.
       def normalized_zip(zip)
         return unless zip.is_a?(String) && zip.match?(/\A[0-9]{5}(?:-[0-9]{4})?\z/)
 
         zip[0, 5]
       end
 
+      # Federal fiscal year of a Date. October 1 starts the next FY.
+      def fiscal_year_for(date)
+        date.month >= 10 ? date.year + 1 : date.year
+      end
+
+      private
+
       def service_date(on)
         return Date.current if on.nil?
         return on if on.is_a?(Date)
 
         raise ArgumentError, "on must be a Date"
-      end
-
-      def fiscal_year_for(date)
-        date.month >= 10 ? date.year + 1 : date.year
       end
 
       def ensure_loaded

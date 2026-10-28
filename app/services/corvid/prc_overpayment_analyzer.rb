@@ -42,12 +42,21 @@ module Corvid
   #     loaded for the year)
   #   - Result#wage_area is the CMS wage area for an institutional
   #     result (IPPS, OPPS, ASC): the crosswalk code, or nil when the
-  #     crosswalk has no row (priced as NATIONAL). Professional PFS,
+  #     facility ZIP is missing or malformed or that fiscal year has
+  #     no crosswalk row (priced as NATIONAL). Professional PFS,
   #     unmapped, and missing-date results leave it nil. Institutional
-  #     notes end with "Wage area: <code>." or "Wage area: NATIONAL
-  #     (no crosswalk row for the facility ZIP)." Notes do not include
+  #     notes end with "Wage area: <code> (crosswalk release <label>)."
+  #     when the row has a release label, or "Wage area: <code>." when
+  #     that label is blank. A missing or malformed ZIP ends with
+  #     "Wage area: NATIONAL (facility ZIP missing or malformed)." A
+  #     well-formed ZIP with no row ends with "Wage area: NATIONAL
+  #     (no crosswalk row for the facility ZIP in FY <year>)." The
+  #     sentence stays last, after any CAH text. Notes do not include
   #     the facility ZIP. A resolved area with no wage-index row still
-  #     prices on the NATIONAL wage index.
+  #     prices on the NATIONAL wage index. A crosswalk release_label
+  #     that starts with "stub" marks the institutional result :stub
+  #     and :stub_estimate even when the rate rows are real CMS data.
+  #     rate_source_release stays the rate row's label.
   #   - Summary exposes total_overpayment_known (sum where confidence is
   #     :clear) and total_overpayment_stub_estimate (sum where confidence
   #     is :stub_estimate). total_medicare_equivalent intentionally
@@ -63,8 +72,9 @@ module Corvid
     # to a specific CMS release. Nil for in-code stub fallback or
     # exception paths (no source release to attribute).
     # wage_area is the crosswalk code for institutional results, or
-    # nil when that crosswalk has no row. Nil for professional,
-    # unmapped, and missing-date results. It is not a PFS locality.
+    # nil when the ZIP is missing, malformed, or that fiscal year has
+    # no crosswalk row. Nil for professional, unmapped, and
+    # missing-date results. It is not a PFS locality.
     Result = Struct.new(
       :obligation_id, :patient_dfn, :vendor_id,
       :procedure_code, :hcpcs, :drg, :apc, :procedure_description,
@@ -119,16 +129,19 @@ module Corvid
         return unmapped_procedure(obligation, facility) unless proc_info
         return unmapped_facility(obligation, proc_info) unless facility
 
+        # One crosswalk row for the whole institutional obligation.
+        # Professional pricing does not query the crosswalk.
+        crosswalk = institutional_wage_crosswalk(proc_info, facility, obligation)
         result = if proc_info.drg
-          analyze_inpatient(obligation, proc_info, facility)
+          analyze_inpatient(obligation, proc_info, facility, crosswalk)
         elsif proc_info.apc
-          analyze_outpatient(obligation, proc_info, facility)
+          analyze_outpatient(obligation, proc_info, facility, crosswalk)
         else
           analyze_professional(obligation, proc_info, facility)
         end
 
         # CAH edits the note first so the wage-area sentence stays last.
-        append_wage_area_note(apply_cah_adjustment(result))
+        append_wage_area_note(apply_cah_adjustment(result), crosswalk)
       end
 
       private
@@ -187,10 +200,10 @@ module Corvid
         )
       end
 
-      def analyze_inpatient(obligation, proc_info, facility)
+      def analyze_inpatient(obligation, proc_info, facility, crosswalk)
         # Resolved once per obligation, then reused for the IPPS lookup
         # and the stub fallback.
-        area = wage_area(facility, obligation.service_date)
+        area = wage_area(crosswalk)
 
         # IPPS lookup (#276): real CMS data first; fall back to in-code
         # stub provider when no row is loaded. Recovery confidence keys
@@ -198,7 +211,9 @@ module Corvid
         # prefix) marks :stub_estimate so seed canonical CSVs we ship
         # in the release don't get misrepresented as recoverable-now.
         # Real CMS Final Rule labels (e.g., "cms_fy2026_final_rule")
-        # mark :clear / :real.
+        # mark :clear / :real. A crosswalk release_label with that same
+        # "stub" prefix downgrades the result even when this lookup is
+        # real CMS data.
         lookup = Corvid::IppsRateProvider.lookup_for(
           drg_code: proc_info.drg,
           locality: area,
@@ -206,7 +221,11 @@ module Corvid
         )
 
         if lookup
-          stub_derived = lookup.release_label.to_s.start_with?("stub")
+          # A stub-labelled crosswalk downgrades a real rate row the
+          # same way a stub-labelled rate row does. The pricing note
+          # and rate_source_release still describe the rate row.
+          provider_stub = stub_release?(lookup.release_label)
+          stub_derived = provider_stub || stub_release?(crosswalk&.release_label)
           Result.new(
             base_fields(obligation, proc_info, facility).merge(
               medicare_equivalent: lookup.rate,
@@ -216,7 +235,7 @@ module Corvid
               recovery_confidence: stub_derived ? :stub_estimate : :clear,
               rate_source_release: lookup.release_label.presence,
               wage_area: area,
-              notes: stub_derived ?
+              notes: provider_stub ?
                 "Inpatient hospital claim (DRG #{proc_info.drg}). Priced via " \
                 "stub-derived IPPS canonical CSV (release=#{lookup.release_label}); " \
                 "replace with real CMS Final Rule data as it's normalized." :
@@ -260,14 +279,16 @@ module Corvid
         )
       end
 
-      def analyze_outpatient(obligation, proc_info, facility)
+      def analyze_outpatient(obligation, proc_info, facility, crosswalk)
         # Resolved once per obligation, then reused for ASC, OPPS, and
         # the OPPS stub.
-        area = wage_area(facility, obligation.service_date)
+        area = wage_area(crosswalk)
 
         # OPPS lookup (#277): real CMS data first; fall back to in-code
         # stub provider when no row is loaded. Mirrors the IPPS analyze_
-        # inpatient pattern — release_label drives confidence label.
+        # inpatient pattern — the rate row's release_label drives the
+        # pricing note, and a "stub" prefix on that label or on the
+        # crosswalk release downgrades confidence.
         #
         # ASC routing (#278): when the obligation's vendor is in the
         # corvid_asc_facilities registry on the service date, route to
@@ -287,7 +308,8 @@ module Corvid
         ) : nil
 
         if asc_lookup
-          stub_derived = asc_lookup.release_label.to_s.start_with?("stub")
+          provider_stub = stub_release?(asc_lookup.release_label)
+          stub_derived = provider_stub || stub_release?(crosswalk&.release_label)
           return Result.new(
             base_fields(obligation, proc_info, facility).merge(
               medicare_equivalent: asc_lookup.rate,
@@ -297,7 +319,7 @@ module Corvid
               recovery_confidence: stub_derived ? :stub_estimate : :clear,
               rate_source_release: asc_lookup.release_label.presence,
               wage_area: area,
-              notes: stub_derived ?
+              notes: provider_stub ?
                 "Ambulatory surgical center (HCPCS #{proc_info.hcpcs}). Priced via " \
                 "stub-derived ASC canonical CSV (release=#{asc_lookup.release_label})." :
                 "Ambulatory surgical center (HCPCS #{proc_info.hcpcs}). " \
@@ -313,7 +335,8 @@ module Corvid
         )
 
         if lookup
-          stub_derived = lookup.release_label.to_s.start_with?("stub")
+          provider_stub = stub_release?(lookup.release_label)
+          stub_derived = provider_stub || stub_release?(crosswalk&.release_label)
           Result.new(
             base_fields(obligation, proc_info, facility).merge(
               medicare_equivalent: lookup.rate,
@@ -323,7 +346,7 @@ module Corvid
               recovery_confidence: stub_derived ? :stub_estimate : :clear,
               rate_source_release: lookup.release_label.presence,
               wage_area: area,
-              notes: stub_derived ?
+              notes: provider_stub ?
                 "Hospital outpatient (APC #{proc_info.apc}). Priced via " \
                 "stub-derived OPPS canonical CSV (release=#{lookup.release_label})." :
                 "Hospital outpatient (APC #{proc_info.apc}). " \
@@ -400,46 +423,87 @@ module Corvid
         )
       end
 
+      # One ZipCbsaCrosswalk read per institutional obligation.
+      # Professional obligations do not query the crosswalk. Nil is a
+      # missing or malformed ZIP, or no row for that fiscal year.
+      def institutional_wage_crosswalk(proc_info, facility, obligation)
+        return unless proc_info.drg || proc_info.apc
+
+        Corvid::PrcFacilityDictionary.crosswalk_for(
+          zip: facility.zip, on: obligation.service_date
+        )
+      end
+
       # CMS wage area for one institutional obligation: the 5-digit
-      # CBSA or 2-digit rural-state code from the ZIP→CBSA crosswalk
-      # for the service date. analyze_inpatient and analyze_outpatient
-      # call this once, before any rate lookup, and pass that value
-      # into every IPPS, OPPS, ASC, and stub lookup on the obligation.
+      # CBSA or 2-digit rural-state code on the crosswalk row resolved
+      # once for the service date. analyze_obligation loads that row
+      # before any rate lookup, and analyze_inpatient /
+      # analyze_outpatient pass this code into every IPPS, OPPS, ASC,
+      # and stub lookup on the obligation.
       #
       # PFS locality codes are a separate numbering system and overlap
       # these wage areas (PFS "02" is Seattle; wage area "02" is rural
-      # Alaska), so this returns PrcFacilityDictionary.cbsa_for and
-      # never facility.locality. It does not check that the ZIP is a
-      # String. cbsa_for returns nil for a non-String ZIP, a malformed
-      # ZIP, a missing ZIP, or a fiscal year with no crosswalk row.
-      # Nil is passed through; the rate providers treat a nil locality
-      # as NATIONAL. A resolved code with no wage-index row still
-      # prices on the NATIONAL wage index inside those providers.
-      # Result#wage_area keeps the resolved code, or nil for that
-      # crosswalk miss, and institutional notes record the same fact
-      # without the facility ZIP.
-      def wage_area(facility, service_date)
-        Corvid::PrcFacilityDictionary.cbsa_for(zip: facility.zip, on: service_date)
+      # Alaska), so this returns the crosswalk row's cbsa and never
+      # facility.locality. crosswalk_for returns nil for a non-String
+      # ZIP, a malformed ZIP, a missing ZIP, or a fiscal year with no
+      # crosswalk row. Nil is passed through; the rate providers treat
+      # a nil locality as NATIONAL. A resolved code with no wage-index
+      # row still prices on the NATIONAL wage index inside those
+      # providers. Result#wage_area keeps the resolved code, or nil
+      # for that miss.
+      #
+      # Institutional notes stay last, after any CAH suffix, and never
+      # include the facility ZIP. A row with a release label ends with
+      # "Wage area: <code> (crosswalk release <label>)." A blank label
+      # ends with "Wage area: <code>." A nil, non-String, or malformed
+      # ZIP ends with "Wage area: NATIONAL (facility ZIP missing or
+      # malformed)." A well-formed ZIP with no row ends with
+      # "Wage area: NATIONAL (no crosswalk row for the facility ZIP in
+      # FY <year>)." Those two sentences use
+      # PrcFacilityDictionary.normalized_zip and fiscal_year_for.
+      # A crosswalk release_label that starts with "stub" marks the
+      # institutional result rate_source :stub and recovery_confidence
+      # :stub_estimate even when the rate rows are real CMS data.
+      # rate_source_release stays the rate row's label.
+      def wage_area(crosswalk)
+        crosswalk&.cbsa
+      end
+
+      def stub_release?(label)
+        label.to_s.start_with?("stub")
       end
 
       # Institutional notes end with the wage-area sentence. Called
       # after the CAH suffix so that sentence stays last. Professional
-      # notes are left alone. The sentence names the code or NATIONAL;
-      # it never includes the facility ZIP.
-      def append_wage_area_note(result)
+      # notes are left alone. The sentence never includes the facility
+      # ZIP; normalized_zip is only the well-formed check.
+      def append_wage_area_note(result, crosswalk)
         return result unless %i[ipps opps asc].include?(result.payment_system)
 
-        sentence = wage_area_note(result.wage_area)
+        sentence = wage_area_note(result, crosswalk)
         existing = result.notes.to_s
         result.notes = existing.empty? ? sentence : "#{existing} #{sentence}"
         result
       end
 
-      def wage_area_note(area)
-        if area.nil?
-          "Wage area: NATIONAL (no crosswalk row for the facility ZIP)."
+      def wage_area_note(result, crosswalk)
+        area = result.wage_area
+        return national_wage_area_note(result) if area.nil?
+
+        label = crosswalk&.release_label.presence
+        if label
+          "Wage area: #{area} (crosswalk release #{label})."
         else
           "Wage area: #{area}."
+        end
+      end
+
+      def national_wage_area_note(result)
+        if Corvid::PrcFacilityDictionary.normalized_zip(result.facility_zip).nil?
+          "Wage area: NATIONAL (facility ZIP missing or malformed)."
+        else
+          year = Corvid::PrcFacilityDictionary.fiscal_year_for(result.service_date)
+          "Wage area: NATIONAL (no crosswalk row for the facility ZIP in FY #{year})."
         end
       end
 
