@@ -40,6 +40,14 @@ module Corvid
   #   - Result#rate_source values: :real (PFS / IPPS / OPPS with real
   #     CMS data) or :stub (IPPS / OPPS fallback when real data isn't
   #     loaded for the year)
+  #   - Result#wage_area is the CMS wage area for an institutional
+  #     result (IPPS, OPPS, ASC): the crosswalk code, or nil when the
+  #     crosswalk has no row (priced as NATIONAL). Professional PFS,
+  #     unmapped, and missing-date results leave it nil. Institutional
+  #     notes end with "Wage area: <code>." or "Wage area: NATIONAL
+  #     (no crosswalk row for the facility ZIP)." Notes do not include
+  #     the facility ZIP. A resolved area with no wage-index row still
+  #     prices on the NATIONAL wage index.
   #   - Summary exposes total_overpayment_known (sum where confidence is
   #     :clear) and total_overpayment_stub_estimate (sum where confidence
   #     is :stub_estimate). total_medicare_equivalent intentionally
@@ -54,6 +62,9 @@ module Corvid
     # packet's methodology.json can attribute each recoverable dollar
     # to a specific CMS release. Nil for in-code stub fallback or
     # exception paths (no source release to attribute).
+    # wage_area is the crosswalk code for institutional results, or
+    # nil when that crosswalk has no row. Nil for professional,
+    # unmapped, and missing-date results. It is not a PFS locality.
     Result = Struct.new(
       :obligation_id, :patient_dfn, :vendor_id,
       :procedure_code, :hcpcs, :drg, :apc, :procedure_description,
@@ -62,6 +73,7 @@ module Corvid
       :medicare_equivalent, :overpayment,
       :payment_system, :rate_source, :recovery_confidence,
       :rate_source_release,
+      :wage_area,
       :notes,
       keyword_init: true
     )
@@ -115,7 +127,8 @@ module Corvid
           analyze_professional(obligation, proc_info, facility)
         end
 
-        apply_cah_adjustment(result)
+        # CAH edits the note first so the wage-area sentence stays last.
+        append_wage_area_note(apply_cah_adjustment(result))
       end
 
       private
@@ -175,6 +188,10 @@ module Corvid
       end
 
       def analyze_inpatient(obligation, proc_info, facility)
+        # Resolved once per obligation, then reused for the IPPS lookup
+        # and the stub fallback.
+        area = wage_area(facility, obligation.service_date)
+
         # IPPS lookup (#276): real CMS data first; fall back to in-code
         # stub provider when no row is loaded. Recovery confidence keys
         # off the loaded row's release_label — "stub_v1" (or any "stub_*"
@@ -184,7 +201,7 @@ module Corvid
         # mark :clear / :real.
         lookup = Corvid::IppsRateProvider.lookup_for(
           drg_code: proc_info.drg,
-          locality: wage_area(facility, obligation.service_date),
+          locality: area,
           date: obligation.service_date
         )
 
@@ -198,6 +215,7 @@ module Corvid
               rate_source: stub_derived ? :stub : :real,
               recovery_confidence: stub_derived ? :stub_estimate : :clear,
               rate_source_release: lookup.release_label.presence,
+              wage_area: area,
               notes: stub_derived ?
                 "Inpatient hospital claim (DRG #{proc_info.drg}). Priced via " \
                 "stub-derived IPPS canonical CSV (release=#{lookup.release_label}); " \
@@ -209,7 +227,7 @@ module Corvid
         else
           stub_rate = Corvid::IppsStubRateProvider.rate_for(
             drg_code: proc_info.drg,
-            locality: wage_area(facility, obligation.service_date),
+            locality: area,
             date: obligation.service_date
           )
           Result.new(
@@ -219,6 +237,7 @@ module Corvid
               payment_system: :ipps,
               rate_source: stub_rate ? :stub : nil,
               recovery_confidence: stub_rate ? :stub_estimate : :no_rate_for_year,
+              wage_area: area,
               notes: "Inpatient hospital claim (DRG #{proc_info.drg}). Real IPPS " \
                      "rate unavailable for this (year, DRG, locality); using stub " \
                      "national-average estimate."
@@ -242,6 +261,10 @@ module Corvid
       end
 
       def analyze_outpatient(obligation, proc_info, facility)
+        # Resolved once per obligation, then reused for ASC, OPPS, and
+        # the OPPS stub.
+        area = wage_area(facility, obligation.service_date)
+
         # OPPS lookup (#277): real CMS data first; fall back to in-code
         # stub provider when no row is loaded. Mirrors the IPPS analyze_
         # inpatient pattern — release_label drives confidence label.
@@ -259,7 +282,7 @@ module Corvid
         )
         asc_lookup = is_asc ? Corvid::AscRateProvider.lookup_for(
           hcpcs_code: proc_info.hcpcs,
-          locality: wage_area(facility, obligation.service_date),
+          locality: area,
           date: obligation.service_date
         ) : nil
 
@@ -273,6 +296,7 @@ module Corvid
               rate_source: stub_derived ? :stub : :real,
               recovery_confidence: stub_derived ? :stub_estimate : :clear,
               rate_source_release: asc_lookup.release_label.presence,
+              wage_area: area,
               notes: stub_derived ?
                 "Ambulatory surgical center (HCPCS #{proc_info.hcpcs}). Priced via " \
                 "stub-derived ASC canonical CSV (release=#{asc_lookup.release_label})." :
@@ -284,7 +308,7 @@ module Corvid
 
         lookup = Corvid::OppsRateProvider.lookup_for(
           apc_code: proc_info.apc,
-          locality: wage_area(facility, obligation.service_date),
+          locality: area,
           date: obligation.service_date
         )
 
@@ -298,6 +322,7 @@ module Corvid
               rate_source: stub_derived ? :stub : :real,
               recovery_confidence: stub_derived ? :stub_estimate : :clear,
               rate_source_release: lookup.release_label.presence,
+              wage_area: area,
               notes: stub_derived ?
                 "Hospital outpatient (APC #{proc_info.apc}). Priced via " \
                 "stub-derived OPPS canonical CSV (release=#{lookup.release_label})." :
@@ -308,7 +333,7 @@ module Corvid
         else
           stub_rate = Corvid::OppsStubRateProvider.rate_for(
             apc_code: proc_info.apc,
-            locality: wage_area(facility, obligation.service_date),
+            locality: area,
             date: obligation.service_date
           )
           Result.new(
@@ -318,6 +343,7 @@ module Corvid
               payment_system: :opps,
               rate_source: stub_rate ? :stub : nil,
               recovery_confidence: stub_rate ? :stub_estimate : :no_rate_for_year,
+              wage_area: area,
               notes: "Hospital outpatient (APC #{proc_info.apc}). Real OPPS " \
                      "rate unavailable for this (year, APC, locality); using " \
                      "stub national-average estimate."
@@ -374,20 +400,47 @@ module Corvid
         )
       end
 
-      # CMS wage area for IPPS, OPPS, and ASC: the 5-digit CBSA or
-      # 2-digit rural-state code from the ZIP→CBSA crosswalk for the
-      # obligation's service date. PFS locality codes are a separate
-      # numbering system and overlap those wage areas (PFS "02" is
-      # Seattle; wage area "02" is rural Alaska), so this returns
-      # PrcFacilityDictionary.cbsa_for and never facility.locality.
-      # A nil result — no crosswalk row for that fiscal year, no ZIP,
-      # a malformed ZIP, or a ZIP that is not a String — is passed
-      # through. The rate providers treat a nil locality as NATIONAL.
+      # CMS wage area for one institutional obligation: the 5-digit
+      # CBSA or 2-digit rural-state code from the ZIP→CBSA crosswalk
+      # for the service date. analyze_inpatient and analyze_outpatient
+      # call this once, before any rate lookup, and pass that value
+      # into every IPPS, OPPS, ASC, and stub lookup on the obligation.
+      #
+      # PFS locality codes are a separate numbering system and overlap
+      # these wage areas (PFS "02" is Seattle; wage area "02" is rural
+      # Alaska), so this returns PrcFacilityDictionary.cbsa_for and
+      # never facility.locality. It does not check that the ZIP is a
+      # String. cbsa_for returns nil for a non-String ZIP, a malformed
+      # ZIP, a missing ZIP, or a fiscal year with no crosswalk row.
+      # Nil is passed through; the rate providers treat a nil locality
+      # as NATIONAL. A resolved code with no wage-index row still
+      # prices on the NATIONAL wage index inside those providers.
+      # Result#wage_area keeps the resolved code, or nil for that
+      # crosswalk miss, and institutional notes record the same fact
+      # without the facility ZIP.
       def wage_area(facility, service_date)
-        zip = facility.zip
-        return nil unless zip.is_a?(String)
+        Corvid::PrcFacilityDictionary.cbsa_for(zip: facility.zip, on: service_date)
+      end
 
-        Corvid::PrcFacilityDictionary.cbsa_for(zip: zip, on: service_date)
+      # Institutional notes end with the wage-area sentence. Called
+      # after the CAH suffix so that sentence stays last. Professional
+      # notes are left alone. The sentence names the code or NATIONAL;
+      # it never includes the facility ZIP.
+      def append_wage_area_note(result)
+        return result unless %i[ipps opps asc].include?(result.payment_system)
+
+        sentence = wage_area_note(result.wage_area)
+        existing = result.notes.to_s
+        result.notes = existing.empty? ? sentence : "#{existing} #{sentence}"
+        result
+      end
+
+      def wage_area_note(area)
+        if area.nil?
+          "Wage area: NATIONAL (no crosswalk row for the facility ZIP)."
+        else
+          "Wage area: #{area}."
+        end
       end
 
       def base_fields(obligation, proc_info, facility)

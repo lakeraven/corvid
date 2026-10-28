@@ -55,7 +55,9 @@ Wage index is 1.0 (NATIONAL) for IPPS/OPPS in this demo rather than
 Billings, MT's real per-CBSA wage index (0.8961, CBSA 13740, validated
 in PR #467). The demo does not load a ZIP→CBSA crosswalk, so its
 published figures stay on NATIONAL. Production institutional pricing
-uses the facility wage area once that crosswalk is imported (#372).
+resolves the facility wage area once that crosswalk is imported (#372).
+Results and notes record that wage area. Pricing still falls back to
+NATIONAL when the resolved wage area has no wage-index row.
 Because Billings' real wage index is **below** 1.0, a CBSA-adjusted
 MLR would be **lower**, and the savings number **higher**. This demo
 undersells the number a loaded crosswalk would show.

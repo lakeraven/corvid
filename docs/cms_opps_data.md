@@ -207,13 +207,19 @@ The `wage_index` column on `corvid_opps_conversion_factors` is now
 dead weight (unread by the rate provider) but still present in the
 schema; dropping it is #370, sequenced after #369 proves out.
 
-`PrcOverpaymentAnalyzer` passes the facility wage area from
-`PrcFacilityDictionary.cbsa_for` into `OppsRateProvider` (#372).
-PFS locality codes overlap wage-area codes ("02" is Seattle in PFS
-and rural Alaska as a wage area), so the wage-area argument is the
-crosswalk result. Once a crosswalk is imported for the service date's
-fiscal year, outpatient claims use that wage index. With no row, they
-stay on the NATIONAL wage index.
+`PrcOverpaymentAnalyzer` resolves the facility wage area once per
+obligation with `PrcFacilityDictionary.cbsa_for` and passes that
+value into `OppsRateProvider` and into the ASC and stub lookups on
+the same path (#372). PFS locality codes overlap wage-area codes
+("02" is Seattle in PFS and rural Alaska as a wage area), so the
+wage-area argument is the crosswalk result. Once a crosswalk is
+imported for the service date's fiscal year, outpatient claims use
+that wage index. With no crosswalk row they stay on the NATIONAL
+wage index. Pricing still falls back to NATIONAL when the resolved
+wage area has no wage-index row. The institutional result records
+the wage area, and its notes end with `Wage area: <code>.` or
+`Wage area: NATIONAL (no crosswalk row for the facility ZIP).`
+Notes do not include the facility ZIP.
 
 For tribal PRC recovery in rural/non-metro areas, the wage adjustment
 can be material — e.g. Billings, MT's real FY2026 wage index (0.8961)

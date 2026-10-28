@@ -229,11 +229,19 @@ above for each fiscal year and `gh release upload` the result.
 this table (#369). The table is keyed by CMS wage area (5-digit CBSA
 or 2-digit rural-state code), which overlaps the PFS locality codes
 in `PrcFacilityDictionary` (PFS "02" is Seattle; wage area "02" is
-rural Alaska). `PrcOverpaymentAnalyzer` passes the wage area from
-`PrcFacilityDictionary.cbsa_for` into IPPS, OPPS, and ASC lookups
-(#372). The wage-area argument is that crosswalk result. With no row
-for the service date's fiscal year, pricing stays on the NATIONAL
-wage row.
+rural Alaska). `PrcOverpaymentAnalyzer` resolves that wage area once
+per obligation with `PrcFacilityDictionary.cbsa_for` and passes the
+same value into the IPPS, OPPS, ASC, and stub lookups (#372). The
+wage-area argument is that crosswalk result, never the facility's
+PFS locality. With no crosswalk row for the service date's fiscal
+year, the argument is nil and pricing stays on the NATIONAL wage
+row. When the crosswalk resolves a code that has no wage-index row,
+pricing still falls back to the NATIONAL wage index. Institutional
+`Result#wage_area` is the resolved code, or nil for that crosswalk
+miss. Institutional notes end with `Wage area: <code>.` or
+`Wage area: NATIONAL (no crosswalk row for the facility ZIP).`
+Notes do not include the facility ZIP. Professional PFS results
+leave `wage_area` nil and do not add that sentence.
 
 Remaining in this cluster:
 - **#370** — drop the now-unused `wage_index` column from
@@ -283,8 +291,14 @@ for that year, `cbsa_for` returns nil and institutional pricing stays
 on the NATIONAL wage index.
 
 Once a crosswalk for that fiscal year is imported,
-`PrcOverpaymentAnalyzer` uses the facility's wage area for IPPS, OPPS,
-and ASC (#372). Professional PFS pricing still uses the facility's
-PFS locality. A nil `cbsa_for` result (no row, no ZIP, a malformed ZIP,
-or a ZIP that is not a String) leaves those institutional lookups on
-the NATIONAL wage index.
+`PrcOverpaymentAnalyzer` resolves the facility wage area once per
+obligation and uses it for IPPS, OPPS, and ASC, including both stub
+providers (#372). Professional PFS pricing still uses the facility's
+PFS locality. `cbsa_for` returns nil for a non-String ZIP, a
+malformed ZIP, a missing ZIP, or a year with no row; the analyzer
+does not pre-check the ZIP type. A nil result leaves those
+institutional lookups on the NATIONAL wage index. A resolved code
+with no wage-index row still prices on the NATIONAL wage index.
+The result and its notes record the wage area (the code, or
+NATIONAL when the crosswalk has no row). Notes never include the
+facility ZIP.

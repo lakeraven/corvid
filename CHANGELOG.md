@@ -22,17 +22,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   instead of `denial_reason_token`.
 
 ### Added
-- Institutional IPPS, OPPS, and ASC pricing uses the facility's CMS
-  wage area (#372). `PrcOverpaymentAnalyzer` resolves it with
-  `PrcFacilityDictionary.cbsa_for` for the facility ZIP and the
-  obligation's service date, then passes that code into the IPPS, OPPS,
-  and ASC lookups. Once a ZIP-to-CBSA crosswalk is imported, those
-  rates follow that area's wage index. Professional PFS pricing still
-  uses the facility's PFS locality. A missing row for the fiscal year,
-  a missing or malformed ZIP, or a ZIP that is not a String leaves
-  institutional pricing on the NATIONAL wage index. PFS locality codes
-  overlap wage-area codes (PFS "02" is Seattle; wage area "02" is rural
-  Alaska), so the wage-area argument is only the crosswalk result.
 - ZIP-to-CBSA wage-area crosswalk (#371). `corvid_zip_cbsa_crosswalks`
   stores the CMS crosswalk by federal fiscal year (`zip` is five ASCII
   digits; `cbsa` is a five-digit CBSA or a two-digit rural-state code;
@@ -110,6 +99,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   nullable column and cannot restore values. (#702)
 
 ### Changed
+- Institutional IPPS, OPPS, and ASC pricing uses the facility's CMS
+  wage area (#372). `PrcOverpaymentAnalyzer` resolves it once per
+  obligation with `PrcFacilityDictionary.cbsa_for` (facility ZIP and
+  service date) and passes that same code into the IPPS, OPPS, ASC,
+  and stub lookups. Once a ZIP-to-CBSA crosswalk is imported, those
+  rates follow that area's wage index. Pricing still falls back to
+  NATIONAL when the resolved wage area has no wage-index row.
+  `Result#wage_area` and the notes record the wage area: the resolved
+  code, or NATIONAL when the crosswalk has no row. Professional PFS
+  pricing still uses the facility's PFS locality, and professional
+  notes are unchanged. A missing crosswalk row for the fiscal year, a
+  missing or malformed ZIP, or a ZIP that is not a String leaves
+  institutional pricing on the NATIONAL wage index. PFS locality codes
+  overlap wage-area codes (PFS "02" is Seattle; wage area "02" is rural
+  Alaska), so the wage-area argument is only the crosswalk result.
 - Postgres CHECK constraints and foreign keys now bound columns that
   accepted any string. Value lists: `corvid_prc_referrals.priority_system`
   (`corvid_v1`), `corvid_prc_eligibility_decisions.provider_confidence`
