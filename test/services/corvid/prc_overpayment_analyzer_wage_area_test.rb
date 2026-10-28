@@ -12,8 +12,13 @@ class Corvid::PrcOverpaymentAnalyzerWageAreaTest < ActiveSupport::TestCase
   SYNTH_CBSA = "77077"
   LOW_WAGE_INDEX = BigDecimal("0.85")
 
-  NATIONAL_WAGE_NOTE =
-    "Wage area: NATIONAL (no crosswalk row for the facility ZIP)."
+  CROSSWALK_RELEASE_LABEL = "cucumber_synthetic"
+  REAL_OPPS_RELEASE = "cms_opps_cy2009_final_rule"
+  REAL_IPPS_RELEASE = "cms_fy2009_final_rule"
+  STUB_CROSSWALK_RELEASE = "stub_v1"
+
+  NATIONAL_WAGE_NOTE_MISSING_OR_MALFORMED =
+    "Wage area: NATIONAL (facility ZIP missing or malformed)."
 
   def setup
     Corvid::FeeScheduleEntry.connection.execute("TRUNCATE corvid_fee_schedule_entries")
@@ -32,7 +37,9 @@ class Corvid::PrcOverpaymentAnalyzerWageAreaTest < ActiveSupport::TestCase
   test "ASC miss OPPS miss stub fallback issues one zip crosswalk query per obligation" do
     register_outpatient_procedure!
     register_facility_for_cbsa(code: "ONCE", zip: SYNTH_ZIP)
-    Corvid::ZipCbsaCrosswalk.create!(fiscal_year: 2009, zip: SYNTH_ZIP, cbsa: SYNTH_CBSA)
+    Corvid::ZipCbsaCrosswalk.create!(
+      fiscal_year: 2009, zip: SYNTH_ZIP, cbsa: SYNTH_CBSA, release_label: CROSSWALK_RELEASE_LABEL
+    )
     Corvid::AscFacility.create!(ccn: "ASC-VENDOR-1", effective_date: Date.new(2009, 1, 1))
 
     queries = count_zip_cbsa_crosswalk_queries do
@@ -42,6 +49,13 @@ class Corvid::PrcOverpaymentAnalyzerWageAreaTest < ActiveSupport::TestCase
       ).results.first
       assert_equal :opps, result.payment_system
       assert_equal :stub_estimate, result.recovery_confidence
+      assert_equal SYNTH_CBSA, result.wage_area
+      assert_institutional_wage_area_documentation(
+        result,
+        facility_zip: SYNTH_ZIP,
+        wage_area: SYNTH_CBSA,
+        crosswalk_release: CROSSWALK_RELEASE_LABEL
+      )
     end
 
     assert_equal 1, queries,
@@ -50,7 +64,9 @@ class Corvid::PrcOverpaymentAnalyzerWageAreaTest < ActiveSupport::TestCase
 
   test "IPPS stub fallback issues one zip crosswalk query per obligation" do
     register_facility_for_cbsa(code: "ONCE", zip: SYNTH_ZIP)
-    Corvid::ZipCbsaCrosswalk.create!(fiscal_year: 2009, zip: SYNTH_ZIP, cbsa: SYNTH_CBSA)
+    Corvid::ZipCbsaCrosswalk.create!(
+      fiscal_year: 2009, zip: SYNTH_ZIP, cbsa: SYNTH_CBSA, release_label: CROSSWALK_RELEASE_LABEL
+    )
 
     queries = count_zip_cbsa_crosswalk_queries do
       result = analyze_with_facility(
@@ -58,6 +74,13 @@ class Corvid::PrcOverpaymentAnalyzerWageAreaTest < ActiveSupport::TestCase
       ).results.first
       assert_equal :ipps, result.payment_system
       assert_equal :stub_estimate, result.recovery_confidence
+      assert_equal SYNTH_CBSA, result.wage_area
+      assert_institutional_wage_area_documentation(
+        result,
+        facility_zip: SYNTH_ZIP,
+        wage_area: SYNTH_CBSA,
+        crosswalk_release: CROSSWALK_RELEASE_LABEL
+      )
     end
 
     assert_equal 1, queries,
@@ -77,7 +100,10 @@ class Corvid::PrcOverpaymentAnalyzerWageAreaTest < ActiveSupport::TestCase
 
     assert_equal :ipps, result.payment_system
     assert_institutional_wage_area_documentation(
-      result, facility_zip: SYNTH_ZIP, wage_area: SYNTH_CBSA
+      result,
+      facility_zip: SYNTH_ZIP,
+      wage_area: SYNTH_CBSA,
+      crosswalk_release: CROSSWALK_RELEASE_LABEL
     )
   end
 
@@ -93,7 +119,10 @@ class Corvid::PrcOverpaymentAnalyzerWageAreaTest < ActiveSupport::TestCase
 
     assert_equal :opps, result.payment_system
     assert_institutional_wage_area_documentation(
-      result, facility_zip: SYNTH_ZIP, wage_area: SYNTH_CBSA
+      result,
+      facility_zip: SYNTH_ZIP,
+      wage_area: SYNTH_CBSA,
+      crosswalk_release: CROSSWALK_RELEASE_LABEL
     )
   end
 
@@ -110,7 +139,10 @@ class Corvid::PrcOverpaymentAnalyzerWageAreaTest < ActiveSupport::TestCase
 
     assert_equal :asc, result.payment_system
     assert_institutional_wage_area_documentation(
-      result, facility_zip: SYNTH_ZIP, wage_area: SYNTH_CBSA
+      result,
+      facility_zip: SYNTH_ZIP,
+      wage_area: SYNTH_CBSA,
+      crosswalk_release: CROSSWALK_RELEASE_LABEL
     )
   end
 
@@ -125,7 +157,11 @@ class Corvid::PrcOverpaymentAnalyzerWageAreaTest < ActiveSupport::TestCase
     assert_equal :opps, result.payment_system
     assert_equal :stub_estimate, result.recovery_confidence
     assert_institutional_wage_area_documentation(
-      result, facility_zip: "88999", wage_area: nil, national: true
+      result,
+      facility_zip: "88999",
+      wage_area: nil,
+      national: :no_crosswalk_row,
+      fiscal_year: 2009
     )
   end
 
@@ -163,7 +199,10 @@ class Corvid::PrcOverpaymentAnalyzerWageAreaTest < ActiveSupport::TestCase
 
     assert_in_delta expected_opps_national_rate, result.medicare_equivalent.to_f, 0.01
     assert_institutional_wage_area_documentation(
-      result, facility_zip: "88202", wage_area: nil, national: true
+      result,
+      facility_zip: "88202",
+      wage_area: nil,
+      national: :missing_or_malformed
     )
   end
 
@@ -184,7 +223,10 @@ class Corvid::PrcOverpaymentAnalyzerWageAreaTest < ActiveSupport::TestCase
 
     assert_in_delta expected_opps_national_rate, result.medicare_equivalent.to_f, 0.01
     assert_institutional_wage_area_documentation(
-      result, facility_zip: nil, wage_area: nil, national: true
+      result,
+      facility_zip: nil,
+      wage_area: nil,
+      national: :missing_or_malformed
     )
   end
 
@@ -206,7 +248,92 @@ class Corvid::PrcOverpaymentAnalyzerWageAreaTest < ActiveSupport::TestCase
 
     assert_in_delta expected_opps_national_rate, result.medicare_equivalent.to_f, 0.01
     assert_institutional_wage_area_documentation(
-      result, facility_zip: "88202-", wage_area: nil, national: true
+      result,
+      facility_zip: "88202-",
+      wage_area: nil,
+      national: :missing_or_malformed
+    )
+  end
+
+  # -- L1: stub crosswalk downgrades institutional confidence ----------------
+
+  test "OPPS priced from real CMS rows is stub_estimate when crosswalk release is stub-derived" do
+    register_outpatient_procedure!
+    register_facility_for_cbsa(code: "CBSA", zip: SYNTH_ZIP)
+    seed_cbsa_crosswalk_and_wage_area(
+      fiscal_year: 2009, zip: SYNTH_ZIP, cbsa: SYNTH_CBSA,
+      crosswalk_release_label: STUB_CROSSWALK_RELEASE
+    )
+    seed_opps_cbsa_rows(
+      calendar_year: 2009, cbsa: SYNTH_CBSA, release_label: REAL_OPPS_RELEASE
+    )
+
+    result = analyze_with_facility(
+      facility_code: "CBSA", procedure: "OUTPATIENT_TEST", paid: 5_000
+    ).results.first
+
+    assert_equal :opps, result.payment_system
+    assert_equal :stub_estimate, result.recovery_confidence,
+                 "stub-derived crosswalk must downgrade confidence even when OPPS rows are real CMS"
+    assert_equal :stub, result.rate_source
+    assert_equal REAL_OPPS_RELEASE, result.rate_source_release
+    assert_institutional_wage_area_documentation(
+      result,
+      facility_zip: SYNTH_ZIP,
+      wage_area: SYNTH_CBSA,
+      crosswalk_release: STUB_CROSSWALK_RELEASE
+    )
+  end
+
+  test "IPPS priced from real CMS rows is stub_estimate when crosswalk release is stub-derived" do
+    register_facility_for_cbsa(code: "CBSA", zip: SYNTH_ZIP)
+    seed_cbsa_crosswalk_and_wage_area(
+      fiscal_year: 2009, zip: SYNTH_ZIP, cbsa: SYNTH_CBSA,
+      crosswalk_release_label: STUB_CROSSWALK_RELEASE
+    )
+    Corvid::IppsDrgWeight.create!(
+      fiscal_year: 2009, drg_code: "470", relative_weight: 2.0743,
+      release_label: REAL_IPPS_RELEASE
+    )
+    Corvid::IppsHospitalRate.where(fiscal_year: 2009).update_all(release_label: REAL_IPPS_RELEASE)
+
+    result = analyze_with_facility(
+      facility_code: "CBSA", procedure: "HIP_REPLACE_THR", paid: 42_000
+    ).results.first
+
+    assert_equal :ipps, result.payment_system
+    assert_equal :stub_estimate, result.recovery_confidence
+    assert_equal :stub, result.rate_source
+    assert_institutional_wage_area_documentation(
+      result,
+      facility_zip: SYNTH_ZIP,
+      wage_area: SYNTH_CBSA,
+      crosswalk_release: STUB_CROSSWALK_RELEASE
+    )
+  end
+
+  # -- L4: CAH multiplier note precedes wage-area sentence -------------------
+
+  test "institutional CAH vendor notes include CAH multiplier and end with wage-area sentence" do
+    register_outpatient_procedure!
+    register_facility_for_cbsa(code: "CAHOP", zip: SYNTH_ZIP)
+    seed_cbsa_crosswalk_and_wage_area(fiscal_year: 2009, zip: SYNTH_ZIP, cbsa: SYNTH_CBSA)
+    seed_opps_cbsa_rows(calendar_year: 2009, cbsa: SYNTH_CBSA, release_label: REAL_OPPS_RELEASE)
+    Corvid::CahFacility.create!(
+      ccn: "CAH-001", facility_name: "Test CAH",
+      effective_date: Date.new(2009, 1, 1)
+    )
+
+    result = analyze_with_facility(
+      facility_code: "CAHOP", procedure: "OUTPATIENT_TEST", paid: 5_000, vendor_id: "CAH-001"
+    ).results.first
+
+    assert_match(/CAH 1\.01× multiplier applied/, result.notes)
+    assert_institutional_wage_area_documentation(
+      result,
+      facility_zip: SYNTH_ZIP,
+      wage_area: SYNTH_CBSA,
+      crosswalk_release: CROSSWALK_RELEASE_LABEL
     )
   end
 
@@ -226,13 +353,32 @@ class Corvid::PrcOverpaymentAnalyzerWageAreaTest < ActiveSupport::TestCase
     count
   end
 
-  def assert_institutional_wage_area_documentation(result, facility_zip:, wage_area:, national: false)
+  def national_wage_area_note(national:, fiscal_year: nil)
+    case national
+    when :missing_or_malformed
+      NATIONAL_WAGE_NOTE_MISSING_OR_MALFORMED
+    when :no_crosswalk_row
+      "Wage area: NATIONAL (no crosswalk row for the facility ZIP in FY #{fiscal_year})."
+    else
+      raise ArgumentError, "national must be :missing_or_malformed or :no_crosswalk_row"
+    end
+  end
+
+  def resolved_wage_area_note(wage_area:, crosswalk_release:)
+    "Wage area: #{wage_area} (crosswalk release #{crosswalk_release})."
+  end
+
+  def assert_institutional_wage_area_documentation(
+    result, facility_zip:, wage_area:, national: false, fiscal_year: nil, crosswalk_release: nil
+  )
     if national
       assert_nil result.wage_area
-      assert result.notes.end_with?(NATIONAL_WAGE_NOTE), "expected national wage-area note; got: #{result.notes}"
+      expected = national_wage_area_note(national: national, fiscal_year: fiscal_year)
+      assert result.notes.end_with?(expected), "expected national wage-area note; got: #{result.notes}"
     else
       assert_equal wage_area, result.wage_area
-      assert result.notes.end_with?("Wage area: #{wage_area}."),
+      expected = resolved_wage_area_note(wage_area: wage_area, crosswalk_release: crosswalk_release)
+      assert result.notes.end_with?(expected),
              "expected resolved wage-area note; got: #{result.notes}"
     end
 
@@ -255,8 +401,12 @@ class Corvid::PrcOverpaymentAnalyzerWageAreaTest < ActiveSupport::TestCase
     )
   end
 
-  def seed_cbsa_crosswalk_and_wage_area(fiscal_year:, zip:, cbsa:, wage_index: LOW_WAGE_INDEX)
-    Corvid::ZipCbsaCrosswalk.create!(fiscal_year: fiscal_year, zip: zip, cbsa: cbsa)
+  def seed_cbsa_crosswalk_and_wage_area(
+    fiscal_year:, zip:, cbsa:, wage_index: LOW_WAGE_INDEX, crosswalk_release_label: CROSSWALK_RELEASE_LABEL
+  )
+    Corvid::ZipCbsaCrosswalk.create!(
+      fiscal_year: fiscal_year, zip: zip, cbsa: cbsa, release_label: crosswalk_release_label
+    )
     Corvid::IppsHospitalRate.create!(
       fiscal_year: fiscal_year, locality: "NATIONAL", base_rate: 6_000.0, wage_index: 1.0
     )
@@ -272,6 +422,21 @@ class Corvid::PrcOverpaymentAnalyzerWageAreaTest < ActiveSupport::TestCase
     Corvid::OppsConversionFactor.create!(
       calendar_year: calendar_year, locality: "NATIONAL",
       conversion_factor: 70.0, wage_index: 1.0
+    )
+  end
+
+  def seed_opps_cbsa_rows(calendar_year:, cbsa:, release_label:)
+    Corvid::OppsApcWeight.create!(
+      calendar_year: calendar_year, apc_code: "5071", relative_weight: 25.4378,
+      release_label: release_label
+    )
+    Corvid::OppsConversionFactor.create!(
+      calendar_year: calendar_year, locality: "NATIONAL",
+      conversion_factor: 70.0, wage_index: 1.0, release_label: release_label
+    )
+    Corvid::OppsConversionFactor.create!(
+      calendar_year: calendar_year, locality: cbsa,
+      conversion_factor: 70.0, wage_index: LOW_WAGE_INDEX, release_label: release_label
     )
   end
 
