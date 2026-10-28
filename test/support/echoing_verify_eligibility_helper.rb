@@ -16,7 +16,7 @@ module EchoingVerifyEligibilityHelper
 
       base =
         if custom
-          custom.call(patient_identifier, resource_type, date_of_service)
+          custom.call(patient_identifier, resource_type, date_of_service: date_of_service)
         else
           { eligible: eligible }
         end
