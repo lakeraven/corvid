@@ -695,10 +695,15 @@ class Corvid::StateMedicaidRulesTest < Minitest::Test
     refute qq_entry.expanded?
   end
 
-  # -- state_code_characters: is_a? / name / to_str must not alias (#680) ----
+  # -- state_code_characters: String.new pins own characters (#680) -----------
 
-  def test_state_code_characters_string_subclass_is_a_symbol_spoof_reads_own_characters
-    spoof = string_subclass_is_a_symbol_spoof_xb
+  def test_state_code_characters_string_subclass_xa_alias_ops_reads_own_xb_characters
+    spoof = string_subclass_xb_aliases_xa_character_ops
+    assert_equal "XB", Corvid::StateMedicaidRules.state_code_characters(spoof)
+  end
+
+  def test_state_code_characters_xb_singleton_upcase_spoof_reads_own_characters
+    spoof = xb_string_with_singleton_upcase_xa
     assert_equal "XB", Corvid::StateMedicaidRules.state_code_characters(spoof)
   end
 
@@ -707,15 +712,29 @@ class Corvid::StateMedicaidRulesTest < Minitest::Test
     assert_nil Corvid::StateMedicaidRules.state_code_characters(spoof)
   end
 
-  def test_lookup_string_subclass_is_a_symbol_spoof_does_not_return_xa_entry
+  def test_lookup_string_subclass_xa_alias_ops_returns_not_configured_xb_not_xa_entry
     register_sample_state("XA")
     xa_entry = Corvid::StateMedicaidRules.lookup("XA")
-    spoof = string_subclass_is_a_symbol_spoof_xb
+    spoof = string_subclass_xb_aliases_xa_character_ops
 
     result = Corvid::StateMedicaidRules.lookup(spoof)
 
+    assert_kind_of Corvid::StateMedicaidRules::NotConfigured, result
+    refute result.configured?
+    assert_equal "XB", result.state_code
     refute result.equal?(xa_entry)
-    refute_equal xa_entry.state_code, result.state_code if result.configured?
+  end
+
+  def test_lookup_xb_singleton_upcase_spoof_returns_not_configured_not_xa_entry
+    register_sample_state("XA")
+    spoof = xb_string_with_singleton_upcase_xa
+
+    result = Corvid::StateMedicaidRules.lookup(spoof)
+
+    assert_kind_of Corvid::StateMedicaidRules::NotConfigured, result
+    refute result.configured?
+    assert_equal "XB", result.state_code
+    refute Corvid::StateMedicaidRules.lookup("XA").equal?(result)
   end
 
   def test_lookup_object_is_a_string_spoof_does_not_return_xa_entry
@@ -768,6 +787,29 @@ class Corvid::StateMedicaidRulesTest < Minitest::Test
     refute_nil group
     assert group.work_requirement?
     assert_equal 12, group.renewal_months
+  end
+
+  # -- Entry#group_name: String.new pins own characters (#680) -----------------
+
+  def test_group_string_subclass_is_a_symbol_spoof_resolves_waiver_adult_on_xc
+    register_synthetic_xc_dual_groups!
+    entry = Corvid::StateMedicaidRules.lookup("XC")
+    spoof = string_subclass_waiver_adult_is_a_symbol_spoof_expansion
+
+    group = entry.group(spoof)
+
+    refute_nil group
+    assert group.work_requirement?
+    assert_equal 6, group.renewal_months
+    refute_equal 12, group.renewal_months
+  end
+
+  def test_group_object_is_a_symbol_spoof_raises_unknown_eligibility_group
+    register_synthetic_xc_dual_groups!
+    entry = Corvid::StateMedicaidRules.lookup("XC")
+    spoof = object_is_a_symbol_spoof_expansion_adult
+
+    assert_raises(ArgumentError) { entry.group(spoof) }
   end
 
   # -- Entry#waiver_program_for ------------------------------------------------
@@ -1182,8 +1224,59 @@ class Corvid::StateMedicaidRulesTest < Minitest::Test
     )
   end
 
-  def string_subclass_is_a_symbol_spoof_xb
-    klass = Class.new(String) do
+  def register_synthetic_xc_dual_groups!
+    Corvid::StateMedicaidRules.register(
+      "XC",
+      expanded: true,
+      work_requirement_programs: [
+        { code: "xc_synthetic_waiver", description_pattern: /\bSYNTHETIC XC WAIVER\b/i }
+      ],
+      groups: {
+        expansion_adult: {
+          renewal_months: 12,
+          retro_coverage_months: 1,
+          work_requirement: false
+        },
+        waiver_adult: {
+          renewal_months: 6,
+          retro_coverage_months: 1,
+          work_requirement: true
+        }
+      }
+    )
+  end
+
+  def string_subclass_xb_aliases_xa_character_ops
+    canonical = "XA"
+    lowercase = "xa"
+    Class.new(String) do
+      define_method(:upcase) do |*args|
+        args.empty? ? canonical.dup : super
+      end
+
+      define_method(:upcase!) do
+        replace(canonical)
+        self
+      end
+
+      define_method(:gsub) { |*args, &block| canonical.gsub(*args, &block) }
+      define_method(:to_str) { canonical.dup }
+      define_method(:to_s) { canonical.dup }
+      define_method(:dup) { canonical.dup }
+      define_method(:==) { |other| canonical == other || lowercase == other }
+      define_method(:eql?) { |other| other.is_a?(String) && (other == canonical || other == lowercase) }
+      define_method(:hash) { canonical.hash }
+    end.new("XB")
+  end
+
+  def xb_string_with_singleton_upcase_xa
+    value = +"XB"
+    value.define_singleton_method(:upcase) { "XA" }
+    value
+  end
+
+  def string_subclass_waiver_adult_is_a_symbol_spoof_expansion
+    Class.new(String) do
       def is_a?(type)
         return true if type == Symbol
 
@@ -1191,10 +1284,20 @@ class Corvid::StateMedicaidRulesTest < Minitest::Test
       end
 
       def name
-        "XA"
+        "expansion_adult"
       end
+    end.new("waiver_adult")
+  end
+
+  def object_is_a_symbol_spoof_expansion_adult
+    Object.new.tap do |value|
+      value.define_singleton_method(:is_a?) do |type|
+        return true if type == Symbol
+
+        super(type)
+      end
+      value.define_singleton_method(:name) { "expansion_adult" }
     end
-    klass.new("XB")
   end
 
   def object_is_a_string_to_str_spoof_xa
