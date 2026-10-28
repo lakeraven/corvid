@@ -133,6 +133,8 @@ module Corvid
       end
 
       def list_referrals(patient_identifier)
+        return nil if blank_patient_identifier?(patient_identifier)
+
         @referrals.filter_map do |id, attrs|
           next unless attrs[:patient_identifier] == patient_identifier.to_s
 
@@ -286,6 +288,8 @@ module Corvid
       # ----------------------------------------------------------------------
 
       def get_care_team(patient_identifier)
+        return nil if blank_patient_identifier?(patient_identifier)
+
         members = @care_teams[patient_identifier.to_s] || []
         members.map do |attrs|
           Corvid::CareTeamMemberReference.new(
@@ -500,6 +504,8 @@ module Corvid
       end
 
       def list_claims(patient_identifier)
+        return nil if blank_patient_identifier?(patient_identifier)
+
         copied_references(@claim_lines[patient_identifier.to_s])
       end
 

@@ -20,7 +20,6 @@ module Corvid
         end
 
         anchor = anchor_date || Date.current
-        program = Corvid::ProgramRegistry.find(program_type)
 
         kase = Corvid::Case.transaction do
           k = Corvid::Case.create!(
@@ -33,7 +32,6 @@ module Corvid
           Corvid::CaseProgram.create!(
             case: k,
             program_code: program_type,
-            program_name: program&.display_name.presence || program_type,
             enrollment_date: anchor
           )
           k

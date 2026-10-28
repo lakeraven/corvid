@@ -50,8 +50,12 @@ module Corvid
             patient_identifiers: patient_identifiers(clinic),
             adapter: adapter
           )
-          eligibility = run_eligibility_sample(clinic, adapter)
-          summary = FhirOverlayIngest.analyze(facility: clinic.facility)
+          # Unknown claims are not zero claims. Skip eligibility writes and
+          # the dollar total so a failed read cannot look like an undercount.
+          unless claims_unknown?(counts)
+            eligibility = run_eligibility_sample(clinic, adapter)
+            summary = FhirOverlayIngest.analyze(facility: clinic.facility)
+          end
         end
 
         print_clinic(clinic, counts, eligibility, summary)
@@ -118,12 +122,38 @@ module Corvid
         clinic.resources.select { |r| r["resourceType"] == "Patient" }.map { |r| r["id"] }
       end
 
+      # nil list_claims or nil find_patient is unknown, not an empty panel
+      # with a zero total. Either list withholds clinic and consortium totals.
+      def claims_unknown?(counts)
+        unknown_roster_ids(counts).any?
+      end
+
+      def unknown_roster_ids(counts)
+        (Array(counts[:patients_claims_unknown]) + Array(counts[:patients_unknown])).uniq
+      end
+
+      # "Claims unknown", "Patients unknown", or both. A failed patient read
+      # is not narrated as a claims failure.
+      def unknown_roster_cause(counts)
+        claims = Array(counts[:patients_claims_unknown]).any?
+        patients = Array(counts[:patients_unknown]).any?
+        return "Claims and patients unknown" if claims && patients
+        return "Patients unknown" if patients
+
+        "Claims unknown"
+      end
+
       # --- output ---------------------------------------------------------
 
       def print_clinic(clinic, counts, eligibility, summary)
         banner("#{clinic.name}  (#{clinic.tenant})")
         line "Source EHR:  #{clinic.source_ehr_label}"
         line "Ingest:      stock FHIR R4 via Corvid::Adapters::FhirAdapter (generic, no vendor code)"
+        if claims_unknown?(counts)
+          line "#{unknown_roster_cause(counts)} for #{unknown_roster_ids(counts).size} patient(s); " \
+               "nothing written for them and no dollar total reported."
+          return
+        end
         line "Created:     #{counts[:cases_created]} Case(s), #{counts[:obligations_created]} PrcObligation(s)"
         print_skipped(counts)
         if eligibility
@@ -162,6 +192,12 @@ module Corvid
       end
 
       def print_consortium(per_clinic)
+        if per_clinic.any? { |c| claims_unknown?(c[:counts]) }
+          banner("CONSORTIUM TOTAL (#{per_clinic.size} clinics)")
+          line "  Consortium total withheld: #{consortium_withheld_cause(per_clinic)}."
+          return
+        end
+
         summaries = per_clinic.map { |c| c[:summary] }
         claims_analyzed = summaries.sum(&:obligations_analyzed)
 
@@ -191,6 +227,14 @@ module Corvid
         line "  Medicare-Like Rate (MLR, clear): $#{fmt(clear_mlr)}"
         line "  TOTAL $ RECOVERED across the consortium: $#{fmt(clear_recovered)}" \
              "  (#{clear_pct(clear_paid, clear_recovered)}% of $ priced clear)"
+      end
+
+      def consortium_withheld_cause(per_clinic)
+        counts = {
+          patients_claims_unknown: per_clinic.flat_map { |c| Array(c[:counts][:patients_claims_unknown]) },
+          patients_unknown: per_clinic.flat_map { |c| Array(c[:counts][:patients_unknown]) }
+        }
+        "#{unknown_roster_cause(counts).downcase} for at least one clinic"
       end
 
       # Print the lines the analyzer could NOT price clear, per bucket, so a

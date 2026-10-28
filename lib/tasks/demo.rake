@@ -141,13 +141,18 @@ namespace :demo do
       referral.approve_management!
       beat("referral.approve_management! (by pr_demo_002) -> status=#{referral.status}", real: true)
 
-      # Synthetic payer determinations. The demo does not query a payer;
-      # each resource is recorded not_enrolled so the exhaustion guard
-      # can pass without inventing coverage.
+      # Synthetic current determinations. The demo does not query a payer;
+      # each resource is recorded not_enrolled and fresh so the exhaustion
+      # guard can pass without inventing coverage.
       Corvid::AlternateResourceCheck::RESOURCE_TYPES.each do |type|
-        referral.alternate_resource_checks.find_or_create_by!(resource_type: type) do |check|
-          check.status = "not_enrolled"
-        end
+        check = referral.alternate_resource_checks.find_or_create_by!(resource_type: type)
+        check.update!(
+          status: "not_enrolled",
+          checked_at: Time.current,
+          coverage_start: nil,
+          coverage_end: nil,
+          renewal_date: nil
+        )
       end
       referral.alternate_resource_checks.reload
       beat(
