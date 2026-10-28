@@ -32,7 +32,7 @@ check() {
   printf '== smoke: %s\n' "$name"
   if ! "$script" >"$log" 2>&1; then
     printf '   FAIL: %s exited non-zero\n' "$script"
-    tail -20 "$log" | sed 's/^/   | /'
+    tail -20 "$log" | mlr_doc_redact | sed 's/^/   | /'
     failures=$((failures + 1))
     return 0
   fi
@@ -52,17 +52,38 @@ check() {
 }
 
 mlr_doc_write_pg_env() {
+  # DATABASE_URL unset: keep the developer's PG* and only fill gaps.
+  # URI::InvalidURIError echoes the raw URL, so rescue it and print a fixed line.
   OUT="$1" ruby -ruri -rshellwords -e '
-    u = URI(ENV.fetch("DATABASE_URL", "postgres://postgres:postgres@localhost:5432/corvid_dummy_development"))
-    decode = URI.method(:decode_www_form_component)
-    user = u.user ? decode.call(u.user) : "postgres"
-    pass = u.password ? decode.call(u.password) : "postgres"
-    File.open(ENV.fetch("OUT"), "w") do |f|
-      f.puts "PGHOST=#{Shellwords.shellescape(u.host || "localhost")}"
-      f.puts "PGPORT=#{Shellwords.shellescape((u.port || 5432).to_s)}"
-      f.puts "PGUSER=#{Shellwords.shellescape(user)}"
-      f.puts "PGPASSWORD=#{Shellwords.shellescape(pass)}"
+    def write_env(host, port, user, pass)
+      File.open(ENV.fetch("OUT"), "w") do |f|
+        f.puts "PGHOST=#{Shellwords.shellescape(host.to_s)}"
+        f.puts "PGPORT=#{Shellwords.shellescape(port.to_s)}"
+        f.puts "PGUSER=#{Shellwords.shellescape(user.to_s)}"
+        f.puts "PGPASSWORD=#{Shellwords.shellescape(pass.to_s)}"
+      end
     end
+
+    raw = ENV["DATABASE_URL"]
+    if raw.nil? || raw.empty?
+      write_env(
+        ENV.fetch("PGHOST", "localhost"),
+        ENV.fetch("PGPORT", "5432"),
+        ENV.fetch("PGUSER", "postgres"),
+        ENV.fetch("PGPASSWORD", "postgres")
+      )
+      exit 0
+    end
+
+    begin
+      u = URI(raw)
+      decode = URI.method(:decode_www_form_component)
+      user = u.user ? decode.call(u.user) : "postgres"
+      pass = u.password ? decode.call(u.password) : "postgres"
+    rescue URI::InvalidURIError, ArgumentError
+      abort "DATABASE_URL is not a valid URI"
+    end
+    write_env(u.host || "localhost", u.port || 5432, user, pass)
   '
 }
 
@@ -73,31 +94,69 @@ mlr_doc_test_database_name() {
   '
 }
 
+# Prints the database path component of DATABASE_URL, or nothing when it is unset.
+# Unparseable URLs exit non-zero with a fixed message (the URL is not printed).
+mlr_doc_database_url_name() {
+  ruby -ruri -e '
+    raw = ENV["DATABASE_URL"]
+    exit 0 if raw.nil? || raw.empty?
+    begin
+      u = URI(raw)
+    rescue URI::InvalidURIError
+      abort "DATABASE_URL is not a valid URI"
+    end
+    path = u.path.to_s.sub(%r{\A/}, "").sub(%r{/\z}, "")
+    begin
+      path = URI.decode_www_form_component(path) unless path.empty?
+    rescue ArgumentError
+      abort "DATABASE_URL is not a valid URI"
+    end
+    puts path unless path.empty?
+  '
+}
+
+mlr_doc_redact() {
+  sed -E \
+    -e 's#postgres(ql)?://[^[:space:]"'"'"']*#[REDACTED]#g' \
+    -e 's#(DATABASE_URL|PGPASSWORD)=[^[:space:]]*#\1=[REDACTED]#g' \
+    -e 's#(password:[[:space:]]*)[^[:space:]]+#\1[REDACTED]#g'
+}
+
 mlr_doc_log_tail() {
   local logfile="$1"
-  tail -30 "$logfile" | sed -E \
-    -e 's#postgres://[^[:space:]"'\'']*#[REDACTED]#g' \
-    -e 's#(DATABASE_URL|PGPASSWORD)=[^[:space:]]*#\1=[REDACTED]#g' \
-    | sed 's/^/   | /'
+  tail -30 "$logfile" | mlr_doc_redact | sed 's/^/   | /'
+}
+
+# `cat "$src" >"$dest"` truncates dest before reading when they are the same file.
+mlr_doc_copy_err() {
+  local src="$1"
+  local dest="$2"
+  if [ "$src" -ef "$dest" ]; then
+    return 0
+  fi
+  cat "$src" >"$dest"
 }
 
 # Writes "absent" or a sha256 hex digest to $1. Fails (non-zero) on probe/connection errors.
+# Counts miss a delete+reinsert of the same demo rows, so each public table also
+# contributes md5(string_agg(row text)) in deterministic order.
 mlr_doc_test_db_snapshot() {
   local outfile="$1"
   local test_db="$2"
   local errfile="$3"
-  local snap_err="$tmp/mlr-doc-snapshot.err"
+  local snap_err="$tmp/mlr-doc-snapshot-probe.err"
+  local body quoted row tbl
 
   export MLR_DOC_TEST_DB="$test_db"
 
   if command -v psql >/dev/null 2>&1; then
     if ! psql -d postgres -v ON_ERROR_STOP=1 -tAc "SELECT 1" >"$snap_err" 2>&1; then
-      cat "$snap_err" >"$errfile"
+      mlr_doc_copy_err "$snap_err" "$errfile"
       return 1
     fi
     if ! psql -d postgres -v ON_ERROR_STOP=1 -tAc \
       "SELECT 1 FROM pg_database WHERE datname = '${test_db}'" >"$tmp/mlr-doc-db-exists.txt" 2>"$snap_err"; then
-      cat "$snap_err" >"$errfile"
+      mlr_doc_copy_err "$snap_err" "$errfile"
       return 1
     fi
     if [ "$(tr -d '[:space:]' <"$tmp/mlr-doc-db-exists.txt")" != "1" ]; then
@@ -106,39 +165,48 @@ mlr_doc_test_db_snapshot() {
     fi
     if ! psql -d "$test_db" -v ON_ERROR_STOP=1 -tAc \
       "SELECT version FROM schema_migrations ORDER BY version" >"$tmp/mlr-doc-migrations.txt" 2>"$snap_err"; then
-      cat "$snap_err" >"$errfile"
+      mlr_doc_copy_err "$snap_err" "$errfile"
       return 1
     fi
     if ! psql -d "$test_db" -v ON_ERROR_STOP=1 -tAc \
       "SELECT key, value, created_at, updated_at FROM ar_internal_metadata ORDER BY key" \
       >"$tmp/mlr-doc-metadata.txt" 2>"$snap_err"; then
-      cat "$snap_err" >"$errfile"
+      mlr_doc_copy_err "$snap_err" "$errfile"
       return 1
     fi
     if ! psql -d "$test_db" -v ON_ERROR_STOP=1 -tAc \
       "SELECT tablename FROM pg_tables WHERE schemaname = 'public' ORDER BY tablename" \
       >"$tmp/mlr-doc-tables.txt" 2>"$snap_err"; then
-      cat "$snap_err" >"$errfile"
+      mlr_doc_copy_err "$snap_err" "$errfile"
       return 1
     fi
+    body="$tmp/mlr-doc-snapshot-body.txt"
     {
       printf '%s\n' 'schema_migrations'
       cat "$tmp/mlr-doc-migrations.txt"
       printf '%s\n' 'ar_internal_metadata'
       cat "$tmp/mlr-doc-metadata.txt"
-      while IFS= read -r tbl; do
-        [ -z "$tbl" ] && continue
-        count="$(psql -d "$test_db" -v ON_ERROR_STOP=1 -tAc \
-          "SELECT COUNT(*)::bigint FROM public.\"${tbl//\"/\"\"}\"" 2>"$snap_err")" || {
-          cat "$snap_err" >"$errfile"
-          return 1
-        }
-        printf '%s\t%s\n' "$tbl" "$(tr -d '[:space:]' <<<"$count")"
-      done <"$tmp/mlr-doc-tables.txt"
-    } | sha256sum | awk '{print $1}' >"$outfile"
+    } >"$body"
+    while IFS= read -r tbl; do
+      [ -z "$tbl" ] && continue
+      quoted="${tbl//\"/\"\"}"
+      if ! row="$(psql -d "$test_db" -v ON_ERROR_STOP=1 -tA -F "$(printf '\t')" -c \
+        "SELECT COUNT(*)::bigint, md5(COALESCE(string_agg(t::text, chr(10) ORDER BY t::text), '')) FROM public.\"${quoted}\" t" \
+        2>"$snap_err")"; then
+        mlr_doc_copy_err "$snap_err" "$errfile"
+        return 1
+      fi
+      printf '%s\t%s\n' "$tbl" "$row" >>"$body"
+    done <"$tmp/mlr-doc-tables.txt"
+    if ! sha256sum "$body" >"$tmp/mlr-doc-snapshot.sha"; then
+      printf '%s\n' 'snapshot digest failed' >"$errfile"
+      return 1
+    fi
+    awk '{print $1}' "$tmp/mlr-doc-snapshot.sha" >"$outfile"
     return 0
   fi
 
+  # shellcheck disable=SC2016 # $1 is a query placeholder, not a shell expansion
   if ! bundle exec ruby -rpg -rdigest -e '
     test_db = ENV.fetch("MLR_DOC_TEST_DB")
     conn = PG.connect(
@@ -170,16 +238,18 @@ mlr_doc_test_db_snapshot() {
       "SELECT tablename FROM pg_tables WHERE schemaname = $1 ORDER BY tablename",
       ["public"]
     )
+    empty_md5 = Digest::MD5.hexdigest("")
     tables.each do |row|
       tbl = row["tablename"]
-      q = "SELECT COUNT(*)::bigint AS c FROM public." + conn.quote_ident(tbl)
-      c = conn.exec(q).first["c"]
-      parts << "#{tbl}\t#{c}"
+      q = "SELECT COUNT(*)::bigint AS c, md5(string_agg(t::text, chr(10) ORDER BY t::text)) AS h FROM public." + conn.quote_ident(tbl) + " t"
+      got = conn.exec(q).first
+      h = got["h"] || empty_md5
+      parts << "#{tbl}\t#{got["c"]}\t#{h}"
     end
     conn.close
     puts Digest::SHA256.hexdigest(parts.join("\n"))
   ' >"$outfile" 2>"$snap_err"; then
-    cat "$snap_err" >"$errfile"
+    mlr_doc_copy_err "$snap_err" "$errfile"
     return 1
   fi
 }
@@ -218,7 +288,7 @@ check_mlr_doc() {
   local snapshot_after="$tmp/mlr-doc-snapshot-after.txt"
   local snapshot_err="$tmp/mlr-doc-snapshot.err"
   local pg_env="$tmp/mlr-doc-pg.env"
-  local test_db missing=0 assertions=0
+  local test_db missing=0 assertions=0 url_db url_err
 
   printf '== smoke: %s\n' "$name"
 
@@ -247,8 +317,24 @@ check_mlr_doc() {
     return 0
   fi
 
-  if ! mlr_doc_write_pg_env "$pg_env"; then
+  url_err="$tmp/mlr-doc-url.err"
+  if ! url_db="$(mlr_doc_database_url_name 2>"$url_err")"; then
     printf '   FAIL: could not parse DATABASE_URL server parameters\n'
+    mlr_doc_redact <"$url_err" | sed 's/^/   | /'
+    failures=$((failures + 1))
+    return 0
+  fi
+  # DATABASE_URL overrides RAILS_ENV. A URL whose database path is the test
+  # database would run the reproduce block against it — refuse before any probe.
+  if [ -n "$url_db" ] && [ "$url_db" = "$test_db" ]; then
+    printf '   FAIL: DATABASE_URL names the test database\n'
+    failures=$((failures + 1))
+    return 0
+  fi
+
+  if ! mlr_doc_write_pg_env "$pg_env" 2>"$tmp/mlr-doc-pg.err"; then
+    printf '   FAIL: could not parse DATABASE_URL server parameters\n'
+    mlr_doc_redact <"$tmp/mlr-doc-pg.err" | sed 's/^/   | /'
     failures=$((failures + 1))
     return 0
   fi
@@ -257,10 +343,7 @@ check_mlr_doc() {
 
   if ! mlr_doc_test_db_snapshot "$snapshot_before" "$test_db" "$snapshot_err"; then
     printf '   FAIL: test database snapshot before reproduce (probe error)\n'
-    sed -E \
-      -e 's#postgres://[^[:space:]"'\'']*#[REDACTED]#g' \
-      -e 's#(DATABASE_URL|PGPASSWORD)=[^[:space:]]*#\1=[REDACTED]#g' \
-      "$snapshot_err" | sed 's/^/   | /'
+    mlr_doc_redact <"$snapshot_err" | sed 's/^/   | /'
     failures=$((failures + 1))
     return 0
   fi
@@ -270,6 +353,7 @@ check_mlr_doc() {
     printf '%s\n' '#!/usr/bin/env bash'
     printf '%s\n' 'set -e'
     cat "$tmp/mlr-doc-block.txt"
+    # shellcheck disable=SC2016 # $PWD expands in the generated script, not here
     printf '%s\n' 'echo "MLR_DOC_PWD=$PWD"'
   } >"$script"
   chmod +x "$script"
@@ -302,10 +386,7 @@ check_mlr_doc() {
 
   if ! mlr_doc_test_db_snapshot "$snapshot_after" "$test_db" "$snapshot_err"; then
     printf '   FAIL: test database snapshot after reproduce (probe error)\n'
-    sed -E \
-      -e 's#postgres://[^[:space:]"'\'']*#[REDACTED]#g' \
-      -e 's#(DATABASE_URL|PGPASSWORD)=[^[:space:]]*#\1=[REDACTED]#g' \
-      "$snapshot_err" | sed 's/^/   | /'
+    mlr_doc_redact <"$snapshot_err" | sed 's/^/   | /'
     failures=$((failures + 1))
     return 0
   fi
