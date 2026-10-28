@@ -319,7 +319,7 @@ class Corvid::ClaimSubmissionPhaseBRecheckTest < ActiveSupport::TestCase
           )
           results.push(:ok)
         rescue Exception => error
-          results.push(error.class.name)
+          results.push(error.class)
         end
       end
     end
@@ -337,7 +337,7 @@ class Corvid::ClaimSubmissionPhaseBRecheckTest < ActiveSupport::TestCase
     override_thread.join(10)
     marker_thread.join(10)
 
-    assert_equal "SubmissionOutcomeUnknown", results.pop
+    assert_equal Corvid::ClaimSubmission::SubmissionOutcomeUnknown, results.pop
     row = fresh_claim_row(claim_id)
     assert_nil row.medicaid_hold_override_reason_token
   ensure
@@ -560,7 +560,7 @@ class Corvid::ClaimSubmissionPhaseBRecheckTest < ActiveSupport::TestCase
 
   def assert_in_flight_changed_message!(error)
     assert error.is_a?(StandardError)
-    assert_equal "InFlightSubmissionChanged", error.class.name
+    assert_equal in_flight_submission_changed_class, error.class
     refute_match(/pt[-_]/i, error.message)
     refute_match(/TEST,PATIENT/i, error.message)
   end

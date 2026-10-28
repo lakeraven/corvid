@@ -305,7 +305,7 @@ class Corvid::ClaimSubmissionOverrideSubmitFindingsTest < ActiveSupport::TestCas
           )
           results.push([ :override, :ok ])
         rescue Exception => error
-          results.push([ :override, error.class.name ])
+          results.push([ :override, error.class ])
         end
       end
     end
@@ -316,7 +316,8 @@ class Corvid::ClaimSubmissionOverrideSubmitFindingsTest < ActiveSupport::TestCas
 
     out = []
     out << results.pop until results.empty?
-    assert_equal "SubmissionOutcomeUnknown", out.find { |kind, _| kind == :override }&.last
+    assert_equal Corvid::ClaimSubmission::SubmissionOutcomeUnknown,
+      out.find { |kind, _| kind == :override }&.last
 
     row = fresh_claim_row(claim_id)
     assert_override_spent_row!(row)
