@@ -9,17 +9,19 @@ module Corvid
     #
     # It IS the generic FhirAdapter — every read goes through the real
     # FhirAdapter FHIR-R4 parsing code (find_patient, verify_eligibility,
-    # verify_tribal_enrollment, list_claims, ...). A failed search stays
-    # nil on those list reads, and a blank patient identifier is unknown
-    # on list_referrals, list_claims, and get_care_team. The ONLY thing
-    # overridden is the HTTP transport: instead of issuing `net/http`
-    # calls, the REST primitives (`fhir_read`, `fhir_search`,
-    # `fhir_create`, `fhir_update`) serve and store resources in an
-    # in-memory FHIR store. That keeps the demo self-contained (no live
-    # FHIR server) while proving the exact same stock-FHIR code path a
-    # production deployment runs against any conformant FHIR R4 server.
-    # Writes (create_referral, update_referral)
-    # land in that store, so later reads see them.
+    # verify_tribal_enrollment, list_claims, get_coverages, ...). A failed
+    # search stays nil on those list reads, and a blank patient identifier
+    # is unknown on list_referrals, list_claims, and get_care_team. The ONLY
+    # thing overridden is the HTTP transport: instead of issuing `net/http`
+    # calls, the REST primitives (`fhir_read`, `fhir_search`, `fhir_create`,
+    # `fhir_update`) serve and store resources in an in-memory FHIR store,
+    # and `fetch_bundle_page` serves each search page from that store, so
+    # page walks such as get_coverages apply the same Coverage rules without
+    # net/http. That keeps the demo self-contained (no live FHIR server)
+    # while proving the exact same stock-FHIR code path a production
+    # deployment runs against any conformant FHIR R4 server. Writes
+    # (create_referral, update_referral) land in that store, so later reads
+    # see them.
     #
     # The store is a plain array of FHIR resource hashes (as a real server
     # would return them). No vendor-specific shapes — see
@@ -78,6 +80,42 @@ module Corvid
       # ServiceRequest?patient=, CareTeam?patient=. Matching mirrors how a
       # real FHIR server resolves these references/tokens.
       def fhir_search(resource_type, params = {})
+        memory_search_bundle(resource_type, params)
+      end
+
+      # Same Bundle #fhir_search builds, so a page walk stays in memory and
+      # still runs the caller's Coverage rules. Does not follow next links;
+      # the store is one page. The resource type is the first segment after
+      # this adapter's own base path, so memory://fhir-demo/r4/Coverage and
+      # a deeper base such as memory://fhir-demo/a/b/r4/Coverage both name
+      # Coverage. A path that is not under that base is not a page.
+      def fetch_bundle_page(url)
+        uri = URI.parse(url.to_s)
+        resource_type = resource_type_on_base_path(uri.path.to_s)
+        return if resource_type.nil?
+
+        memory_search_bundle(resource_type, URI.decode_www_form(uri.query.to_s).to_h)
+      rescue URI::Error, ArgumentError
+        nil
+      end
+
+      def resource_type_on_base_path(path)
+        base_path = URI.parse(@base_url).path.to_s
+        relative = relative_path_under_base(base_path, path)
+        return if relative.nil?
+
+        relative.split("/").reject(&:empty?).first
+      end
+
+      def relative_path_under_base(base_path, path)
+        return if base_path.empty?
+        return "" if path == base_path
+        return unless path.start_with?("#{base_path}/")
+
+        path.delete_prefix(base_path)
+      end
+
+      def memory_search_bundle(resource_type, params)
         params = params.transform_keys(&:to_s)
         matches = @by_type[resource_type].select { |r| search_match?(resource_type, r, params) }
                                          .map { |r| deep_stringify(r) }

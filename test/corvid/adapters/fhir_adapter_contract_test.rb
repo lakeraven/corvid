@@ -49,6 +49,20 @@ module Corvid
         }
       end
 
+      # get_coverages walks pages via fetch_bundle_page; serve the same in-memory
+      # search as fhir_search after stripping this harness base path.
+      def fetch_bundle_page(url)
+        uri = URI.parse(url.to_s)
+        base_uri = URI.parse(@base_url)
+        relative_path = uri.path.to_s.sub(%r{\A#{base_uri.path}/?}, "")
+        resource_type = relative_path.split("/").reject(&:empty?).first
+        return if resource_type.nil? || resource_type.empty?
+
+        fhir_search(resource_type, URI.decode_www_form(uri.query.to_s).to_h)
+      rescue URI::Error, ArgumentError
+        nil
+      end
+
       def fhir_create(resource_type, body)
         resource = JSON.parse(JSON.generate(body)).merge("id" => "#{resource_type.downcase}-contract-#{@by_type[resource_type].size + 1}")
         add_resource(resource)

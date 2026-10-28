@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "minitest/autorun"
+require "active_support/all" # get_coverages uses String#blank?
 require "uri"
 require "openssl"
 require "corvid/configuration"
@@ -186,6 +187,14 @@ class Corvid::Adapters::FhirAdapterBaseUrlPathTest < Minitest::Test
     window = doc[near_fhir.begin(0)..(near_fhir.end(0) + 200)]
     assert_match(/path-qualified/i, window,
                  "FHIR base URL guidance must mention path-qualified bases")
+  end
+
+  def test_get_coverages_returns_nil_for_non_http_base_url_without_raising
+    adapter = Corvid::Adapters::FhirAdapter.new(base_url: "ftp://x.example/r4")
+
+    result = adapter.get_coverages("pt-1")
+
+    assert_nil result
   end
 
   private

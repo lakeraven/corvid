@@ -52,6 +52,71 @@ class Corvid::Adapters::FhirDemoAdapterTest < Minitest::Test
     assert_equal "C-DEMO-001", results.first.code
   end
 
+  def test_get_coverages_returns_mapped_active_coverage_from_in_memory_store
+    coverage = synthetic_demo_coverage(for_patient: "pt_demo_cov")
+    adapter = Corvid::Adapters::FhirDemoAdapter.new(resources: [ coverage ])
+
+    result = adapter.get_coverages("pt_demo_cov")
+
+    refute_nil result
+    assert_equal 1, result.size
+    assert_equal({
+      payer_name: "TEST DEMO PAYER COV",
+      plan_name: "TEST DEMO PLAN COV",
+      coverage_type: "MCDSC",
+      policy_number: "POL_DEMO_COV",
+      coverage_start: Date.new(2020, 1, 1),
+      coverage_end: Date.new(2030, 12, 31),
+      status: "active"
+    }, result.first)
+  end
+
+  def test_deep_base_path_demo_subclass_maps_coverage_from_in_memory_store
+    coverage = synthetic_demo_coverage(for_patient: "pt_demo_deep_cov")
+    adapter = deep_base_fhir_demo_adapter(resources: [ coverage ])
+
+    result = adapter.get_coverages("pt_demo_deep_cov")
+
+    refute_nil result
+    assert_equal 1, result.size
+    assert_equal "POL_DEMO_COV", result.first[:policy_number]
+  end
+
+  def test_get_coverages_returns_empty_array_when_patient_has_no_coverage_in_memory_store
+    adapter = Corvid::Adapters::FhirDemoAdapter.new(
+      resources: [ synthetic_condition ]
+    )
+
+    result = adapter.get_coverages("pt_demo_no_cov")
+
+    assert_equal [], result
+  end
+
+  def test_get_coverages_does_not_raise_for_patient_with_or_without_coverage
+    with_cov = Corvid::Adapters::FhirDemoAdapter.new(
+      resources: [ synthetic_demo_coverage(for_patient: "pt_demo_cov") ]
+    )
+    without_cov = Corvid::Adapters::FhirDemoAdapter.new(resources: [])
+
+    with_cov.get_coverages("pt_demo_cov")
+    without_cov.get_coverages("pt_demo_cov")
+  end
+
+  def test_fetch_bundle_page_returns_nil_for_coverage_search_outside_demo_base_path
+    adapter = Corvid::Adapters::FhirDemoAdapter.new(
+      resources: [ synthetic_demo_coverage(for_patient: "pt-1") ]
+    )
+    outside_url = "memory://fhir-demo/r4x/Coverage?beneficiary=Patient%2Fpt-1"
+    inside_url = "memory://fhir-demo/r4/Coverage?beneficiary=Patient%2Fpt-1"
+
+    assert_nil adapter.send(:fetch_bundle_page, outside_url)
+
+    page = adapter.send(:fetch_bundle_page, inside_url)
+    refute_nil page
+    assert_equal "searchset", page["type"]
+    refute_empty page["entry"]
+  end
+
   # The overlay demo installs this adapter as Corvid.adapter, so referral
   # writes must work in memory instead of reaching for HTTP.
   def test_create_referral_stores_a_service_request_that_reads_find_and_list
@@ -98,6 +163,16 @@ class Corvid::Adapters::FhirDemoAdapterTest < Minitest::Test
 
   private
 
+  def deep_base_fhir_demo_adapter(resources:)
+    klass = Class.new(Corvid::Adapters::FhirDemoAdapter) do
+      define_method(:initialize) do |resources: []|
+        super(resources: resources)
+        @base_url = "memory://fhir-demo/a/b/r4".freeze
+      end
+    end
+    klass.new(resources: resources)
+  end
+
   def synthetic_service_request
     {
       "resourceType" => "ServiceRequest",
@@ -139,6 +214,30 @@ class Corvid::Adapters::FhirDemoAdapterTest < Minitest::Test
           "display" => "TEST DEMO MEDICATION 001"
         } ]
       }
+    }
+  end
+
+  def synthetic_demo_coverage(for_patient:)
+    {
+      "resourceType" => "Coverage",
+      "id" => "cov_demo_cov",
+      "status" => "active",
+      "beneficiary" => { "reference" => "Patient/#{for_patient}" },
+      "subscriberId" => "POL_DEMO_COV",
+      "payor" => [
+        {
+          "reference" => "Organization/cov_demo_cov",
+          "display" => "TEST DEMO PAYER COV"
+        }
+      ],
+      "type" => { "coding" => [ { "code" => "MCDSC" } ] },
+      "period" => { "start" => "2020-01-01", "end" => "2030-12-31" },
+      "class" => [
+        {
+          "type" => { "coding" => [ { "code" => "plan" } ] },
+          "name" => "TEST DEMO PLAN COV"
+        }
+      ]
     }
   end
 

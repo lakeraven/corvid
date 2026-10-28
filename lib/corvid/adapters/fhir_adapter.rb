@@ -5,6 +5,8 @@ require "json"
 require "uri"
 require "ipaddr"
 require "date"
+require "time"
+require "zlib"
 require "bigdecimal"
 require "openssl"
 require "zlib"
@@ -87,9 +89,17 @@ module Corvid
         active on-hold cancelled completed entered-in-error stopped draft unknown
       ].freeze
       BLOCKING_OUTCOME_SEVERITIES = %w[error fatal].freeze
-      # These issue codes make the page unknown at any severity. Other codes
-      # still follow BLOCKING_OUTCOME_SEVERITIES.
-      UNTRUSTED_OUTCOME_CODES = %w[suppressed incomplete too-costly].freeze
+      # Plain-ASCII FHIR code token: printable ASCII runs separated by one
+      # space. No padding, no empty string, and no character outside [!-~].
+      # An OperationOutcome issue.code that is missing or is not this
+      # token is unknown. Do not normalize or guess.
+      FHIR_CODE_TOKEN = /\A[!-~]+(?: [!-~]+)*\z/
+      # These tokens make the page unknown at any severity. Comparison is
+      # code.downcase of a FHIR_CODE_TOKEN, with no whitespace or format
+      # stripping. Other tokens still follow BLOCKING_OUTCOME_SEVERITIES.
+      UNTRUSTED_OUTCOME_CODES = %w[
+        suppressed incomplete too-costly timeout throttled too-long exception
+      ].freeze
       # FHIR R4 dateTime grammar (anchored). Year and year-month are valid
       # partials and carry no day. Do not use Date.parse — it accepts prose.
       FHIR_YEAR = "(?:[0-9](?:[0-9](?:[0-9][1-9]|[1-9]0)|[1-9]00)|[1-9]000)"
@@ -145,6 +155,71 @@ module Corvid
 
       DEFAULT_OPEN_TIMEOUT = 10
       DEFAULT_READ_TIMEOUT = 30
+      # A Coverage search that reads this many Bundle pages is unknown,
+      # including when the last page has no next link. A shorter chain
+      # that ends is kept. Other searches use MAX_SEARCH_PAGES and may
+      # use every page when the chain ends.
+      MAX_COVERAGE_PAGES = 50
+      # Coverage.kind. Absent and exact "insurance" stay on the allowlist.
+      # Exact "self-pay" and "other" are not insurance, so the row is
+      # dropped. Any other present value is unknown.
+      COVERAGE_INSURANCE_KIND = "insurance"
+      COVERAGE_EXCLUDED_KINDS = %w[self-pay other].freeze
+
+      # Strict Coverage.period grammar. Anchored, and applied before any
+      # Date or Time parse. Date.parse is never used on these bounds.
+      COVERAGE_YEAR_RE = /\A\d{4}\z/
+      COVERAGE_MONTH_RE = /\A\d{4}-\d{2}\z/
+      COVERAGE_DATE_RE = /\A\d{4}-\d{2}-\d{2}\z/
+      COVERAGE_DATETIME_RE =
+        /\A\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})\z/
+      # Coverage.status. Any other value fails the search closed.
+      COVERAGE_STATUSES = %w[active cancelled draft entered-in-error].freeze
+      # Exact OperationOutcome.issue.severity on a Coverage search. Any
+      # other value, including a different case, fails the search.
+      COVERAGE_OUTCOME_SEVERITIES = %w[fatal error warning information].freeze
+      # Code "pay" is self-pay with either system below, or when the
+      # coding has no system (issue #607 adds the STU3 system).
+      COVERAGE_SELF_PAY_CODE = "pay"
+      COVERAGE_SELFPAY_SYSTEM = "http://terminology.hl7.org/CodeSystem/coverage-selfpay"
+      # STU3 Coverage self-pay code system (issue #607).
+      COVERAGE_STU3_SELFPAY_SYSTEM = "http://hl7.org/fhir/coverage-selfpay"
+      COVERAGE_PAY_SELF_PAY_SYSTEMS = [
+        COVERAGE_SELFPAY_SYSTEM,
+        COVERAGE_STU3_SELFPAY_SYSTEM
+      ].freeze
+      # X12 claim filing indicator (issue #607). On this system, code
+      # "09", "9", or Integer 9 is self-pay. With no system, only "09".
+      COVERAGE_X12_SELF_PAY_CODE = "09"
+      COVERAGE_X12_SELF_PAY_SHORT_CODE = "9"
+      COVERAGE_X12_SELF_PAY_INTEGER = 9
+      COVERAGE_X12_CLAIM_FILING_INDICATOR_SYSTEM =
+        "https://x12.org/codes/claim-filing-indicator-codes"
+      # type.text is self-pay when Coverage.type has no coding and the
+      # text, downcased with whitespace and hyphens removed, equals this
+      # value (issue #607).
+      COVERAGE_SELF_PAY_TEXT = "selfpay"
+      # PHDSC Source of Payment Typology (issue #607). On any system
+      # below, a coding is insurance only when its code is digits whose
+      # first digit is in COVERAGE_SOP_INSURER_FIRST_DIGITS. A first digit
+      # of 3 (IHS/Tribe incl. PRC), 8 (no payment), or 9 (miscellaneous),
+      # or a non-digit code, is not insurance. Any such coding excludes
+      # the Coverage even when another coding is an insurer code.
+      # https://nahdo.org/sopt is the HL7 THO canonical URL of the same
+      # typology.
+      COVERAGE_SOP_SYSTEM = "urn:oid:2.16.840.1.113883.3.221.5"
+      COVERAGE_SOP_BARE_OID = "2.16.840.1.113883.3.221.5"
+      COVERAGE_SOP_NAHDO_SYSTEM = "https://nahdo.org/sopt"
+      COVERAGE_SOP_SYSTEMS = [
+        COVERAGE_SOP_SYSTEM,
+        COVERAGE_SOP_BARE_OID,
+        COVERAGE_SOP_NAHDO_SYSTEM
+      ].freeze
+      COVERAGE_SOP_INSURER_FIRST_DIGITS = "124567"
+      # Digits whose first digit is an insurer family (issue #607).
+      COVERAGE_SOP_INSURER_CODE_RE =
+        /\A[#{COVERAGE_SOP_INSURER_FIRST_DIGITS}]\d*\z/
+      COVERAGE_REFERENCE_ID_RE = %r{\A[^/?#]+\z}
 
       # The only names accepted as loopback. RFC 6761 reserves "localhost"
       # and ".localhost" and requires resolvers to keep them on the loopback
@@ -407,7 +482,9 @@ module Corvid
       # Refuted and entered-in-error are excluded in any system. The same
       # codes given only as verificationStatus text, stripped and
       # case-insensitive, are excluded too. Entered-in-error is dropped
-      # even when clinical status is unusable. Never raises.
+      # even when clinical status is unusable. An OperationOutcome issue
+      # whose code is missing or is not a plain-ASCII FHIR code token is
+      # unknown at any severity, including a non-String. Never raises.
       # In memory only — never persisted or logged (ADR 0003).
       def get_conditions(patient_identifier)
         clinical_search("Condition", patient_identifier) do |bundle|
@@ -431,9 +508,11 @@ module Corvid
       # doNotPerform value makes the page unknown. Code is the first
       # coding with a non-empty code; display falls back to that coding's
       # display, then text. No such coding and no text is unknown. Invalid
-      # Medication ids are not requested. Never raises. Array of
-      # MedicationReference, or nil when unknown. In memory only — never
-      # persisted or logged (ADR 0003).
+      # Medication ids are not requested. An OperationOutcome issue whose
+      # code is missing or is not a plain-ASCII FHIR code token is
+      # unknown at any severity, including a non-String. Never raises.
+      # Array of MedicationReference, or nil when unknown. In memory only —
+      # never persisted or logged (ADR 0003).
       def get_medications(patient_identifier)
         clinical_search("MedicationRequest", patient_identifier) do |bundle|
           map_medication_entries(bundle, patient_identifier)
@@ -488,6 +567,143 @@ module Corvid
         return nil if teams.nil?
 
         teams.flat_map { |team| care_team_members(team) }
+      end
+
+      # ----------------------------------------------------------------------
+      # Coverages
+      #
+      # GET Coverage?beneficiary=Patient/<id>. A nil, empty, or
+      # whitespace-only patient identifier is nil and makes no request.
+      # Bundle.type must equal "searchset" or the search is nil. Pages
+      # come from #collect_search_pages: one next-link walker, the same
+      # origin and path checks, and the same repeat detection as
+      # #fhir_search. Each page is loaded through #fetch_bundle_page.
+      # The Coverage cap is MAX_COVERAGE_PAGES. A chain
+      # that long is unknown. A relation containing a Unicode format
+      # character (general category Cf, such as U+200B or U+FEFF) is
+      # unknown and is not requested.
+      #
+      # Every Coverage must name this patient. beneficiary.reference is
+      # accepted only as "Patient/<id>" or exactly
+      # "#{base_url}/Patient/<id>". Any other reference, including an
+      # absolute URL on another server, makes the whole result nil.
+      #
+      # Insurance is an allowlist. A Coverage is included only when every
+      # payor is a Hash whose reference is "Organization/<id>" or exactly
+      # "#{base_url}/Organization/<id>", and there is at least one payor.
+      # No type.coding, in any position, may be self-pay or a non-insurer
+      # PHDSC code (issue #607). Self-pay is code "pay" with system
+      # http://terminology.hl7.org/CodeSystem/coverage-selfpay, system
+      # http://hl7.org/fhir/coverage-selfpay (STU3), or no system; or
+      # code "09", "9", or Integer 9 with system
+      # https://x12.org/codes/claim-filing-indicator-codes; or code "09"
+      # with no system. On PHDSC Source of Payment Typology system
+      # urn:oid:2.16.840.1.113883.3.221.5, bare OID
+      # 2.16.840.1.113883.3.221.5, or https://nahdo.org/sopt, a coding is
+      # insurance only when its code is digits whose first digit is 1, 2,
+      # 4, 5, 6, or 7. A first digit of 3 (IHS/Tribe incl. PRC), 8 (no
+      # payment), or 9 (miscellaneous), or a non-digit code, is not
+      # insurance; any such coding excludes the Coverage even when another
+      # coding is an insurer code. Codes in other systems keep the prior
+      # rules. type.text, downcased with whitespace and hyphens removed,
+      # equal to "selfpay" is self-pay when there is no coding. kind
+      # absent or exactly "insurance" continues the allowlist. Exact
+      # "self-pay" or "other" excludes the row. Any other present kind
+      # is nil. Coverages excluded by this allowlist still count toward
+      # the total check.
+      #
+      # The array is active coverages whose period covers now. A missing
+      # start or end is an open bound. A present bound must match strict
+      # FHIR grammar before any calendar parse (anchored patterns, never
+      # Date.parse) or the whole result is nil: YYYY, YYYY-MM, YYYY-MM-DD,
+      # or YYYY-MM-DDThh:mm:ss(.fraction)?(Z|[+-]hh:mm). Year is Jan 1
+      # (start) or Dec 31 (end). Month is the first or last day. A date is
+      # that date. Those are compared with Date.current and stored on
+      # coverage_start / coverage_end. A dateTime is an instant compared
+      # with Time.current; the stored value is the UTC calendar date of
+      # that instant. One parser feeds both the filter and the mapping.
+      #
+      # status must be active, cancelled, draft, or entered-in-error;
+      # any other value, including a missing status, is nil. A Coverage
+      # with "period" present but not an object is nil. A malformed shape
+      # (type, payor, beneficiary, class, or coding that is not the Hash,
+      # Array, or String that element requires) is nil and does not raise.
+      # payor[0].display, subscriberId, and any type.coding code, when
+      # present but not a String, make the search nil. Integer 9 on the
+      # X12 claim-filing-indicator system remains self-pay.
+      # A Coverage entry is counted only when it has no search, no mode, or
+      # mode "match", on every page, before the active and insurance
+      # filters. Any other search on a Coverage entry is malformed and the
+      # read is unknown: search present and not a Hash, a mode present and
+      # not a String, a mode that is not a FHIR search mode, or mode
+      # "include" or "outcome". A malformed search on any entry, on any
+      # page, is unknown. When a page includes total, it must be an
+      # Integer >= 0 and equal to the first page's total; a later
+      # page may omit total. The first page's total must equal that count,
+      # or the result is nil. An OperationOutcome entry is nil when issue
+      # is missing, not an Array, empty, contains a non-Hash, or has a
+      # severity other than exactly "fatal", "error", "warning", or
+      # "information". An issue code that is missing or is not a
+      # plain-ASCII FHIR code token (FHIR_CODE_TOKEN) is nil: a missing
+      # key, JSON null, a non-String, invalid encoding, look-alike
+      # characters, padding, or "". Nothing is stripped or rewritten.
+      # UNTRUSTED_OUTCOME_CODES are nil at any severity when that token
+      # matches one of them case-insensitively (code.downcase).
+      # "error" and "fatal" still block. A well-formed warning or
+      # information issue with another code token is ignored. A
+      # resourceType equal to "OperationOutcome" case-insensitively or
+      # after stripping, but not exactly, is nil. A page with no entry and total nil
+      # or 0 is empty. A first page with no entry, a
+      # positive total, and no next link is nil via the count check. A
+      # string anywhere in the bundle that fails valid_encoding? is nil
+      # and does not raise.
+      # An entry that is not a Hash, an entry without a Hash resource, or
+      # a resource without a String resourceType is nil. A resourceType
+      # equal to "Coverage" case-insensitively but not exactly is nil.
+      # An entry whose resourceType is neither Coverage nor
+      # OperationOutcome is nil unless search.mode is exactly "include"
+      # (that entry is skipped). Each Coverage id is tracked across all
+      # pages. A Coverage without a non-empty String id, or a repeated
+      # id, is nil.
+      # plan_name is the class entry typed "plan": its name, otherwise
+      # its value.
+      #
+      # An Array means the search finished ([] when nothing matched). nil
+      # means unknown — a non-2xx page, bad JSON, a non-Bundle body, a
+      # Bundle.type other than "searchset", a malformed link or entry, a
+      # malformed entry search, a missing or duplicate Coverage id, an
+      # untrusted beneficiary or
+      # period, a malformed Coverage, a status outside the FHIR set, a
+      # total that is not an Integer >= 0, differs from the first page,
+      # or does not match the Coverage count, invalid encoding, an
+      # untrusted or inexact OperationOutcome, an empty issue array, a
+      # missing issue code or one that is not a FHIR code token, an
+      # unexpected resource without search.mode "include", a blank patient
+      # identifier, a non-String
+      # payor display, subscriberId, or type code, a malformed kind,
+      # an off-origin / cyclic / over-limit next link, a next relation
+      # that matches only after removing [[:space:]] or case-folding,
+      # or a relation that contains a format character,
+      # or a transport or URI error
+      # (Timeout::Error, including Net::ReadTimeout and Net::OpenTimeout,
+      # SocketError, SystemCallError, OpenSSL::SSL::SSLError, IOError,
+      # Net::ProtocolError, Net::HTTPBadResponse,
+      # Net::HTTPHeaderSyntaxError, Zlib::Error, URI::Error, ArgumentError).
+      # A non-http(s) base_url returns nil. Callers fail closed; a partial
+      # page list is never returned.
+      # ----------------------------------------------------------------------
+
+      def get_coverages(patient_identifier)
+        return nil if patient_identifier.blank?
+
+        query = URI.encode_www_form(beneficiary: "Patient/#{patient_identifier}")
+        pages = collect_search_pages("#{@base_url}/Coverage?#{query}", **page_cap_for("Coverage"))
+        coverage_rows_from_pages(pages, patient_identifier) if pages
+      rescue Timeout::Error, SocketError, SystemCallError,
+             OpenSSL::SSL::SSLError, IOError, Net::ProtocolError,
+             Net::HTTPBadResponse, Net::HTTPHeaderSyntaxError, Zlib::Error,
+             URI::Error, ArgumentError
+        nil
       end
 
       # ----------------------------------------------------------------------
@@ -660,17 +876,20 @@ module Corvid
       # empty or nil body, a String body that is not valid_encoding?, or not
       # a Bundle Hash; when `entry` is present and not an Array (absent or
       # null is an empty page); when `link` is present and not an Array;
-      # when a link relation or url String is not valid_encoding?; when a
-      # Hash link's relation is a String equal to "next" only after strip
-      # and case-insensitive compare (that URL is not requested); when more
-      # than one exactly-"next" link is present (neither URL is requested);
-      # when parsing, joining, or checking a next URL raises URI::Error;
-      # when a next URL's scheme or port differs from @base_url, or its host
-      # differs case-insensitively; when its path does not start with
-      # @base_url's path at a segment boundary; when that path contains ";",
-      # a backslash, or an encoded %2f/%5c/%3b/%25 (any case) before or
-      # after percent-decoding, or a path segment is "." or ".." after
-      # %2e/%2E are decoded (that URL is not requested); when a present
+      # when a link row is not a Hash, or its relation is not a String
+      # (an Array relation included); when a relation or url String is not
+      # valid_encoding?; when a relation contains a Unicode format
+      # character (category Cf); when a relation equals "next" only after
+      # removing [[:space:]] or case-folding (that URL is not requested);
+      # when more than one exactly-"next" link is present (neither URL is
+      # requested); when parsing, joining, or checking a next URL raises
+      # URI::Error; when a next URL's scheme or port differs from
+      # @base_url, or its host differs case-insensitively; when its path
+      # does not start with @base_url's path at a segment boundary after
+      # repeated percent-decoding and segment collapse; when that path
+      # contains ";", a backslash, a control character, or an encoded
+      # %2f/%5c/%3b/%25 (any case) before or after decoding, or a path
+      # segment is "." or ".." (that URL is not requested); when a present
       # `total` is not a non-negative Integer, or differs from the count of
       # merged entries whose search.mode is "match" or absent, or whose
       # search value is not a Hash (an equal total is kept, an absent total
@@ -678,11 +897,21 @@ module Corvid
       # the same resourceType and id appear twice among those counted
       # entries (repeated include entries are allowed); when a later page's
       # Bundle.type differs from the first page's; when a next URL was
-      # already visited; or when the chain is longer than MAX_SEARCH_PAGES.
+      # already visited; or when the chain exceeds the page cap. Coverage
+      # uses MAX_COVERAGE_PAGES and is unknown when that many pages were
+      # read. Other types use MAX_SEARCH_PAGES and keep a chain that ends on
+      # the last page.
       def fhir_search(resource_type, params = {})
         query = URI.encode_www_form(params)
-        pages = collect_search_pages("#{@base_url}/#{resource_type}?#{query}")
+        url = "#{@base_url}/#{resource_type}?#{query}"
+        pages = collect_search_pages(url, **page_cap_for(resource_type))
         merge_search_pages(pages) if pages
+      end
+
+      def page_cap_for(resource_type)
+        return { page_limit: MAX_SEARCH_PAGES } unless resource_type == "Coverage"
+
+        { page_limit: MAX_COVERAGE_PAGES, at_limit: :unknown }
       end
 
       # 204 and an empty body are not a resource. Parsing nil raises, and
@@ -694,11 +923,13 @@ module Corvid
         JSON.parse(response.body)
       end
 
-      def collect_search_pages(url)
+      # at_limit :unknown discards a chain that filled page_limit, even
+      # when the last Bundle has no next link. :allow keeps that chain.
+      def collect_search_pages(url, page_limit: MAX_SEARCH_PAGES, at_limit: :allow)
         pages = []
         seen = {}
 
-        while url && pages.size < MAX_SEARCH_PAGES && !seen[url]
+        while url && pages.size < page_limit && !seen[url]
           page = fetch_bundle_page(url)
           return unless page && acceptable_entries?(page) && same_bundle_type?(pages, page)
 
@@ -708,11 +939,20 @@ module Corvid
           return if url == SEARCH_REJECTED
         end
 
-        # A nil url means the chain ended. A leftover url is a page cap or a
-        # repeated next link, so pages already read are discarded.
-        pages if url.nil?
+        search_pages_result(pages, url, page_limit, at_limit)
       end
 
+      # A nil url means the chain ended. A leftover url is a page cap or a
+      # repeated next link, so pages already read are discarded.
+      def search_pages_result(pages, url, page_limit, at_limit)
+        return if url
+        return if at_limit == :unknown && pages.size >= page_limit
+
+        pages
+      end
+
+      # One Bundle page, or nil when it cannot be read. Subclasses override
+      # this to replace HTTP. #collect_search_pages is the only caller.
       def fetch_bundle_page(url)
         response = http_get(url)
         return unless response.is_a?(Net::HTTPSuccess)
@@ -725,7 +965,7 @@ module Corvid
 
         bundle = JSON.parse(body)
         bundle if bundle.is_a?(Hash) && bundle["resourceType"] == "Bundle"
-      rescue JSON::ParserError, TypeError
+      rescue JSON::ParserError, TypeError, ArgumentError, EncodingError
         nil
       end
 
@@ -741,15 +981,21 @@ module Corvid
       def next_link_href(bundle)
         links = bundle_links(bundle)
         return SEARCH_REJECTED if links == SEARCH_REJECTED
-        return SEARCH_REJECTED if links.any? { |link| invalid_link_encoding?(link) }
-        return SEARCH_REJECTED if links.any? { |link| inexact_next_relation?(link) }
+        return SEARCH_REJECTED unless links.all? { |link| sound_link?(link) }
 
         next_links = links.select { |link| next_relation?(link) }
         return SEARCH_REJECTED if next_links.size > 1
         return if next_links.empty?
 
-        href = next_links.first["url"]
-        href.is_a?(String) && href.valid_encoding? && !href.empty? ? href : SEARCH_REJECTED
+        strict_href(next_links.first["url"])
+      end
+
+      def sound_link?(link)
+        return false unless link.is_a?(Hash)
+        return false if invalid_link_encoding?(link)
+
+        relation = link["relation"]
+        relation.is_a?(String) && !format_relation?(relation) && !near_miss_next_relation?(relation)
       end
 
       def invalid_link_encoding?(link)
@@ -758,13 +1004,19 @@ module Corvid
         [ link["relation"], link["url"] ].any? { |value| value.is_a?(String) && !value.valid_encoding? }
       end
 
-      def inexact_next_relation?(link)
-        return false unless link.is_a?(Hash)
+      # Format characters are invisible. They must not be stripped into "next".
+      def format_relation?(relation)
+        relation.match?(/\p{Cf}/)
+      end
 
-        relation = link["relation"]
-        return false unless relation.is_a?(String) && relation != "next"
+      # Equals "next" once every [[:space:]] character is removed and case
+      # is folded, but is not the exact relation that is followed.
+      def near_miss_next_relation?(relation)
+        relation != "next" && relation.gsub(/[[:space:]]/, "").casecmp?("next")
+      end
 
-        relation.strip.casecmp?("next")
+      def strict_href(href)
+        href.is_a?(String) && href.valid_encoding? && !href.empty? ? href : SEARCH_REJECTED
       end
 
       def next_relation?(link)
@@ -799,27 +1051,75 @@ module Corvid
       end
 
       def path_under_base?(base_path, other_path)
-        base = base_path.to_s.chomp("/")
-        base = "/" if base.empty?
-        other = other_path.to_s
-        other = "/" if other.empty?
-        base == "/" || other == base || other.start_with?("#{base}/")
+        root = collapsed_search_path(base_path.to_s)
+        child = collapsed_search_path(other_path.to_s)
+        return false unless root && child
+
+        child == root || child.start_with?(root == "/" ? "/" : "#{root}/")
       end
 
-      # "." and ".." segments, including %2e/%2E, are rejected before fetch.
-      # ";", a backslash, encoded separators %2f/%5c, an encoded ";" (%3b)
-      # and any double-encoded escape (%25), all in any case, are rejected
-      # on the path both before and after that percent-decoding. A gateway
-      # that decodes, strips path parameters and normalizes dot segments
-      # could otherwise route the request outside the base path.
+      # Repeated decoding, then "." / ".." collapse. nil when the path is
+      # not absolute after decoding, contains a control character or
+      # backslash, or ".." would climb above the root. An empty path is
+      # the host root.
+      def collapsed_search_path(path)
+        decoded = repeated_decode(path)
+        return nil unless decoded.is_a?(String)
+        return nil if decoded.match?(/[[:cntrl:]\\]/)
+        return nil unless decoded.empty? || decoded.start_with?("/")
+
+        collapse_search_segments(decoded)
+      end
+
+      def collapse_search_segments(decoded)
+        segments = []
+        decoded.split("/").each do |segment|
+          next if segment.empty? || segment == "."
+          return nil if segment == ".." && segments.empty?
+
+          segment == ".." ? segments.pop : segments << segment
+        end
+        "/#{segments.join("/")}"
+      end
+
+      def repeated_decode(path)
+        decoded = path
+        5.times do
+          nxt = URI.decode_uri_component(decoded)
+          return nxt if nxt == decoded
+
+          decoded = nxt
+        end
+        nil
+      rescue ArgumentError
+        nil
+      end
+
+      # "." and ".." segments are rejected before fetch, including those
+      # that appear only after repeated percent-decoding. ";", a
+      # backslash, a control character, encoded separators %2f/%5c, an
+      # encoded ";" (%3b) and any double-encoded escape (%25), all in
+      # any case, are rejected on the raw path and on the decoded path.
+      # A gateway that decodes, strips path parameters and normalizes
+      # dot segments could otherwise route the request outside the base.
       def dot_segment_path?(href)
         raw = URI.parse(href).path.to_s
-        decoded = raw.gsub(/%2e/i, ".")
-        return true if forbidden_next_path?(raw) || forbidden_next_path?(decoded)
+        return true if forbidden_next_path?(raw)
 
-        decoded.split("/").any? { |segment| segment == "." || segment == ".." }
+        unsafe_decoded_path?(repeated_decode(raw))
       rescue URI::Error
         false
+      end
+
+      def unsafe_decoded_path?(decoded)
+        return true unless decoded.is_a?(String)
+        return true if forbidden_next_path?(decoded) || decoded.match?(/[[:cntrl:]\\]/)
+
+        dot_segment?(decoded)
+      end
+
+      def dot_segment?(path)
+        path.split("/").any? { |segment| segment == "." || segment == ".." }
       end
 
       def forbidden_next_path?(path)
@@ -1511,6 +1811,435 @@ module Corvid
         end
       end
 
+      # Coverage search -----------------------------------------------------
+
+      def coverage_rows_from_pages(pages, patient_identifier)
+        acc = { found: [], seen_ids: {}, received: 0, stated_total: nil, saw_total: false }
+        pages.each do |bundle|
+          return nil unless append_coverage_page(bundle, patient_identifier, acc)
+        end
+        coverage_search_result(acc[:found], acc[:received], acc[:stated_total])
+      end
+
+      def append_coverage_page(bundle, patient_identifier, acc)
+        return false unless accept_coverage_page(bundle, acc)
+
+        page = active_coverage_rows(bundle, patient_identifier, acc[:seen_ids])
+        return false unless page
+
+        acc[:received] += page[:coverage_count]
+        acc[:found].concat(page[:coverages])
+        true
+      end
+
+      def accept_coverage_page(bundle, acc)
+        return false unless coverage_bundle_shape?(bundle)
+
+        total = bundle["total"]
+        stated = acc[:saw_total] ? acc[:stated_total] : total
+        return false unless coverage_page_total_ok?(total, stated)
+
+        acc[:stated_total] = total unless acc[:saw_total]
+        acc[:saw_total] = true
+      end
+
+      def coverage_search_result(found, received, stated_total)
+        return nil unless coverage_total_matches?(stated_total, received)
+
+        found
+      end
+
+      def coverage_total_matches?(stated_total, received)
+        return true if stated_total.nil?
+        return false unless non_negative_coverage_total?(stated_total)
+
+        stated_total == received
+      end
+
+      # A present total must be a non-negative Integer and the same value
+      # as the first page. A later page may omit total.
+      def coverage_page_total_ok?(page_total, stated_total)
+        return true if page_total.nil?
+        return false unless non_negative_coverage_total?(page_total)
+
+        page_total == stated_total
+      end
+
+      def non_negative_coverage_total?(total)
+        total.is_a?(Integer) && total >= 0
+      end
+
+      def coverage_bundle_shape?(bundle)
+        bundle.is_a?(Hash) && bundle["type"] == "searchset" && coverage_strings_encoded?(bundle)
+      end
+
+      # Keys and values. One invalid string fails the whole search.
+      def coverage_strings_encoded?(value)
+        case value
+        when String
+          value.valid_encoding?
+        when Array
+          value.all? { |item| coverage_strings_encoded?(item) }
+        when Hash
+          value.all? { |key, item| coverage_strings_encoded?(key) && coverage_strings_encoded?(item) }
+        else
+          true
+        end
+      end
+
+      def active_coverage_rows(bundle, patient_identifier, seen_ids)
+        entries = bundle["entry"]
+        return empty_coverage_page(bundle) if entries.nil?
+        return nil unless entries.is_a?(Array)
+
+        fold_coverage_entries(entries, patient_identifier, seen_ids)
+      end
+
+      # No entry array. Absent or a non-negative Integer total is an empty
+      # page; the caller checks it against the first page and the count.
+      # Any other total is incomplete.
+      def empty_coverage_page(bundle)
+        total = bundle["total"]
+        return nil unless total.nil? || non_negative_coverage_total?(total)
+
+        { coverages: [], coverage_count: 0 }
+      end
+
+      def fold_coverage_entries(entries, patient_identifier, seen_ids)
+        rows = []
+        count = 0
+        entries.each do |entry|
+          counted = append_coverage_entry(entry, rows, patient_identifier, seen_ids)
+          return nil if counted.nil?
+
+          count += counted
+        end
+        { coverages: rows, coverage_count: count }
+      end
+
+      def append_coverage_entry(entry, rows, patient_identifier, seen_ids)
+        return nil unless well_formed_coverage_entry?(entry)
+        return nil if unknown_coverage_entry_search?(entry)
+        return nil if unknown_coverage_outcome?(entry)
+
+        resource = coverage_resource(entry)
+        return nil if resource && !remember_coverage_id(resource, seen_ids)
+        return non_coverage_entry(entry) unless resource
+
+        row = coverage_row(resource, patient_identifier)
+        return nil if row == :unknown_coverage
+
+        rows << row if row
+        1
+      rescue TypeError, NoMethodError, ArgumentError, EncodingError
+        nil
+      end
+
+      # List reads (#entry_search_state) treat "include" and "outcome" as
+      # known non-matches and keep the read. A Coverage row counts only for
+      # :match (no search, no mode, or mode "match"); those two modes on a
+      # Coverage entry are unknown. Every other malformed search is the
+      # same predicate list reads use, and fails the whole read.
+      def unknown_coverage_entry_search?(entry)
+        return true if malformed_entry_search?(entry)
+        return false unless coverage_resource(entry)
+
+        entry_search_state(entry) != :match
+      end
+
+      # false fails the search. Inexact Coverage and OperationOutcome
+      # types fail here. Any other String type is judged later.
+      def well_formed_coverage_entry?(entry)
+        resource = bundle_entry_resource(entry)
+        return false unless resource
+
+        accepted_resource_type?(resource["resourceType"])
+      end
+
+      def accepted_resource_type?(type)
+        type.is_a?(String) && !inexact_coverage_type?(type) && !inexact_outcome_type?(type)
+      end
+
+      def inexact_coverage_type?(type)
+        type != "Coverage" && type.casecmp?("Coverage")
+      end
+
+      def inexact_outcome_type?(type)
+        type != "OperationOutcome" && type.strip.casecmp?("OperationOutcome")
+      end
+
+      # false fails the search. The id is a non-empty String, unique across
+      # every page of this search, including coverages later filtered out.
+      def remember_coverage_id(resource, seen_ids)
+        id = resource["id"]
+        return false unless id.is_a?(String) && !id.empty?
+        return false if seen_ids.key?(id)
+
+        seen_ids[id] = true
+      end
+
+      def bundle_entry_resource(entry)
+        resource = entry.is_a?(Hash) ? entry["resource"] : nil
+        resource if resource.is_a?(Hash)
+      end
+
+      # A missing issue, an empty Array, a non-Array, a non-Hash element,
+      # or a severity outside COVERAGE_OUTCOME_SEVERITIES is unknown.
+      # issue.code uses the same predicate as every other OperationOutcome
+      # read (#blocking_issue?): a missing code, a non-String, or any
+      # other value that is not a plain-ASCII FHIR code token is unknown.
+      # UNTRUSTED_OUTCOME_CODES block at any severity.
+      # error and fatal still block. A well-formed warning or information
+      # issue with another code token does not.
+      def unknown_coverage_outcome?(entry)
+        resource = operation_outcome_resource(entry)
+        return false unless resource
+
+        unknown_coverage_issues?(resource["issue"])
+      end
+
+      def operation_outcome_resource(entry)
+        resource = bundle_entry_resource(entry)
+        resource if resource && resource["resourceType"] == "OperationOutcome"
+      end
+
+      def unknown_coverage_issues?(issues)
+        return true unless issues.is_a?(Array)
+        return true if issues.empty?
+
+        issues.any? { |issue| unknown_coverage_issue?(issue) }
+      end
+
+      def unknown_coverage_issue?(issue)
+        return true unless issue.is_a?(Hash)
+        return true unless COVERAGE_OUTCOME_SEVERITIES.include?(issue["severity"])
+
+        blocking_issue?(issue)
+      end
+
+      # 0 skips the entry. nil fails the search. Exact OperationOutcome
+      # was already accepted. search.mode "include" may carry other types.
+      def non_coverage_entry(entry)
+        return 0 if operation_outcome_resource(entry) || included_other_resource?(entry)
+
+        nil
+      end
+
+      def included_other_resource?(entry)
+        resource = bundle_entry_resource(entry)
+        return false unless resource
+
+        ignorable_include?(entry, resource, "Coverage")
+      end
+
+      def coverage_resource(entry)
+        resource = bundle_entry_resource(entry)
+        resource if resource && resource["resourceType"] == "Coverage"
+      end
+
+      def coverage_row(resource, patient_identifier)
+        return :unknown_coverage unless trusted_coverage?(resource, patient_identifier)
+
+        period_state = coverage_period_current?(resource)
+        return :unknown_coverage if period_state == :unknown_coverage
+        insurance = insurance_coverage_state(resource)
+        return :unknown_coverage if insurance == :unknown_coverage
+        plan_name = coverage_plan_name(resource)
+        return :unknown_coverage if plan_name == :unknown_coverage
+        return nil unless period_state && resource["status"] == "active" && insurance
+
+        coverage_attributes(resource, plan_name)
+      end
+
+      def trusted_coverage?(resource, patient_identifier)
+        coverage_beneficiary_matches?(resource, patient_identifier) &&
+          known_coverage_status?(resource["status"]) &&
+          trusted_coverage_strings?(resource)
+      end
+
+      def trusted_coverage_strings?(resource)
+        coverage_string_or_nil?(coverage_payor_display(resource)) &&
+          coverage_string_or_nil?(resource["subscriberId"]) &&
+          trusted_type_codes?(resource)
+      end
+
+      def coverage_string_or_nil?(value)
+        value.nil? || value.is_a?(String)
+      end
+
+      # Every type.coding code is nil or a String, or Integer 9 on the X12
+      # claim-filing system (self-pay). Any other non-String code is unknown.
+      def trusted_type_codes?(resource)
+        codings = coverage_type_codings(resource)
+        return false if codings == :unknown_coverage
+
+        codings.all? { |coding| trusted_coding_code?(coding) }
+      end
+
+      def trusted_coding_code?(coding)
+        return false unless coding.is_a?(Hash)
+
+        code = coding["code"]
+        return true if coverage_string_or_nil?(code)
+
+        x12_self_pay?(code, coding["system"])
+      end
+
+      def known_coverage_status?(status)
+        status.is_a?(String) && COVERAGE_STATUSES.include?(status)
+      end
+
+      def insurance_coverage_state(resource)
+        codings = coverage_type_codings(resource)
+        return :unknown_coverage if codings == :unknown_coverage
+
+        payors = coverage_payors(resource)
+        return :unknown_coverage if payors == :unknown_coverage
+
+        insurance_allowlisted?(resource, codings, payors)
+      end
+
+      def insurance_allowlisted?(resource, codings, payors)
+        kind = coverage_kind_state(resource)
+        return kind if kind == :unknown_coverage
+        return false if kind == :exclude
+        return false unless organization_payors?(payors)
+        return false if self_pay_type_text?(resource, codings)
+
+        codings.all? { |coding| insurance_type_coding?(coding) }
+      end
+
+      def coverage_kind_state(resource)
+        return :allow unless resource.key?("kind")
+
+        kind = resource["kind"]
+        return :allow if kind == COVERAGE_INSURANCE_KIND
+        return :exclude if COVERAGE_EXCLUDED_KINDS.include?(kind)
+
+        :unknown_coverage
+      end
+
+      def coverage_type_codings(resource)
+        type = resource["type"]
+        return [] if type.nil?
+        return :unknown_coverage unless type.is_a?(Hash)
+
+        coding_entries(type["coding"])
+      end
+
+      def coding_entries(coding)
+        return [] if coding.nil?
+        return :unknown_coverage unless coding.is_a?(Array)
+        return :unknown_coverage unless coding.all? { |row| row.is_a?(Hash) }
+
+        coding
+      end
+
+      def coverage_payors(resource)
+        payors = resource["payor"]
+        return [] if payors.nil?
+        return :unknown_coverage unless payors.is_a?(Array)
+        return :unknown_coverage unless payors.all? { |payor| payor.is_a?(Hash) }
+
+        payors
+      end
+
+      def organization_payors?(payors)
+        return false if payors.empty?
+
+        payors.all? { |payor| organization_reference?(payor["reference"]) }
+      end
+
+      def organization_reference?(reference)
+        return false unless reference.is_a?(String)
+
+        organization_prefixed?(reference, "Organization/") ||
+          organization_prefixed?(reference, "#{@base_url}/Organization/")
+      end
+
+      def organization_prefixed?(reference, prefix)
+        return false unless reference.start_with?(prefix)
+
+        COVERAGE_REFERENCE_ID_RE.match?(reference.delete_prefix(prefix))
+      end
+
+      def self_pay_coding?(coding)
+        code = coding["code"]
+        system = coding["system"]
+        pay_self_pay?(code, system) || x12_self_pay?(code, system)
+      end
+
+      def pay_self_pay?(code, system)
+        code == COVERAGE_SELF_PAY_CODE && pay_self_pay_system?(system)
+      end
+
+      def pay_self_pay_system?(system)
+        system.nil? || COVERAGE_PAY_SELF_PAY_SYSTEMS.include?(system)
+      end
+
+      def x12_self_pay?(code, system)
+        return code == COVERAGE_X12_SELF_PAY_CODE if system.nil?
+        return false unless system == COVERAGE_X12_CLAIM_FILING_INDICATOR_SYSTEM
+
+        x12_claim_filing_self_pay_code?(code)
+      end
+
+      def x12_claim_filing_self_pay_code?(code)
+        code == COVERAGE_X12_SELF_PAY_CODE ||
+          code == COVERAGE_X12_SELF_PAY_SHORT_CODE ||
+          (code.is_a?(Integer) && code == COVERAGE_X12_SELF_PAY_INTEGER)
+      end
+
+      # Issue #607. A PHDSC SOP coding that is not an insurer family
+      # excludes the Coverage, including when another coding is insurance.
+      def sop_non_insurer_coding?(coding)
+        return false unless sop_system?(coding["system"])
+
+        !sop_insurer_code?(coding["code"])
+      end
+
+      def sop_system?(system)
+        COVERAGE_SOP_SYSTEMS.include?(system)
+      end
+
+      def sop_insurer_code?(code)
+        code.is_a?(String) && COVERAGE_SOP_INSURER_CODE_RE.match?(code)
+      end
+
+      def insurance_type_coding?(coding)
+        !self_pay_coding?(coding) && !sop_non_insurer_coding?(coding)
+      end
+
+      # Issue #607. type.text applies only when there is no coding. Self-pay
+      # only when downcasing and removing whitespace and hyphens yields
+      # "selfpay".
+      def self_pay_type_text?(resource, codings)
+        return false unless codings.empty?
+
+        text = coverage_type_text(resource)
+        text.is_a?(String) && normalized_self_pay_text(text) == COVERAGE_SELF_PAY_TEXT
+      end
+
+      def normalized_self_pay_text(text)
+        text.downcase.gsub(/[[:space:]]|-/, "")
+      end
+
+      def coverage_type_text(resource)
+        type = resource["type"]
+        type.is_a?(Hash) ? type["text"] : nil
+      end
+
+      def coverage_beneficiary_matches?(resource, patient_identifier)
+        beneficiary = resource["beneficiary"]
+        return false unless beneficiary.is_a?(Hash)
+
+        reference = beneficiary["reference"]
+        return false unless reference.is_a?(String)
+
+        relative = "Patient/#{patient_identifier}"
+        reference == relative || reference == "#{@base_url}/#{relative}"
+      end
+
       # Clinical search -------------------------------------------------------
       # One page only. nil means unknown; never a partial list. A Bundle.link
       # entry with relation "next" is unknown. Response bodies are not logged
@@ -1635,15 +2364,34 @@ module Corvid
         issues.any? { |issue| blocking_issue?(issue) }
       end
 
+      # FHIR R4 requires OperationOutcome.issue.code (1..1). Malformed
+      # means unknown: an issue is blocking unless its code is a
+      # plain-ASCII FHIR code token. A missing key, JSON null, a
+      # non-String, invalid encoding, look-alike characters, padding,
+      # and "" are unknown at any severity.
       def blocking_issue?(issue)
         return true unless issue.is_a?(Hash)
+        return true unless fhir_code_token?(issue["code"])
 
         untrusted_outcome?(issue) || blocking_severity?(issue)
       end
 
       def untrusted_outcome?(issue)
-        code = issue["code"]
-        code.is_a?(String) && UNTRUSTED_OUTCOME_CODES.include?(code)
+        code = normalized_outcome_code(issue["code"])
+        !code.nil? && UNTRUSTED_OUTCOME_CODES.include?(code)
+      end
+
+      # Downcased FHIR_CODE_TOKEN for UNTRUSTED_OUTCOME_CODES. A value that
+      # is not that token is nil. No Unicode space or format stripping, and
+      # no other rewrite.
+      def normalized_outcome_code(code)
+        return unless fhir_code_token?(code)
+
+        code.downcase
+      end
+
+      def fhir_code_token?(code)
+        code.is_a?(String) && code.valid_encoding? && FHIR_CODE_TOKEN.match?(code)
       end
 
       def blocking_severity?(issue)
@@ -1691,6 +2439,164 @@ module Corvid
 
         relative = "Patient/#{patient_identifier}"
         reference == relative || reference == "#{@base_url}/#{relative}"
+      end
+
+      def coverage_period_current?(resource)
+        period = resource["period"]
+        return true if period.nil?
+        return :unknown_coverage unless period.is_a?(Hash)
+
+        start_state = coverage_bound_current?(period["start"], :start)
+        return :unknown_coverage if start_state == :unknown_coverage
+
+        end_state = coverage_bound_current?(period["end"], :end)
+        return :unknown_coverage if end_state == :unknown_coverage
+
+        start_state && end_state
+      end
+
+      # true / false keep or drop the row. :unknown_coverage fails the search.
+      def coverage_bound_current?(raw, role)
+        parsed = parse_coverage_bound(raw, role)
+        return true if parsed.nil?
+        return :unknown_coverage unless parsed.is_a?(Hash)
+
+        point = parsed[:compare]
+        now = point.is_a?(Time) ? Time.current : Date.current
+        role == :start ? point <= now : point >= now
+      end
+
+      def coverage_bound_date(raw, role)
+        parsed = parse_coverage_bound(raw, role)
+        parsed.is_a?(Hash) ? parsed[:mapped] : nil
+      end
+
+      # nil is an open bound. :unknown_coverage is present but not strict
+      # FHIR date or dateTime. A hash carries the compare point and the
+      # calendar date copied onto the returned row.
+      def parse_coverage_bound(raw, role)
+        return nil if raw.nil? || raw == ""
+        return :unknown_coverage unless raw.is_a?(String)
+
+        if COVERAGE_YEAR_RE.match?(raw)
+          coverage_year_bound(raw, role)
+        elsif COVERAGE_MONTH_RE.match?(raw)
+          coverage_month_bound(raw, role)
+        elsif COVERAGE_DATE_RE.match?(raw)
+          coverage_day_bound(raw)
+        elsif COVERAGE_DATETIME_RE.match?(raw)
+          coverage_instant_bound(raw)
+        else
+          :unknown_coverage
+        end
+      end
+
+      def coverage_year_bound(raw, role)
+        year = raw.to_i
+        date = role == :start ? Date.new(year, 1, 1) : Date.new(year, 12, 31)
+        { compare: date, mapped: date }
+      rescue ArgumentError
+        :unknown_coverage
+      end
+
+      def coverage_month_bound(raw, role)
+        year_text, month_text = raw.split("-", 2)
+        month = month_text.to_i
+        return :unknown_coverage unless (1..12).cover?(month)
+
+        year = year_text.to_i
+        date = role == :start ? Date.new(year, month, 1) : Date.new(year, month, -1)
+        { compare: date, mapped: date }
+      rescue ArgumentError
+        :unknown_coverage
+      end
+
+      def coverage_day_bound(raw)
+        year, month, day = raw.split("-").map(&:to_i)
+        date = Date.new(year, month, day)
+        { compare: date, mapped: date }
+      rescue ArgumentError
+        :unknown_coverage
+      end
+
+      def coverage_instant_bound(raw)
+        instant = Time.iso8601(raw)
+        utc = instant.getutc
+        { compare: instant, mapped: Date.new(utc.year, utc.month, utc.day) }
+      rescue ArgumentError
+        :unknown_coverage
+      end
+
+      def coverage_attributes(resource, plan_name)
+        {
+          payer_name: coverage_payor_display(resource),
+          plan_name: plan_name,
+          coverage_type: coverage_primary_type_code(resource),
+          policy_number: resource["subscriberId"],
+          coverage_start: coverage_bound_date(coverage_period_bound(resource, "start"), :start),
+          coverage_end: coverage_bound_date(coverage_period_bound(resource, "end"), :end),
+          status: resource["status"]
+        }
+      end
+
+      def coverage_payor_display(resource)
+        payors = resource["payor"]
+        return nil unless payors.is_a?(Array)
+
+        first = payors.first
+        first.is_a?(Hash) ? first["display"] : nil
+      end
+
+      def coverage_primary_type_code(resource)
+        codings = coverage_type_codings(resource)
+        return nil unless codings.is_a?(Array) && !codings.empty?
+
+        codings.first["code"]
+      end
+
+      def coverage_period_bound(resource, key)
+        period = resource["period"]
+        period.is_a?(Hash) ? period[key] : nil
+      end
+
+      def coverage_plan_name(resource)
+        classes = resource["class"]
+        return nil unless classes.is_a?(Array)
+
+        plan = coverage_plan_class(classes)
+        return :unknown_coverage if plan == :unknown_coverage
+        return nil unless plan.is_a?(Hash)
+
+        [ plan["name"], plan["value"] ].find { |item| item.is_a?(String) && !item.empty? }
+      end
+
+      def coverage_plan_class(classes)
+        plan = nil
+        classes.each do |row|
+          code = coverage_class_code(row)
+          return :unknown_coverage if code == :unknown_coverage
+
+          plan = row if plan.nil? && code == "plan"
+        end
+        plan
+      end
+
+      def coverage_class_code(row)
+        return :unknown_coverage unless row.is_a?(Hash)
+
+        type = row["type"]
+        return nil if type.nil?
+        return :unknown_coverage unless type.is_a?(Hash)
+
+        first_coding_code(type["coding"])
+      end
+
+      def first_coding_code(coding)
+        rows = coding_entries(coding)
+        return rows if rows == :unknown_coverage
+        return nil if rows.empty?
+
+        rows.first["code"]
       end
 
       # Conditions ------------------------------------------------------------
