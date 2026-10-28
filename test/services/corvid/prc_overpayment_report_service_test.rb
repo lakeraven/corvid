@@ -524,6 +524,14 @@ class Corvid::PrcOverpaymentReportServiceTest < ActiveSupport::TestCase
       refute_nil row
       assert_equal Money.from_amount(expected_medicare, "USD"), row[:medicare_equivalent]
       assert_equal "clear", row[:recovery_confidence]
+
+      obligation = Corvid::PrcObligation.find_by!(obligation_id: "OBL-CBSA-PERSIST")
+      analysis = Corvid::PrcOverpaymentAnalysis
+        .where(prc_obligation: obligation)
+        .order(analyzed_at: :desc)
+        .first!
+      assert_match(/Wage area: #{synth_cbsa}\./, analysis.notes)
+      refute_includes analysis.notes, synth_zip
     end
   ensure
     Corvid::PrcProcedureDictionary.reset!
