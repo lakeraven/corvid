@@ -596,8 +596,6 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_25_000004) do
     t.bigint "case_id", null: false
     t.string "referral_identifier", null: false
     t.string "status", default: "draft", null: false
-    t.string "current_activity_code"
-    t.string "reviewer_identifier"
     t.string "authorization_number"
     t.integer "medical_priority"
     t.string "priority_system"
@@ -622,6 +620,8 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_25_000004) do
     t.datetime "management_rejected_at"
     t.string "management_rejected_by_identifier"
     t.string "management_rejection_reason_token"
+    t.string "current_activity_code"
+    t.string "reviewer_identifier"
     t.index ["case_id"], name: "index_corvid_prc_referrals_on_case_id"
     t.index ["tenant_identifier", "facility_identifier", "referral_identifier"], name: "idx_corvid_prc_referrals_tenant_referral", unique: true
     t.index ["tenant_identifier", "status"], name: "index_corvid_prc_referrals_on_tenant_identifier_and_status"
