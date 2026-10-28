@@ -4,13 +4,17 @@
 # ADR 0002: string enums and token columns are CHECK-constrained.
 # ADR 0003 §4: no free text at rest. up counts rows that still hold free
 # text and aborts with those counts only — the message never includes a
-# stored value. Each evidence_refs element must be an object whose only
+# stored value. A claim_reference that is an opaque token or CLM_<ULID>
+# is kept. Each evidence_refs element must be an object whose only
 # keys are supports (a caller evidence kind) and ref (a token).
 # current_activity is not parsed. Only the engine literal
 # "Submitted via FHIR PAS" is mapped; every other value is dropped.
 class ReplaceFreeTextWithTokens < ActiveRecord::Migration[8.1]
   # Postgres form of Corvid::OpaqueToken::FORMAT (ADR 0003 §4).
   TOKEN_PATTERN = "^[a-z]{2,4}_[0-9A-HJKMNP-TV-Z]{26}$"
+  # Corvid claim identifiers: CLM_ plus 26 Crockford base32 characters.
+  # A replay must not follow a later model change, so this stays a literal.
+  CLM_CLAIM_PATTERN = "^CLM_[0-9A-HJKMNP-TV-Z]{26}$"
 
   CLAIM_CHECK = "corvid_fmap_determinations_claim_identifier_check"
   EVIDENCE_CHECK = "corvid_fmap_determinations_evidence_refs_check"
@@ -62,6 +66,7 @@ class ReplaceFreeTextWithTokens < ActiveRecord::Migration[8.1]
       FROM corvid_fmap_determinations
       WHERE claim_reference IS NOT NULL
         AND claim_reference !~ #{quote(TOKEN_PATTERN)}
+        AND claim_reference !~ #{quote(CLM_CLAIM_PATTERN)}
     SQL
   end
 
@@ -140,7 +145,8 @@ class ReplaceFreeTextWithTokens < ActiveRecord::Migration[8.1]
   end
 
   def claim_identifier_check_sql
-    "claim_identifier IS NULL OR claim_identifier ~ #{quote(TOKEN_PATTERN)}"
+    "claim_identifier IS NULL OR claim_identifier ~ #{quote(TOKEN_PATTERN)} OR " \
+      "claim_identifier ~ #{quote(CLM_CLAIM_PATTERN)}"
   end
 
   # Lax jsonpath wraps a non-array, so the array type is required explicitly.

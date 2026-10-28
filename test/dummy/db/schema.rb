@@ -409,7 +409,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_25_000004) do
     t.check_constraint "jurisdiction::text ~ '^[A-Z]{2}$'::text", name: "corvid_fmap_determinations_jurisdiction_check"
     t.check_constraint "received_through_basis IS NULL OR (received_through_basis::text = ANY (ARRAY['facility_authority'::character varying, 'cca'::character varying]::text[]))", name: "corvid_fmap_determinations_basis_check"
     t.check_constraint "\nCASE\n    WHEN jsonb_typeof(evidence_refs) IS DISTINCT FROM 'array'::text THEN false\n    WHEN jsonb_path_exists(evidence_refs, 'strict $[*]?(@.type() != \"object\" || !((exists (@.keyvalue()?((@.\"key\" == \"supports\" && @.\"value\".type() == \"string\") && @.\"value\" == \"aian_status\")) && exists (@.keyvalue()?((@.\"key\" == \"ref\" && @.\"value\".type() == \"string\") && @.\"value\" like_regex \"^[a-z]{2,4}_[0-9A-HJKMNP-TV-Z]{26}$\"))) && !(exists (@.keyvalue()?(@.\"key\" != \"supports\" && @.\"key\" != \"ref\")))))'::jsonpath) THEN false\n    ELSE true\nEND", name: "corvid_fmap_determinations_evidence_refs_check"
-    t.check_constraint "claim_identifier IS NULL OR claim_identifier::text ~ '^[a-z]{2,4}_[0-9A-HJKMNP-TV-Z]{26}$'::text", name: "corvid_fmap_determinations_claim_identifier_check"
+    t.check_constraint "claim_identifier IS NULL OR claim_identifier::text ~ '^[a-z]{2,4}_[0-9A-HJKMNP-TV-Z]{26}$'::text OR claim_identifier::text ~ '^CLM_[0-9A-HJKMNP-TV-Z]{26}$'::text", name: "corvid_fmap_determinations_claim_identifier_check"
   end
 
   create_table "corvid_fmap_rules", force: :cascade do |t|

@@ -12,8 +12,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (ADR 0001). `FmapDetermination#claim_identifier` and
   `FmapClassificationService.classify!(claim_identifier:)` replace
   `claim_reference`. When present, the value must be an opaque token
-  (`Corvid::OpaqueToken::FORMAT`, ADR 0003 §4), checked on the model and by
-  a CHECK. The immutability error no longer includes the token.
+  (`Corvid::OpaqueToken::FORMAT`, ADR 0003 §4) or Corvid's own `CLM_<ULID>`
+  (`FmapDetermination::CLM_FORMAT`: `CLM_` and 26 Crockford base32 characters).
+  Nil is allowed; anything else is rejected. The model and a CHECK both
+  enforce that, and the validation message does not include the value.
+  `FmapClassificationService.classify!` stores either form.
+  A legacy `claim_reference` that is already `CLM_<ULID>` is renamed and does
+  not abort the migration. The immutability error no longer includes the token.
+  ADR 0003 §4 example tokens are valid Crockford base32: the payer and facility
+  examples no longer end in `I` or `L`, and each body stays distinct.
 - Each `evidence_refs` element must be an object with exactly the keys
   `supports` and `ref`: `supports` is one of `FmapRule::CALLER_EVIDENCE_KINDS`
   and `ref` is an opaque token. The model reports that contract without
@@ -32,9 +39,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   engine literal `Submitted via FHIR PAS` to `submitted_via_fhir_pas`. Every
   other `current_activity` value is dropped and is not parsed.
 - `ReplaceFreeTextWithTokens#up` aborts, before changing the schema, when any
-  `claim_reference` is not a token or any `evidence_refs` value is not an
-  array of `{ supports, ref }` entries. The error reports row counts only
-  and does not include the stored values.
+  `claim_reference` is neither an opaque token nor `CLM_<ULID>`, or any
+  `evidence_refs` value is not an array of `{ supports, ref }` entries. The
+  error reports row counts only and does not include the stored values.
 - The model and `FmapClassificationService` never echo stored values. The
   database backstop's CHECK-violation detail can: Postgres includes the
   failing row when a write bypasses validations (`update_columns`,

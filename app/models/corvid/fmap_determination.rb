@@ -61,8 +61,10 @@ module Corvid
     validates :authority_type, inclusion: { in: FacilityAuthority::AUTHORITY_TYPES }, allow_nil: true
     validates :coverage_group, inclusion: { in: FmapClassificationService::COVERAGE_GROUPS }, allow_nil: true
     validates :determination_reason, inclusion: { in: FmapClassificationService::REASONS }, allow_nil: true
-    # ADR 0003 §4: a claim reference is an opaque token, never free text.
-    # The message does not include the value.
+    # Nil, a vault token (OpaqueToken::FORMAT), or Corvid's own CLM_<ULID>.
+    # Nothing else. The message does not include the value. The migration
+    # keeps its own copy of this pattern and does not read this constant.
+    CLM_FORMAT = /\ACLM_[0-9A-HJKMNP-TV-Z]{26}\z/
     validate :claim_identifier_is_opaque_token
     validate :evidence_refs_are_opaque_tokens
     validate :immutable_once_claimed
@@ -257,7 +259,7 @@ module Corvid
     def claim_identifier_is_opaque_token
       value = claim_identifier
       return if value.nil?
-      return if OpaqueToken.valid?(value)
+      return if OpaqueToken.valid?(value) || CLM_FORMAT.match?(value)
 
       errors.add(:claim_identifier, "must be an opaque token")
     end
