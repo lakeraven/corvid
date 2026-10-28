@@ -38,11 +38,13 @@ module Corvid
     # resolves and is refused. Assigning prc_referral is refused the
     # same way. Unsent claims and new rows still resolve a blank link.
     # submit! and mark_submitted! are the only paths that write those
-    # markers or enter "submitted" from an unsent row, and they re-run
-    # the gates. check_status! may record "submitted" on a claim that was
-    # already sent. Later moves among sent statuses, including an error
-    # that was actually sent, do not depend on submitted_at. A row created
-    # already sent is a historical import and is left unstamped.
+    # markers or enter "submitted" from an unsent row. submit! re-runs
+    # the gates. mark_submitted! re-runs them unless it is reconciling
+    # a send whose outcome is still unknown. check_status! may record
+    # "submitted" on a claim that was already sent. Later moves among
+    # sent statuses, including an error that was actually sent, do not
+    # depend on submitted_at. A row created already sent is a historical
+    # import and is left unstamped.
     UNSENT_STATUSES = %w[draft error].freeze
     SENT_STATUSES = %w[submitted accepted rejected paid denied appealed].freeze
     SENT_MARKER_MESSAGE = "must be set with submit! or mark_submitted!"
@@ -79,13 +81,7 @@ module Corvid
     # submission_outcome_unknown_at is set. The clearinghouse may
     # already have accepted the claim. Confirm it was not sent, or
     # mark it submitted, before another send or override.
-    # The reported name is the leaf. Callers match that string, and
-    # Module#name would otherwise be the full nesting.
     class SubmissionOutcomeUnknown < StandardError
-      def self.name
-        "SubmissionOutcomeUnknown"
-      end
-
       def initialize
         super("submission outcome is unknown until it is reconciled")
       end
@@ -104,13 +100,8 @@ module Corvid
     # Raised by phase B of an override submit when the locked row or
     # the patient's Medicaid records changed after phase A committed.
     # The clearinghouse is not called. The message names no patient
-    # data (ADR 0003). The reported name is the leaf. Callers match
-    # that string, and Module#name would otherwise be the full nesting.
+    # data (ADR 0003).
     class InFlightSubmissionChanged < StandardError
-      def self.name
-        "InFlightSubmissionChanged"
-      end
-
       def initialize
         super("in-flight submission changed before the clearinghouse was called")
       end
@@ -176,6 +167,12 @@ module Corvid
     # two-phase submit, which refuses any open caller transaction.
     RESTART_WITH_MEDICAID_HOLD_OVERRIDE = :restart_with_medicaid_hold_override
     private_constant :RESTART_WITH_MEDICAID_HOLD_OVERRIDE
+
+    # Sentinel from phase B when the claim's own referral is no longer
+    # a current exhausted alternate-resource determination. The lock
+    # transaction commits the marker clear, then the caller raises.
+    IN_FLIGHT_ALTERNATE_RESOURCES_NOT_CURRENT = :in_flight_alternate_resources_not_current
+    private_constant :IN_FLIGHT_ALTERNATE_RESOURCES_NOT_CURRENT
 
     # Hold basis captured with phase A's committed row. Phase B aborts
     # when any of these differ from that snapshot.
@@ -339,12 +336,18 @@ module Corvid
       %w[submitted accepted].include?(status)
     end
 
+    # Reconciliation of a send whose outcome is unknown records the
+    # identifier. submission_outcome_unknown? reads the persisted
+    # marker. While it is set, skip authorization and the
+    # alternate-resource re-verification, and do not re-verify. Without
+    # that marker both gates run, authorization then alternate
+    # resources, before the row lock, the same as submit!.
     def mark_submitted!(claim_identifier:)
-      # Same gate order as submit!: authorization, then the
-      # alternate-resource re-verification, before the row lock.
       prepare_medicaid_hold_submission!
-      enforce_referral_authorization_gate!
-      enforce_alternate_resources_current!
+      unless submission_outcome_unknown?
+        enforce_referral_authorization_gate!
+        enforce_alternate_resources_current!
+      end
       discard_resolved_referral_link!
       refuse_unsaved_claim_changes!
       with_medicaid_submission_lock { record_marked_submission!(claim_identifier) }
@@ -403,13 +406,18 @@ module Corvid
     # then sends in a second transaction. The marker is committed
     # first so a killed process, an aborted database transaction, or
     # a failed result save cannot restore the override or hide that
-    # the outcome is unknown. Phase B re-reads that committed row
-    # under the same locks and does not call the clearinghouse if it
-    # changed. Between those phases the marker blocks any other submit
-    # or override of this claim. A submit with no override in force
-    # stays one transaction: an adapter error rolls back and nothing
-    # is marked. An override recorded after that choice is not sent
-    # in the open transaction; submit! restarts on the two-phase path.
+    # the outcome is unknown. Phase B, under the same locks, compares
+    # the marker, status, claim_identifier, the hold basis columns,
+    # the patient's case, referral, and Medicaid-check records, and
+    # the claim's own referral's alternate-resource exhaustion. It
+    # does not call the clearinghouse unless those still hold. Other
+    # edits made in the gap, such as billed amount, are sent, the same
+    # as edits made before submit!. Between those phases the marker
+    # blocks any other submit or override of this claim. A submit with
+    # no override in force stays one transaction: an adapter error
+    # rolls back and nothing is marked. An override recorded after
+    # that choice is not sent in the open transaction; submit!
+    # restarts on the two-phase path.
     def submit!
       refuse_unknown_submission_outcome!
       prepare_for_clearinghouse_submit!
@@ -703,21 +711,28 @@ module Corvid
     # A claim that resolves to neither stays unlinked, and #submit! decides
     # what that means.
     def resolve_prc_referral_from_identifier
+      self.prc_referral = unambiguous_patient_referral
+    end
+
+    # One referral at this facility for this identifier, and that row's
+    # patient. Several matches, or another patient's referral, are not
+    # a link. Does not assign the association.
+    def unambiguous_patient_referral
       candidates = Corvid::PrcReferral
         .includes(:case)
         .where(facility_identifier: facility_identifier, referral_identifier: referral_identifier)
         .limit(2)
         .to_a
+      return unless candidates.size == 1
+      return unless candidates.first.case&.patient_identifier == patient_identifier
 
-      self.prc_referral =
-        if candidates.size == 1 && candidates.first.case&.patient_identifier == patient_identifier
-          candidates.first
-        end
+      candidates.first
     end
 
     # A linked referral is re-verified for service_date before the claim is
     # sent. No linked PRC referral is ordinary billing and skips this gate.
-    # A nil service date fails closed.
+    # A nil service date fails closed. The locks re-check exhaustion again
+    # immediately before the clearinghouse call, without re-verifying.
     def enforce_alternate_resources_current!
       referral = referral_for_alternate_resource_gate
       return if referral.nil?
@@ -745,6 +760,33 @@ module Corvid
 
     def exhausted_for_claim?(referral)
       AlternateResourceCheck.all_exhausted?(referral, date_of_service: service_date, as_of: Time.current)
+    end
+
+    # Read-only. No re-verification and no writes. No linked referral
+    # skips this, the same as the pre-lock gate. A nil service date
+    # fails closed. The association is not assigned, so an abort does
+    # not persist a link resolved only for this read.
+    def own_referral_alternate_resources_exhausted?
+      self.class.uncached do
+        referral = linked_referral_for_exhausted_recheck
+        next true if referral.nil?
+        next false if service_date.nil?
+
+        exhausted_for_claim?(referral)
+      end
+    end
+
+    def linked_referral_for_exhausted_recheck
+      return prc_referral if prc_referral.present?
+      return if referral_identifier.blank?
+
+      unambiguous_patient_referral
+    end
+
+    def enforce_own_referral_alternate_resources_exhausted!
+      return if own_referral_alternate_resources_exhausted?
+
+      raise AlternateResourcesNotCurrent
     end
 
     # A claim that bills a PRC referral may only be submitted once that
@@ -1199,27 +1241,41 @@ module Corvid
 
     # Phase B. A new transaction, the same patient advisory lock, and
     # the row lock. Re-read the phase A snapshot before the
-    # clearinghouse call. The accepted result and the cleared marker
-    # commit in one save. Any exception from the send rolls this
-    # phase back only and is re-raised as itself. A throw is not
-    # caught, so this transaction follows Rails for a non-local exit.
-    # An abort clears the marker only when it is still phase A's
-    # value, commits that clear, then raises. The marker is not
-    # cleared before the adapter returns, so the one phase A
-    # committed stays set when the send does not finish.
+    # clearinghouse call. Immediately before that call, re-check the
+    # claim's own referral's alternate-resource exhaustion. That read
+    # does not re-verify and does not write. The accepted result and
+    # the cleared marker commit in one save. Any exception from the
+    # send rolls this phase back only and is re-raised as itself. A
+    # throw is not caught, so this transaction follows Rails for a
+    # non-local exit. An abort clears the marker only when it is still
+    # phase A's value, commits that clear, then raises. A changed
+    # snapshot raises InFlightSubmissionChanged. Alternate resources
+    # that are not current raise AlternateResourcesNotCurrent. The
+    # marker is not cleared before the adapter returns, so the one
+    # phase A committed stays set when the send does not finish.
     # record_claim_submission! clears it with the result.
     def submit_in_flight_claim!(snapshot)
-      aborted = false
+      failure = nil
       result = with_medicaid_submission_lock do
-        if abort_in_flight_submission?(snapshot)
-          aborted = true
-        else
-          send_in_flight_claim!
-        end
+        failure, sent = in_flight_locked_send(snapshot)
+        sent
       end
-      raise InFlightSubmissionChanged if aborted
-
+      raise_in_flight_failure!(failure)
       result
+    end
+
+    def in_flight_locked_send(snapshot)
+      return [ :changed, nil ] if abort_in_flight_submission?(snapshot)
+
+      sent = send_in_flight_claim!(snapshot)
+      return [ :alternate_resources, nil ] if sent == IN_FLIGHT_ALTERNATE_RESOURCES_NOT_CURRENT
+
+      [ nil, sent ]
+    end
+
+    def raise_in_flight_failure!(failure)
+      raise InFlightSubmissionChanged if failure == :changed
+      raise AlternateResourcesNotCurrent if failure == :alternate_resources
     end
 
     def abort_in_flight_submission?(snapshot)
@@ -1282,10 +1338,26 @@ module Corvid
       clear_submission_outcome_unknown!
     end
 
-    def send_in_flight_claim!
+    # The exhaustion re-check is the last read before the clearinghouse.
+    # A miss clears phase A's marker when it is still that value and
+    # returns the sentinel. The caller commits that clear, then raises.
+    # The adapter is not called.
+    def send_in_flight_claim!(snapshot)
+      unless own_referral_alternate_resources_exhausted?
+        return abort_in_flight_alternate_resources!(snapshot)
+      end
+
       result = Corvid.adapter.submit_claim(to_claim_data)
       record_accepted_submission!(result)
       result
+    end
+
+    def abort_in_flight_alternate_resources!(snapshot)
+      self.class.uncached do
+        row = self.class.unscoped.find_by(id: id)
+        clear_phase_a_marker_if_still!(row, snapshot)
+      end
+      IN_FLIGHT_ALTERNATE_RESOURCES_NOT_CURRENT
     end
 
     # One transaction when no override is in force. A complete override
@@ -1301,11 +1373,16 @@ module Corvid
     # A complete override that showed up after the unlocked check, and
     # that would release the hold, is not sent in this transaction.
     # A stale override still holds: do not restart onto the two-phase path.
+    # Immediately before the clearinghouse call, re-check the claim's
+    # own referral's alternate-resource exhaustion. That read does not
+    # re-verify and does not write. A miss raises inside this
+    # transaction, so the send rolls back and nothing is written.
     def send_claim_without_override!
       refuse_unknown_submission_outcome!
       return RESTART_WITH_MEDICAID_HOLD_OVERRIDE if medicaid_hold_override_to_spend?
 
       enforce_pending_medicaid_hold!
+      enforce_own_referral_alternate_resources_exhausted!
       result = Corvid.adapter.submit_claim(to_claim_data)
       record_accepted_submission!(result)
       result
@@ -1396,7 +1473,10 @@ module Corvid
 
     # Recording an identifier for a send whose outcome was unknown is
     # reconciliation, not a new send, so the pending Medicaid hold does
-    # not apply. The marker is cleared with the identifier.
+    # not apply. mark_submitted! has already skipped authorization and
+    # alternate-resource re-verification from the same persisted
+    # marker, and did not re-verify. This reads the marker again under
+    # the lock for the hold. The marker is cleared with the identifier.
     def record_marked_submission!(claim_identifier)
       enforce_pending_medicaid_hold! unless submission_outcome_unknown?
       record_claim_submission!(claim_identifier:, status: "submitted")
