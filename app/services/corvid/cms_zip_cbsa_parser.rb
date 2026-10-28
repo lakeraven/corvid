@@ -10,13 +10,16 @@ module Corvid
   #
   # Input is parsed from a UTF-8 copy. Invalid encodings raise
   # ArgumentError and never echo the bytes. A bad row names the line
-  # number and never the field values.
+  # number and never the field values. A carriage return still in a
+  # line after one trailing LF or CRLF is removed is an error on that
+  # line (comment, header, or data) and never echoes the line.
   module CmsZipCbsaParser
     HEADER = %w[zip cbsa].freeze
 
     class << self
       def parse(csv_text, fiscal_year:, release_label:)
         lines = normalize_text(csv_text).lines
+        reject_embedded_carriage_returns!(lines)
         start = header_index(lines)
         seen = {}
         rows = []
@@ -79,7 +82,28 @@ module Corvid
 
       def logical_line(line, line_no, header:)
         body = without_trailing_break(line)
-        return body unless body.include?("\r")
+        reject_carriage_return!(body, line_no, header: header)
+        body
+      end
+
+      # Every line is checked before it can be skipped as a comment or
+      # blank. One trailing LF or CRLF is a record separator; any other
+      # CR is an error and the message names only the line number.
+      def reject_embedded_carriage_returns!(lines)
+        seen_header = false
+        lines.each_with_index do |line, index|
+          body = without_trailing_break(line)
+          if body.include?("\r")
+            header = !seen_header && !ignorable_line?(body)
+            reject_carriage_return!(body, index + 1, header: header)
+          else
+            seen_header ||= !ignorable_line?(body)
+          end
+        end
+      end
+
+      def reject_carriage_return!(body, line_no, header:)
+        return unless body.include?("\r")
 
         raise ArgumentError, header ? header_message(line_no) : "malformed row on line #{line_no}"
       end

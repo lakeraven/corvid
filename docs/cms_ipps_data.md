@@ -264,10 +264,14 @@ zip,cbsa
 or two digits (CMS rural state code). Stored `fiscal_year` values are
 2000 through 2100. The year argument must be four digits in that range;
 any other year aborts with usage before the file is read. A file with
-no data rows is refused, and that year's rows stay untouched. A stray
-carriage return inside a line is rejected, never silently dropped.
-When the file has data rows, import replaces that fiscal year's rows
-in one transaction:
+no data rows is refused, and that year's rows stay untouched. Carriage
+returns are rejected on every line, including comments. After one
+trailing LF or CRLF is removed, a line that still contains a carriage
+return is an error and is never silently dropped. When the file has
+data rows, import replaces that fiscal year's rows in one transaction.
+Imports of the same year are serialized with a transaction advisory
+lock taken before the delete. A conflicting row aborts the import, so
+that year's previous rows stay in place:
 
 ```bash
 rake "cms:zip_cbsa:import[2026,/tmp/zip_cbsa_FY2026.csv,synthetic_example]"

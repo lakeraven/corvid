@@ -21,10 +21,12 @@ namespace :cms do
       abort "No ZIP to CBSA data rows; FY #{year} was left unchanged" if rows.empty?
 
       ActiveRecord::Base.transaction do
+        Corvid::ZipCbsaCrosswalk.lock_fiscal_year!(year)
         Corvid::ZipCbsaCrosswalk.where(fiscal_year: year).delete_all
         now = Time.current
         stamped = rows.map { |row| row.merge(created_at: now, updated_at: now) }
-        Corvid::ZipCbsaCrosswalk.insert_all(stamped)
+        # insert_all! raises on a unique conflict, so no row is skipped.
+        Corvid::ZipCbsaCrosswalk.insert_all!(stamped)
       end
 
       puts "Imported #{rows.size} ZIP to CBSA rows for FY #{year} (label=#{label}, replaced full year snapshot)"
