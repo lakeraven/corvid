@@ -158,12 +158,16 @@ module Corvid
       end
 
       # Own characters of a String (including a subclass), or Symbol#name.
-      # Anything else is not a code and comes back nil. String#to_s can be
-      # overridden and would alias another state. Lookup still fails closed
-      # for those values; this only exposes the read lookup already uses.
+      # Anything else is not a code and comes back nil. case/when uses
+      # Module#===, which a caller cannot override via is_a?, so a spoofed
+      # is_a?, name, to_s, or to_str cannot alias another state. Lookup
+      # still fails closed for those values; this only exposes the read
+      # lookup already uses.
       def state_code_characters(state_code)
-        return state_code.name if state_code.is_a?(Symbol)
-        String.new(state_code) if state_code.is_a?(String)
+        case state_code
+        when Symbol then Symbol.instance_method(:name).bind_call(state_code)
+        when String then String.new(state_code)
+        end
       end
 
       private
@@ -316,11 +320,11 @@ module Corvid
         raw.upcase(:ascii).encode(Encoding::UTF_8).freeze
       end
 
-      # A malformed string is copied later; a symbol follows that string.
-      # Anything else is not a state code.
+      # Characters of a value that is not two ASCII letters, from
+      # state_code_characters, so a caller is_a? is not consulted again.
+      # A string is copied later. Anything else is not a state code.
       def presented_state_code(state_code)
-        return state_code if state_code.is_a?(String)
-        state_code.name if state_code.is_a?(Symbol)
+        state_code_characters(state_code)
       end
 
       def freeze_copy(value)
