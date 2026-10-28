@@ -28,6 +28,11 @@ class Corvid::CommitteeReviewSyncServiceInjectionTest < ActiveSupport::TestCase
       @calls << [ :fetch_text, token ]
       "text-for-#{token}"
     end
+
+    def verify_eligibility(patient_identifier, resource_type)
+      @calls << [ :verify_eligibility, patient_identifier, resource_type ]
+      { eligible: false }
+    end
   end
 
   setup do
@@ -41,6 +46,18 @@ class Corvid::CommitteeReviewSyncServiceInjectionTest < ActiveSupport::TestCase
     # adapter for the next test, but explicit teardown here keeps this
     # file self-contained and survives test_helper reorganizations.
     Corvid.configure { |c| c.adapter = @original_adapter }
+  end
+
+  test "instance.sync_decision re-verifies stale checks through the injected adapter only" do
+    review = build_approved_review_with_stale_medicaid
+    Corvid.configure { |c| c.adapter = poison_adapter }
+    service = Corvid::CommitteeReviewSyncService.new(adapter: @fake)
+
+    service.sync_decision(review)
+
+    verify_calls = @fake.calls.select { |entry| entry.first == :verify_eligibility }
+    assert verify_calls.any?,
+           "stale alternate-resource checks must re-verify via the injected adapter; got #{@fake.calls.inspect}"
   end
 
   test "instance.sync_decision routes through the injected adapter, not Corvid.adapter" do
@@ -82,28 +99,28 @@ class Corvid::CommitteeReviewSyncServiceInjectionTest < ActiveSupport::TestCase
                     "the injected adapter must receive the sync_decision call"
   end
 
-  test "sync_and_apply! apply half currently routes through Corvid.adapter (gated on #264)" do
-    # Boundary-pin: documents the limitation so when #264 lands and the
-    # model callbacks become DI-aware, this test will fail and prompt
-    # us to flip it into a stricter assertion ("apply half also routes
-    # through @adapter"). Until then, this is the fact on the ground.
-    review = build_approved_review
-    exhaust_alternate_resources!(review.prc_referral)
-    global = Corvid::Adapters::MockAdapter.new
-    spy_global = []
-    global.define_singleton_method(:update_referral) do |id, params|
-      spy_global << [ :update_referral, id, params ]
-      true
+  test "sync_and_apply! routes every verify_eligibility through injected adapter including apply_to_referral!" do
+    travel_to Time.zone.parse("2025-07-01 12:00:00 UTC") do
+      review = build_approved_review
+      medicaid = review.prc_referral.alternate_resource_checks.find_by!(resource_type: "medicaid")
+      medicaid.update!(checked_at: 31.days.ago) # after build_approved_review exhausts checks
+      global_verify_calls = []
+      global = Corvid::Adapters::MockAdapter.new
+      global.define_singleton_method(:verify_eligibility) do |patient_identifier, resource_type|
+        global_verify_calls << [ patient_identifier, resource_type ]
+        { eligible: false }
+      end
+      Corvid.configure { |c| c.adapter = global }
+      service = Corvid::CommitteeReviewSyncService.new(adapter: @fake)
+
+      service.sync_and_apply!(review)
+
+      verify_calls = @fake.calls.select { |entry| entry.first == :verify_eligibility }
+      assert verify_calls.any?,
+             "stale checks re-verified during apply and sync must use the injected adapter; got #{@fake.calls.inspect}"
+      assert_empty global_verify_calls,
+                   "re-verification must not fall back to Corvid.adapter when an adapter is injected"
     end
-    Corvid.configure { |c| c.adapter = global }
-
-    Corvid::CommitteeReviewSyncService.new(adapter: @fake).sync_and_apply!(review)
-
-    # When the model layer is decoupled in #264, this assertion should
-    # be inverted to `assert_empty spy_global` and the apply half should
-    # also land in @fake.calls.
-    assert spy_global.any?,
-           "apply_to_referral! is expected to route through the global until #264; if this test now reports @fake received the call instead, tighten the assertion"
   end
 
   test "class .sync_decision still works with no kwarg, falling back to Corvid.adapter" do
@@ -119,6 +136,15 @@ class Corvid::CommitteeReviewSyncServiceInjectionTest < ActiveSupport::TestCase
   end
 
   private
+
+  def build_approved_review_with_stale_medicaid
+    travel_to Time.zone.parse("2025-07-01 12:00:00 UTC") do
+      review = build_approved_review
+      medicaid = review.prc_referral.alternate_resource_checks.find_by!(resource_type: "medicaid")
+      medicaid.update!(checked_at: 31.days.ago)
+      review
+    end
+  end
 
   def build_approved_review
     Corvid::TenantContext.with_tenant(TENANT) do

@@ -30,6 +30,27 @@ class Corvid::CommitteeReviewSyncServiceTest < ActiveSupport::TestCase
 
   # -- Authorization exhaustion guard on sync_decision --------------------------
 
+  test "sync_decision blockers name medicaid not current when stale for authorization date" do
+    with_tenant("tnt_test") do
+      travel_to Time.zone.parse("2025-07-01 12:00:00 UTC") do
+        review = create_approved_review_in_committee_review
+        referral = review.prc_referral
+        exhaust_alternate_resources!(referral, date_of_service: Date.current, as_of: Time.current)
+        referral.alternate_resource_checks.find_by!(resource_type: "medicaid").update!(checked_at: 31.days.ago)
+        Corvid.adapter.define_singleton_method(:verify_eligibility) { |_pid, _type| raise "unreadable" }
+
+        fake = RecordingAdapter.new
+        result = Corvid::CommitteeReviewSyncService.sync_decision(review, adapter: fake)
+
+        refute result[:success]
+        assert result[:blocked]
+        assert_includes result[:blockers], "medicaid: not current"
+        refute_equal [ "referral: committee_review" ], result[:blockers]
+        refute fake.committee_decision_synced?
+      end
+    end
+  end
+
   test "sync_decision blocks approved decision when alternate resources not exhausted" do
     with_tenant(TENANT) do
       review = create_approved_review(exhaust: false)
