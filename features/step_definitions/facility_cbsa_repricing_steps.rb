@@ -46,5 +46,7 @@ end
 
 Then("the analyzer medicare equivalent should be {float}") do |expected|
   refute_nil @analyzer_result, "analyzer produced no result"
-  assert_in_delta expected, @analyzer_result.medicare_equivalent.to_f, 0.01
+  expected_amount = BigDecimal(format("%.2f", expected))
+  actual_amount = BigDecimal(@analyzer_result.medicare_equivalent.to_s).round(2)
+  assert_equal expected_amount, actual_amount
 end

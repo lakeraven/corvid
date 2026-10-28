@@ -15,7 +15,9 @@ class Corvid::PrcOverpaymentAnalyzerWageAreaTest < ActiveSupport::TestCase
   CROSSWALK_RELEASE_LABEL = "cucumber_synthetic"
   REAL_OPPS_RELEASE = "cms_opps_cy2009_final_rule"
   REAL_IPPS_RELEASE = "cms_fy2009_final_rule"
+  REAL_ASC_RELEASE = "cms_asc_cy2009_final_rule"
   STUB_CROSSWALK_RELEASE = "stub_v1"
+  NON_PREFIX_STUB_LIKE_CROSSWALK = "cms_restub_2026"
 
   NATIONAL_WAGE_NOTE_MISSING_OR_MALFORMED =
     "Wage area: NATIONAL (facility ZIP missing or malformed)."
@@ -169,14 +171,19 @@ class Corvid::PrcOverpaymentAnalyzerWageAreaTest < ActiveSupport::TestCase
     register_facility_for_cbsa(code: "CBSA", zip: SYNTH_ZIP, locality: TEST_LOCALITY)
     Corvid::ZipCbsaCrosswalk.create!(fiscal_year: 2009, zip: SYNTH_ZIP, cbsa: SYNTH_CBSA)
 
-    result = analyze_with_facility(
-      facility_code: "CBSA", procedure: "OFFICE_VISIT_EST", paid: 250
-    ).results.first
+    result = nil
+    queries = count_zip_cbsa_crosswalk_queries do
+      result = analyze_with_facility(
+        facility_code: "CBSA", procedure: "OFFICE_VISIT_EST", paid: 250
+      ).results.first
+    end
 
     assert_equal :pfs, result.payment_system
     assert_nil result.wage_area
     refute_match(/Wage area:/, result.notes.to_s)
     refute_includes result.notes.to_s, SYNTH_ZIP
+    assert_equal 0, queries,
+                 "professional PFS pricing must not query corvid_zip_cbsa_crosswalks"
   end
 
   # -- K3: zip types price at NATIONAL without raising -----------------------
@@ -276,7 +283,14 @@ class Corvid::PrcOverpaymentAnalyzerWageAreaTest < ActiveSupport::TestCase
     assert_equal :stub_estimate, result.recovery_confidence,
                  "stub-derived crosswalk must downgrade confidence even when OPPS rows are real CMS"
     assert_equal :stub, result.rate_source
-    assert_equal REAL_OPPS_RELEASE, result.rate_source_release
+    assert_equal STUB_CROSSWALK_RELEASE, result.rate_source_release,
+                 "stub crosswalk release_label wins over real OPPS row label when any input is stub-derived"
+    assert_match(
+      /Priced via real CMS OPPS Final Rule \(release=#{REAL_OPPS_RELEASE}\)/,
+      result.notes
+    )
+    refute_match(/stub-derived OPPS canonical CSV/, result.notes,
+                 "real CMS rate row under stub crosswalk keeps real-rule pricing wording")
     assert_institutional_wage_area_documentation(
       result,
       facility_zip: SYNTH_ZIP,
@@ -304,11 +318,77 @@ class Corvid::PrcOverpaymentAnalyzerWageAreaTest < ActiveSupport::TestCase
     assert_equal :ipps, result.payment_system
     assert_equal :stub_estimate, result.recovery_confidence
     assert_equal :stub, result.rate_source
+    assert_equal STUB_CROSSWALK_RELEASE, result.rate_source_release
+    assert_match(
+      /Priced via real CMS IPPS Final Rule \(release=#{REAL_IPPS_RELEASE}\)/,
+      result.notes
+    )
+    refute_match(/stub-derived IPPS canonical CSV/, result.notes)
     assert_institutional_wage_area_documentation(
       result,
       facility_zip: SYNTH_ZIP,
       wage_area: SYNTH_CBSA,
       crosswalk_release: STUB_CROSSWALK_RELEASE
+    )
+  end
+
+  test "ASC priced from real CMS rows is stub_estimate when crosswalk release is stub-derived" do
+    register_outpatient_procedure!
+    register_facility_for_cbsa(code: "CBSA", zip: SYNTH_ZIP)
+    seed_cbsa_crosswalk_and_wage_area(
+      fiscal_year: 2009, zip: SYNTH_ZIP, cbsa: SYNTH_CBSA,
+      crosswalk_release_label: STUB_CROSSWALK_RELEASE
+    )
+    seed_asc_cbsa_rows(
+      calendar_year: 2009, cbsa: SYNTH_CBSA, release_label: REAL_ASC_RELEASE
+    )
+    Corvid::AscFacility.create!(ccn: "ASC-VENDOR-1", effective_date: Date.new(2009, 1, 1))
+
+    result = analyze_with_facility(
+      facility_code: "CBSA", procedure: "OUTPATIENT_TEST", paid: 1_000, vendor_id: "ASC-VENDOR-1"
+    ).results.first
+
+    assert_equal :asc, result.payment_system
+    assert_equal :stub_estimate, result.recovery_confidence
+    assert_equal :stub, result.rate_source
+    assert_equal STUB_CROSSWALK_RELEASE, result.rate_source_release
+    assert_match(
+      /Priced via real CMS ASC Final Rule \(release=#{REAL_ASC_RELEASE}\)/,
+      result.notes
+    )
+    refute_match(/stub-derived ASC canonical CSV/, result.notes)
+    assert_institutional_wage_area_documentation(
+      result,
+      facility_zip: SYNTH_ZIP,
+      wage_area: SYNTH_CBSA,
+      crosswalk_release: STUB_CROSSWALK_RELEASE
+    )
+  end
+
+  test "crosswalk release_label containing stub without stub prefix keeps real-priced OPPS clear" do
+    register_outpatient_procedure!
+    register_facility_for_cbsa(code: "CBSA", zip: SYNTH_ZIP)
+    seed_cbsa_crosswalk_and_wage_area(
+      fiscal_year: 2009, zip: SYNTH_ZIP, cbsa: SYNTH_CBSA,
+      crosswalk_release_label: NON_PREFIX_STUB_LIKE_CROSSWALK
+    )
+    seed_opps_cbsa_rows(
+      calendar_year: 2009, cbsa: SYNTH_CBSA, release_label: REAL_OPPS_RELEASE
+    )
+
+    result = analyze_with_facility(
+      facility_code: "CBSA", procedure: "OUTPATIENT_TEST", paid: 5_000
+    ).results.first
+
+    assert_equal :opps, result.payment_system
+    assert_equal :clear, result.recovery_confidence
+    assert_equal :real, result.rate_source
+    assert_equal REAL_OPPS_RELEASE, result.rate_source_release
+    assert_institutional_wage_area_documentation(
+      result,
+      facility_zip: SYNTH_ZIP,
+      wage_area: SYNTH_CBSA,
+      crosswalk_release: NON_PREFIX_STUB_LIKE_CROSSWALK
     )
   end
 
@@ -448,6 +528,24 @@ class Corvid::PrcOverpaymentAnalyzerWageAreaTest < ActiveSupport::TestCase
     Corvid::AscConversionFactor.create!(
       calendar_year: calendar_year, locality: "NATIONAL",
       conversion_factor: 42.0, wage_index: 1.0
+    )
+  end
+
+  def seed_asc_cbsa_rows(calendar_year:, cbsa:, release_label:)
+    Corvid::AscHcpcsRate.create!(
+      calendar_year: calendar_year, hcpcs_code: "12345",
+      payment_indicator: "G2", payment_weight: 20.0,
+      release_label: release_label
+    )
+    Corvid::AscConversionFactor.create!(
+      calendar_year: calendar_year, locality: "NATIONAL",
+      conversion_factor: 42.0, wage_index: 1.0,
+      release_label: release_label
+    )
+    Corvid::AscConversionFactor.create!(
+      calendar_year: calendar_year, locality: cbsa,
+      conversion_factor: 42.0, wage_index: LOW_WAGE_INDEX,
+      release_label: release_label
     )
   end
 
