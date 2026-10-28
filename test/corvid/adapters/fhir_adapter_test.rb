@@ -2787,6 +2787,187 @@ class Corvid::Adapters::FhirAdapterTest < Minitest::Test
     end
   end
 
+  # Issue #674 parity: malformed Bundle.entry.search fails Coverage search closed.
+
+  def test_get_coverages_counts_coverage_entry_with_no_search_key
+    patient = "pt_cov_no_search"
+    resource = coverage_fhir_resource(
+      id: "cov_no_search",
+      for_patient: patient,
+      status: "active",
+      payer_display: "TEST PAYER NO SEARCH",
+      type_code: "MCDSC",
+      subscriber_id: "POL_NS",
+      period_start: Date.new(2026, 1, 1),
+      period_end: Date.new(2026, 12, 31)
+    )
+    bundle = coverage_bundle(entries: [ { "resource" => resource } ], total: 1)
+    with_stubbed_coverage_http({ coverage_search_url(patient) => http_ok_json(bundle) }) do
+      result = @adapter.get_coverages(patient)
+      assert_equal 1, result.size
+      assert_equal "POL_NS", result.first[:policy_number]
+    end
+  end
+
+  def test_get_coverages_counts_coverage_entry_with_search_mode_match
+    patient = "pt_cov_match_search"
+    resource = coverage_fhir_resource(
+      id: "cov_match_search",
+      for_patient: patient,
+      status: "active",
+      payer_display: "TEST PAYER MATCH SEARCH",
+      type_code: "MCDSC",
+      subscriber_id: "POL_MS",
+      period_start: Date.new(2026, 1, 1),
+      period_end: Date.new(2026, 12, 31)
+    )
+    entry = { "resource" => resource, "search" => { "mode" => "match" } }
+    bundle = coverage_bundle(entries: [ entry ], total: 1)
+    with_stubbed_coverage_http({ coverage_search_url(patient) => http_ok_json(bundle) }) do
+      result = @adapter.get_coverages(patient)
+      assert_equal 1, result.size
+    end
+  end
+
+  def test_get_coverages_returns_nil_for_string_search_field_on_coverage_entry
+    patient = "pt_cov_str_search"
+    resource = coverage_fhir_resource(
+      id: "cov_str_search",
+      for_patient: patient,
+      status: "active",
+      payer_display: "TEST PAYER STR SEARCH",
+      type_code: "MCDSC",
+      subscriber_id: "POL_SS",
+      period_start: Date.new(2026, 1, 1),
+      period_end: Date.new(2026, 12, 31)
+    )
+    bundle = coverage_bundle(entries: [ { "resource" => resource, "search" => "match" } ], total: 1)
+    with_stubbed_coverage_http({ coverage_search_url(patient) => http_ok_json(bundle) }) do
+      assert_nil @adapter.get_coverages(patient)
+    end
+  end
+
+  def test_get_coverages_returns_nil_for_non_string_search_mode_on_coverage_entry
+    patient = "pt_cov_mode_type"
+    resource = coverage_fhir_resource(
+      id: "cov_mode_type",
+      for_patient: patient,
+      status: "active",
+      payer_display: "TEST PAYER MODE TYPE",
+      type_code: "MCDSC",
+      subscriber_id: "POL_MT",
+      period_start: Date.new(2026, 1, 1),
+      period_end: Date.new(2026, 12, 31)
+    )
+    bundle = coverage_bundle(
+      entries: [ { "resource" => resource, "search" => { "mode" => 1 } } ],
+      total: 1
+    )
+    with_stubbed_coverage_http({ coverage_search_url(patient) => http_ok_json(bundle) }) do
+      assert_nil @adapter.get_coverages(patient)
+    end
+  end
+
+  def test_get_coverages_returns_nil_for_unknown_search_mode_on_coverage_entry
+    patient = "pt_cov_bogus_mode"
+    resource = coverage_fhir_resource(
+      id: "cov_bogus_mode",
+      for_patient: patient,
+      status: "active",
+      payer_display: "TEST PAYER BOGUS MODE",
+      type_code: "MCDSC",
+      subscriber_id: "POL_BM",
+      period_start: Date.new(2026, 1, 1),
+      period_end: Date.new(2026, 12, 31)
+    )
+    bundle = coverage_bundle(
+      entries: [ { "resource" => resource, "search" => { "mode" => "bogus" } } ],
+      total: 1
+    )
+    with_stubbed_coverage_http({ coverage_search_url(patient) => http_ok_json(bundle) }) do
+      assert_nil @adapter.get_coverages(patient)
+    end
+  end
+
+  def test_get_coverages_returns_nil_for_include_search_mode_on_coverage_entry
+    patient = "pt_cov_include_mode"
+    resource = coverage_fhir_resource(
+      id: "cov_include_mode",
+      for_patient: patient,
+      status: "active",
+      payer_display: "TEST PAYER INCLUDE MODE",
+      type_code: "MCDSC",
+      subscriber_id: "POL_IM",
+      period_start: Date.new(2026, 1, 1),
+      period_end: Date.new(2026, 12, 31)
+    )
+    bundle = coverage_bundle(
+      entries: [ { "resource" => resource, "search" => { "mode" => "include" } } ],
+      total: 1
+    )
+    with_stubbed_coverage_http({ coverage_search_url(patient) => http_ok_json(bundle) }) do
+      assert_nil @adapter.get_coverages(patient)
+    end
+  end
+
+  def test_get_coverages_returns_nil_for_outcome_search_mode_on_coverage_entry
+    patient = "pt_cov_outcome_mode"
+    resource = coverage_fhir_resource(
+      id: "cov_outcome_mode",
+      for_patient: patient,
+      status: "active",
+      payer_display: "TEST PAYER OUTCOME MODE",
+      type_code: "MCDSC",
+      subscriber_id: "POL_OM",
+      period_start: Date.new(2026, 1, 1),
+      period_end: Date.new(2026, 12, 31)
+    )
+    bundle = coverage_bundle(
+      entries: [ { "resource" => resource, "search" => { "mode" => "outcome" } } ],
+      total: 1
+    )
+    with_stubbed_coverage_http({ coverage_search_url(patient) => http_ok_json(bundle) }) do
+      assert_nil @adapter.get_coverages(patient)
+    end
+  end
+
+  def test_get_coverages_returns_nil_when_page_two_has_malformed_search_on_coverage_entry
+    patient = "pt_cov_p2_bad_search"
+    page1_url = coverage_search_url(patient)
+    page2_url = "#{@adapter.base_url}/Coverage?#{URI.encode_www_form(page: "2", beneficiary: "Patient/#{patient}")}"
+    page1_resource = coverage_fhir_resource(
+      id: "cov_p2a",
+      for_patient: patient,
+      status: "active",
+      payer_display: "TEST PAYER P2A",
+      type_code: "MCDSC",
+      subscriber_id: "POL_P2A",
+      period_start: Date.new(2026, 1, 1),
+      period_end: Date.new(2026, 12, 31)
+    )
+    page2_resource = coverage_fhir_resource(
+      id: "cov_p2b",
+      for_patient: patient,
+      status: "active",
+      payer_display: "TEST PAYER P2B",
+      type_code: "EHCPOL",
+      subscriber_id: "POL_P2B",
+      period_start: Date.new(2026, 2, 1),
+      period_end: Date.new(2026, 12, 31)
+    )
+    page1 = coverage_bundle(entries: [ { "resource" => page1_resource } ], total: 2, next_url: page2_url)
+    page2 = coverage_bundle(
+      entries: [ { "resource" => page2_resource, "search" => { "mode" => "bogus" } } ],
+      total: 2
+    )
+    with_stubbed_coverage_http({
+      page1_url => http_ok_json(page1),
+      page2_url => http_ok_json(page2)
+    }) do
+      assert_nil @adapter.get_coverages(patient)
+    end
+  end
+
   # Chair round 2 — duplicate Coverage ids, link shape, entry shape, Bundle.type
 
   def test_get_coverages_returns_nil_when_same_coverage_id_appears_twice_on_one_page
@@ -4462,6 +4643,25 @@ class Corvid::Adapters::FhirAdapterTest < Minitest::Test
     assert_nil result
   end
 
+  # -- Issue #611 panel round 1: strict clinical read behaviour (failing until implemented) --
+
+  CLINICAL_HTTP_FAULTS.each do |fault|
+    define_method(:"test_get_conditions_returns_nil_when_http_get_raises_#{fault.class.name.split('::').last}") do
+      assert_nil clinical_read_with_http_fault(:get_conditions, fault)
+    end
+
+    define_method(:"test_get_medications_returns_nil_when_http_get_raises_#{fault.class.name.split('::').last}") do
+      assert_nil clinical_read_with_http_fault(:get_medications, fault)
+    end
+  end
+
+  INVALID_STRICT_DATE_STRINGS.each do |bad_onset|
+    define_method(:"test_get_conditions_returns_nil_when_onset_is_#{bad_onset.gsub(/\W+/, '_')}") do
+      condition = build_condition_resource(onsetDateTime: bad_onset)
+      assert_nil get_conditions_with_bundle(conditions_bundle([ condition ]))
+    end
+  end
+
   def test_get_conditions_keeps_row_with_nil_onset_for_year_only_onset_date_time
     condition = build_condition_resource(onsetDateTime: "2020")
     results = get_conditions_with_bundle(conditions_bundle([ condition ]))
@@ -4501,6 +4701,13 @@ class Corvid::Adapters::FhirAdapterTest < Minitest::Test
     assert_nil results.first.onset_date
   end
 
+  INVALID_STRICT_DATE_STRINGS.each do |bad_authored|
+    define_method(:"test_get_medications_returns_nil_when_authored_on_is_#{bad_authored.gsub(/\W+/, '_')}") do
+      request = build_medication_request_resource(authoredOn: bad_authored)
+      assert_nil get_medications_with_bundle(medications_bundle([ request ]))
+    end
+  end
+
   def test_get_medications_keeps_row_with_nil_authored_on_for_year_only
     request = build_medication_request_resource(authoredOn: "2020")
     results = get_medications_with_bundle(medications_bundle([ request ]))
@@ -4538,6 +4745,19 @@ class Corvid::Adapters::FhirAdapterTest < Minitest::Test
     assert_equal [], results
   end
 
+  %w[refuted entered-in-error].each do |code|
+    define_method(:"test_get_conditions_excludes_verification_status_#{code.tr('-', '_')}_in_foreign_system") do
+      condition = build_condition_resource(
+        verification_status_codings: [
+          { "system" => "http://example.test/foreign-verification", "code" => code }
+        ]
+      )
+      results = get_conditions_with_bundle(conditions_bundle([ condition ]))
+
+      assert_equal [], results
+    end
+  end
+
   def test_get_conditions_uses_condition_clinical_system_coding_not_first_arbitrary_coding
     condition = build_condition_resource(
       clinical_status_codings: [
@@ -4551,12 +4771,39 @@ class Corvid::Adapters::FhirAdapterTest < Minitest::Test
     assert_equal "active", results.first.clinical_status
   end
 
+  %w[recurrence relapse].each do |status|
+    define_method(:"test_get_conditions_includes_clinical_status_#{status}") do
+      condition = build_condition_resource(
+        clinical_status: status,
+        clinical_status_system: CONDITION_CLINICAL_SYSTEM
+      )
+      results = get_conditions_with_bundle(conditions_bundle([ condition ]))
+
+      assert_equal 1, results.size
+      assert_equal status, results.first.clinical_status
+    end
+  end
+
   def test_get_conditions_returns_nil_when_condition_clinical_code_is_not_fhir_allowed
     condition = build_condition_resource(
       clinical_status: "Active",
       clinical_status_system: CONDITION_CLINICAL_SYSTEM
     )
     assert_nil get_conditions_with_bundle(conditions_bundle([ condition ]))
+  end
+
+  %w[inactive remission].each do |status|
+    define_method(:"test_get_conditions_excludes_clinical_status_#{status}") do
+      skipped = build_condition_resource(
+        clinical_status: status,
+        clinical_status_system: CONDITION_CLINICAL_SYSTEM
+      )
+      included = build_condition_resource(id: "cond_ok", clinical_status: "active",
+                                        clinical_status_system: CONDITION_CLINICAL_SYSTEM)
+      results = get_conditions_with_bundle(conditions_bundle([ skipped, included ]))
+
+      assert_equal 1, results.size
+    end
   end
 
   def test_get_conditions_returns_nil_when_subject_is_absolute_patient_on_other_host
@@ -4628,6 +4875,16 @@ class Corvid::Adapters::FhirAdapterTest < Minitest::Test
 
     assert_equal 1, results.size
     assert_equal "M001", results.first.code
+  end
+
+  %w[? ??].each do |bad_ref|
+    define_method(:"test_get_medications_returns_nil_for_malformed_medication_reference_#{bad_ref.gsub('?', 'q')}") do
+      request = build_medication_request_resource(
+        medicationCodeableConcept: nil,
+        medicationReference: { "reference" => bad_ref }
+      )
+      assert_nil get_medications_with_bundle(medications_bundle([ request ]))
+    end
   end
 
   def test_get_medications_returns_nil_for_blank_medication_reference
@@ -4720,6 +4977,16 @@ class Corvid::Adapters::FhirAdapterTest < Minitest::Test
     space: "a b",
     embedded_quote: %(a"b)
   }.freeze
+
+  INVALID_MEDICATION_REFERENCE_IDS.each do |label, invalid_id|
+    define_method(:"test_get_medications_returns_nil_for_invalid_medication_id_#{label}_without_http_read") do
+      request = build_medication_request_resource(
+        medicationCodeableConcept: nil,
+        medicationReference: { "reference" => "Medication/#{invalid_id}" }
+      )
+      assert_nil get_medications_with_bundle_without_extra_http(medications_bundle([ request ]))
+    end
+  end
 
   def test_get_medications_excludes_medication_request_with_do_not_perform_true
     included = build_medication_request_resource("id" => "mr_ok")
@@ -5007,6 +5274,24 @@ class Corvid::Adapters::FhirAdapterTest < Minitest::Test
 
   OUTCOME_SEVERITIES = %w[fatal error warning information].freeze
 
+  # -- Issue #611 panel round 4: spec amendment (individual tests from main) ----
+
+  %w[suppressed incomplete too-costly].each do |issue_code|
+    OUTCOME_SEVERITIES.each do |severity|
+      define_method(:"test_get_conditions_returns_nil_when_operation_outcome_#{issue_code}_at_#{severity}") do
+        condition = build_condition_resource
+        bundle = conditions_bundle_with_operation_outcome([ condition ], issue_code: issue_code, severity: severity)
+        assert_nil get_conditions_with_bundle(bundle)
+      end
+
+      define_method(:"test_get_medications_returns_nil_when_operation_outcome_#{issue_code}_at_#{severity}") do
+        request = build_medication_request_resource
+        bundle = medications_bundle_with_operation_outcome([ request ], issue_code: issue_code, severity: severity)
+        assert_nil get_medications_with_bundle(bundle)
+      end
+    end
+  end
+
   def test_get_conditions_returns_nil_when_operation_outcome_has_untrusted_code_at_any_severity
     condition = build_condition_resource
     TRUST_DEFEATING_OUTCOME_CODES.each do |code|
@@ -5195,6 +5480,18 @@ class Corvid::Adapters::FhirAdapterTest < Minitest::Test
   def test_get_medications_returns_nil_when_positive_total_has_only_informational_operation_outcome_in_outcome_mode
     bundle = positive_total_outcome_only_bundle(search_mode: "outcome")
     assert_nil get_medications_with_bundle(bundle)
+  end
+
+  %i[missing nil blank].each do |variant|
+    define_method(:"test_get_conditions_returns_nil_when_us_core_category_code_is_#{variant}") do
+      condition = build_condition_resource(category: [ us_core_category_element(variant) ])
+      assert_nil get_conditions_with_bundle(conditions_bundle([ condition ]))
+    end
+
+    define_method(:"test_get_conditions_returns_nil_when_hl7_category_code_is_#{variant}") do
+      condition = build_condition_resource(category: [ hl7_category_element(variant) ])
+      assert_nil get_conditions_with_bundle(conditions_bundle([ condition ]))
+    end
   end
 
   def test_get_conditions_still_skips_known_system_with_explicit_out_of_scope_category_code

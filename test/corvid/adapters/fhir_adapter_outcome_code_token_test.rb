@@ -304,6 +304,52 @@ class Corvid::Adapters::FhirAdapterOutcomeCodeTokenTest < Minitest::Test
     end
   end
 
+  def test_list_referrals_returns_nil_when_operation_outcome_issue_has_no_code_key_at_warning_or_information
+    NON_BLOCKING_OUTCOME_SEVERITIES.each do |severity|
+      bundle = list_referrals_bundle_with_outcome_issue({ "severity" => severity })
+      assert_nil list_referrals(bundle),
+                 "expected nil for OperationOutcome issue without code key at #{severity} on ServiceRequest search"
+    end
+  end
+
+  def test_get_care_team_returns_nil_when_operation_outcome_issue_has_no_code_key_at_warning_or_information
+    NON_BLOCKING_OUTCOME_SEVERITIES.each do |severity|
+      bundle = list_care_team_bundle_with_outcome_issue({ "severity" => severity })
+      assert_nil get_care_team(bundle),
+                 "expected nil for OperationOutcome issue without code key at #{severity} on CareTeam search"
+    end
+  end
+
+  def test_list_claims_returns_nil_for_invalid_utf8_operation_outcome_code_at_any_severity
+    OUTCOME_SEVERITIES.each do |severity|
+      bundle = list_claims_bundle_with_outcome_issue(
+        { "severity" => severity, "code" => "timeout#{invalid_utf8_byte_sequence}" }
+      )
+      assert_nil list_claims(bundle),
+                 "expected nil for invalid UTF-8 OperationOutcome code at #{severity} on Claim search"
+    end
+  end
+
+  def test_list_referrals_returns_nil_for_invalid_utf8_operation_outcome_code_at_any_severity
+    OUTCOME_SEVERITIES.each do |severity|
+      bundle = list_referrals_bundle_with_outcome_issue(
+        { "severity" => severity, "code" => "timeout#{invalid_utf8_byte_sequence}" }
+      )
+      assert_nil list_referrals(bundle),
+                 "expected nil for invalid UTF-8 OperationOutcome code at #{severity} on ServiceRequest search"
+    end
+  end
+
+  def test_get_care_team_returns_nil_for_invalid_utf8_operation_outcome_code_at_any_severity
+    OUTCOME_SEVERITIES.each do |severity|
+      bundle = list_care_team_bundle_with_outcome_issue(
+        { "severity" => severity, "code" => "timeout#{invalid_utf8_byte_sequence}" }
+      )
+      assert_nil get_care_team(bundle),
+                 "expected nil for invalid UTF-8 OperationOutcome code at #{severity} on CareTeam search"
+    end
+  end
+
   LIST_SEARCH_READS.each do |method, arg|
     define_method("test_#{method}_returns_nil_for_fullwidth_timeout_operation_outcome_at_warning") do
       bundle = list_search_outcome_only_bundle(
@@ -520,6 +566,69 @@ class Corvid::Adapters::FhirAdapterOutcomeCodeTokenTest < Minitest::Test
 
   def list_claims(bundle)
     @adapter.stub(:fhir_search, bundle) { @adapter.list_claims("pt_token_list") }
+  end
+
+  def list_referrals(bundle)
+    @adapter.stub(:fhir_search, bundle) { @adapter.list_referrals("pt_token_list") }
+  end
+
+  def get_care_team(bundle)
+    @adapter.stub(:fhir_search, bundle) { @adapter.get_care_team("pt_token_list") }
+  end
+
+  def list_referrals_bundle_with_outcome_issue(issue)
+    {
+      "resourceType" => "Bundle",
+      "type" => "searchset",
+      "entry" => [
+        sample_service_request_match_entry,
+        {
+          "resource" => { "resourceType" => "OperationOutcome", "issue" => [ issue ] },
+          "search" => { "mode" => "outcome" }
+        }
+      ]
+    }
+  end
+
+  def list_care_team_bundle_with_outcome_issue(issue)
+    {
+      "resourceType" => "Bundle",
+      "type" => "searchset",
+      "entry" => [
+        sample_care_team_match_entry,
+        {
+          "resource" => { "resourceType" => "OperationOutcome", "issue" => [ issue ] },
+          "search" => { "mode" => "outcome" }
+        }
+      ]
+    }
+  end
+
+  def sample_service_request_match_entry
+    {
+      "resource" => {
+        "resourceType" => "ServiceRequest",
+        "id" => "sr_token_test",
+        "status" => "active",
+        "intent" => "order",
+        "subject" => { "reference" => "Patient/pt_token_list" },
+        "code" => { "text" => "Referral for testing" }
+      },
+      "search" => { "mode" => "match" }
+    }
+  end
+
+  def sample_care_team_match_entry
+    {
+      "resource" => {
+        "resourceType" => "CareTeam",
+        "id" => "ct_token_test",
+        "status" => "active",
+        "subject" => { "reference" => "Patient/pt_token_list" },
+        "participant" => [ { "member" => { "reference" => "Practitioner/pr_token_test" } } ]
+      },
+      "search" => { "mode" => "match" }
+    }
   end
 
   def stub_coverage_http(responses_by_url)
