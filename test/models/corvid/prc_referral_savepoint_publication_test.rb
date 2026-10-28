@@ -56,6 +56,7 @@ module Corvid
         travel_to Time.zone.parse("2025-06-15 12:00:00 UTC") do
           referral = referral_ready_to_authorize!
           referral.authorize!
+          record_delivered_fulfilment!(referral)
           claim = draft_claim_for!(referral)
 
           Corvid.configure do |c|
@@ -138,6 +139,7 @@ module Corvid
       Corvid::CommitteeReview.unscoped.where(prc_referral_id: ids).delete_all
       Corvid::AlternateResourceCheck.unscoped.where(prc_referral_id: ids).delete_all
       Corvid::EligibilityChecklist.unscoped.where(prc_referral_id: ids).delete_all
+      Corvid::ReferralFulfilmentReport.unscoped.where(prc_referral_id: ids).delete_all
       case_ids = Corvid::PrcReferral.unscoped.where(id: ids).pluck(:case_id)
       Corvid::PrcReferral.unscoped.where(id: ids).delete_all
       Corvid::Case.unscoped.where(id: case_ids).delete_all

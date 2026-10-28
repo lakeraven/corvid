@@ -140,6 +140,7 @@ class Corvid::ClaimSubmissionSentMarkerCombinedSaveTest < ActiveSupport::TestCas
     referral.complete_priority_assignment!
     referral.authorize! if referral.may_authorize? && !referral.committee_review?
     referral.reload
+    record_delivered_fulfilment!(referral)
   end
 
   def referral_at
