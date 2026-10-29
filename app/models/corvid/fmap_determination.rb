@@ -68,6 +68,7 @@ module Corvid
     # appending a correction to an old row.
     validate :cites_applied_rule, if: :decision_changed?
     validate :evidence_backs_hundred_percent, if: :decision_changed?
+    validate :expansion_tier_requires_configured_state, if: :decision_changed?
     validate :authority_is_own_facilitys, if: :decision_changed?
     # Not a decision field. The check runs when the key is written, so an
     # unknown key fails here instead of the foreign key, which aborts the
@@ -218,6 +219,28 @@ module Corvid
       return if unmet.empty?
 
       errors.add(:evidence_refs, "lacks #{unmet.uniq.join(', ')} for rule #{rule_key}")
+    end
+
+    # Backstop for the service rule: a persisted expansion tier rests on
+    # a jurisdiction StateMedicaidRules has configured as expanded.
+    # Undetermined rows apply no tier. The state check is
+    # FmapClassificationService.expansion_state? so a hand-entered row
+    # cannot persist where classification would refuse.
+    def expansion_tier_requires_configured_state
+      return unless applies_expansion_tier?
+      return if FmapClassificationService.expansion_state?(jurisdiction)
+
+      errors.add(:jurisdiction, "must be a configured expansion state to apply an expansion tier")
+    end
+
+    # The applied rule's expansion? covers a group-scoped rule under any
+    # category. With no rule row, the expansion category itself still
+    # counts — fail closed — and an undetermined row never does.
+    def applies_expansion_tier?
+      return false if category == FmapClassificationService::UNDETERMINED
+      return true if applied_rule&.expansion?
+
+      category == FmapRule::EXPANSION_CATEGORY
     end
 
     # For a facility-authority basis: the stored, same-tenant authority

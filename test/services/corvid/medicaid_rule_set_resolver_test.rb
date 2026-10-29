@@ -328,6 +328,43 @@ class Corvid::MedicaidRuleSetResolverTest < ActiveSupport::TestCase
     end
   end
 
+  # -- token_characters: String.new pins own characters (#680) ---------------
+
+  test "resolve string subclass is_a Symbol spoof for waiver_adult uses six month waiver rules on XC" do
+    with_tenant(TENANT) do
+      register_synthetic_xc_dual_groups!
+      spoof = string_subclass_waiver_adult_is_a_symbol_spoof_expansion
+      result = resolve(eligibility_group: spoof, state: "XC", indian_exemption: "not_eligible")
+
+      assert_rule_set(
+        result,
+        renewal_cycle_months: 6,
+        retroactive_window_months: 1,
+        work_requirement: "applies",
+        exemption_needs_confirmation: false,
+        reasons: []
+      )
+    end
+  ensure
+    restore_state_medicaid_rules!
+  end
+
+  test "resolve object is_a Symbol group spoof raises eligibility_group is not recognized" do
+    with_tenant(TENANT) do
+      register_synthetic_xc_dual_groups!
+      spoof = object_is_a_symbol_spoof_expansion_adult
+
+      error = assert_raises(ArgumentError) do
+        resolve(eligibility_group: spoof, state: "XC", indian_exemption: "not_eligible")
+      end
+
+      assert_equal "eligibility_group is not recognized", error.message
+      refute_includes error.message, "expansion_adult"
+    end
+  ensure
+    restore_state_medicaid_rules!
+  end
+
   # -- Symbol inputs -----------------------------------------------------------
 
   test "resolve accepts symbol eligibility_group state and indian_exemption" do
@@ -410,6 +447,53 @@ class Corvid::MedicaidRuleSetResolverTest < ActiveSupport::TestCase
         }
       }
     )
+  end
+
+  def register_synthetic_xc_dual_groups!
+    Corvid::StateMedicaidRules.register(
+      "XC",
+      expanded: true,
+      work_requirement_programs: [
+        { code: "xc_synthetic_waiver", description_pattern: /\bSYNTHETIC XC WAIVER\b/i }
+      ],
+      groups: {
+        expansion_adult: {
+          renewal_months: 12,
+          retro_coverage_months: 1,
+          work_requirement: false
+        },
+        waiver_adult: {
+          renewal_months: 6,
+          retro_coverage_months: 1,
+          work_requirement: true
+        }
+      }
+    )
+  end
+
+  def string_subclass_waiver_adult_is_a_symbol_spoof_expansion
+    Class.new(String) do
+      def is_a?(type)
+        return true if type == Symbol
+
+        super
+      end
+
+      def name
+        "expansion_adult"
+      end
+    end.new("waiver_adult")
+  end
+
+  def object_is_a_symbol_spoof_expansion_adult
+    Object.new.tap do |value|
+      value.define_singleton_method(:is_a?) do |type|
+        return true if type == Symbol
+
+        super(type)
+      end
+      value.define_singleton_method(:name) { "expansion_adult" }
+    end
   end
 
   def restore_state_medicaid_rules!
