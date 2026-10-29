@@ -146,6 +146,23 @@ class Corvid::Demo::FhirOverlayTest < ActiveSupport::TestCase
     assert_match(/Tallgrass Clinic/, output)
   end
 
+  test "demo Coverage lastUpdated is a FHIR instant and verify_eligibility returns as_of" do
+    clinic = Data.clinics.first
+    patient_id = "pt-br-001"
+    coverage = clinic.resources.find { |r| r["resourceType"] == "Coverage" && r["id"] == "cov_br_001" }
+    last_updated = coverage.dig("meta", "lastUpdated")
+
+    refute_nil last_updated, "demo Coverage must carry meta.lastUpdated"
+    assert_match(/\A\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,6})?Z\z/, last_updated,
+                 "lastUpdated must be a FHIR instant with explicit Z")
+
+    adapter = adapter_for(clinic)
+    result = adapter.verify_eligibility(patient_id, "tribal_program")
+
+    refute_nil result
+    assert result[:as_of].is_a?(Time), "verify_eligibility must surface Coverage answer time"
+  end
+
   test "dataset is fully synthetic (no real clinic/place/vendor names)" do
     blob = Data.clinics.flat_map(&:resources).to_s.downcase
     labels = Data.clinics.map(&:source_ehr_label).join(" ").downcase

@@ -466,8 +466,11 @@ module Corvid
         @coverages[patient_identifier.to_s] << row
       end
 
+      # Copies, so a caller cannot change the stored rows. :as_of is
+      # the add_coverage time, or nil when that coverage has none.
       def get_coverages(patient_identifier)
-        @coverages[patient_identifier.to_s] || []
+        rows = @coverages[patient_identifier.to_s] || []
+        rows.map { |row| copied_coverage_row(row) }
       end
 
       def add_condition(patient_identifier, reference)
@@ -569,6 +572,27 @@ module Corvid
         coverage.key?(:coverage_type) ? coverage[:coverage_type] : coverage[:resource_type]
       end
 
+      def copied_coverage_row(row)
+        copy = row.dup
+        copy.delete("as_of")
+        copy[:as_of] = copied_answer_time(stored_answer_time(row))
+        copy
+      end
+
+      def stored_answer_time(row)
+        return row[:as_of] if row.key?(:as_of)
+
+        row["as_of"] if row.key?("as_of")
+      end
+
+      # Only a Time or TimeWithZone is an answer time. Anything else,
+      # including a missing value, is nil.
+      def copied_answer_time(value)
+        return unless value.is_a?(Time) || value.is_a?(ActiveSupport::TimeWithZone)
+
+        value.dup
+      end
+
       # A recorded period or renewal key, even an explicit nil (an unknown
       # or open bound), replaces the default; an omitted key keeps it.
       def apply_recorded_dates(result, coverage)
@@ -589,7 +613,8 @@ module Corvid
           payer_name: coverage[:payer_name] || "MOCK #{resource_type.to_s.upcase} PAYER",
           policy_token: coverage[:policy_token] || policy_token_for(patient_identifier, resource_type),
           coverage_start: year_start,
-          coverage_end: year_end
+          coverage_end: year_end,
+          as_of: copied_answer_time(stored_answer_time(coverage))
         }
         apply_recorded_dates(result, coverage)
       end
