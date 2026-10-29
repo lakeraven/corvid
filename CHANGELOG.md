@@ -69,26 +69,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `:active_this_month_only` stores the first and last day of the month of
   `Date.current` at seeding; other seeded scenarios still follow the inquiry
   month. FHIR `Coverage.status` is today's state. Missing data is never a
-  negative answer. A Coverage matches the requested type when any
-  `type.coding` code is the type name or its mapped ActCode. Applicable rows
-  are matches whose present period bounds do not exclude the inquiry date.
-  When none apply, the answer is eligible false from a matching Coverage
-  whose bounds exclude the date. Any applicable row that cannot be judged
-  makes the answer nil. Applicable rows that are determinable and agree
-  answer from the row with the latest period start; a nil start sorts
-  earliest. Disagreeing applicable rows are nil. The first entry is never a
-  fallback. A false answer is nil when that type's ActCode is shared with
-  another resource type in the adapter map, counted from the map itself. A
-  present period bound that excludes the inquiry is eligible false for every
-  status. Eligible is true when status is active and either the inquiry is
-  in the current year-month and the present period bounds cover it, or both
-  start and end are present and cover the inquiry. Explicit `cancelled` is
-  eligible false when the inquiry is in the current month and the bounds
-  cover it or are absent. A cancelled Coverage whose start and end cover an
-  inquiry outside the current month is nil. An absent status, `draft`,
-  `entered-in-error`, or any other status is nil when the bounds do not
-  exclude the inquiry. Otherwise FHIR `verify_eligibility` returns nil and
-  the check row stays unchanged.
+  negative answer, and unknown is never a denial or an approval. A Coverage
+  matches the requested type when the primary (first) `type.coding` code is
+  the type name or the mapped ActCode, or when any coding's code is exactly
+  the requested type name. A mapped ActCode in any coding also matches. A
+  Coverage whose codings name a different resource type does not match a
+  sibling that only shares the ActCode. A shared ActCode alone (no type name)
+  never answers true or false for the types that share it: nil. Ambiguous
+  means nil. Applicable rows are matches whose present period bounds do not
+  exclude the inquiry date. When
+  none apply, the answer is eligible false from an active or cancelled
+  matching Coverage whose bounds exclude the date. Any other status,
+  including an absent status, `draft`, and `entered-in-error`, is nil even
+  when its period excludes the date, because status is checked before the
+  bounds. Any applicable row that cannot be judged makes the answer nil.
+  Applicable rows that are determinable and agree answer from the row with
+  the latest period start; a nil start sorts earliest. Disagreeing
+  applicable rows are nil. The first entry is never a fallback. A false
+  answer is also nil when that type's ActCode is shared with another
+  resource type in the adapter map, counted from the map itself. Eligible is
+  true when status is active and either the inquiry is in the current
+  year-month and the present period bounds cover it, or both start and end
+  are present and cover the inquiry. Explicit `cancelled` is eligible false
+  when the inquiry is in the current month and the bounds cover it or are
+  absent. A cancelled Coverage whose start and end cover an inquiry outside
+  the current month is nil. Otherwise FHIR `verify_eligibility` returns nil
+  and the check row stays unchanged.
 - `demo:prc` stamps the seeded Medicaid alternate-resource check with
   `inquiry_date_of_service` of `Date.current`, the date the demo judges, so
   the narrated path authorizes. (#712)
