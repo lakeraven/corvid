@@ -2,10 +2,10 @@
 
 Given("the adapter cannot re-verify {string} eligibility") do |resource_type|
   patient_id = @referral.case.patient_identifier
-  Corvid.adapter.define_singleton_method(:verify_eligibility) do |pid, type|
+  Corvid.adapter.define_singleton_method(:verify_eligibility) do |pid, type, date_of_service: nil|
     raise "unreadable" if pid == patient_id && type == resource_type
 
-    { eligible: false }
+    echo_verify_eligibility_date({ eligible: false }, date_of_service)
   end
 end
 
@@ -76,6 +76,8 @@ Given("an authorized PRC referral {string} for patient {string}") do |identifier
 end
 
 Given("a draft claim linked to that referral with service date {string}") do |iso_date|
+  service_date = Date.parse(iso_date)
+  stamp_alternate_resources_for_claim_service_date!(@referral, service_date, as_of: Time.current)
   @claim = Corvid::ClaimSubmission.create!(
     tenant_identifier: @tenant,
     facility_identifier: @facility,
@@ -167,6 +169,8 @@ Given("the claim has submitted_at set without going through submit!") do
 end
 
 Given("a submitted claim linked to that referral with service date {string}") do |iso_date|
+  service_date = Date.parse(iso_date)
+  stamp_alternate_resources_for_claim_service_date!(@referral, service_date, as_of: Time.current)
   @claim = Corvid::ClaimSubmission.create!(
     tenant_identifier: @tenant,
     facility_identifier: @facility,

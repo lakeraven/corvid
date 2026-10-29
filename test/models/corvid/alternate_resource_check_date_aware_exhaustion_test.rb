@@ -11,7 +11,7 @@ class Corvid::AlternateResourceCheckDateAwareExhaustionTest < ActiveSupport::Tes
       travel_to Time.zone.parse("2025-07-01 12:00:00 UTC") do
         referral = create_referral
         dos = Date.new(2025, 6, 15)
-        create_all_twelve_unavailable_checks(referral, checked_at: 31.days.ago)
+        create_all_twelve_unavailable_checks(referral, checked_at: 31.days.ago, date_of_service: dos)
 
         refute Corvid::AlternateResourceCheck.all_exhausted?(referral, date_of_service: dos)
         assert_exhaustion_agreement(referral, date_of_service: dos)
@@ -24,7 +24,7 @@ class Corvid::AlternateResourceCheckDateAwareExhaustionTest < ActiveSupport::Tes
       travel_to Time.zone.parse("2025-06-15 12:00:00 UTC") do
         referral = create_referral
         dos = Date.new(2025, 6, 15)
-        create_all_twelve_unavailable_checks(referral, checked_at: 1.day.ago)
+        create_all_twelve_unavailable_checks(referral, checked_at: 1.day.ago, date_of_service: dos)
 
         assert Corvid::AlternateResourceCheck.all_exhausted?(referral, date_of_service: dos)
         assert_exhaustion_agreement(referral, date_of_service: dos)
@@ -36,7 +36,7 @@ class Corvid::AlternateResourceCheckDateAwareExhaustionTest < ActiveSupport::Tes
     with_tenant(TENANT) do
       referral = create_referral
       previous = create_referral
-      create_all_twelve_unavailable_checks(previous, checked_at: 1.day.ago)
+      create_all_twelve_unavailable_checks(previous, checked_at: 1.day.ago, date_of_service: Date.current)
       Corvid::AlternateResourceCheck.seed_from_previous!(referral, previous)
 
       dos = Date.current
@@ -49,7 +49,7 @@ class Corvid::AlternateResourceCheckDateAwareExhaustionTest < ActiveSupport::Tes
       travel_to Time.zone.parse("2025-06-15 12:00:00 UTC") do
         referral = create_referral
         dos = Date.new(2025, 6, 15)
-        create_all_twelve_unavailable_checks(referral, checked_at: 1.day.ago)
+        create_all_twelve_unavailable_checks(referral, checked_at: 1.day.ago, date_of_service: dos)
         medicaid = referral.alternate_resource_checks.find_by!(resource_type: "medicaid")
         medicaid.update!(
           status: "exhausted",
@@ -67,7 +67,7 @@ class Corvid::AlternateResourceCheckDateAwareExhaustionTest < ActiveSupport::Tes
       travel_to Time.zone.parse("2025-07-01 12:00:00 UTC") do
         referral = create_referral
         dos = Date.new(2025, 6, 15)
-        create_all_twelve_unavailable_checks(referral, checked_at: 31.days.ago)
+        create_all_twelve_unavailable_checks(referral, checked_at: 31.days.ago, date_of_service: dos)
 
         assert Corvid::AlternateResourceCheck.any_pending?(referral, date_of_service: dos)
       end
@@ -79,7 +79,7 @@ class Corvid::AlternateResourceCheckDateAwareExhaustionTest < ActiveSupport::Tes
       travel_to Time.zone.parse("2025-06-15 12:00:00 UTC") do
         referral = create_referral
         dos = Date.new(2025, 6, 15)
-        create_all_twelve_unavailable_checks(referral, checked_at: 1.day.ago)
+        create_all_twelve_unavailable_checks(referral, checked_at: 1.day.ago, date_of_service: dos)
 
         refute Corvid::AlternateResourceCheck.any_pending?(referral, date_of_service: dos)
       end
@@ -90,7 +90,7 @@ class Corvid::AlternateResourceCheckDateAwareExhaustionTest < ActiveSupport::Tes
     with_tenant(TENANT) do
       travel_to Time.zone.parse("2025-07-01 12:00:00 UTC") do
         referral = create_referral
-        create_all_twelve_unavailable_checks(referral, checked_at: 31.days.ago)
+        create_all_twelve_unavailable_checks(referral, checked_at: 31.days.ago, date_of_service: Date.current)
 
         refute Corvid::AlternateResourceCheck.all_exhausted?(referral)
       end
@@ -102,7 +102,7 @@ class Corvid::AlternateResourceCheckDateAwareExhaustionTest < ActiveSupport::Tes
       travel_to Time.zone.parse("2025-06-15 12:00:00 UTC") do
         referral = create_referral
         dos = Date.new(2025, 6, 15)
-        create_all_twelve_unavailable_checks(referral, checked_at: 1.day.ago)
+        create_all_twelve_unavailable_checks(referral, checked_at: 1.day.ago, date_of_service: dos)
 
         assert Corvid::AlternateResourceService.all_exhausted?(referral, date_of_service: dos)
         refute Corvid::AlternateResourceService.has_active_coverage?(referral, date_of_service: dos)
@@ -145,16 +145,19 @@ class Corvid::AlternateResourceCheckDateAwareExhaustionTest < ActiveSupport::Tes
     )
   end
 
-  def create_all_twelve_unavailable_checks(referral, checked_at:, status_overrides: {})
+  def create_all_twelve_unavailable_checks(referral, checked_at:, date_of_service: Date.current, status_overrides: {})
     Corvid::AlternateResourceCheck::RESOURCE_TYPES.each do |type|
       status = status_overrides.fetch(type, "not_enrolled")
-      Corvid::AlternateResourceCheck.create!(
+      check = Corvid::AlternateResourceCheck.create!(
         prc_referral: referral,
         resource_type: type,
-        status: status,
-        checked_at: %w[not_checked checking].include?(status) ? nil : checked_at
+        status: status
       )
+      next if %w[not_checked checking].include?(status)
+
+      stamp_alternate_resource_check_current!(check, date_of_service: date_of_service, as_of: checked_at)
     end
+    referral.alternate_resource_checks.reload
   end
 
   def assert_exhaustion_agreement(referral, date_of_service:)

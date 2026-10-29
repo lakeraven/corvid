@@ -1,11 +1,22 @@
 # frozen_string_literal: true
 
 require "minitest/autorun"
+require "open3"
+require "active_support/all"
+require "active_support/testing/time_helpers"
 require "corvid/adapters/mock_adapter"
 
 class Corvid::Adapters::MockAdapterTest < Minitest::Test
+  include ActiveSupport::Testing::TimeHelpers
+
   def setup
+    @saved_time_zone = Time.zone
+    Time.zone = "UTC"
     @adapter = Corvid::Adapters::MockAdapter.new
+  end
+
+  def teardown
+    Time.zone = @saved_time_zone
   end
 
   # -- Vault: store_text + fetch_text round-trip ------------------------------
@@ -461,4 +472,360 @@ class Corvid::Adapters::MockAdapterTest < Minitest::Test
       assert_equal expected_display, second.display
     end
   end
+
+  def test_instantiating_mock_adapter_does_not_change_time_zone
+    saved = Time.zone
+    Time.zone = "Pacific/Honolulu"
+    begin
+      Corvid::Adapters::MockAdapter.new
+      assert_equal "Pacific/Honolulu", Time.zone.tzinfo.name,
+                   "MockAdapter must not assign Time.zone (issue #712 R10)"
+    ensure
+      Time.zone = saved
+    end
+  end
+
+  def test_loading_mock_adapter_does_not_assign_time_zone_when_zone_is_already_set
+    adapter_path = File.expand_path("../../../lib/corvid/adapters/mock_adapter.rb", __dir__)
+    script = <<~RUBY
+      require "active_support/all"
+      Time.zone = "Pacific/Honolulu"
+      load #{adapter_path.inspect}
+      puts Time.zone.tzinfo.name
+    RUBY
+    output, = capture_mock_adapter_load_subprocess(script)
+    zone_name = output.strip
+    assert_equal "Pacific/Honolulu", zone_name,
+                 "mock_adapter.rb must not assign Time.zone on load (issue #712 R10); child output: #{output}"
+  end
+
+  def test_loading_mock_adapter_leaves_time_zone_nil_when_it_was_nil
+    adapter_path = File.expand_path("../../../lib/corvid/adapters/mock_adapter.rb", __dir__)
+    script = <<~RUBY
+      require "active_support/all"
+      load #{adapter_path.inspect}
+      puts(Time.zone.nil? ? "nil" : Time.zone.tzinfo.name)
+    RUBY
+    output, = capture_mock_adapter_load_subprocess(script)
+    zone_label = output.strip
+    assert_equal "nil", zone_label,
+                 "mock_adapter.rb must not default Time.zone to UTC on load (issue #712 R10); child output: #{output}"
+  end
+
+  def test_check_eligibility_detailed_false_when_coverage_end_before_inquiry_date
+    payer = "PAYER_712_DETAILED"
+    @adapter.add_coverage(
+      "pt-712-detailed",
+      payer_identifier: payer,
+      eligible: true,
+      coverage_start: Date.new(2026, 1, 1),
+      coverage_end: Date.new(2026, 1, 31)
+    )
+
+    result = @adapter.check_eligibility_detailed(
+      "pt-712-detailed",
+      payer,
+      date_of_service: Date.new(2026, 6, 15)
+    )
+    refute result[:eligible], "check_eligibility_detailed must judge plan end against inquiry (issue #712)"
+  end
+
+  def test_check_eligibility_detailed_true_when_coverage_end_covers_inquiry_date
+    payer = "PAYER_712_DETAILED"
+    @adapter.add_coverage(
+      "pt-712-detailed",
+      payer_identifier: payer,
+      eligible: true,
+      coverage_start: Date.new(2026, 1, 1),
+      coverage_end: Date.new(2026, 1, 31)
+    )
+
+    result = @adapter.check_eligibility_detailed(
+      "pt-712-detailed",
+      payer,
+      date_of_service: Date.new(2026, 1, 15)
+    )
+    assert result[:eligible]
+  end
+
+  def test_check_eligibility_detailed_passes_service_active_from_recorded_coverage_row
+    payer = "PAYER_712_SERVICE_ACTIVE"
+    @adapter.add_coverage(
+      "pt-712-service-active-detailed",
+      payer_identifier: payer,
+      eligible: true,
+      service_active: false,
+      coverage_start: Date.new(2026, 1, 1),
+      coverage_end: Date.new(2026, 12, 31)
+    )
+
+    result = @adapter.check_eligibility_detailed(
+      "pt-712-service-active-detailed",
+      payer,
+      date_of_service: Date.new(2026, 10, 10)
+    )
+
+    assert_equal false, result[:service_active],
+                 "check_eligibility_detailed must pass service_active from the coverage row (issue #712)"
+  end
+
+  def test_verify_eligibility_passes_service_active_from_recorded_coverage_row
+    @adapter.add_coverage(
+      "pt-712-service-active",
+      coverage_type: "medicaid",
+      eligible: true,
+      service_active: false,
+      coverage_start: Date.new(2026, 1, 1),
+      coverage_end: Date.new(2026, 12, 31)
+    )
+
+    result = @adapter.verify_eligibility(
+      "pt-712-service-active",
+      "medicaid",
+      date_of_service: Date.new(2026, 10, 10)
+    )
+
+    assert_equal false, result[:service_active],
+                 "verify_eligibility must pass service_active from the coverage row (issue #712)"
+  end
+
+  def test_verify_eligibility_false_when_coverage_end_before_inquiry_date
+    @adapter.add_coverage(
+      "pt-712-inquiry",
+      coverage_type: "medicaid",
+      eligible: true,
+      coverage_start: Date.new(2026, 1, 1),
+      coverage_end: Date.new(2026, 9, 30)
+    )
+
+    result = @adapter.verify_eligibility("pt-712-inquiry", "medicaid", date_of_service: Date.new(2026, 10, 15))
+    refute result[:eligible], "Coverage ending before inquiry must not be eligible (issue #712 R9)"
+  end
+
+  def test_verify_eligibility_true_when_coverage_covers_inquiry_date
+    @adapter.add_coverage(
+      "pt-712-inquiry",
+      coverage_type: "medicaid",
+      eligible: true,
+      coverage_start: Date.new(2026, 1, 1),
+      coverage_end: Date.new(2026, 9, 30)
+    )
+
+    result = @adapter.verify_eligibility("pt-712-inquiry", "medicaid", date_of_service: Date.new(2026, 9, 15))
+    assert result[:eligible]
+  end
+
+  # -- Issue #712: date_of_service on eligibility reads ----------------------------
+
+  def test_verify_eligibility_without_date_of_service_sets_defaulted_flag
+    assert @adapter.method(:verify_eligibility).parameters.any? { |type, name|
+      type == :key && name == :date_of_service
+    }, "verify_eligibility must accept date_of_service: keyword (issue #712)"
+
+    @adapter.add_coverage(
+      "pt-712-001",
+      coverage_type: "medicaid",
+      payer_name: "MOCK MEDICAID PAYER",
+      plan_name: "TEST PLAN 712",
+      eligible: true
+    )
+
+    travel_to Time.zone.local(2026, 10, 27, 9, 0, 0) do
+      result = @adapter.verify_eligibility("pt-712-001", "medicaid")
+      assert_equal Date.new(2026, 10, 27), result[:date_of_service]
+      assert result[:date_of_service_defaulted]
+    end
+  end
+
+  def test_verify_eligibility_with_explicit_date_of_service_clears_defaulted_flag
+    assert @adapter.method(:verify_eligibility).parameters.any? { |type, name|
+      type == :key && name == :date_of_service
+    }, "verify_eligibility must accept date_of_service: keyword (issue #712)"
+
+    @adapter.add_coverage(
+      "pt-712-001",
+      coverage_type: "medicaid",
+      payer_name: "MOCK MEDICAID PAYER",
+      plan_name: "TEST PLAN 712",
+      eligible: true
+    )
+    explicit = Date.new(2026, 10, 15)
+
+    result = @adapter.verify_eligibility("pt-712-001", "medicaid", date_of_service: explicit)
+
+    assert_equal explicit, result[:date_of_service]
+    refute result[:date_of_service_defaulted]
+  end
+
+  def test_verify_eligibility_rejects_non_date_date_of_service
+    params = @adapter.method(:verify_eligibility).parameters
+    assert params.any? { |type, name| type == :key && name == :date_of_service },
+           "verify_eligibility must accept date_of_service: keyword (issue #712)"
+
+    @adapter.add_coverage("pt-712-001", coverage_type: "medicaid", eligible: true)
+
+    assert_raises(ArgumentError) do
+      @adapter.verify_eligibility("pt-712-001", "medicaid", date_of_service: "2026-10-15")
+    end
+  end
+
+  # -- Issue #712: MockAdapter eligibility scenarios -----------------------------
+
+  SCENARIO_PATIENT = "pt-712-scenario"
+
+  def test_seed_medicaid_eligibility_scenario_active_this_month_only
+    assert_respond_to @adapter, :seed_medicaid_eligibility_scenario
+
+    travel_to Time.zone.local(2026, 10, 5, 9, 0, 0) do
+      @adapter.seed_medicaid_eligibility_scenario(SCENARIO_PATIENT, :active_this_month_only)
+    end
+
+    inquiry = Date.new(2026, 10, 20)
+    travel_to Time.zone.local(2026, 10, 20, 9, 0, 0) do
+      result = @adapter.verify_eligibility(SCENARIO_PATIENT, "medicaid", date_of_service: inquiry)
+
+      assert result[:eligible]
+      assert_equal Date.new(2026, 10, 1), result[:coverage_start]
+      assert_equal Date.new(2026, 10, 31), result[:coverage_end]
+      assert_equal inquiry, result[:date_of_service]
+    end
+  end
+
+  def test_seed_medicaid_eligibility_scenario_active_this_month_only_ineligible_in_next_month
+    assert_respond_to @adapter, :seed_medicaid_eligibility_scenario
+
+    travel_to Time.zone.local(2026, 10, 5, 9, 0, 0) do
+      @adapter.seed_medicaid_eligibility_scenario(SCENARIO_PATIENT, :active_this_month_only)
+    end
+
+    inquiry = Date.new(2026, 11, 5)
+    travel_to Time.zone.local(2026, 11, 5, 9, 0, 0) do
+      result = @adapter.verify_eligibility(SCENARIO_PATIENT, "medicaid", date_of_service: inquiry)
+
+      refute result[:eligible],
+             "active_this_month_only plan ends at seed month; November inquiry must not be eligible (issue #712)"
+      assert_equal Date.new(2026, 10, 31), result[:coverage_end]
+    end
+  end
+
+  def test_seed_medicaid_eligibility_scenario_mid_month_end_eligible_before_plan_end
+    assert_respond_to @adapter, :seed_medicaid_eligibility_scenario
+
+    inquiry = Date.new(2026, 10, 10)
+    @adapter.seed_medicaid_eligibility_scenario(SCENARIO_PATIENT, :mid_month_end)
+    result = @adapter.verify_eligibility(SCENARIO_PATIENT, "medicaid", date_of_service: inquiry)
+
+    assert result[:eligible], "inquiry on plan end date must be eligible (issue #712 R9)"
+    assert_equal Date.new(2026, 10, 1), result[:coverage_start],
+                 "mid_month_end must start coverage on the first of the inquiry month (issue #712 R12)"
+    assert_equal Date.new(2026, 10, 14), result[:coverage_end]
+  end
+
+  def test_seed_medicaid_eligibility_scenario_mid_month_end_ineligible_after_plan_end
+    assert_respond_to @adapter, :seed_medicaid_eligibility_scenario
+
+    inquiry = Date.new(2026, 10, 20)
+    @adapter.seed_medicaid_eligibility_scenario(SCENARIO_PATIENT, :mid_month_end)
+    result = @adapter.verify_eligibility(SCENARIO_PATIENT, "medicaid", date_of_service: inquiry)
+
+    refute result[:eligible], "inquiry after coverage_end must not be eligible (issue #712 R9)"
+    assert_equal Date.new(2026, 10, 14), result[:coverage_end]
+  end
+
+  def test_seed_medicaid_eligibility_scenario_placeholder_end
+    assert_respond_to @adapter, :seed_medicaid_eligibility_scenario
+
+    inquiry = Date.new(2026, 10, 1)
+    @adapter.seed_medicaid_eligibility_scenario(SCENARIO_PATIENT, :placeholder_end)
+    result = @adapter.verify_eligibility(SCENARIO_PATIENT, "medicaid", date_of_service: inquiry)
+
+    assert result[:eligible]
+    assert_equal Date.new(9999, 12, 31), result[:coverage_end]
+  end
+
+  def test_seed_medicaid_eligibility_scenario_inactive_with_covering_dates
+    assert_respond_to @adapter, :seed_medicaid_eligibility_scenario
+
+    inquiry = Date.new(2026, 10, 10)
+    @adapter.seed_medicaid_eligibility_scenario(SCENARIO_PATIENT, :inactive_with_covering_dates)
+    result = @adapter.verify_eligibility(SCENARIO_PATIENT, "medicaid", date_of_service: inquiry)
+
+    assert result[:eligible], "inactive service scenario still has covering plan dates at payer level"
+    assert_equal false, result[:service_active]
+  end
+
+  # Issue #712 B3: check_eligibility_detailed must match verify_eligibility for the same row and date.
+  def test_check_eligibility_detailed_matches_verify_eligibility_for_mid_month_end_scenario
+    inquiry = Date.new(2026, 10, 20)
+    @adapter.seed_medicaid_eligibility_scenario(SCENARIO_PATIENT, :mid_month_end)
+
+    verify = @adapter.verify_eligibility(SCENARIO_PATIENT, "medicaid", date_of_service: inquiry)
+    detailed = @adapter.check_eligibility_detailed(SCENARIO_PATIENT, "medicaid", date_of_service: inquiry)
+
+    assert_equal verify[:eligible], detailed[:eligible],
+                 "mid_month_end inquiry on the 20th must match between verify and detailed (issue #712 B3)"
+    refute detailed[:eligible], "mid_month_end plan ends before the 20th (issue #712 B3)"
+  end
+
+  def test_check_eligibility_detailed_keeps_explicit_nil_coverage_end_like_verify_eligibility
+    patient = "pt-712-nil-end"
+    start_date = Date.new(2025, 1, 1)
+    @adapter.add_coverage(
+      patient,
+      coverage_type: "medicaid",
+      eligible: true,
+      coverage_start: start_date,
+      coverage_end: nil
+    )
+    inquiry = Date.new(2026, 10, 15)
+
+    verify = @adapter.verify_eligibility(patient, "medicaid", date_of_service: inquiry)
+    detailed = @adapter.check_eligibility_detailed(patient, "medicaid", date_of_service: inquiry)
+
+    assert verify[:eligible], "Open-ended coverage_end must remain eligible for a future-month inquiry (issue #712 B3)"
+    assert_equal verify[:eligible], detailed[:eligible]
+    assert_nil verify[:coverage_end]
+    assert_nil detailed[:coverage_end]
+  end
+
+  def test_check_eligibility_detailed_non_boolean_eligible_is_undetermined_like_verify
+    patient = "pt-712-eligible-symbol"
+    @adapter.add_coverage(
+      patient,
+      coverage_type: "medicaid",
+      payer_identifier: "MOCK_PAYER",
+      eligible: :unknown
+    )
+    inquiry = Date.new(2026, 10, 15)
+
+    verify = @adapter.verify_eligibility(patient, "medicaid", date_of_service: inquiry)
+    detailed = @adapter.check_eligibility_detailed(patient, "MOCK_PAYER", date_of_service: inquiry)
+
+    assert_nil verify, "Non-boolean eligible must make verify_eligibility undetermined (issue #712 K5)"
+    assert_nil detailed[:eligible],
+               "Non-boolean eligible must make detailed eligibility undetermined, not eligible: false (issue #712 K5)"
+  end
+
+  def test_check_eligibility_detailed_non_boolean_service_active_is_undetermined_like_verify
+    patient = "pt-712-svc-active"
+    @adapter.add_coverage(
+      patient,
+      coverage_type: "medicaid",
+      eligible: true,
+      service_active: "yes"
+    )
+    inquiry = Date.new(2026, 10, 15)
+
+    verify = @adapter.verify_eligibility(patient, "medicaid", date_of_service: inquiry)
+    detailed = @adapter.check_eligibility_detailed(patient, "medicaid", date_of_service: inquiry)
+
+    assert_nil verify, "Non-boolean service_active must make verify_eligibility undetermined (issue #712 B3)"
+    assert_nil detailed[:eligible], "Non-boolean service_active must make detailed eligibility undetermined (issue #712 B3)"
+  end
+
+  def capture_mock_adapter_load_subprocess(script)
+    lib_dir = File.expand_path("../../../lib", __dir__)
+    Open3.capture2e(RbConfig.ruby, "-I", lib_dir, "-e", script)
+  end
+  private :capture_mock_adapter_load_subprocess
 end

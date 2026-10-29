@@ -159,6 +159,12 @@ module Corvid
         "charity_care"      => "CHAR"
       }.freeze
 
+      # A present period bound that is not a readable FHIR date. Nil is
+      # a different state: the key was missing or the value was null,
+      # and that bound stays open.
+      UNREADABLE_PERIOD_BOUND = :unreadable_period_bound
+      private_constant :UNREADABLE_PERIOD_BOUND
+
       DEFAULT_OPEN_TIMEOUT = 10
       DEFAULT_READ_TIMEOUT = 30
 
@@ -510,19 +516,51 @@ module Corvid
       # Eligibility
       # ----------------------------------------------------------------------
 
-      def verify_eligibility(patient_identifier, resource_type)
-        bundle = fhir_search("Coverage", beneficiary: "Patient/#{patient_identifier}")
-        coverage = coverage_for_resource_type(extract_entries(bundle), resource_type)
+      # FHIR R4 Coverage search has no date parameter, so the inquiry
+      # date cannot be sent to the server. Coverage.status is today's
+      # state. Missing data is never a negative answer. Unknown is
+      # never a denial or an approval. A Coverage matches the requested
+      # type when any type.coding code is the type name, or when a
+      # coding is the mapped ActCode and no coding names another
+      # resource type. An unrelated code that is not a resource type
+      # still matches with the ActCode. A shared ActCode alone (no type
+      # name) is ambiguous and is left out of selection. The answer
+      # comes from the unambiguous rows. Only ambiguous rows leaves
+      # the answer nil.
+      # A present period bound that is not a readable FHIR date makes
+      # that Coverage unknown. A missing key or a null bound stays
+      # open. Applicable rows are matches whose readable bounds do not
+      # exclude the inquiry date. When none apply, an active or
+      # cancelled matching Coverage whose readable bounds exclude the
+      # date answers eligible: false. Any other status, including
+      # absent, draft, and entered-in-error, is nil even when its
+      # period excludes the date: status is checked before the bounds.
+      # Any applicable row that cannot be judged makes the answer nil.
+      # Applicable rows that are determinable and agree answer from the
+      # row with the latest period start; a nil start sorts earliest.
+      # Disagreeing applicable rows are nil. The first entry is never a
+      # fallback. A false answer is also nil when the requested type's
+      # ActCode is shared with another resource type in
+      # COVERAGE_TYPE_MAP. Status active is eligible: true when the
+      # inquiry is in Date.current's year and month and the readable
+      # bounds cover it, or when both bounds are present, readable, and
+      # cover the inquiry. Status cancelled is eligible: false when the
+      # inquiry is in the current month and the readable bounds cover
+      # it or are missing or null. A cancelled Coverage whose start and
+      # end cover an inquiry outside the current month is nil. The
+      # asked date is echoed. No matching coverage, or a search that
+      # does not answer, stays nil: absence never verifies
+      # (42 CFR 136.61).
+      def verify_eligibility(patient_identifier, resource_type, date_of_service: nil)
+        answered_on, defaulted = resolve_inquiry_date(date_of_service)
+        coverage = eligibility_coverage(patient_identifier, resource_type, answered_on)
         return nil unless coverage
 
-        {
-          eligible: coverage["status"] == "active",
-          payer_name: coverage.dig("payor", 0, "display"),
-          policy_number: coverage["subscriberId"],
-          coverage_start: parse_period_date(coverage.dig("period", "start"), :start),
-          coverage_end: parse_period_date(coverage.dig("period", "end"), :end),
-          as_of: coverage_answer_as_of(coverage)
-        }
+        result = eligibility_hash(coverage, answered_on, defaulted)
+        return nil if ambiguous_shared_act_code?(coverage, resource_type)
+        return nil if shared_denial?(result, resource_type)
+
+        result
       end
 
       # ----------------------------------------------------------------------
@@ -600,8 +638,18 @@ module Corvid
         []
       end
 
-      def check_eligibility_detailed(_patient_identifier, _payer_id)
-        { eligible: false, payer_name: nil, plan_name: nil }
+      # Stock FHIR has no 270/271 exchange, and Coverage cannot be
+      # queried by date, so this cannot confirm eligibility. Fail
+      # closed: eligible is false. The inquiry date is still reported.
+      def check_eligibility_detailed(_patient_identifier, _payer_id, date_of_service: nil)
+        answered_on, defaulted = resolve_inquiry_date(date_of_service)
+        {
+          eligible: false,
+          payer_name: nil,
+          plan_name: nil,
+          date_of_service: answered_on,
+          date_of_service_defaulted: defaulted
+        }
       end
 
       def search_payers(_query)
@@ -650,6 +698,114 @@ module Corvid
       end
 
       private
+
+      def eligibility_coverage(patient_identifier, resource_type, inquiry_date)
+        bundle = fhir_search("Coverage", beneficiary: "Patient/#{patient_identifier}")
+        coverage_for_resource_type(extract_entries(bundle), resource_type, inquiry_date)
+      end
+
+      def eligibility_hash(coverage, answered_on, defaulted)
+        coverage_start, coverage_end = coverage_bounds(coverage)
+        return nil if unreadable_period_bound?(coverage_start) || unreadable_period_bound?(coverage_end)
+
+        eligible = coverage_eligibility(coverage, coverage_start, coverage_end, answered_on)
+        return nil if eligible.nil?
+
+        {
+          eligible: eligible,
+          payer_name: coverage.dig("payor", 0, "display"),
+          policy_number: coverage["subscriberId"],
+          coverage_start: coverage_start,
+          coverage_end: coverage_end,
+          date_of_service: answered_on,
+          date_of_service_defaulted: defaulted,
+          as_of: coverage_answer_as_of(coverage)
+        }
+      end
+
+      # true, false, or nil. Status is checked before the bounds.
+      # Absent, draft, entered-in-error, and any status other than
+      # active or cancelled is nil, including when a present bound
+      # excludes the inquiry. A present bound that is not a readable
+      # FHIR date is nil. A missing key or null stays an open bound.
+      # An active or cancelled Coverage whose readable bounds exclude
+      # the inquiry is false. Active coverage is true for an inquiry
+      # in the current year-month whose readable bounds cover it, or
+      # when both bounds are present, readable, and cover it.
+      # Cancelled is false for an inquiry in the current month whose
+      # readable bounds cover it or are missing or null. A cancelled
+      # Coverage whose start and end cover an inquiry outside the
+      # current month is nil. Missing data stays nil.
+      def coverage_eligibility(coverage, coverage_start, coverage_end, inquiry_date)
+        return nil unless inquiry_date.instance_of?(Date)
+        return nil if unknown_coverage_status?(coverage)
+        return nil if unreadable_period_bound?(coverage_start) || unreadable_period_bound?(coverage_end)
+        return false if bound_excludes_inquiry?(coverage_start, coverage_end, inquiry_date)
+        return true if active_on_inquiry?(coverage, coverage_start, coverage_end, inquiry_date)
+        return false if cancelled_in_current_month?(coverage, coverage_start, coverage_end, inquiry_date)
+
+        nil
+      end
+
+      # Absent, draft, entered-in-error, and any other status are not
+      # a denial. Only the exact strings active and cancelled are judged.
+      def unknown_coverage_status?(coverage)
+        status = coverage["status"]
+        status != "active" && status != "cancelled"
+      end
+
+      # Explicit cancelled, in Date.current's year and month, when the
+      # readable bounds cover the inquiry or the bounds are missing
+      # or null.
+      def cancelled_in_current_month?(coverage, coverage_start, coverage_end, inquiry_date)
+        coverage["status"] == "cancelled" &&
+          current_month_bounds_cover?(coverage_start, coverage_end, inquiry_date)
+      end
+
+      def active_on_inquiry?(coverage, coverage_start, coverage_end, inquiry_date)
+        coverage["status"] == "active" &&
+          inquiry_period_eligible?(coverage_start, coverage_end, inquiry_date)
+      end
+
+      # True when readable bounds cover an inquiry in the current
+      # year-month, or both start and end are readable and cover the
+      # inquiry. False here is not a denial; a missing or null bound
+      # stays open. An unreadable bound does not reach here.
+      def inquiry_period_eligible?(coverage_start, coverage_end, inquiry_date)
+        return false unless inquiry_date.instance_of?(Date)
+
+        current_month_bounds_cover?(coverage_start, coverage_end, inquiry_date) ||
+          bounded_period_covers?(coverage_start, coverage_end, inquiry_date)
+      end
+
+      def current_month_bounds_cover?(coverage_start, coverage_end, inquiry_date)
+        return false unless current_year_month?(inquiry_date)
+
+        present_bounds_cover?(coverage_start, coverage_end, inquiry_date)
+      end
+
+      def current_year_month?(inquiry_date)
+        today = Date.current
+        inquiry_date.year == today.year && inquiry_date.month == today.month
+      end
+
+      def present_bounds_cover?(coverage_start, coverage_end, inquiry_date)
+        !bound_excludes_inquiry?(coverage_start, coverage_end, inquiry_date)
+      end
+
+      # A missing or null bound does not exclude. Only a Date can
+      # exclude, so an unreadable bound does not. A start after the
+      # inquiry, or an end before it, does.
+      def bound_excludes_inquiry?(coverage_start, coverage_end, inquiry_date)
+        (coverage_start.instance_of?(Date) && coverage_start > inquiry_date) ||
+          (coverage_end.instance_of?(Date) && coverage_end < inquiry_date)
+      end
+
+      def bounded_period_covers?(coverage_start, coverage_end, inquiry_date)
+        return false unless coverage_start.instance_of?(Date) && coverage_end.instance_of?(Date)
+
+        coverage_start <= inquiry_date && coverage_end >= inquiry_date
+      end
 
       # FHIR REST primitives ------------------------------------------------
 
@@ -1468,19 +1624,236 @@ module Corvid
 
       # A nil, empty, or whitespace-only resource_type is undetermined:
       # nil, never the first coverage. A requested type that matches
-      # nothing is unknown — never another type's coverage.
-      def coverage_for_resource_type(coverages, resource_type)
+      # nothing is unknown — never another type's coverage. Ambiguous
+      # shared-ActCode rows are left out before the inquiry date
+      # chooses. The first entry is not a fallback.
+      def coverage_for_resource_type(coverages, resource_type, inquiry_date = nil)
         return nil if resource_type.to_s.strip.empty?
 
-        coverages.find { |coverage| coverage_type_matches?(coverage, resource_type) }
+        matches = coverages_for_selection(coverages, resource_type)
+        return if matches.empty?
+
+        coverage_for_inquiry(matches, inquiry_date)
       end
 
-      def coverage_type_matches?(coverage, resource_type)
-        type_code = coverage.dig("type", "coding", 0, "code")
-        return false if type_code.nil? || type_code.to_s.empty?
+      # Applicable rows are matches whose readable bounds do not exclude
+      # the inquiry. A present unreadable bound that does not already
+      # exclude makes that row unknown, and an unknown applicable row
+      # makes the answer nil. Any applicable row that cannot be judged,
+      # or applicable rows that disagree, is nil. Agreement answers from
+      # the applicable row with the latest period start; a nil start
+      # sorts earliest. When nothing applies, an active or cancelled
+      # row whose readable bounds exclude the inquiry answers eligible:
+      # false. A row that cannot be judged is not a denial. Any other
+      # status is unknown. The first entry is not a fallback.
+      def coverage_for_inquiry(matches, inquiry_date)
+        judged = judged_coverages(matches, inquiry_date)
+        applicable = applicable_judgments(judged)
+        return coverage_when_none_apply(judged) if applicable.empty?
 
+        agreed_applicable_coverage(applicable)
+      end
+
+      def judged_coverages(matches, inquiry_date)
+        matches.filter_map { |coverage| judge_coverage(coverage, inquiry_date) }
+      end
+
+      def judge_coverage(coverage, inquiry_date)
+        return unless coverage.is_a?(Hash) && inquiry_date.instance_of?(Date)
+
+        start_on, end_on = coverage_bounds(coverage)
+        {
+          coverage: coverage,
+          eligible: coverage_eligibility(coverage, start_on, end_on, inquiry_date),
+          covers: coverage_period_applies?(start_on, end_on, inquiry_date),
+          period_start: readable_bound(start_on)
+        }
+      end
+
+      # Dates, nil for a missing or null bound, or UNREADABLE_PERIOD_BOUND
+      # when the value is present and not a FHIR date. A period that is
+      # present and not a Hash is unreadable on both bounds.
+      def coverage_bounds(coverage)
+        [
+          read_coverage_bound(coverage, "start", :start),
+          read_coverage_bound(coverage, "end", :end)
+        ]
+      end
+
+      def read_coverage_bound(coverage, key, edge)
+        period = coverage_period(coverage)
+        return UNREADABLE_PERIOD_BOUND if unreadable_period_bound?(period)
+        return nil unless period.is_a?(Hash) && period.key?(key)
+
+        parse_present_bound(period[key], edge)
+      end
+
+      def coverage_period(coverage)
+        return nil unless coverage.is_a?(Hash) && coverage.key?("period")
+
+        period = coverage["period"]
+        return nil if period.nil?
+        return period if period.is_a?(Hash)
+
+        UNREADABLE_PERIOD_BOUND
+      end
+
+      def parse_present_bound(value, edge)
+        return nil if value.nil?
+
+        parsed = strict_period_date(value, edge)
+        parsed.nil? ? UNREADABLE_PERIOD_BOUND : parsed
+      end
+
+      def strict_period_date(value, edge)
+        return unless value.is_a?(String) && value.valid_encoding?
+
+        parse_period_date(value, edge)
+      end
+
+      def unreadable_period_bound?(value)
+        value == UNREADABLE_PERIOD_BOUND
+      end
+
+      # A readable Date outside the inquiry means the row does not
+      # apply. An unreadable bound does not itself exclude, and it
+      # keeps that row's answer unknown.
+      def coverage_period_applies?(start_on, end_on, inquiry_date)
+        !bound_excludes_inquiry?(readable_bound(start_on), readable_bound(end_on), inquiry_date)
+      end
+
+      def readable_bound(value)
+        value if value.instance_of?(Date)
+      end
+
+      def applicable_judgments(judged)
+        judged.select { |row| row[:covers] }
+      end
+
+      # Nothing covers the inquiry. Answer only from an active or
+      # cancelled row whose readable bounds exclude it, using the
+      # latest period start. A row that cannot be judged, including a
+      # present unreadable bound, is not a denial. Nil when none of
+      # those were judged.
+      def coverage_when_none_apply(judged)
+        row = latest_period_start_row(denial_rows(judged))
+        row[:coverage] if row
+      end
+
+      def denial_rows(rows)
+        active_or_cancelled_rows(rows).select { |row| row[:eligible] == false }
+      end
+
+      def active_or_cancelled_rows(rows)
+        rows.reject { |row| unknown_coverage_status?(row[:coverage]) }
+      end
+
+      def agreed_applicable_coverage(rows)
+        return if undetermined_applicable?(rows)
+        return if conflicting_eligibility?(rows)
+
+        latest_period_start_row(rows)[:coverage]
+      end
+
+      def undetermined_applicable?(rows)
+        rows.any? { |row| !determinable_eligible?(row[:eligible]) }
+      end
+
+      def determinable_eligible?(eligible)
+        eligible == true || eligible == false
+      end
+
+      def conflicting_eligibility?(rows)
+        rows.map { |row| row[:eligible] }.uniq.size > 1
+      end
+
+      # A nil start sorts earliest, so any real start outranks it.
+      def latest_period_start_row(rows)
+        rows.max_by { |row| period_start_rank(row[:period_start]) }
+      end
+
+      def period_start_rank(start_on)
+        start_on.instance_of?(Date) ? [ 1, start_on ] : [ 0 ]
+      end
+
+      def matching_coverages(coverages, resource_type)
+        return [] unless coverages.respond_to?(:select)
+
+        coverages.select { |coverage| coverage_type_matches?(coverage, resource_type) }
+      end
+
+      # Ambiguous shared-ActCode rows match the type and still must not
+      # take part in latest-start selection. When only they match, the
+      # answer is nil.
+      def coverages_for_selection(coverages, resource_type)
+        matching_coverages(coverages, resource_type).reject do |coverage|
+          ambiguous_shared_act_code?(coverage, resource_type)
+        end
+      end
+
+      # Any coding whose code is the requested type name matches. A
+      # mapped ActCode matches when no coding names another resource
+      # type. An unrelated code that is not a type name still matches
+      # with the ActCode. A blank code does not match.
+      def coverage_type_matches?(coverage, resource_type)
         requested = resource_type.to_s
-        type_code == requested || type_code == COVERAGE_TYPE_MAP[requested]
+        codes = coverage_type_codes(coverage)
+        return true if codes.include?(requested)
+        return false unless act_code_listed?(codes, requested)
+        return false if names_other_resource_type?(codes, requested)
+
+        true
+      end
+
+      def names_other_resource_type?(codes, requested)
+        codes.any? { |code| code != requested && COVERAGE_TYPE_MAP.key?(code) }
+      end
+
+      def act_code_listed?(codes, requested)
+        act_code = COVERAGE_TYPE_MAP[requested]
+        return false if act_code.nil?
+
+        codes.include?(act_code)
+      end
+
+      # A shared ActCode and no type name is ambiguous for every type
+      # that shares that code. Selection omits the row. True and false
+      # are both withheld when one is still chosen.
+      def ambiguous_shared_act_code?(coverage, resource_type)
+        shared_coverage_type?(resource_type) && !names_resource_type?(coverage)
+      end
+
+      def names_resource_type?(coverage)
+        coverage_type_codes(coverage).any? { |code| COVERAGE_TYPE_MAP.key?(code) }
+      end
+
+      def coverage_type_codes(coverage)
+        codings = coverage.dig("type", "coding")
+        return [] unless codings.is_a?(Array)
+
+        codings.filter_map { |coding| coverage_coding_code(coding) }
+      end
+
+      def coverage_coding_code(coding)
+        return unless coding.is_a?(Hash)
+
+        code = coding["code"]
+        return if code.nil? || code.to_s.empty?
+
+        code
+      end
+
+      # False from a type whose ActCode is also another type's code.
+      # Shared codes are counted from COVERAGE_TYPE_MAP, not listed by hand.
+      def shared_denial?(result, resource_type)
+        result.is_a?(Hash) && result[:eligible] == false && shared_coverage_type?(resource_type)
+      end
+
+      def shared_coverage_type?(resource_type)
+        code = COVERAGE_TYPE_MAP[resource_type.to_s]
+        return false if code.nil?
+
+        COVERAGE_TYPE_MAP.values.count(code) > 1
       end
 
       def find_extension(resource, url)
@@ -1568,7 +1941,9 @@ module Corvid
 
       # Coverage period bounds only. A partial FHIR date ("2026" or
       # "2026-03") means its whole range: a start is the first day and an
-      # end is the last day. Full dates parse as parse_date; malformed is nil.
+      # end is the last day. Full dates parse as parse_date. Malformed
+      # is nil. That nil is not an open bound: a present value with a
+      # nil parse is unreadable, and a missing key or null is absent.
       def parse_period_date(value, bound)
         range = partial_date_range(value.to_s)
         return parse_date(value) unless range

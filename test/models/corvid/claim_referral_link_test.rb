@@ -173,6 +173,7 @@ class Corvid::ClaimReferralLinkTest < ActiveSupport::TestCase
         referral = referral_at("fac_a", "REF-RESUB-GATE")
         patient = referral.case.patient_identifier
         authorize!(referral)
+        stamp_alternate_resources_for_claim_service_date!(referral, Date.new(2025, 6, 15))
         claim = build_claim(
           facility: "fac_a", referral_identifier: "REF-RESUB-GATE", patient: patient,
           service_date: Date.new(2025, 6, 15)
@@ -182,7 +183,9 @@ class Corvid::ClaimReferralLinkTest < ActiveSupport::TestCase
         claim.mark_rejected!(reason_token: "tok_resub")
         referral.alternate_resource_checks.find_by!(resource_type: "medicaid").update!(checked_at: 31.days.ago)
 
-        Corvid.adapter.define_singleton_method(:verify_eligibility) { |_pid, _type| nil }
+        Corvid.adapter.define_singleton_method(:verify_eligibility) do |_pid, _type, date_of_service: nil|
+          nil
+        end
 
         assert_raises(Corvid::ClaimSubmission::AlternateResourcesNotCurrent) do
           claim.mark_submitted!(claim_identifier: "CLM-RESUB-2")
@@ -546,10 +549,7 @@ class Corvid::ClaimReferralLinkTest < ActiveSupport::TestCase
       claim.save!
 
       verify_calls = []
-      Corvid.adapter.define_singleton_method(:verify_eligibility) do |patient_identifier, resource_type|
-        verify_calls << [ patient_identifier, resource_type ]
-        { eligible: false }
-      end
+      install_verify_eligibility_stub(calls: verify_calls, eligible: false)
 
       error = assert_raises(Corvid::ClaimSubmission::ReferralNotAuthorized) do
         claim.mark_submitted!(claim_identifier: "CLM-MARK-GATE")
@@ -783,6 +783,7 @@ class Corvid::ClaimReferralLinkTest < ActiveSupport::TestCase
     referral = referral_at("fac_a", referral_identifier)
     patient = referral.case.patient_identifier
     authorize!(referral)
+    stamp_alternate_resources_for_claim_service_date!(referral, Date.new(2025, 6, 15))
     claim = build_claim(
       facility: "fac_a", referral_identifier: referral_identifier, patient: patient,
       service_date: Date.new(2025, 6, 15)

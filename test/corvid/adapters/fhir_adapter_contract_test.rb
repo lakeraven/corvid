@@ -2,6 +2,7 @@
 
 require "minitest/autorun"
 require "active_support/all"
+require "active_support/testing/time_helpers"
 require "corvid/adapters/fhir_adapter"
 require_relative "../../support/adapter_contract_tests"
 require_relative "../../support/fhir_adapter_contract_fixtures"
@@ -68,6 +69,7 @@ module Corvid
 end
 
 class Corvid::Adapters::FhirAdapterContractTest < Minitest::Test
+  include ActiveSupport::Testing::TimeHelpers
   include AdapterContractTests
 
   def contract_adapter

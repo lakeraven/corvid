@@ -8,6 +8,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed (breaking)
+- Host adapters must accept the `date_of_service:` keyword on
+  `verify_eligibility` and `check_eligibility_detailed` and echo
+  `:date_of_service`. A Medicaid check verified while the service is
+  inactive is recorded `not_enrolled` and is not current (re-verify).
+  (#712)
 - `corvid_eligibility_checklists.application_completed_by` and
   `management_approved_by` are renamed to `application_completed_by_identifier`
   and `management_approved_by_identifier`. They hold a practitioner identifier
@@ -22,6 +27,80 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   instead of `denial_reason_token`.
 
 ### Added
+- Eligibility reads take `date_of_service:` (`Date`, or omitted). A non-Date
+  raises `ArgumentError` before the adapter is called, and the message does
+  not include the value. `verify_eligibility` and `check_eligibility_detailed`
+  include `:date_of_service` (the date answered for, `Date.current` when
+  omitted) and `:date_of_service_defaulted`.   `AlternateResourceCheck#verify!`
+  accepts the same keyword and passes a referral `service_date` when that
+  column holds a `Date`. `AlternateResourceReverification` passes the judged
+  date into `verify!` unchanged. A non-Date raises `ArgumentError` from
+  `verify!` and is not coerced. An adapter that does not declare
+  `date_of_service:` is called without that keyword. When a date was asked, the adapter must echo that
+  exact `Date`; a missing, nil, or different `:date_of_service` is not an
+  answer and the row is unchanged. `inquiry_date_of_service` stores the asked
+  date. When nothing was asked, it stores the adapter's exact `Date`,
+  otherwise nil, which clears a previous inquiry. The Medicaid eligibility
+  group uses the inquiry date, then the referral service date, then
+  `checked_at`.
+- Month-bounded eligibility is always `medicaid`, plus any names in
+  `month_bounded_eligibility_resource_types` compared case-insensitively.
+  Nil or a non-array does not remove medicaid. A check is current only in
+  the year-month of `inquiry_date_of_service`. A saved check with no inquiry
+  date is not current.
+- Placeholder coverage ends are stored as nil on `coverage_end` and
+  `renewal_date`. `9999-12-31` is always a placeholder. An Array in
+  `placeholder_coverage_end_dates` adds exact `Date`s and ISO 8601 strings
+  (`Date.iso8601`); other elements and a non-Array are ignored and do not
+  raise. An end more than `placeholder_coverage_end_horizon_years` after the
+  inquiry date is also open (25 when that setting is not a positive integer;
+  `Time.current.to_date` when there is no inquiry date). An end exactly that
+  many years out is kept. `service_active: false` records `not_enrolled`
+  even when the plan dates cover the inquiry, and that check is not current.
+  A present non-boolean `service_active` is not an answer. Mock
+  `verify_eligibility` returns nil when `service_active` is present and not
+  exactly true, false, or nil. `check_eligibility_detailed` reads the same
+  coverage row and date, including a seeded Medicaid scenario, and keeps an
+  explicit nil `coverage_end` instead of defaulting that nil to December 31.
+  A non-boolean `service_active`, or a non-boolean `eligible` on the row,
+  leaves detailed `eligible` nil (the same undetermined detailed result, not
+  eligible false). Boolean `service_active` is still passed through. Plan
+  dates that miss the inquiry are not eligible, for both reads.
+  `:active_this_month_only` stores the first and last day of the month of
+  `Date.current` at seeding; other seeded scenarios still follow the inquiry
+  month. FHIR `Coverage.status` is today's state. Missing data is never a
+  negative answer, and unknown is never a denial or an approval. A Coverage
+  matches the requested type when any `type.coding` code is the type name,
+  or when a coding is the mapped ActCode and no coding names another
+  resource type. An unrelated code that is not a resource type still
+  matches with the ActCode. A shared ActCode alone (no type name) is
+  ambiguous and is left out of selection. The answer comes from the
+  unambiguous rows. Only ambiguous rows leaves the answer nil. A
+  present period bound that is not a readable FHIR date makes that
+  Coverage unknown. A missing key or a null bound stays open.
+  Applicable rows are matches whose readable bounds do not exclude the
+  inquiry date. When none apply, the answer is eligible false from an
+  active or cancelled matching Coverage whose readable bounds exclude
+  the date. Any other status, including an absent status, `draft`, and
+  `entered-in-error`, is nil even
+  when its period excludes the date, because status is checked before the
+  bounds. Any applicable row that cannot be judged makes the answer nil.
+  Applicable rows that are determinable and agree answer from the row with
+  the latest period start; a nil start sorts earliest. Disagreeing
+  applicable rows are nil. The first entry is never a fallback. A false
+  answer is also nil when that type's ActCode is shared with another
+  resource type in the adapter map, counted from the map itself. Eligible is
+  true when status is active and either the inquiry is in the current
+  year-month and the readable period bounds cover it, or both start and
+  end are present, readable, and cover the inquiry. Explicit `cancelled`
+  is eligible false when the inquiry is in the current month and the
+  readable bounds cover it or are missing or null. A present unreadable
+  bound is unknown. A cancelled Coverage whose start and end cover an
+  inquiry outside the current month is nil. Otherwise FHIR
+  `verify_eligibility` returns nil and the check row stays unchanged.
+- `demo:prc` stamps the seeded Medicaid alternate-resource check with
+  `inquiry_date_of_service` of `Date.current`, the date the demo judges, so
+  the narrated path authorizes. (#712)
 - ZIP-to-CBSA wage-area crosswalk (#371). `corvid_zip_cbsa_crosswalks`
   stores the CMS crosswalk by federal fiscal year (`zip` is five ASCII
   digits; `cbsa` is a five-digit CBSA or a two-digit rural-state code;
