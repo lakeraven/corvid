@@ -150,7 +150,9 @@ mlr_doc_database_url_name() {
 }
 
 # Fixed-string redaction. Secrets are read from the environment (never argv)
-# so values with any characters can be replaced safely.
+# so values with any characters can be replaced safely. Also redacts JSON
+# "password" values, any *_PASSWORD= assignment, and pwd=/pwd: through
+# the end of the line.
 mlr_doc_redact() {
   ruby -ruri -e '
     def remember(list, value)
@@ -201,8 +203,15 @@ mlr_doc_redact() {
 
     urls.uniq.sort_by { |s| -s.bytesize }.each { |s| blob.gsub!(s, token) }
     blob.gsub!(%r{postgres(?:ql)?://[^\s"\x27]+}n, token)
+    # Quoted JSON first so a later same-line assignment cannot hide the value.
+    json_pw = /("password"[ \t]*:[ \t]*")(?:\\.|[^"\\\n])*(")/in
+    blob.gsub!(json_pw) { ($1 + token + $2).force_encoding(Encoding::ASCII_8BIT) }
     key_re = /(^|[^\w])(password|pgpassword|database_url)(\s*[:=]\s*)[^\n]*/in
     blob.gsub!(key_re) { ($1 + $2 + $3 + token).force_encoding(Encoding::ASCII_8BIT) }
+    env_pw = /(^|[^\w])(\w+_password)([ \t]*=[ \t]*)[^\n]*/in
+    blob.gsub!(env_pw) { ($1 + $2 + $3 + token).force_encoding(Encoding::ASCII_8BIT) }
+    pwd_re = /(^|[^\w])(pwd)([ \t]*[:=][ \t]*)[^\n]*/in
+    blob.gsub!(pwd_re) { ($1 + $2 + $3 + token).force_encoding(Encoding::ASCII_8BIT) }
     passwords.uniq.sort_by { |s| -s.bytesize }.each { |s| blob.gsub!(s, token) }
     blob.gsub!(token, "[REDACTED]".b)
     STDOUT.write(blob)
@@ -233,7 +242,7 @@ mlr_doc_capture_relation() {
       ;;
   esac
 
-  if ! flag="$(psql -d "$test_db" -v ON_ERROR_STOP=1 -tAc \
+  if ! flag="$(psql -X -q -d "$test_db" -v ON_ERROR_STOP=1 -tAc \
     "SELECT CASE WHEN to_regclass('public.${rel}') IS NULL THEN 'missing' ELSE 'present' END" \
     2>"$snap_err")"; then
     mlr_doc_copy_err "$snap_err" "$errfile"
@@ -248,7 +257,7 @@ mlr_doc_capture_relation() {
     printf '%s\n' 'snapshot probe failed' >"$errfile"
     return 1
   fi
-  if ! psql -d "$test_db" -v ON_ERROR_STOP=1 -tAc "$query" >"$outfile" 2>"$snap_err"; then
+  if ! psql -X -q -d "$test_db" -v ON_ERROR_STOP=1 -tAc "$query" >"$outfile" 2>"$snap_err"; then
     mlr_doc_copy_err "$snap_err" "$errfile"
     return 1
   fi
@@ -270,6 +279,8 @@ mlr_doc_copy_err() {
 # so each public table also contributes md5(string_agg(row text)) in deterministic order.
 # Every public sequence contributes last_value and is_called, so an insert/delete that
 # only advances a sequence still changes the digest.
+# Every psql call uses -X (ignore ~/.psqlrc and $PSQLRC) and -q so timing chatter
+# and startup messages cannot change the captured rows. ON_ERROR_STOP is set on each call.
 mlr_doc_test_db_snapshot() {
   local outfile="$1"
   local test_db="$2"
@@ -280,11 +291,11 @@ mlr_doc_test_db_snapshot() {
   export MLR_DOC_TEST_DB="$test_db"
 
   if command -v psql >/dev/null 2>&1; then
-    if ! psql -d postgres -v ON_ERROR_STOP=1 -tAc "SELECT 1" >"$snap_err" 2>&1; then
+    if ! psql -X -q -d postgres -v ON_ERROR_STOP=1 -tAc "SELECT 1" >"$snap_err" 2>&1; then
       mlr_doc_copy_err "$snap_err" "$errfile"
       return 1
     fi
-    if ! psql -d postgres -v ON_ERROR_STOP=1 -tAc \
+    if ! psql -X -q -d postgres -v ON_ERROR_STOP=1 -tAc \
       "SELECT 1 FROM pg_database WHERE datname = '${test_db}'" >"$tmp/mlr-doc-db-exists.txt" 2>"$snap_err"; then
       mlr_doc_copy_err "$snap_err" "$errfile"
       return 1
@@ -303,7 +314,7 @@ mlr_doc_test_db_snapshot() {
       "$tmp/mlr-doc-metadata.txt" "$errfile" "$snap_err"; then
       return 1
     fi
-    if ! psql -d "$test_db" -v ON_ERROR_STOP=1 -tAc \
+    if ! psql -X -q -d "$test_db" -v ON_ERROR_STOP=1 -tAc \
       "SELECT tablename FROM pg_tables WHERE schemaname = 'public' ORDER BY tablename" \
       >"$tmp/mlr-doc-tables.txt" 2>"$snap_err"; then
       mlr_doc_copy_err "$snap_err" "$errfile"
@@ -319,7 +330,7 @@ mlr_doc_test_db_snapshot() {
     while IFS= read -r tbl; do
       [ -z "$tbl" ] && continue
       quoted="${tbl//\"/\"\"}"
-      if ! row="$(psql -d "$test_db" -v ON_ERROR_STOP=1 -tA -F "$(printf '\t')" -c \
+      if ! row="$(psql -X -q -d "$test_db" -v ON_ERROR_STOP=1 -tA -F "$(printf '\t')" -c \
         "SELECT COUNT(*)::bigint, md5(COALESCE(string_agg(t::text, chr(10) ORDER BY t::text), '')) FROM public.\"${quoted}\" t" \
         2>"$snap_err")"; then
         mlr_doc_copy_err "$snap_err" "$errfile"
@@ -327,7 +338,7 @@ mlr_doc_test_db_snapshot() {
       fi
       printf '%s\t%s\n' "$tbl" "$row" >>"$body"
     done <"$tmp/mlr-doc-tables.txt"
-    if ! psql -d "$test_db" -v ON_ERROR_STOP=1 -tA -F "$(printf '\t')" \
+    if ! psql -X -q -d "$test_db" -v ON_ERROR_STOP=1 -tA -F "$(printf '\t')" \
       >"$tmp/mlr-doc-sequences.txt" 2>"$snap_err" <<'SQL'
 SELECT format(
   'SELECT %L, last_value, is_called FROM %I.%I',
@@ -451,6 +462,146 @@ mlr_doc_assert_pass() {
   return "$missing"
 }
 
+# Prints line numbers whose code (fenced blocks or inline spans) invokes
+# bin/rails without RAILS_ENV=development on that command. The line text is
+# not printed. Exits non-zero only when the file cannot be scanned.
+mlr_doc_rails_env_violations() {
+  ruby - "$1" <<'RUBY'
+def strip_shell_comment(text)
+  out = +""
+  in_single = false
+  in_double = false
+  i = 0
+  while i < text.length
+    ch = text[i]
+    if ch == "\\" && !in_single && i + 1 < text.length
+      out << ch << text[i + 1]
+      i += 2
+      next
+    end
+    if ch == "'" && !in_double
+      in_single = !in_single
+      out << ch
+      i += 1
+      next
+    end
+    if ch == '"' && !in_single
+      in_double = !in_double
+      out << ch
+      i += 1
+      next
+    end
+    break if ch == "#" && !in_single && !in_double
+    out << ch
+    i += 1
+  end
+  out
+end
+
+def split_commands(text)
+  parts = []
+  buf = +""
+  in_single = false
+  in_double = false
+  i = 0
+  while i < text.length
+    ch = text[i]
+    if ch == "\\" && !in_single && i + 1 < text.length
+      buf << ch << text[i + 1]
+      i += 2
+      next
+    end
+    if ch == "'" && !in_double
+      in_single = !in_single
+      buf << ch
+      i += 1
+      next
+    end
+    if ch == '"' && !in_single
+      in_double = !in_double
+      buf << ch
+      i += 1
+      next
+    end
+    if !in_single && !in_double
+      if text[i, 2] == "&&" || text[i, 2] == "||"
+        parts << buf
+        buf = +""
+        i += 2
+        next
+      end
+      if ch == ";" || ch == "|" || ch == "\n"
+        parts << buf
+        buf = +""
+        i += 1
+        next
+      end
+    end
+    buf << ch
+    i += 1
+  end
+  parts << buf
+  parts
+end
+
+def rails_env_value(before)
+  found = nil
+  before.scan(/RAILS_ENV=(?:"([^"]*)"|'([^']*)'|(\S+))/) do |dbl, sgl, bare|
+    found = dbl || sgl || bare
+  end
+  found
+end
+
+def boundary?(ch)
+  return true if ch.nil?
+  return true if ch.match?(/[[:space:]]/)
+  ";|&(`\"'".include?(ch)
+end
+
+def command_ok?(command)
+  idx = 0
+  needle = "bin/rails"
+  while (i = command.index(needle, idx))
+    prev = i.zero? ? nil : command[i - 1]
+    if boundary?(prev)
+      return false unless rails_env_value(command[0...i]) == "development"
+    end
+    idx = i + needle.length
+  end
+  true
+end
+
+def text_ok?(text)
+  split_commands(strip_shell_comment(text)).all? { |cmd| command_ok?(cmd) }
+end
+
+path = ARGV.fetch(0)
+fence = false
+File.foreach(path, mode: "r:UTF-8").with_index(1) do |line, lineno|
+  body = line.sub(/\r?\n\z/, "")
+  if body.match?(/\A\s*```/)
+    fence = !fence
+    next
+  end
+  texts = []
+  if fence
+    texts << body
+  else
+    pos = 0
+    while (match = body.match(/`([^`]*)`/, pos))
+      texts << match[1]
+      pos = match.end(0)
+    end
+  end
+  texts.each do |text|
+    next if text_ok?(text)
+    puts lineno
+    break
+  end
+end
+RUBY
+}
+
 check_mlr_doc() {
   local name="mlr-doc"
   if [ "$only" != "all" ] && [ "$only" != "$name" ]; then return 0; fi
@@ -464,8 +615,26 @@ check_mlr_doc() {
   local snapshot_err="$tmp/mlr-doc-snapshot.err"
   local pg_env="$tmp/mlr-doc-pg.env"
   local test_db missing=0 assertions=0 url_db url_err
+  local static_failed=0 pass_failed=0 lineno violations
 
   printf '== smoke: %s\n' "$name"
+
+  # Every bin/rails invocation in a code block or inline span must carry
+  # RAILS_ENV=development. The reproduce block is only the first bash fence,
+  # so later fences and inline cms:* lines are checked here. A violation is
+  # reported and the run still continues, so a test-database write is also
+  # caught by the snapshot comparison below.
+  if ! violations="$(mlr_doc_rails_env_violations "$doc" 2>"$tmp/mlr-doc-rails-env.err")"; then
+    printf '   FAIL: could not scan %s for bin/rails commands\n' "$doc"
+    mlr_doc_redact <"$tmp/mlr-doc-rails-env.err" | sed 's/^/   | /'
+    failures=$((failures + 1))
+    return 0
+  fi
+  while IFS= read -r lineno; do
+    [ -n "$lineno" ] || continue
+    printf '   FAIL: %s:%s: bin/rails must set RAILS_ENV=development\n' "$doc" "$lineno"
+    static_failed=1
+  done <<< "$violations"
 
   if ! awk '
     BEGIN { after = 0; capturing = 0; got = 0 }
@@ -536,29 +705,30 @@ check_mlr_doc() {
   if ! env RAILS_ENV=test bash -e "$script" >"$log_a" 2>&1; then
     printf '   FAIL: reproduce block pass A (DATABASE_URL inherited) exited non-zero\n'
     mlr_doc_log_tail "$log_a"
-    failures=$((failures + 1))
-    return 0
-  fi
-  if ! mlr_doc_assert_pass "$log_a" A; then
+    pass_failed=1
+  elif ! mlr_doc_assert_pass "$log_a" A; then
     missing=1
   else
     assertions=$((assertions + 3))
   fi
 
-  # PGPASSWORD is already exported by set -a. Passing it as an env(1)
-  # argument would put the secret on the process command line.
-  if ! env -u DATABASE_URL RAILS_ENV=test \
-    PGHOST="$PGHOST" PGPORT="$PGPORT" PGUSER="$PGUSER" \
-    bash -e "$script" >"$log_b" 2>&1; then
-    printf '   FAIL: reproduce block pass B (DATABASE_URL unset, TCP via PG*) exited non-zero\n'
-    mlr_doc_log_tail "$log_b"
-    failures=$((failures + 1))
-    return 0
-  fi
-  if ! mlr_doc_assert_pass "$log_b" B; then
-    missing=1
-  else
-    assertions=$((assertions + 3))
+  # A failed pass used to return before the after-snapshot, so a test-database
+  # change was reported only as that pass failure. Still run pass B when pass A
+  # exited 0, then always snapshot if the before-snapshot succeeded.
+  if [ "$pass_failed" -eq 0 ]; then
+    # PGPASSWORD is already exported by set -a. Passing it as an env(1)
+    # argument would put the secret on the process command line.
+    if ! env -u DATABASE_URL RAILS_ENV=test \
+      PGHOST="$PGHOST" PGPORT="$PGPORT" PGUSER="$PGUSER" \
+      bash -e "$script" >"$log_b" 2>&1; then
+      printf '   FAIL: reproduce block pass B (DATABASE_URL unset, TCP via PG*) exited non-zero\n'
+      mlr_doc_log_tail "$log_b"
+      pass_failed=1
+    elif ! mlr_doc_assert_pass "$log_b" B; then
+      missing=1
+    else
+      assertions=$((assertions + 3))
+    fi
   fi
 
   if ! mlr_doc_test_db_snapshot "$snapshot_after" "$test_db" "$snapshot_err"; then
@@ -576,11 +746,15 @@ check_mlr_doc() {
     assertions=$((assertions + 1))
   fi
 
-  if [ "$missing" -eq 1 ]; then
-    printf '   log tail pass A:\n'
-    mlr_doc_log_tail "$log_a"
-    printf '   log tail pass B:\n'
-    mlr_doc_log_tail "$log_b"
+  if [ "$static_failed" -eq 1 ] || [ "$pass_failed" -eq 1 ] || [ "$missing" -eq 1 ]; then
+    # Pass non-zero already printed its own log tail. Assertion and snapshot
+    # mismatches still show both passes when those passes actually ran.
+    if [ "$missing" -eq 1 ] && [ "$pass_failed" -eq 0 ]; then
+      printf '   log tail pass A:\n'
+      mlr_doc_log_tail "$log_a"
+      printf '   log tail pass B:\n'
+      mlr_doc_log_tail "$log_b"
+    fi
     failures=$((failures + 1))
   else
     printf '   ok (%s assertions)\n' "$assertions"
