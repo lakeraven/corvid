@@ -55,9 +55,9 @@ class Corvid::Adapters::EnrollmentDemoAdapterContractTest < Minitest::Test
       eligible: true
     }
     medicaid[:as_of] = coverage_answer_as_of if coverage_answer_as_of
-    adapter.add_coverage("pt_demo_enrolled", medicaid)
+    adapter.add_coverage("pt-demo-enrolled", medicaid)
     adapter.add_coverage(
-      "pt_demo_enrolled",
+      "pt-demo-enrolled",
       coverage_type: "va_benefits",
       payer_identifier: "MOCK_VA_PAYER",
       payer_name: "MOCK VA PAYER",
@@ -65,7 +65,7 @@ class Corvid::Adapters::EnrollmentDemoAdapterContractTest < Minitest::Test
       eligible: false
     )
     adapter.add_enrollment(
-      "pt_demo_enrolled",
+      "pt-demo-enrolled",
       enrolled: true,
       membership_number: "TEST-10042",
       tribe_name: "Test Tribe",
@@ -76,7 +76,7 @@ class Corvid::Adapters::EnrollmentDemoAdapterContractTest < Minitest::Test
     )
     adapter.add_referral(
       "rf_contract_001",
-      patient_identifier: "pt_demo_enrolled",
+      patient_identifier: "pt-demo-enrolled",
       status: "pending",
       reason_token: text_token,
       estimated_cost: 500.0,
@@ -86,13 +86,13 @@ class Corvid::Adapters::EnrollmentDemoAdapterContractTest < Minitest::Test
       urgent: false,
       chs_approval_status: "P",
       service_requested: "TEST,CONTRACT SERVICE",
-      requesting_provider_identifier: "pr_demo_001"
+      requesting_provider_identifier: "pr-demo-001"
     )
     adapter.add_care_team(
-      "pt_demo_enrolled",
+      "pt-demo-enrolled",
       [
         {
-          practitioner_identifier: "pr_demo_001",
+          practitioner_identifier: "pr-demo-001",
           role: "practitioner",
           name: "DEMO CARE TEAM",
           status: "active"
@@ -102,7 +102,7 @@ class Corvid::Adapters::EnrollmentDemoAdapterContractTest < Minitest::Test
     obligation = adapter.create_obligation("rf_contract_001", 100.0)
     payment = adapter.process_payment(
       amount_cents: 100,
-      patient_identifier: "pt_demo_enrolled",
+      patient_identifier: "pt-demo-enrolled",
       description: "TEST CONTRACT PAYMENT"
     )
     adapter.add_claim(
@@ -113,10 +113,10 @@ class Corvid::Adapters::EnrollmentDemoAdapterContractTest < Minitest::Test
       paid_date: Date.new(2026, 1, 1)
     )
     adapter.add_claim_line(
-      "pt_demo_enrolled",
+      "pt-demo-enrolled",
       Corvid::ClaimLineReference.new(
         claim_identifier: "clm_contract_001",
-        patient_identifier: "pt_demo_enrolled",
+        patient_identifier: "pt-demo-enrolled",
         provider_identifier: "pr_contract_001",
         procedure_code: "99213",
         procedure_display: "TEST VISIT",
@@ -128,11 +128,11 @@ class Corvid::Adapters::EnrollmentDemoAdapterContractTest < Minitest::Test
     )
 
     {
-      patient_identifier: "pt_demo_enrolled",
+      patient_identifier: "pt-demo-enrolled",
       patient_identifier_tribal_no_confidence: "pt_contract_002",
       unknown_patient_identifier: "pt_contract_unknown",
       patient_search_query: "ENROLLED",
-      practitioner_identifier: "pr_demo_001",
+      practitioner_identifier: "pr-demo-001",
       unknown_practitioner_identifier: "pr_contract_unknown",
       practitioner_search_query: "PRC MANAGER",
       referral_identifier: "rf_contract_001",
@@ -151,7 +151,7 @@ class Corvid::Adapters::EnrollmentDemoAdapterContractTest < Minitest::Test
       coverage_resource_type: "medicaid",
       other_resource_type: "medicare_a",
       inactive_coverage_resource_type: "va_benefits",
-      dereference_tokens: %w[pt_demo_enrolled rf_contract_001]
+      dereference_tokens: %w[pt-demo-enrolled rf_contract_001]
     }
   end
 
