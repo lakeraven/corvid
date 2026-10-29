@@ -38,6 +38,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and does not include the reviewer token. The migration maps only the exact
   engine literal `Submitted via FHIR PAS` to `submitted_via_fhir_pas`. Every
   other `current_activity` value is dropped and is not parsed.
+- `corvid_care_team_members.role` free text is replaced by the string enum
+  `role_code` (`primary_care_provider`, `care_manager`, `consultant`,
+  `other`). `CareTeamMember#role_display` is the fixed label for that code.
+  `CareTeam#add_member!` takes `role_code:`. `CareTeam#to_fhir` emits the
+  code and that label under `urn:corvid:care-team-role` and does not include
+  free text. `CareTeamMemberReference` carries `role_code`. `FhirAdapter`
+  maps a CareTeam participant role through an explicit `(system, code)`
+  table (`http://snomed.info/sct` / `446050000` to `primary_care_provider`);
+  anything unknown, missing, or malformed becomes `other` and does not fail
+  the read or pass the raw code through. `ReplaceCareTeamMemberRoleWithRoleCode`
+  maps the unambiguous legacy strings and otherwise aborts with a row count
+  only.
 - `ReplaceFreeTextWithTokens#up` aborts, before changing the schema, when any
   `claim_reference` is neither an opaque token nor `CLM_<ULID>`, or any
   `evidence_refs` value is not an array of `{ supports, ref }` entries. The
