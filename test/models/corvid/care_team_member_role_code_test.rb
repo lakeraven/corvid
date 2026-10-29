@@ -95,11 +95,11 @@ module Corvid
       assert_equal "other", member.reload.role_code
     end
 
-    %w[
-      primary_care
-      Consultant
-      other\ 
-      care-manager
+    [
+      "primary_care",
+      "Consultant",
+      "other ",
+      "care-manager"
     ].each do |near_miss|
       test "database CHECK rejects near-miss role_code #{near_miss.inspect}" do
         assert_role_code_implemented!
