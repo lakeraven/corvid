@@ -59,6 +59,33 @@ class Corvid::Demo::MigrationTest < ActiveSupport::TestCase
     end
   end
 
+  test "reset! leaves pt_demo_001 at the demo facility because migration never seeded that id" do
+    adapter_only_id = "pt_demo_001"
+
+    with_tenant(TENANT) do
+      Corvid::Demo::Migration.seed!(tenant: TENANT)
+      Corvid::Case.create!(
+        tenant_identifier: TENANT,
+        facility_identifier: Corvid::Demo::Migration::FACILITY,
+        patient_identifier: adapter_only_id,
+        status: "active",
+        lifecycle_status: "intake",
+        intake_at: Time.current
+      )
+    end
+
+    Corvid::Demo::Migration.reset!(tenant: TENANT)
+
+    with_tenant(TENANT) do
+      assert Corvid::Case.exists?(
+        tenant_identifier: TENANT,
+        facility_identifier: Corvid::Demo::Migration::FACILITY,
+        patient_identifier: adapter_only_id
+      ), "reset! must not delete #{adapter_only_id}; demo migration never creates that patient"
+      assert_equal 0, Corvid::Case.where(patient_identifier: Corvid::Demo::Migration::HEROES.keys).count
+    end
+  end
+
   test "reset! removes legacy underscore Broken Rock hero cases at the demo facility alongside current heroes" do
     with_tenant(TENANT) do
       LEGACY_HERO_IDS.each do |patient_ref|
