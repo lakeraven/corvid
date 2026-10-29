@@ -5,11 +5,13 @@ require "json"
 require "uri"
 require "ipaddr"
 require "date"
+require "time"
 require "bigdecimal"
 require "openssl"
 require "zlib"
 require "corvid/adapters/base"
 require "corvid/value_objects"
+require "corvid/fhir_reference"
 
 module Corvid
   module Adapters
@@ -103,6 +105,20 @@ module Corvid
         (?:-(?<month>#{FHIR_MONTH})(?:-(?<day>#{FHIR_DAY})(?:#{FHIR_TIME})?)?)?
         \z
       /x
+      # FHIR instant: YYYY-MM-DDThh:mm:ss(.fraction)? then Z or ±hh:mm.
+      # Year 0000 is not a FHIR year. The offset is Z or within ±14:00:
+      # hours 00-13 with minutes 00-59, or exactly 14:00. Calendar ranges
+      # are not encoded here. Time.iso8601 rolls an impossible field
+      # forward, and the field round-trip rejects that.
+      FHIR_INSTANT = /
+        \A
+        (?<year>#{FHIR_YEAR})-(?<month>[0-9]{2})-(?<day>[0-9]{2})
+        T(?<hour>[0-9]{2}):(?<min>[0-9]{2}):(?<sec>[0-9]{2})
+        (?:\.[0-9]+)?
+        (?<offset>Z|[+-](?:(?:0[0-9]|1[0-3]):[0-5][0-9]|14:00))
+        \z
+      /x
+      FHIR_INSTANT_CLOCK = %i[year month day hour min sec].freeze
       # FHIR R4 id. Checked before a Medication read so a bad id is not requested.
       FHIR_ID = /\A[A-Za-z0-9\-\.]{1,64}\z/
 
@@ -684,7 +700,8 @@ module Corvid
           coverage_start: coverage_start,
           coverage_end: coverage_end,
           date_of_service: answered_on,
-          date_of_service_defaulted: defaulted
+          date_of_service_defaulted: defaulted,
+          as_of: coverage_answer_as_of(coverage)
         }
       end
 
@@ -1296,6 +1313,13 @@ module Corvid
         )
       end
 
+      # id_from(base_url:) reads only absolute refs on this server, so also
+      # accept a relative Type/id.
+      def id_from_reference(reference, type:)
+        Corvid::FhirReference.id_from(reference, type: type, base_url: @base_url) ||
+          Corvid::FhirReference.id_from(reference, type: type)
+      end
+
       def claim_lines_from(claims)
         claims.each_with_object([]) do |claim, lines|
           built = safe_claim_lines(claim)
@@ -1322,9 +1346,12 @@ module Corvid
       end
 
       def build_claim_line_references(claim)
-        patient_id = claim.dig("patient", "reference")&.sub("Patient/", "")
+        patient_id = id_from_reference(claim.dig("patient", "reference"), type: "Patient")
         provider_id = claim.dig("provider", "identifier", "value").presence ||
-                      claim.dig("provider", "reference")&.split("/", -1)&.last.presence ||
+                      id_from_reference(
+                        claim.dig("provider", "reference"),
+                        type: Corvid::FhirReference::PROVIDER_TYPES
+                      ) ||
                       claim.dig("provider", "display").presence
         claim_id = claim["id"]
 
@@ -1381,7 +1408,9 @@ module Corvid
       def build_referral_reference(resource)
         Corvid::ReferralReference.new(
           identifier: resource["id"],
-          patient_identifier: resource.dig("subject", "reference")&.sub("Patient/", ""),
+          patient_identifier: id_from_reference(
+            resource.dig("subject", "reference"), type: "Patient"
+          ),
           status: resource["status"],
           reason_token: nil,
           estimated_cost: nil,
@@ -1391,7 +1420,10 @@ module Corvid
           urgent: resource["priority"] == "urgent",
           chs_approval_status: nil,
           service_requested: service_requested_label(resource),
-          requesting_provider_identifier: resource.dig("requester", "reference")&.split("/")&.last
+          requesting_provider_identifier: id_from_reference(
+            resource.dig("requester", "reference"),
+            type: Corvid::FhirReference::PROVIDER_TYPES
+          )
         )
       end
 
@@ -1437,7 +1469,7 @@ module Corvid
 
       def care_team_member(resource, participant)
         Corvid::CareTeamMemberReference.new(
-          practitioner_identifier: participant.dig("member", "reference")&.sub("Practitioner/", ""),
+          practitioner_identifier: id_from_reference(participant.dig("member", "reference"), type: "Practitioner"),
           role: participant.dig("role", 0, "coding", 0, "code"),
           name: resource["name"],
           status: resource["status"]
@@ -1725,6 +1757,52 @@ module Corvid
         [ line, address_hash["city"], address_hash["state"] ].reject { |s| s.nil? || s.empty? }.join(", ")
       end
 
+      # Coverage.meta.lastUpdated is when the source produced the answer.
+      # Only a FHIR instant is known. A non-Hash meta, or anything that
+      # is not an instant, is nil, never now.
+      def coverage_answer_as_of(coverage)
+        meta = coverage["meta"]
+        return unless meta.is_a?(Hash)
+
+        fhir_instant_time(meta["lastUpdated"])
+      end
+
+      # Parse a FHIR instant and return it in UTC. The source fields are
+      # checked against the parsed clock in the source offset so a
+      # rollover (Feb 30, second 60, hour 24) is nil.
+      def fhir_instant_time(value)
+        match = fhir_instant_match(value)
+        return unless match
+
+        parsed = Time.iso8601(value)
+        return unless fhir_instant_round_trip?(parsed, match)
+
+        parsed.utc
+      rescue ArgumentError, TypeError
+        nil
+      end
+
+      def fhir_instant_match(value)
+        FHIR_INSTANT.match(value) if value.is_a?(String)
+      end
+
+      def fhir_instant_round_trip?(parsed, match)
+        zoned = fhir_instant_zoned(parsed, match[:offset])
+        fhir_instant_clock(zoned) == fhir_instant_clock_fields(match)
+      end
+
+      def fhir_instant_zoned(parsed, offset)
+        offset == "Z" ? parsed.utc : parsed.getlocal(offset)
+      end
+
+      def fhir_instant_clock(time)
+        [ time.year, time.month, time.day, time.hour, time.min, time.sec ]
+      end
+
+      def fhir_instant_clock_fields(match)
+        FHIR_INSTANT_CLOCK.map { |part| match[part].to_i }
+      end
+
       def parse_date(value)
         return nil if value.nil? || value.to_s.empty?
 
@@ -1931,11 +2009,12 @@ module Corvid
         patient_reference?(subject["reference"], patient_identifier)
       end
 
+      # Non-String identifiers are not coerced (an Integer must not match).
+      # id_from accepts a Corvid pt_ token, so that form matches too.
       def patient_reference?(reference, patient_identifier)
-        return false unless reference.is_a?(String)
+        return false unless patient_identifier.is_a?(String)
 
-        relative = "Patient/#{patient_identifier}"
-        reference == relative || reference == "#{@base_url}/#{relative}"
+        id_from_reference(reference, type: "Patient") == patient_identifier
       end
 
       # Conditions ------------------------------------------------------------

@@ -26,7 +26,7 @@ class Corvid::Adapters::MockAdapterContractTest < Minitest::Test
     AdapterContractTests::LIST_SEARCH_READS.index_with { IN_MEMORY_NO_FAILED_SEARCH_REASON }
   end
 
-  def contract_seed!
+  def contract_seed!(coverage_answer_as_of: nil)
     adapter = contract_adapter
     adapter.reset!
 
@@ -86,14 +86,15 @@ class Corvid::Adapters::MockAdapterContractTest < Minitest::Test
       tribe_code: "TST",
       member_status: "enrolled"
     )
-    adapter.add_coverage(
-      "pt_contract_001",
+    medicaid = {
       coverage_type: "medicaid",
       payer_identifier: "MOCK_PAYER",
       payer_name: "MOCK MEDICAID PAYER",
       plan_name: "Mock Medicaid",
       eligible: true
-    )
+    }
+    medicaid[:as_of] = coverage_answer_as_of if coverage_answer_as_of
+    adapter.add_coverage("pt_contract_001", medicaid)
     adapter.add_coverage(
       "pt_contract_001",
       coverage_type: "va_benefits",
@@ -173,6 +174,64 @@ class Corvid::Adapters::MockAdapterContractTest < Minitest::Test
       inactive_coverage_resource_type: "va_benefits",
       dereference_tokens: %w[pt_contract_001 rf_contract_001]
     }
+  end
+
+  KNOWN_COVERAGE_ANSWER_AS_OF = Time.utc(2026, 3, 15, 9, 0, 0)
+
+  def test_contract_coverage_answer_as_of_returns_stored_timestamp
+    validate_contract_hooks!
+    adapter = contract_adapter
+    adapter.reset!
+    adapter.add_patient(
+      "pt_contract_asof",
+      display_name: "TEST,PATIENT ASOF",
+      dob: Date.new(1980, 1, 1),
+      sex: "F",
+      ssn_last4: "0099"
+    )
+    adapter.add_coverage(
+      "pt_contract_asof",
+      coverage_type: "medicaid",
+      payer_identifier: "MOCK_PAYER",
+      eligible: true,
+      as_of: KNOWN_COVERAGE_ANSWER_AS_OF
+    )
+    adapter.add_coverage(
+      "pt_contract_asof",
+      coverage_type: "va_benefits",
+      payer_identifier: "MOCK_VA_PAYER",
+      eligible: false
+    )
+
+    seed = {
+      patient_identifier: "pt_contract_asof",
+      patient_identifier_tribal_no_confidence: "pt_contract_002",
+      unknown_patient_identifier: "pt_contract_unknown",
+      patient_search_query: "PATIENT ASOF",
+      practitioner_identifier: "pr_contract_001",
+      unknown_practitioner_identifier: "pr_contract_unknown",
+      practitioner_search_query: "PROVIDER 001",
+      referral_identifier: "rf_contract_001",
+      unknown_referral_identifier: "rf_contract_unknown",
+      text_token: "nt_contract_asof",
+      stored_text: "TEST",
+      case_token: "ct_contract_asof",
+      obligation_identifier: "obl_contract_asof",
+      unknown_obligation_identifier: "obl_contract_unknown",
+      payment_identifier: "pay_contract_asof",
+      unknown_payment_identifier: "pay_contract_unknown",
+      claim_identifier: "clm_contract_001",
+      payer_identifier: "MOCK_PAYER",
+      unknown_payer_identifier: "PAYER_CONTRACT_UNKNOWN",
+      payer_search_query: "Mock Payer",
+      coverage_resource_type: "medicaid",
+      other_resource_type: "medicare_a",
+      inactive_coverage_resource_type: "va_benefits",
+      dereference_tokens: %w[pt_contract_asof],
+      coverage_answer_as_of: KNOWN_COVERAGE_ANSWER_AS_OF
+    }
+    validate_required_seed_keys!(seed)
+    assert_coverage_answer_as_of_policy(seed)
   end
 
   def setup

@@ -5,8 +5,9 @@ require "corvid/adapters/base"
 require "corvid/value_objects"
 
 # Shared behavior contract for Corvid::Adapters::Base implementations.
-# Including classes must define contract_adapter, contract_seed!, and
-# contract_unsupported (Hash of method_name => reason). Optional
+# Including classes must define contract_adapter, contract_seed! (taking
+# coverage_answer_as_of:, the source answer time to seed on the active
+# coverage, nil for none), and contract_unsupported (Hash of method_name => reason). Optional
 # contract_fail_closed_stubs documents methods that return a fail-closed
 # stub instead of raising (Hash of method_name => reason, default {}).
 #
@@ -61,6 +62,11 @@ module AdapterContractTests
   # Seed keys that used to switch seeded checks off. A seed that still
   # sends one is rejected: list the method in contract_unsupported instead.
   RETIRED_SEED_FLAGS = %i[care_team_seeded claims_listable obligation_seeded].freeze
+
+  # Seeded on the active coverage so every adapter must carry a known
+  # source answer time through, not only report nil.
+  KNOWN_COVERAGE_ANSWER_AS_OF = Time.utc(2026, 3, 15, 9, 0, 0)
+  COVERAGE_ANSWER_READS = %i[get_coverages verify_eligibility].freeze
 
   UPDATED_REFERRAL_STATUS = "on-hold"
   UPDATED_OBLIGATION_STATUS = "PARTIAL"
@@ -220,6 +226,15 @@ module AdapterContractTests
         unknown = accounted - base_methods
         assert_empty unknown,
                      "unknown identifier policy lists methods that are not Base public API: #{unknown.inspect}"
+      end
+
+      define_method(:test_contract_coverage_answer_as_of_known_time) do
+        validate_contract_hooks!
+        reads = AdapterContractTests::COVERAGE_ANSWER_READS.reject { |m| contract_unsupported.key?(m) }
+        next if reads.empty?
+
+        seed = contract_seed_with_known_answer_time!
+        assert_seeded_known_answer_time(reads, seed)
       end
 
       base_methods.each do |method_name|
@@ -588,9 +603,12 @@ module AdapterContractTests
           assert_equal adapter.dereference(token), result[token],
                        "dereference_many must return the same record as dereference for #{token.inspect}"
         end
+      when :get_coverages
+        assert_get_coverages_answer_as_of_policy(seed)
       when :verify_eligibility
         assert_coverage_resource_type_guards(seed)
         assert_eligibility_inquiry_date_contract(adapter, seed, method: :verify_eligibility)
+        assert_verify_eligibility_answer_as_of_policy(seed)
       when :check_eligibility_detailed
         wrong_payer = adapter.check_eligibility_detailed(
           seed[:patient_identifier],
@@ -625,6 +643,86 @@ module AdapterContractTests
       display_name = adapter.find_patient(seed[:patient_identifier]).display_name
       assert_includes record.values, display_name,
                       "dereference(seeded patient) must return that patient's record"
+    end
+
+    def contract_seed_with_known_answer_time!
+      unless method(:contract_seed!).parameters.include?([ :key, :coverage_answer_as_of ])
+        flunk("contract_seed! must take coverage_answer_as_of: and seed it on the active coverage")
+      end
+
+      known = AdapterContractTests::KNOWN_COVERAGE_ANSWER_AS_OF
+      seed = contract_seed!(coverage_answer_as_of: known)
+      validate_required_seed_keys!(seed)
+      seed.merge(coverage_answer_as_of: known)
+    end
+
+    def assert_seeded_known_answer_time(reads, seed)
+      # An adapter whose get_coverages returns [] (FhirAdapter) has no row to check.
+      assert_get_coverages_answer_as_of_policy(seed) if reads.include?(:get_coverages)
+      assert_verify_eligibility_answer_as_of_policy(seed) if reads.include?(:verify_eligibility)
+    end
+
+    def expected_coverage_answer_as_of(seed)
+      seed.fetch(:coverage_answer_as_of, nil)
+    end
+
+    def assert_coverage_answer_as_of_policy(seed)
+      assert_get_coverages_answer_as_of_policy(seed)
+      assert_verify_eligibility_answer_as_of_policy(seed)
+    end
+
+    def assert_get_coverages_answer_as_of_policy(seed)
+      adapter = contract_adapter
+      expected = expected_coverage_answer_as_of(seed)
+      patient = seed[:patient_identifier]
+      active_type = seed[:coverage_resource_type]
+      inactive_type = seed[:inactive_coverage_resource_type]
+
+      coverages = adapter.get_coverages(patient)
+      assert_instance_of Array, coverages
+      return if coverages.empty?
+
+      active_rows = coverages.select { |row| coverage_row_resource_type(row) == active_type.to_s }
+      refute_empty active_rows,
+                   "get_coverages must include a row for coverage_resource_type #{active_type.inspect}"
+      active_rows.each do |row|
+        assert_expected_answer_as_of(row[:as_of], expected,
+                                   "get_coverages active #{active_type.inspect} row must return the seeded answer time, nil when unset")
+      end
+
+      inactive_rows = coverages.select { |row| coverage_row_resource_type(row) == inactive_type.to_s }
+      inactive_rows.each do |row|
+        assert_nil row[:as_of],
+                   "get_coverages inactive #{inactive_type.inspect} row must have nil :as_of when unset in seed"
+      end
+    end
+
+    def assert_verify_eligibility_answer_as_of_policy(seed)
+      adapter = contract_adapter
+      expected = expected_coverage_answer_as_of(seed)
+      patient = seed[:patient_identifier]
+      active_type = seed[:coverage_resource_type]
+      inactive_type = seed[:inactive_coverage_resource_type]
+
+      match = adapter.verify_eligibility(patient, active_type)
+      assert_instance_of Hash, match
+      assert_expected_answer_as_of(match[:as_of], expected,
+                                   "verify_eligibility(#{active_type.inspect}) must return the seeded answer time, nil when unset")
+
+      inactive = adapter.verify_eligibility(patient, inactive_type)
+      assert_instance_of Hash, inactive
+      assert_nil inactive[:as_of],
+                 "verify_eligibility(#{inactive_type.inspect}) must have nil :as_of when unset in seed"
+    end
+
+    def coverage_row_resource_type(row)
+      if row.key?(:coverage_type)
+        row[:coverage_type].to_s
+      elsif row.key?(:resource_type)
+        row[:resource_type].to_s
+      else
+        row["coverage_type"] || row["resource_type"]
+      end.to_s
     end
 
     def assert_coverage_resource_type_guards(seed)
@@ -917,7 +1015,7 @@ module AdapterContractTests
       when :get_care_team
         assert_array_of(result, Corvid::CareTeamMemberReference)
       when :get_coverages
-        assert_instance_of Array, result
+        assert_get_coverages_shape(result)
       when :get_conditions
         assert_clinical_read_shape(result, Corvid::ConditionReference)
       when :get_medications
@@ -984,6 +1082,30 @@ module AdapterContractTests
       assert_includes [ true, false ], value.success?
     end
 
+    def assert_get_coverages_shape(value)
+      assert_instance_of Array, value
+      value.each do |row|
+        assert_instance_of Hash, row
+        assert row.key?(:as_of), "get_coverages row must include :as_of"
+        assert_answer_as_of(row[:as_of], context: "get_coverages row")
+      end
+    end
+
+    def assert_expected_answer_as_of(actual, expected, message)
+      if expected.nil?
+        assert_nil actual, message
+      else
+        assert_equal expected, actual, message
+      end
+    end
+
+    def assert_answer_as_of(value, context:)
+      return if value.nil?
+
+      assert value.is_a?(Time) || value.is_a?(ActiveSupport::TimeWithZone),
+             "#{context} :as_of must be Time or ActiveSupport::TimeWithZone, got #{value.class}"
+    end
+
     def assert_verify_eligibility_shape(value)
       return if value.nil?
 
@@ -991,6 +1113,8 @@ module AdapterContractTests
       assert_keys(value, %i[date_of_service date_of_service_defaulted])
       assert_instance_of Date, value[:date_of_service]
       assert_includes [ true, false ], value[:date_of_service_defaulted]
+      assert value.key?(:as_of), "verify_eligibility must include :as_of"
+      assert_answer_as_of(value[:as_of], context: "verify_eligibility")
       # base.rb: these dates are Date or nil when present.
       %i[coverage_start coverage_end renewal_date].each do |key|
         next unless value.key?(key)

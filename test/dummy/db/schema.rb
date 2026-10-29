@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_10_27_000001) do
+ActiveRecord::Schema[8.1].define(version: 2026_10_28_000001) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
@@ -31,6 +31,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_27_000001) do
     t.string "eligibility_group_source"
     t.datetime "eligibility_group_set_at"
     t.date "renewal_date"
+    t.datetime "eligibility_group_as_of"
     t.date "inquiry_date_of_service"
     t.index ["prc_referral_id", "resource_type"], name: "idx_corvid_arc_referral_type", unique: true
     t.index ["prc_referral_id"], name: "index_corvid_alternate_resource_checks_on_prc_referral_id"
@@ -39,6 +40,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_27_000001) do
     t.check_constraint "eligibility_group IS NULL OR (eligibility_group::text = ANY (ARRAY['expansion_adult'::character varying, 'waiver_adult'::character varying, 'other'::character varying, 'unknown'::character varying]::text[]))", name: "corvid_arc_eligibility_group_check"
     t.check_constraint "eligibility_group IS NULL OR resource_type::text = 'medicaid'::text", name: "corvid_arc_eligibility_group_medicaid_only_check"
     t.check_constraint "eligibility_group_source IS NULL OR (eligibility_group_source::text = ANY (ARRAY['eligibility_response'::character varying, 'state_case_data'::character varying, 'registration'::character varying, 'staff_entry'::character varying, 'inferred'::character varying]::text[]))", name: "corvid_arc_eligibility_group_source_check"
+    t.check_constraint "eligibility_group_as_of IS NULL OR eligibility_group_source IS NOT NULL AND (eligibility_group_source::text = ANY (ARRAY['eligibility_response'::character varying, 'state_case_data'::character varying, 'registration'::character varying]::text[]))", name: "corvid_arc_eligibility_group_as_of_stated_source_check"
     t.check_constraint "resource_type::text = ANY (ARRAY['medicare_a'::character varying, 'medicare_b'::character varying, 'medicare_d'::character varying, 'medicaid'::character varying, 'va_benefits'::character varying, 'private_insurance'::character varying, 'workers_comp'::character varying, 'auto_insurance'::character varying, 'liability_coverage'::character varying, 'state_program'::character varying, 'tribal_program'::character varying, 'charity_care'::character varying]::text[])", name: "corvid_arc_resource_type_check"
     t.check_constraint "status::text = ANY (ARRAY['not_checked'::character varying, 'checking'::character varying, 'enrolled'::character varying, 'not_enrolled'::character varying, 'denied'::character varying, 'exhausted'::character varying, 'pending_enrollment'::character varying, 'coordinated'::character varying]::text[])", name: "corvid_arc_status_check"
   end
@@ -669,6 +671,19 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_27_000001) do
     t.index ["tenant_identifier", "status"], name: "index_corvid_tasks_on_tenant_identifier_and_status"
     t.check_constraint "priority::text = ANY (ARRAY['routine'::character varying, 'urgent'::character varying, 'asap'::character varying, 'stat'::character varying]::text[])", name: "corvid_tasks_priority_check"
     t.check_constraint "status::text = ANY (ARRAY['pending'::character varying, 'in_progress'::character varying, 'completed'::character varying, 'cancelled'::character varying, 'on_hold'::character varying]::text[])", name: "corvid_tasks_status_check"
+  end
+
+  create_table "corvid_zip_cbsa_crosswalks", force: :cascade do |t|
+    t.integer "fiscal_year", null: false
+    t.string "zip", null: false
+    t.string "cbsa", null: false
+    t.string "release_label"
+    t.datetime "created_at", null: false
+    t.datetime "updated_at", null: false
+    t.index ["fiscal_year", "zip"], name: "idx_corvid_zip_cbsa_crosswalks_fy_zip", unique: true
+    t.check_constraint "cbsa::text ~ '^([0-9]{5}|[0-9]{2})$'::text", name: "corvid_zip_cbsa_crosswalks_cbsa_check"
+    t.check_constraint "(fiscal_year >= 2000) AND (fiscal_year <= 2100)", name: "corvid_zip_cbsa_crosswalks_fiscal_year_check"
+    t.check_constraint "zip::text ~ '^[0-9]{5}$'::text", name: "corvid_zip_cbsa_crosswalks_zip_check"
   end
 
   create_table "corvid_zip_localities", force: :cascade do |t|
