@@ -8,6 +8,57 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed (breaking)
+- `corvid_fmap_determinations.claim_reference` is renamed to `claim_identifier`
+  (ADR 0001). `FmapDetermination#claim_identifier` and
+  `FmapClassificationService.classify!(claim_identifier:)` replace
+  `claim_reference`. When present, the value must be an opaque token
+  (`Corvid::OpaqueToken::FORMAT`, ADR 0003 §4) or Corvid's own `CLM_<ULID>`
+  (`FmapDetermination::CLM_FORMAT`: `CLM_` and 26 Crockford base32 characters).
+  Nil is allowed; anything else is rejected. The model and a CHECK both
+  enforce that, and the validation message does not include the value.
+  `FmapClassificationService.classify!` stores either form.
+  A legacy `claim_reference` that is already `CLM_<ULID>` is renamed and does
+  not abort the migration. The immutability error no longer includes the token.
+  ADR 0003 §4 example tokens are valid Crockford base32: the payer and facility
+  examples no longer end in `I` or `L`, and each body stays distinct.
+- Each `evidence_refs` element must be an object with exactly the keys
+  `supports` and `ref`: `supports` is one of `FmapRule::CALLER_EVIDENCE_KINDS`
+  and `ref` is an opaque token. The model reports that contract without
+  including the stored value. `FmapClassificationService.classify` and
+  `classify!` raise `ArgumentError` before storing a non-token ref, and that
+  message does not include the value. The CHECK requires a JSON array of
+  those objects, so a bare object, a nested array, or a non-string `ref` is
+  rejected. Blank refs are still dropped by `FmapRule.normalize_evidence`
+  and are not stored.
+- `corvid_prc_referrals.current_activity` free text is replaced by the string
+  enum `current_activity_code` (`submitted_via_fhir_pas`,
+  `assigned_to_reviewer`) and `reviewer_identifier` (an opaque token, required
+  when the code is `assigned_to_reviewer`). `PrcReferral#current_activity` is
+  derived display text ("Submitted via FHIR PAS" / "Assigned to reviewer")
+  and does not include the reviewer token. The migration maps only the exact
+  engine literal `Submitted via FHIR PAS` to `submitted_via_fhir_pas`. Every
+  other `current_activity` value is dropped and is not parsed.
+- `corvid_care_team_members.role` free text is replaced by the string enum
+  `role_code` (`primary_care_provider`, `care_manager`, `consultant`,
+  `other`). `CareTeamMember#role_display` is the fixed label for that code.
+  `CareTeam#add_member!` takes `role_code:`. `CareTeam#to_fhir` emits the
+  code and that label under `urn:corvid:care-team-role` and does not include
+  free text. `CareTeamMemberReference` carries `role_code`. `FhirAdapter`
+  maps a CareTeam participant role through an explicit `(system, code)`
+  table (`http://snomed.info/sct` / `446050000` to `primary_care_provider`);
+  anything unknown, missing, or malformed becomes `other` and does not fail
+  the read or pass the raw code through. `ReplaceCareTeamMemberRoleWithRoleCode`
+  maps the unambiguous legacy strings and otherwise aborts with a row count
+  only.
+- `ReplaceFreeTextWithTokens#up` aborts, before changing the schema, when any
+  `claim_reference` is neither an opaque token nor `CLM_<ULID>`, or any
+  `evidence_refs` value is not an array of `{ supports, ref }` entries. The
+  error reports row counts only and does not include the stored values.
+- The model and `FmapClassificationService` never echo stored values. The
+  database backstop's CHECK-violation detail can: Postgres includes the
+  failing row when a write bypasses validations (`update_columns`,
+  `insert_all`, `upsert_all`). Callers should not log raw
+  `ActiveRecord::CheckViolation` messages.
 - `corvid_eligibility_checklists.application_completed_by` and
   `management_approved_by` are renamed to `application_completed_by_identifier`
   and `management_approved_by_identifier`. They hold a practitioner identifier

@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "corvid/version"
+require "corvid/opaque_token"
 require "corvid/value_objects"
 require "corvid/tenant_context"
 require "corvid/configuration"

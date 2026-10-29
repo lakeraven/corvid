@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_10_28_000001) do
+ActiveRecord::Schema[8.1].define(version: 2026_10_29_000001) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
@@ -131,15 +131,16 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_28_000001) do
   create_table "corvid_care_team_members", force: :cascade do |t|
     t.bigint "care_team_id", null: false
     t.string "practitioner_identifier", null: false
-    t.string "role"
     t.boolean "lead", default: false
     t.date "start_date"
     t.date "end_date"
     t.datetime "created_at", null: false
     t.datetime "updated_at", null: false
+    t.string "role_code", null: false
     t.index ["care_team_id", "practitioner_identifier"], name: "idx_corvid_ctm_team_practitioner", unique: true
     t.index ["care_team_id"], name: "index_corvid_care_team_members_on_care_team_id"
     t.index ["practitioner_identifier"], name: "index_corvid_care_team_members_on_practitioner_identifier"
+    t.check_constraint "role_code::text = ANY (ARRAY['primary_care_provider'::character varying, 'care_manager'::character varying, 'consultant'::character varying, 'other'::character varying]::text[])", name: "corvid_care_team_members_role_code_check"
   end
 
   create_table "corvid_care_teams", force: :cascade do |t|
@@ -375,7 +376,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_28_000001) do
     t.string "best_available_category"
     t.string "best_available_rule_key"
     t.string "category", null: false
-    t.string "claim_reference"
+    t.string "claim_identifier"
     t.string "coverage_group"
     t.datetime "created_at", null: false
     t.date "date_of_service", null: false
@@ -410,6 +411,8 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_28_000001) do
     t.check_constraint "jsonb_typeof(missing_evidence) = 'array'::text AND missing_evidence <@ '[\"evidence_refs\", \"aian_attestation\", \"received_through_basis\", \"aian_status_evidence\", \"care_coordination_agreement\", \"received_through_evidence\"]'::jsonb", name: "corvid_fmap_determinations_missing_evidence_check"
     t.check_constraint "jurisdiction::text ~ '^[A-Z]{2}$'::text", name: "corvid_fmap_determinations_jurisdiction_check"
     t.check_constraint "received_through_basis IS NULL OR (received_through_basis::text = ANY (ARRAY['facility_authority'::character varying, 'cca'::character varying]::text[]))", name: "corvid_fmap_determinations_basis_check"
+    t.check_constraint "\nCASE\n    WHEN jsonb_typeof(evidence_refs) IS DISTINCT FROM 'array'::text THEN false\n    WHEN jsonb_path_exists(evidence_refs, 'strict $[*]?(@.type() != \"object\" || !((exists (@.keyvalue()?((@.\"key\" == \"supports\" && @.\"value\".type() == \"string\") && @.\"value\" == \"aian_status\")) && exists (@.keyvalue()?((@.\"key\" == \"ref\" && @.\"value\".type() == \"string\") && @.\"value\" like_regex \"^[a-z]{2,4}_[0-9A-HJKMNP-TV-Z]{26}$\"))) && !(exists (@.keyvalue()?(@.\"key\" != \"supports\" && @.\"key\" != \"ref\")))))'::jsonpath) THEN false\n    ELSE true\nEND", name: "corvid_fmap_determinations_evidence_refs_check"
+    t.check_constraint "claim_identifier IS NULL OR claim_identifier::text ~ '^[a-z]{2,4}_[0-9A-HJKMNP-TV-Z]{26}$'::text OR claim_identifier::text ~ '^CLM_[0-9A-HJKMNP-TV-Z]{26}$'::text", name: "corvid_fmap_determinations_claim_identifier_check"
   end
 
   create_table "corvid_fmap_rules", force: :cascade do |t|
@@ -596,7 +599,6 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_28_000001) do
     t.bigint "case_id", null: false
     t.string "referral_identifier", null: false
     t.string "status", default: "draft", null: false
-    t.string "current_activity"
     t.string "authorization_number"
     t.integer "medical_priority"
     t.string "priority_system"
@@ -621,11 +623,16 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_28_000001) do
     t.datetime "management_rejected_at"
     t.string "management_rejected_by_identifier"
     t.string "management_rejection_reason_token"
+    t.string "current_activity_code"
+    t.string "reviewer_identifier"
     t.index ["case_id"], name: "index_corvid_prc_referrals_on_case_id"
     t.index ["tenant_identifier", "facility_identifier", "referral_identifier"], name: "idx_corvid_prc_referrals_tenant_referral", unique: true
     t.index ["tenant_identifier", "status"], name: "index_corvid_prc_referrals_on_tenant_identifier_and_status"
     t.check_constraint "priority_system IS NULL OR priority_system::text = 'corvid_v1'::text", name: "corvid_prc_referrals_priority_system_check"
     t.check_constraint "status::text = ANY (ARRAY['draft'::character varying, 'submitted'::character varying, 'eligibility_review'::character varying, 'management_approval'::character varying, 'alternate_resource_review'::character varying, 'priority_assignment'::character varying, 'committee_review'::character varying, 'exception_review'::character varying, 'authorized'::character varying, 'denied'::character varying, 'deferred'::character varying, 'cancelled'::character varying]::text[])", name: "corvid_prc_referrals_status_check"
+    t.check_constraint "current_activity_code IS NULL OR (current_activity_code::text = ANY (ARRAY['submitted_via_fhir_pas'::character varying, 'assigned_to_reviewer'::character varying]::text[]))", name: "corvid_prc_referrals_current_activity_code_check"
+    t.check_constraint "current_activity_code::text IS DISTINCT FROM 'assigned_to_reviewer'::text OR reviewer_identifier IS NOT NULL", name: "corvid_prc_referrals_assigned_reviewer_check"
+    t.check_constraint "reviewer_identifier IS NULL OR reviewer_identifier::text ~ '^[a-z]{2,4}_[0-9A-HJKMNP-TV-Z]{26}$'::text", name: "corvid_prc_referrals_reviewer_identifier_check"
   end
 
   create_table "corvid_referral_fulfilment_reports", force: :cascade do |t|

@@ -8,7 +8,7 @@ module Corvid
   # requirement of the applied rule must have its own evidence, and the
   # persisted row must carry the basis and authority it was decided on.
   class FmapClassificationEvidenceTest < ActiveSupport::TestCase
-    AIAN_EVIDENCE = { "supports" => "aian_status", "ref" => "attestation:tok_example_aian" }.freeze
+    AIAN_EVIDENCE = { "supports" => "aian_status", "ref" => "at_01HK8B7Z9XCQVG3F8N5K0R4MWB" }.freeze
 
     setup do
       Corvid::TenantContext.current_tenant_identifier = "tnt_example"
@@ -169,7 +169,7 @@ module Corvid
     test "a caller cannot supply the received-through evidence itself" do
       assert_raises(ArgumentError) do
         classify_638(
-          evidence_refs: [ AIAN_EVIDENCE, { "supports" => "received_through", "ref" => "facility_authority:999" } ]
+          evidence_refs: [ AIAN_EVIDENCE, { "supports" => "received_through", "ref" => "fa_01HK8B7Z9XCQVG3F8N5K0R4MWB" } ]
         )
       end
     end
