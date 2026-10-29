@@ -82,7 +82,7 @@ class Corvid::Adapters::FhirAdapterContractTest < Minitest::Test
     FHIR_ADAPTER_CONTRACT_FAIL_CLOSED_STUBS
   end
 
-  def contract_seed!
+  def contract_seed!(coverage_answer_as_of: nil)
     adapter = contract_adapter
     adapter.instance_variable_set(:@by_type_and_id, Hash.new { |h, k| h[k] = {} })
     adapter.instance_variable_set(:@by_type, Hash.new { |h, k| h[k] = [] })
@@ -95,7 +95,7 @@ class Corvid::Adapters::FhirAdapterContractTest < Minitest::Test
     )
     adapter.add_resource(fixtures.practitioner_resource("pr_contract_001", "TEST", "PROVIDER 001"))
     adapter.add_resource(fixtures.service_request_resource("rf_contract_001", "pt_contract_001"))
-    adapter.add_resource(fixtures.coverage_resource("cov_contract_001", "pt_contract_001"))
+    adapter.add_resource(fixtures.coverage_resource("cov_contract_001", "pt_contract_001", last_updated: coverage_answer_as_of))
     adapter.add_resource(fixtures.inactive_coverage_resource("cov_contract_002", "pt_contract_001"))
     adapter.add_resource(
       fixtures.care_team_resource("ct_contract_001", "pt_contract_001", "pr_contract_001")

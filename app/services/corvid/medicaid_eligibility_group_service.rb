@@ -40,6 +40,17 @@ module Corvid
   # Coverage may state only eligibility_response, state_case_data, or
   # registration. Any other source is recorded as eligibility_response.
   #
+  # A stated answer carries as_of, when the source produced it. Only a
+  # Time or ActiveSupport::TimeWithZone is known. Anything else,
+  # including a String, is unknown and is never taken as the current
+  # time. A known time is floored to microseconds before it is compared
+  # or stored, which is the precision the column keeps. Under the lock,
+  # that answer replaces a stored stated answer when its as_of is equal
+  # or newer at that precision. An older known as_of leaves the stored
+  # group unwritten. When either time is unknown, the later write wins,
+  # the incoming as_of is stored (nil when unknown), and one fixed
+  # warning is logged. Inference and staff entry clear as_of.
+  #
   # The check's referral must be visible in the current tenant (ADR 0002)
   # or nothing is written. Staff entry raises one ArgumentError that
   # names no identifiers for a missing row, a referral outside this
@@ -58,6 +69,11 @@ module Corvid
 
     # Adapter coverage cannot claim staff_entry or inferred.
     STATED_SOURCES = %w[eligibility_response state_case_data registration].freeze
+
+    # Logged when a stated answer cannot be ordered against the stored
+    # stated answer. Fixed text. No identifiers (ADR 0003).
+    UNKNOWN_ANSWER_TIME_WARNING =
+      "medicaid eligibility group answer time is unknown; last writer wins"
 
     # A missing row and a referral outside the current tenant. The text
     # names no identifiers, and it does not depend on resource type.
@@ -294,8 +310,48 @@ module Corvid
       group
     end
 
+    # A stored stated answer with a known as_of is kept when the
+    # incoming as_of is known and older. Equal or newer replaces it.
+    # An unknown as_of on either side is last-writer-wins, and one
+    # fixed warning is logged. The stored time is the incoming time,
+    # or nil when that time is unknown.
     def write_stated!(check, coverage)
-      write!(check, stated_group(coverage), stated_source(coverage))
+      incoming = answer_time(coverage_value(coverage, :as_of))
+      return current_group(check) if stale_stated_answer?(check, incoming)
+
+      log_unknown_answer_time(check, incoming)
+      write!(check, stated_group(coverage), stated_source(coverage), as_of: incoming)
+    end
+
+    def stale_stated_answer?(check, incoming)
+      stored = stored_stated_answer_time(check)
+      stored && incoming && incoming < stored
+    end
+
+    def log_unknown_answer_time(check, incoming)
+      return unless stored_stated_source?(check)
+      return if stored_stated_answer_time(check) && incoming
+
+      Rails.logger.warn(UNKNOWN_ANSWER_TIME_WARNING)
+    end
+
+    def stored_stated_answer_time(check)
+      return unless stored_stated_source?(check)
+
+      answer_time(check.eligibility_group_as_of)
+    end
+
+    def stored_stated_source?(check)
+      STATED_SOURCES.include?(check.eligibility_group_source)
+    end
+
+    # A String is unknown. It is never parsed, so it cannot become now.
+    # A known time is floored to microseconds before the comparison and
+    # the store. Ordering is decided at the precision the column keeps.
+    def answer_time(value)
+      return unless value.is_a?(Time) || value.is_a?(ActiveSupport::TimeWithZone)
+
+      value.floor(6)
     end
 
     def stated_source(coverage)
@@ -415,11 +471,12 @@ module Corvid
       end
     end
 
-    def write!(check, group, source)
+    def write!(check, group, source, as_of: nil)
       check.update!(
         eligibility_group: group,
         eligibility_group_source: source,
-        eligibility_group_set_at: Time.current
+        eligibility_group_set_at: Time.current,
+        eligibility_group_as_of: as_of
       )
       group
     end
