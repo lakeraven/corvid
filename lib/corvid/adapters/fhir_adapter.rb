@@ -54,9 +54,13 @@ module Corvid
       ].freeze
       BILLING_CODE_SYSTEMS = ([ CPT_SYSTEM ] + HCPCS_SYSTEMS).freeze
 
-      # CareTeam.participant.role (system, code) -> role_code. Anything
-      # missing, unmapped, or malformed is "other". The raw code is never
-      # copied through, and a bad role does not fail the read.
+      # CareTeam.participant.role (system, code) -> role_code. SNOMED
+      # 446050000 is primary_care_provider. A coding whose system is
+      # CareTeam::FHIR_ROLE_SYSTEM (the system CareTeam#to_fhir emits)
+      # maps to that code when it is one of CareTeamMember's role codes.
+      # Anything else under that system, and a foreign system whose code
+      # merely equals an engine role code, is "other". Missing or
+      # malformed roles are "other". A bad role does not fail the read.
       SNOMED_SYSTEM = "http://snomed.info/sct"
       SNOMED_PRIMARY_CARE_PHYSICIAN = "446050000"
       CARE_TEAM_ROLE_BY_CODING = {
@@ -1389,10 +1393,27 @@ module Corvid
         return unless codings.is_a?(Array)
 
         codings.each do |coding|
-          mapped = CARE_TEAM_ROLE_BY_CODING[care_team_coding_pair(coding)]
+          mapped = care_team_role_for(coding)
           return mapped if mapped
         end
         nil
+      end
+
+      def care_team_role_for(coding)
+        pair = care_team_coding_pair(coding)
+        return unless pair
+
+        CARE_TEAM_ROLE_BY_CODING[pair] || engine_care_team_role_code(pair)
+      end
+
+      # Only the system CareTeam#to_fhir emits, and only a real role code.
+      # A matching code on any other system is not this vocabulary.
+      def engine_care_team_role_code(pair)
+        system, code = pair
+        return unless system == Corvid::CareTeam::FHIR_ROLE_SYSTEM
+        return unless Corvid::CareTeamMember.role_codes.value?(code)
+
+        code
       end
 
       def care_team_coding_pair(coding)

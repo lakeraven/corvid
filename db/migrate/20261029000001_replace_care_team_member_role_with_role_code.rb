@@ -98,9 +98,12 @@ class ReplaceCareTeamMemberRoleWithRoleCode < ActiveRecord::Migration[8.1]
     SQL
   end
 
+  # An IN list is stored as ANY (ARRAY[...]::text[]). Loading the schema
+  # dump and reading it back adds a text cast on each element instead.
+  # Spell that cast so a down/up replay matches the schema-loaded CHECK.
   def role_code_check_sql
-    codes = ROLE_CODES.map { |code| quote(code) }.join(", ")
-    "role_code IN (#{codes})"
+    codes = ROLE_CODES.map { |code| "#{quote(code)}::character varying" }.join(", ")
+    "role_code::text = ANY (ARRAY[#{codes}]::text[])"
   end
 
   def quoted_legacy_roles
