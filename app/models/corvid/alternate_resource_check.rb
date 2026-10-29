@@ -62,6 +62,23 @@ module Corvid
     validate :eligibility_group_set_at_paired_with_group
     validate :eligibility_group_as_of_only_for_stated_source
 
+    # ADR 0002: string values, same sets the Postgres CHECKs allow.
+    # The date and its source are stored together or not at all. The
+    # state code is two uppercase letters. These fields are recorded
+    # only on a medicaid row. A future application date is rejected
+    # here; that limit depends on today's date, so it is not a CHECK.
+    APPLICATION_DATE_SOURCES = %w[
+      eligibility_response state_case_data registration staff_entry inferred
+    ].freeze
+
+    validates :application_date_source, inclusion: { in: APPLICATION_DATE_SOURCES }, allow_nil: true
+    validates :medicaid_state_code, format: { with: /\A[A-Z]{2}\z/ }, allow_nil: true
+    validate :application_fields_only_on_medicaid
+    validate :application_date_paired_with_source
+    # Runs on every save. A date after today is rejected. That limit
+    # depends on today's date, so it is not a CHECK.
+    validate :application_date_not_in_future
+
     RESOURCE_NAMES = {
       "medicare_a" => "Medicare Part A", "medicare_b" => "Medicare Part B",
       "medicare_d" => "Medicare Part D", "medicaid" => "Medicaid",
@@ -82,6 +99,14 @@ module Corvid
     # Coordinated coverage is still active: that payer pays first.
     COVERAGE_STATUSES = %w[enrolled pending_enrollment coordinated].freeze
 
+    # An ineligible Medicaid answer moves the row to pending_enrollment
+    # only from these statuses, and only when an application date is on
+    # file. A recorded denial stays denied.
+    MEDICAID_OPEN_APPLICATION_STATUSES = %w[
+      not_checked checking pending_enrollment not_enrolled
+    ].freeze
+    private_constant :MEDICAID_OPEN_APPLICATION_STATUSES
+
     scope :active_coverage, -> { where(status: COVERAGE_STATUSES) }
     scope :unavailable, -> { where(status: UNAVAILABLE_STATUSES) }
     scope :pending, -> { where(status: %w[not_checked checking pending_enrollment]) }
@@ -89,6 +114,11 @@ module Corvid
     scope :private_payer, -> { where(resource_type: PRIVATE_TYPES) }
 
     before_save :set_checked_at, if: :status_changed?
+    # Every Medicaid write takes the same patient lock as claim
+    # submission, so a concurrent submit! waits until this save commits.
+    # lock! takes that lock before the row lock. This callback covers
+    # a save that never called lock!.
+    before_save :lock_patient_medicaid_submission!
 
     # Class methods
     def self.create_all_for_referral(prc_referral)
@@ -172,6 +202,25 @@ module Corvid
     # callers still default to Corvid.adapter; decoupling those paths
     # from the global is #264.
     def verify!(adapter: Corvid.adapter)
+      if resource_type == "medicaid"
+        transaction { verify_eligibility_answer!(adapter) }
+      else
+        verify_eligibility_answer!(adapter)
+      end
+    end
+
+    # with_lock opens its transaction and then calls lock!. On a
+    # Medicaid row the patient advisory lock is taken first, the same
+    # order as verify! and claim submission, and held until that
+    # transaction ends. A row lock taken first deadlocks a verify!
+    # that already holds the advisory lock and still needs the row.
+    def lock!(lock = true)
+      lock_patient_medicaid_submission! if persisted? && lock
+      super
+    end
+
+    def verify_eligibility_answer!(adapter)
+      lock_patient_medicaid_submission!
       patient_identifier = prc_referral.case&.patient_identifier
       return false unless patient_identifier
 
@@ -188,6 +237,7 @@ module Corvid
       record_medicaid_eligibility_group
       true
     end
+    private :verify_eligibility_answer!
 
     # Record that coordination of benefits for this service is done.
     # Only active enrollment can be coordinated. Coordination is not a new
@@ -230,7 +280,37 @@ module Corvid
         renewal_current?(date_of_service, as_of)
     end
 
+    # True when this date cannot be used as a filing. A date after today
+    # is rejected on every save. A stored one is an undetermined window
+    # for the hold.
+    def future_application_date?
+      return false if application_date.nil?
+
+      application_date > Date.current
+    end
+
     private
+
+    # Serialize with ClaimSubmission#submit! / #mark_submitted! for this
+    # patient. The key is hashed there; this method does not log the
+    # tenant or the patient token. A Medicaid row that cannot name its
+    # patient fails closed instead of writing without the lock.
+    def lock_patient_medicaid_submission!
+      return unless resource_type == "medicaid"
+
+      tenant_identifier, patient_identifier = medicaid_patient_lock_parts
+      if tenant_identifier.blank? || patient_identifier.blank?
+        raise ArgumentError, "Medicaid check cannot be saved without its patient"
+      end
+
+      ClaimSubmission.lock_medicaid_patient_submission!(tenant_identifier, patient_identifier)
+    end
+
+    def medicaid_patient_lock_parts
+      referral = PrcReferral.unscoped.find_by(id: prc_referral_id)
+      kase = Case.unscoped.find_by(id: referral.case_id) if referral
+      [ referral&.tenant_identifier, kase&.patient_identifier ]
+    end
 
     # checked_at is when eligibility was answered. Only a persisted row
     # leaving not_checked or checking records one. Coordination is not an
@@ -454,13 +534,41 @@ module Corvid
 
     # Coordinated sticks only when the adapter's policy token is present
     # and matches the stored token. Any other eligible result is enrolled
-    # (verify! stores the new token). Ineligible is not_enrolled. nil
-    # leaves the row unchanged — silence is not a determination.
+    # (verify! stores the new token). Ineligible is not_enrolled, except
+    # an open Medicaid application. nil leaves the row unchanged —
+    # silence is not a determination.
     def status_for_eligibility(result)
       case result[:eligible]
       when true then eligible_status(result)
-      when false then :not_enrolled
+      when false then ineligible_status
       end
+    end
+
+    def ineligible_status
+      return :pending_enrollment if open_medicaid_application?
+      return :denied if recorded_medicaid_denial?
+
+      :not_enrolled
+    end
+
+    # An application_date on Medicaid means an application is on file.
+    # An ineligible answer does not finish it from not_checked, checking,
+    # pending_enrollment, or not_enrolled: the row moves to
+    # pending_enrollment. A recorded denial stays denied. Enrollment,
+    # coordination, and exhaustion take not_enrolled, which is what an
+    # ineligible answer did before an application date could reopen
+    # them. Without an application_date, ineligible is not_enrolled.
+    def open_medicaid_application?
+      medicaid_application_on_file? &&
+        MEDICAID_OPEN_APPLICATION_STATUSES.include?(status)
+    end
+
+    def recorded_medicaid_denial?
+      medicaid_application_on_file? && denied?
+    end
+
+    def medicaid_application_on_file?
+      resource_type == "medicaid" && application_date.present?
     end
 
     def eligible_status(result)
@@ -493,6 +601,30 @@ module Corvid
       return if eligibility_group.nil? == eligibility_group_set_at.nil?
 
       errors.add(:eligibility_group_set_at, "must be present exactly when eligibility group is present")
+    end
+
+    def application_fields_only_on_medicaid
+      return if resource_type == "medicaid"
+
+      %i[application_date application_date_source medicaid_state_code].each do |attribute|
+        errors.add(attribute, "is only recorded for medicaid") if self[attribute].present?
+      end
+    end
+
+    def application_date_paired_with_source
+      return if application_date.nil? == application_date_source.nil?
+
+      if application_date.nil?
+        errors.add(:application_date, "must be set when application_date_source is set")
+      else
+        errors.add(:application_date_source, "must be set when application_date is set")
+      end
+    end
+
+    def application_date_not_in_future
+      return unless future_application_date?
+
+      errors.add(:application_date, "cannot be in the future")
     end
 
     def eligibility_group_as_of_only_for_stated_source

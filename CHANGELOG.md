@@ -8,6 +8,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed (breaking)
+- A Medicaid hold override spent by `ClaimSubmission#submit!` is
+  committed in its own transaction before `submit_claim`, together
+  with `submission_outcome_unknown_at`. Phase A takes the patient
+  advisory lock and the row lock, re-checks the hold and the override,
+  spends the override, and sets the marker. Phase B is a new
+  transaction with the same locks: it calls `submit_claim` and records
+  the accepted result, clearing the marker in that save. A failure in
+  phase B leaves the spend and the marker committed and re-raises the
+  original exception. While the marker is set, `submit!` and
+  `override_medicaid_hold!` raise `SubmissionOutcomeUnknown` before
+  any adapter call or write. `confirm_submission_not_sent!(by_identifier:)`
+  takes the row lock, re-checks the marker, clears it, and appends a
+  `staff_review` Determination. `mark_submitted!(claim_identifier:)`
+  clears the marker too. A plain save cannot write or clear the column.
+  `submit!` raises `OverrideRequiresTopLevelSubmit`, before any lock,
+  spend, or adapter call, when an override would be spent inside any
+  open transaction. A submit with no override may still run inside a
+  host transaction, in one transaction, with nothing marked if the
+  adapter raises.
 - `corvid_eligibility_checklists.application_completed_by` and
   `management_approved_by` are renamed to `application_completed_by_identifier`
   and `management_approved_by_identifier`. They hold a practitioner identifier
@@ -22,6 +41,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   instead of `denial_reason_token`.
 
 ### Added
+- `corvid_claim_submissions.submission_outcome_unknown_at`, a nullable
+  datetime, and `ClaimSubmission#confirm_submission_not_sent!(by_identifier:)`.
+  The column marks a spent Medicaid hold override whose clearinghouse
+  call then raised. Confirming the claim was not sent is required before
+  another override.
 - ZIP-to-CBSA wage-area crosswalk (#371). `corvid_zip_cbsa_crosswalks`
   stores the CMS crosswalk by federal fiscal year (`zip` is five ASCII
   digits; `cbsa` is a five-digit CBSA or a two-digit rural-state code;
@@ -99,6 +123,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   nullable column and cannot restore values. (#702)
 
 ### Changed
+- A claim whose stored status is already `submitted`, `accepted`, or
+  `paid` may record `claim_identifier` through a plain save. The
+  never-sent marker guard applies only while the stored status is unsent.
 - Postgres CHECK constraints and foreign keys now bound columns that
   accepted any string. Value lists: `corvid_prc_referrals.priority_system`
   (`corvid_v1`), `corvid_prc_eligibility_decisions.provider_confidence`
