@@ -20,9 +20,10 @@ module Corvid
     # Same set as corvid_prc_overpayment_analyses_payment_system_check (ADR 0002).
     PAYMENT_SYSTEMS = %w[pfs ipps asc opps].freeze
     # CMS wage area for an institutional analysis. Null for professional
-    # and unmapped rows. "NATIONAL" when the claim was priced with no
-    # crosswalk row. Otherwise a ZipCbsaCrosswalk CBSA: five digits or a
-    # two-digit rural-state code. Same predicate as
+    # and unmapped rows. "NATIONAL" when the wage-index lookup fell back,
+    # the stub ignored locality, or the claim had no crosswalk row.
+    # Otherwise the CBSA of the wage-index row that priced the claim:
+    # five digits or a two-digit rural-state code. Same predicate as
     # corvid_prc_overpayment_analyses_wage_area_check (ADR 0002).
     # The facility ZIP is not stored (ADR 0003).
     WAGE_AREA_FORMAT = /\A(?:NATIONAL|[0-9]{5}|[0-9]{2})\z/

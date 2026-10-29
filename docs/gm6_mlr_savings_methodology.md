@@ -56,22 +56,31 @@ Billings, MT's real per-CBSA wage index (0.8961, CBSA 13740, validated
 in PR #467). The demo does not load a ZIP→CBSA crosswalk, so its
 published figures stay on NATIONAL. Production institutional pricing
 resolves the facility wage area once per obligation from that
-crosswalk (#372). Results record the wage area, and notes name the
-crosswalk release after the pricing sentence. A release label that
-starts with `stub` keeps the result a stub estimate even when the
+crosswalk (#372). Results record the wage area of the rate row that
+priced the claim, and notes name that area after the pricing sentence.
+The recorded area is the CBSA when that wage-index row was used, and
+`NATIONAL` when the lookup fell back or a stub estimate ignored
+locality. The note does not include the facility ZIP. A release label
+that starts with `stub` keeps the result a stub estimate even when the
 rate rows are real CMS data, and on the real paths that label is
 `rate_source_release`.
 Pricing still falls back to NATIONAL when the resolved wage area has
-no wage-index row.
+no wage-index row. That fallback is recorded as wage area `NATIONAL`,
+not as the crosswalk CBSA. The crosswalk release stays on the result
+because the crosswalk row was consulted.
 
 The audit packet carries that wage-area choice (#372). `detail.csv`
 adds `wage_area` and `crosswalk_release` immediately after
-`rate_source_release`. An institutional claim with no crosswalk row
-stores `NATIONAL` and a null crosswalk release. A professional claim
-stores null for both. The facility ZIP is not in the packet.
-`methodology.json` adds `crosswalk_releases`, the sorted distinct
-non-nil crosswalk release labels from recoverable rows, and still
-lists `rate_source_releases`.
+`rate_source_release`. `wage_area` is the wage area of the row that
+priced the claim: the CBSA when that CBSA's wage-index row was used,
+and `NATIONAL` when the lookup fell back to the NATIONAL wage-index
+row, when a stub estimate ignored locality, or when an institutional
+claim has no crosswalk row. `crosswalk_release` is the crosswalk label
+when a crosswalk row was consulted, and null when there was no row. A
+professional claim stores null for both. The facility ZIP is not in
+the packet. `methodology.json` adds `crosswalk_releases`, the sorted
+distinct non-nil crosswalk release labels from recoverable rows, and
+still lists `rate_source_releases`.
 
 Because Billings' real wage index is **below** 1.0, a CBSA-adjusted
 MLR would be **lower**, and the savings number **higher**. This demo

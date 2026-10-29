@@ -238,15 +238,24 @@ With no crosswalk row for the service date's fiscal year, the
 argument is nil and pricing stays on the NATIONAL wage row. When the
 crosswalk resolves a code that has no wage-index row, pricing still
 falls back to the NATIONAL wage index. Institutional `Result#wage_area`
-is the resolved code, or nil for that crosswalk miss. Institutional
-notes name the crosswalk release when the row has one (`Wage area:
-<code> (crosswalk release <label>).`), or end with `Wage area:
-<code>.` when the label is blank. A missing or malformed ZIP ends
-with `Wage area: NATIONAL (facility ZIP missing or malformed).` A
-well-formed ZIP with no row ends with `Wage area: NATIONAL (no
-crosswalk row for the facility ZIP in FY <year>).` The sentence stays
-last, after any CAH text. Notes do not include the facility ZIP. A
-crosswalk `release_label` that starts with `stub` marks the
+is the locality of the wage-index row that priced the claim: the CBSA
+when that row was used, `NATIONAL` when the lookup fell back or the
+in-code stub ignored locality after a crosswalk row was consulted, and
+nil for a crosswalk miss. `crosswalk_release` stays the crosswalk
+label whenever a row was consulted. Institutional notes name that
+priced area. When the CBSA row was used and the crosswalk has a
+release label the sentence is `Wage area: <code> (crosswalk release
+<label>).`, or `Wage area: <code>.` when the label is blank. A
+NATIONAL wage-index fallback ends with `Wage area: NATIONAL (no
+wage-index row for CBSA <code>; crosswalk release <label>).` A stub
+estimate that consulted a crosswalk ends with `Wage area: NATIONAL
+(stub estimate does not use a wage area; crosswalk release <label>).`
+A missing or malformed ZIP ends with `Wage area: NATIONAL (facility
+ZIP missing or malformed).` A well-formed ZIP with no row ends with
+`Wage area: NATIONAL (no crosswalk row for the facility ZIP in FY
+<year>).` The sentence stays last, after any CAH text. Notes do not
+include the facility ZIP. A crosswalk `release_label` that starts
+with `stub` marks the
 institutional result `:stub` / `:stub_estimate` even when the rate
 rows are real CMS data. On the IPPS, OPPS, and ASC real paths that
 stub label is `rate_source_release` (if any input row is
@@ -329,28 +338,48 @@ and does not duplicate the ZIP pattern. A nil wage area leaves those
 institutional lookups on the NATIONAL wage index. A resolved code
 with no wage-index row still prices on the NATIONAL wage index.
 
-`Result#wage_area` is the resolved code, or nil when the ZIP does not
-resolve. Institutional notes end with the wage-area sentence, after
-any CAH multiplier text, and never include the facility ZIP:
+`Result#wage_area` is the wage area of the rate row that priced the
+claim. The provider lookup carries that locality (`IppsHospitalRate`
+for IPPS, and the `IppsHospitalRate` wage-index row OPPS and ASC
+already load). It is the CBSA when that row was used, and `NATIONAL`
+when the lookup fell back to the NATIONAL row or the in-code stub
+ignored locality after a crosswalk row was consulted. It stays nil
+when the ZIP does not resolve, so the note can still tell a missing
+ZIP from a missing row. `crosswalk_release` stays the crosswalk label
+whenever a crosswalk row was consulted. Institutional notes end with
+the wage-area sentence, after any CAH multiplier text, and never
+include the facility ZIP:
 
-- `Wage area: <code> (crosswalk release <label>).` when the row has a release label
+- `Wage area: <code> (crosswalk release <label>).` when that code's wage-index row priced the claim and the crosswalk has a release label
 - `Wage area: <code>.` when that label is blank
+- `Wage area: NATIONAL (no wage-index row for CBSA <code>; crosswalk release <label>).` when the crosswalk resolved `<code>` and the wage-index lookup fell back to NATIONAL
+- `Wage area: NATIONAL (stub estimate does not use a wage area; crosswalk release <label>).` when the in-code stub priced the claim after a crosswalk row was consulted
 - `Wage area: NATIONAL (facility ZIP missing or malformed).` when the ZIP is nil, not a String, or not `#####` / `#####-####`
 - `Wage area: NATIONAL (no crosswalk row for the facility ZIP in FY <year>).` when the ZIP is well formed and that fiscal year has no row
 
+A blank crosswalk label omits the release clause on the NATIONAL
+fallback and stub sentences.
+
 `PrcImporter.reanalyze` stores that resolution on
-`corvid_prc_overpayment_analyses` (#372). `wage_area` is the resolved
-code, or `NATIONAL` when an institutional claim has no crosswalk row
-(`Result#wage_area` stays nil in that case so the note can still
-distinguish a missing ZIP from a missing row). Professional rows
-leave `wage_area` null. `crosswalk_release` is the row's
-`release_label`, or null when the label is blank or there is no row.
-A CHECK allows only null, `NATIONAL`, or the crosswalk CBSA shape
-(five digits or a two-digit rural-state code), the same shape as
+`corvid_prc_overpayment_analyses` (#372). `wage_area` is the CBSA when
+that wage-index row priced the claim, or `NATIONAL` when the lookup
+fell back, the stub ignored locality, or an institutional claim has
+no crosswalk row (`Result#wage_area` stays nil in the no-row and
+malformed-ZIP cases so the note can still distinguish them; the column
+stores `NATIONAL`). Professional rows leave `wage_area` null.
+`crosswalk_release` is the row's `release_label` when a crosswalk row
+was consulted, including a NATIONAL fallback and a stub estimate, or
+null when the label is blank or there is no row. A CHECK allows only
+null, `NATIONAL`, or the crosswalk CBSA shape (five digits or a
+two-digit rural-state code), the same shape as
 `corvid_zip_cbsa_crosswalks.cbsa`. The facility ZIP is not a column.
 
 The audit packet cites the same fields. `detail.csv` places
 `wage_area` and `crosswalk_release` immediately after
-`rate_source_release`. `methodology.json` adds `crosswalk_releases`,
-the sorted distinct non-nil `crosswalk_release` values on recoverable
-rows, and still lists `rate_source_releases`.
+`rate_source_release`. `wage_area` in that column is the wage area of
+the row that priced the claim: the CBSA, or `NATIONAL` for a
+wage-index fallback, a stub that ignored locality, or an institutional
+claim with no crosswalk row. `crosswalk_release` is present when a
+crosswalk row was consulted. `methodology.json` adds
+`crosswalk_releases`, the sorted distinct non-nil `crosswalk_release`
+values on recoverable rows, and still lists `rate_source_releases`.

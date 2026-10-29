@@ -217,12 +217,19 @@ crosswalk is imported for the service date's fiscal year, outpatient
 claims use that wage index. With no crosswalk row they stay on the
 NATIONAL wage index. Pricing still falls back to NATIONAL when the
 resolved wage area has no wage-index row. The institutional result
-records the wage area. Notes end with `Wage area: <code> (crosswalk
-release <label>).` when the row has a release label, `Wage area:
-<code>.` when that label is blank, `Wage area: NATIONAL (facility ZIP
-missing or malformed).` when the ZIP is missing or malformed, or
-`Wage area: NATIONAL (no crosswalk row for the facility ZIP in FY
-<year>).` when the ZIP is well formed and that year has no row. The
+records the wage area of the wage-index row that priced the claim:
+the CBSA when that row was used, and `NATIONAL` when the lookup fell
+back or the stub ignored locality. Notes end with `Wage area: <code>
+(crosswalk release <label>).` when that code's wage-index row priced
+the claim and the crosswalk has a release label, `Wage area: <code>.`
+when that label is blank, `Wage area: NATIONAL (no wage-index row for
+CBSA <code>; crosswalk release <label>).` when the lookup fell back,
+`Wage area: NATIONAL (stub estimate does not use a wage area;
+crosswalk release <label>).` when the stub ignored locality,
+`Wage area: NATIONAL (facility ZIP missing or malformed).` when the
+ZIP is missing or malformed, or `Wage area: NATIONAL (no crosswalk
+row for the facility ZIP in FY <year>).` when the ZIP is well formed
+and that year has no row. The
 sentence stays last, after any CAH text. Notes do not include the
 facility ZIP. A crosswalk `release_label` that starts with `stub`
 marks the result `:stub` / `:stub_estimate` even when the OPPS or ASC

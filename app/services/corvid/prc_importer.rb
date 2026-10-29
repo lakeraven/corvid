@@ -171,11 +171,13 @@ module Corvid
 
       private
 
-      # Result#wage_area is the crosswalk code, or nil when an
-      # institutional claim is priced on the NATIONAL wage index.
-      # The audit column records that fallback as "NATIONAL".
-      # Professional and unmapped results stay nil. crosswalk_release
-      # is already on the result from that same crosswalk row.
+      # Result#wage_area is the wage-index row that priced the claim:
+      # the CBSA, "NATIONAL" when the lookup fell back or the stub
+      # ignored locality, or nil when the ZIP did not resolve a
+      # crosswalk row. The audit column records that nil institutional
+      # miss as "NATIONAL". Professional and unmapped results stay nil.
+      # crosswalk_release is already on the result from the crosswalk
+      # row that was consulted, including a NATIONAL fallback.
       def analysis_wage_area(result)
         return result.wage_area if result.wage_area
 

@@ -14,10 +14,12 @@ module Corvid
   # Every detail row carries the provenance fields auditors and recovery
   # counterparties need to answer "where does this number come from?":
   # analyzer_version, rate_source, rate_source_release, wage_area,
-  # crosswalk_release, source_file. wage_area is the CMS wage area for
-  # an institutional claim ("NATIONAL" when no crosswalk row resolved)
-  # and nil for professional claims. crosswalk_release is the ZIP→CBSA
-  # release label, or nil when the claim did not use a labeled row.
+  # crosswalk_release, source_file. wage_area is the CMS wage area of
+  # the rate row that priced an institutional claim: the CBSA when that
+  # row was used, "NATIONAL" when the lookup fell back, the stub ignored
+  # locality, or no crosswalk row resolved, and nil for professional
+  # claims. crosswalk_release is the ZIP→CBSA release label when a
+  # crosswalk row was consulted, or nil when it was not.
   #
   # Recoverable-now overpayments (recovery_confidence = "clear") are
   # reported separately from stub-estimate ("stub_estimate") so a tribal
