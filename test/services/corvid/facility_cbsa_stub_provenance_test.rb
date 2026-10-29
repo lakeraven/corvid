@@ -54,7 +54,7 @@ class Corvid::FacilityCbsaStubProvenanceTest < ActiveSupport::TestCase
 
       summary = Corvid::PrcOverpaymentReportService.summary(tenant: TENANT)
       assert_equal({ "stub_data_loaded" => 1 }, summary[:exceptions][:by_reason],
-                   "today returns stub_fallback because rate_source_release is the real OPPS label")
+                   "stub crosswalk release_label on the persisted analysis must classify as stub_data_loaded")
     end
   end
 

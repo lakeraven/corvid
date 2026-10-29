@@ -167,6 +167,47 @@ class Corvid::PrcOverpaymentAnalyzerWageAreaTest < ActiveSupport::TestCase
     )
   end
 
+  test "October institutional date with crosswalk only for calendar year uses next FY in NATIONAL note" do
+    register_outpatient_procedure!
+    register_facility_for_cbsa(code: "OCTFY", zip: SYNTH_ZIP)
+    # Row keyed to calendar 2026 only — service date in Oct 2026 resolves FY 2027.
+    Corvid::ZipCbsaCrosswalk.create!(fiscal_year: 2026, zip: SYNTH_ZIP, cbsa: SYNTH_CBSA)
+    seed_opps_national_rows(calendar_year: 2026)
+
+    result = analyze_with_facility(
+      facility_code: "OCTFY", procedure: "OUTPATIENT_TEST", paid: 5_000,
+      service_date: Date.new(2026, 10, 15)
+    ).results.first
+
+    assert_institutional_wage_area_documentation(
+      result,
+      facility_zip: SYNTH_ZIP,
+      wage_area: nil,
+      national: :no_crosswalk_row,
+      fiscal_year: 2027
+    )
+  end
+
+  test "March institutional date resolves crosswalk for service-date FY not calendar-year-only row" do
+    register_outpatient_procedure!
+    register_facility_for_cbsa(code: "MARCHFY", zip: SYNTH_ZIP)
+    seed_cbsa_crosswalk_and_wage_area(fiscal_year: 2026, zip: SYNTH_ZIP, cbsa: SYNTH_CBSA)
+    seed_opps_cbsa_rows(calendar_year: 2026, cbsa: SYNTH_CBSA, release_label: REAL_OPPS_RELEASE)
+
+    result = analyze_with_facility(
+      facility_code: "MARCHFY", procedure: "OUTPATIENT_TEST", paid: 5_000,
+      service_date: Date.new(2026, 3, 1)
+    ).results.first
+
+    assert_equal SYNTH_CBSA, result.wage_area
+    assert_institutional_wage_area_documentation(
+      result,
+      facility_zip: SYNTH_ZIP,
+      wage_area: SYNTH_CBSA,
+      crosswalk_release: CROSSWALK_RELEASE_LABEL
+    )
+  end
+
   test "professional PFS result leaves wage_area nil and omits wage-area notes" do
     register_facility_for_cbsa(code: "CBSA", zip: SYNTH_ZIP, locality: TEST_LOCALITY)
     Corvid::ZipCbsaCrosswalk.create!(fiscal_year: 2009, zip: SYNTH_ZIP, cbsa: SYNTH_CBSA)
