@@ -20,6 +20,41 @@ When("a provider submits a FHIR PA request for service {string} with estimated c
   @referral = Corvid::PrcReferral.find_by!(referral_identifier: @claim_response[:id])
 end
 
+When("a provider submits a FHIR PA request with provider reference {string}") do |provider_reference|
+  @fhir_claim = build_fhir_claim(patient_id: @case.patient_identifier, service: "MRI").merge(
+    provider: { reference: provider_reference }
+  )
+  @claim_response = Corvid::PriorAuthorizationApiService.submit_from_claim(@fhir_claim)
+  @referral = Corvid::PrcReferral.find_by!(referral_identifier: @claim_response[:id])
+end
+
+When("a provider submits a FHIR PA request with patient reference {string}") do |patient_reference|
+  @fhir_claim = build_fhir_claim(patient_id: @case.patient_identifier, service: "MRI").merge(
+    patient: { reference: patient_reference }
+  )
+  @submission_error = nil
+  @claim_response = nil
+  @referral = nil
+  begin
+    @claim_response = Corvid::PriorAuthorizationApiService.submit_from_claim(@fhir_claim)
+    @referral = Corvid::PrcReferral.find_by(referral_identifier: @claim_response[:id])
+  rescue ArgumentError => e
+    @submission_error = e
+  end
+end
+
+Then("the PA submission should be rejected with a patient reference error") do
+  refute_nil @submission_error, "expected submit_from_claim to raise ArgumentError"
+  assert_match(%r{relative Patient/<id> reference}i, @submission_error.message)
+  assert_match(/FHIR id/i, @submission_error.message)
+  assert_nil @claim_response, "expected no ClaimResponse when submission is rejected"
+end
+
+Then("no PrcReferral should be created for patient {string}") do |patient_identifier|
+  exists = Corvid::PrcReferral.joins(:case).where(corvid_cases: { patient_identifier: patient_identifier }).exists?
+  refute exists, "expected no PrcReferral for patient #{patient_identifier}"
+end
+
 When("a provider {string} submits a FHIR PA request for service {string}") do |provider_id, service|
   @fhir_claim = build_fhir_claim(patient_id: @case.patient_identifier, service: service, provider: provider_id)
   @claim_response = Corvid::PriorAuthorizationApiService.submit_from_claim(@fhir_claim)
@@ -39,6 +74,17 @@ Then("the PrcReferral should record the requesting provider as {string}") do |pr
   ref = Corvid.adapter.find_referral(@referral.referral_identifier)
   refute_nil ref, "Expected adapter to know the referral"
   assert_equal provider_id, ref.requesting_provider_identifier
+end
+
+Then("the PrcReferral should record the requesting provider as absent") do
+  ref = Corvid.adapter.find_referral(@referral.referral_identifier)
+  refute_nil ref, "Expected adapter to know the referral"
+  assert_nil ref.requesting_provider_identifier
+end
+
+Then("the created PrcReferral case patient should be {string}") do |patient_identifier|
+  refute_nil @referral
+  assert_equal patient_identifier, @referral.case.patient_identifier
 end
 
 Then("the FHIR response should be a ClaimResponse with outcome {string}") do |outcome|
