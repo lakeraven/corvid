@@ -146,6 +146,23 @@ class Corvid::Demo::FhirOverlayTest < ActiveSupport::TestCase
     assert_match(/Tallgrass Clinic/, output)
   end
 
+  test "demo Coverage lastUpdated is a FHIR instant and verify_eligibility returns as_of" do
+    clinic = Data.clinics.first
+    patient_id = "pt-br-001"
+    coverage = clinic.resources.find { |r| r["resourceType"] == "Coverage" && r["id"] == "cov_br_001" }
+    last_updated = coverage.dig("meta", "lastUpdated")
+
+    refute_nil last_updated, "demo Coverage must carry meta.lastUpdated"
+    assert_match(/\A\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,6})?Z\z/, last_updated,
+                 "lastUpdated must be a FHIR instant with explicit Z")
+
+    adapter = adapter_for(clinic)
+    result = adapter.verify_eligibility(patient_id, "tribal_program")
+
+    refute_nil result
+    assert result[:as_of].is_a?(Time), "verify_eligibility must surface Coverage answer time"
+  end
+
   test "dataset is fully synthetic (no real clinic/place/vendor names)" do
     blob = Data.clinics.flat_map(&:resources).to_s.downcase
     labels = Data.clinics.map(&:source_ehr_label).join(" ").downcase
@@ -160,12 +177,43 @@ class Corvid::Demo::FhirOverlayTest < ActiveSupport::TestCase
     assert_equal [ "Broken Rock Clinic", "Tallgrass Clinic" ], Data.clinics.map(&:name)
   end
 
+  test "ingest skips claim lines with unresolved patient identifier" do
+    patient = Data.patient("pt-unres-1", "OVERLAY", "PATIENT UNRES", "1980-01-01", "F", "UR-1")
+    bad_patient_ref = Data.claim("clm_unres", "pt-unres-1", "V1", "Vendor One",
+                                  "99213", "2026-02-10", 240.00, Data::CPT_SYSTEM, "Office visit")
+    bad_patient_ref["patient"] = { "reference" => "Patient/" }
+
+    adapter = Corvid::Adapters::FhirDemoAdapter.new(resources: [ patient, bad_patient_ref ])
+    unresolved_lines = adapter.send(:build_claim_line_references, bad_patient_ref)
+    assert unresolved_lines.all? { |line| line.patient_identifier.nil? },
+           "Patient/ claim must map to nil patient_identifier on claim lines"
+
+    Corvid.configure { |c| c.adapter = adapter }
+
+    adapter.define_singleton_method(:list_claims) { |_patient_id| unresolved_lines }
+
+    with_tenant("tnt_test") do
+      Corvid::TenantContext.current_facility_identifier = "fac_unres"
+      counts = Ingest.ingest(
+        facility: "fac_unres",
+        patient_identifiers: [ "pt-unres-1" ],
+        adapter: adapter
+      )
+
+      assert_equal 0, counts[:obligations_created]
+      assert_equal 1, counts[:skipped]
+      assert counts[:skipped_reasons].any? { |s| s[:reason].to_s.match?(/patient_unresolved/i) },
+             "expected skipped_reasons to include patient_unresolved"
+      refute Corvid::PrcObligation.exists?(source_file: "fhir:clm_unres")
+    end
+  end
+
   test "ingest surfaces silently-skipped lines instead of dropping them" do
-    patient = Data.patient("pt_skip_1", "OVERLAY", "PATIENT SKIP", "1980-01-01", "F", "SK-1")
-    priceable = Data.claim("clm_ok", "pt_skip_1", "V1", "Vendor One",
+    patient = Data.patient("pt-skip-1", "OVERLAY", "PATIENT SKIP", "1980-01-01", "F", "SK-1")
+    priceable = Data.claim("clm_ok", "pt-skip-1", "V1", "Vendor One",
                            "99213", "2026-02-10", 240.00, Data::CPT_SYSTEM, "Office visit")
     # A claim line whose net amount is absent: today it is silently dropped.
-    missing_amt = Data.claim("clm_bad", "pt_skip_1", "V1", "Vendor One",
+    missing_amt = Data.claim("clm_bad", "pt-skip-1", "V1", "Vendor One",
                              "99214", "2026-03-10", 300.00, Data::CPT_SYSTEM, "Office visit")
     missing_amt["item"].first.delete("net")
 
@@ -174,7 +222,7 @@ class Corvid::Demo::FhirOverlayTest < ActiveSupport::TestCase
 
     with_tenant("tnt_skip") do
       Corvid::TenantContext.current_facility_identifier = "fac_skip"
-      counts = Ingest.ingest(facility: "fac_skip", patient_identifiers: [ "pt_skip_1" ], adapter: adapter)
+      counts = Ingest.ingest(facility: "fac_skip", patient_identifiers: [ "pt-skip-1" ], adapter: adapter)
 
       assert_equal 1, counts[:obligations_created], "only the priceable line becomes an obligation"
       assert_equal 1, counts[:skipped], "the amount-less line is counted, not silently dropped"

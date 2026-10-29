@@ -180,6 +180,12 @@ module Corvid
         nil
       end
 
+      # Returns an Array of coverage Hashes. [] means the source
+      # answered "none". Each row includes :as_of, when the source
+      # produced that answer: a Time or ActiveSupport::TimeWithZone,
+      # or nil. nil means the source did not say. That is unknown,
+      # never the current time. :as_of is not verified_at, which is
+      # when a check ran.
       def get_coverages(patient_identifier)
         []
       end
@@ -208,6 +214,11 @@ module Corvid
       # renewal_date as Date or nil. Any other type makes the answer
       # unreadable. Callers treat anything else as undetermined, never
       # as no coverage (42 CFR 136.61).
+      #
+      # An answer Hash includes :as_of, when the source produced it:
+      # a Time or ActiveSupport::TimeWithZone, or nil. nil means the
+      # source did not say. That is unknown, never the current time.
+      # :as_of is not verified_at, which is when a check ran.
       #
       # A nil, empty, or whitespace-only resource_type returns nil
       # (undetermined) and never selects a coverage. A real resource

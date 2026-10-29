@@ -25,28 +25,28 @@ class Corvid::Adapters::FhirDemoAdapterContractTest < Minitest::Test
     FHIR_ADAPTER_CONTRACT_FAIL_CLOSED_STUBS
   end
 
-  def contract_seed!
+  def contract_seed!(coverage_answer_as_of: nil)
     fixtures = FhirAdapterContractFixtures
     @adapter = Corvid::Adapters::FhirDemoAdapter.new(
       resources: [
-        fixtures.patient_resource("pt_contract_001", "TEST", "PATIENT 001"),
-        fixtures.patient_resource_tribal_no_confidence("pt_contract_002", "TEST", "PATIENT 002"),
-        fixtures.practitioner_resource("pr_contract_001", "TEST", "PROVIDER 001"),
-        fixtures.service_request_resource("rf_contract_001", "pt_contract_001"),
-        fixtures.coverage_resource("cov_contract_001", "pt_contract_001"),
-        fixtures.inactive_coverage_resource("cov_contract_002", "pt_contract_001"),
-        fixtures.care_team_resource("ct_contract_001", "pt_contract_001", "pr_contract_001"),
-        fixtures.claim_resource("clm_contract_001", "pt_contract_001")
+        fixtures.patient_resource("pt-contract-001", "TEST", "PATIENT 001"),
+        fixtures.patient_resource_tribal_no_confidence("pt-contract-002", "TEST", "PATIENT 002"),
+        fixtures.practitioner_resource("pr-contract-001", "TEST", "PROVIDER 001"),
+        fixtures.service_request_resource("rf_contract_001", "pt-contract-001"),
+        fixtures.coverage_resource("cov_contract_001", "pt-contract-001", last_updated: coverage_answer_as_of),
+        fixtures.inactive_coverage_resource("cov_contract_002", "pt-contract-001"),
+        fixtures.care_team_resource("ct_contract_001", "pt-contract-001", "pr-contract-001"),
+        fixtures.claim_resource("clm_contract_001", "pt-contract-001")
       ]
     )
 
     {
-      patient_identifier: "pt_contract_001",
-      patient_identifier_tribal_no_confidence: "pt_contract_002",
-      unknown_patient_identifier: "pt_contract_unknown",
+      patient_identifier: "pt-contract-001",
+      patient_identifier_tribal_no_confidence: "pt-contract-002",
+      unknown_patient_identifier: "pt-contract-unknown",
       patient_search_query: "PATIENT",
-      practitioner_identifier: "pr_contract_001",
-      unknown_practitioner_identifier: "pr_contract_unknown",
+      practitioner_identifier: "pr-contract-001",
+      unknown_practitioner_identifier: "pr-contract-unknown",
       practitioner_search_query: "PROVIDER",
       referral_identifier: "rf_contract_001",
       unknown_referral_identifier: "rf_contract_unknown",
@@ -64,7 +64,7 @@ class Corvid::Adapters::FhirDemoAdapterContractTest < Minitest::Test
       coverage_resource_type: "medicaid",
       other_resource_type: "medicare_a",
       inactive_coverage_resource_type: "va_benefits",
-      dereference_tokens: %w[pt_contract_001],
+      dereference_tokens: %w[pt-contract-001],
       simulate_failed_list_search: AdapterContractTests::FHIR_SIMULATE_FAILED_LIST_SEARCH
     }
   end

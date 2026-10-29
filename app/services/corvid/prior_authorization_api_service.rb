@@ -36,6 +36,15 @@ module Corvid
       "cancelled"               => { outcome: "error",    disposition: "cancelled" }
     }.freeze
 
+    # Unusable patient reference. Names the rule only — never the submitted
+    # reference value (ADR 0003). For a patient the only Corvid token form
+    # is pt_; see Corvid::FhirReference.
+    PATIENT_REFERENCE_ERROR =
+      "patient reference must be a relative Patient/<id> reference " \
+      "with a FHIR id (letters, digits, '-' or '.', up to 64 characters) " \
+      "or a Corvid pt_ token (a single underscore, then FHIR id characters, " \
+      "64 characters total)"
+
     class << self
       # POST /Claim/$submit handler. Accepts a FHIR Claim (as hash) and
       # creates a PrcReferral. Returns a ClaimResponse hash.
@@ -44,6 +53,9 @@ module Corvid
       # CMS-0057-F annual usage metrics (#46) can count distinct apps.
       def submit_from_claim(fhir_claim, app_identifier: nil)
         patient_id = extract_patient_identifier(fhir_claim)
+        # Fail closed before a Case row or an adapter referral exists.
+        raise ArgumentError, PATIENT_REFERENCE_ERROR if patient_id.nil?
+
         provider_id = extract_provider_identifier(fhir_claim)
         service_description = extract_service_description(fhir_claim)
         estimated_cost = extract_estimated_cost(fhir_claim)
@@ -220,35 +232,96 @@ module Corvid
       private
 
       def extract_patient_identifier(fhir_claim)
-        ref = fhir_claim.dig(:patient, :reference) || fhir_claim.dig("patient", "reference")
-        ref&.split("/")&.last
+        Corvid::FhirReference.id_from(element_reference(fhir_claim, :patient), type: "Patient")
       end
 
       def extract_provider_identifier(fhir_claim)
-        ref = fhir_claim.dig(:provider, :reference) || fhir_claim.dig("provider", "reference")
-        ref&.split("/")&.last
+        Corvid::FhirReference.id_from(
+          element_reference(fhir_claim, :provider),
+          type: Corvid::FhirReference::PROVIDER_TYPES
+        )
+      end
+
+      # Hash or anything that converts like one (#to_unsafe_h), so a Hash and
+      # raw or permitted ActionController::Parameters both work. A non-hash
+      # element is not a reference object: patient then fails closed (nil id,
+      # caller raises) and provider is optional, so nil. When a symbol key and
+      # a string key are both present and their references differ, fail closed
+      # the same way — neither reference is chosen.
+      def element_reference(claim, name)
+        elements = reference_elements(claim, name)
+        return nil if elements.nil?
+
+        references = elements.map { |element| reference_value(element) }
+        references.uniq.one? ? references.first : nil
+      end
+
+      def reference_elements(claim, name)
+        source = hash_like(claim)
+        return nil unless source
+
+        values = element_values(source, name)
+        return nil if values.empty?
+
+        hashes = values.map { |value| hash_like(value) }
+        hashes.all? ? hashes : nil
+      end
+
+      def element_values(source, name)
+        [ name.to_sym, name.to_s ].uniq.select { |key| source.key?(key) }.map { |key| source[key] }
+      end
+
+      # Keep a real Hash intact so a symbol key and a string key can disagree.
+      # Convert other hash-like objects (Parameters) without naming ActionController.
+      def hash_like(value)
+        return value if value.is_a?(Hash)
+        return nil unless value.respond_to?(:to_unsafe_h)
+
+        converted = value.to_unsafe_h
+        converted if converted.is_a?(Hash)
+      end
+
+      # Both :reference and "reference", with different values, is not a
+      # reference. nil fails the patient path closed and drops an optional
+      # provider. The same value under both keys is that value. No value is
+      # included in an error.
+      def reference_value(element)
+        values = reference_candidates(element)
+        values.first if values.uniq.one?
+      end
+
+      def reference_candidates(element)
+        keys = [ :reference, "reference" ]
+        keys.select { |key| element.key?(key) }.map { |key| element[key] }
       end
 
       def extract_service_description(fhir_claim)
-        items = fhir_claim[:item] || fhir_claim["item"] || []
-        first = items.first || {}
-        raw = first[:productOrService] || first["productOrService"]
+        source = hash_like(fhir_claim) || {}
+        items = source[:item] || source["item"] || []
+        raw = codeable_from_item(items.first)
         normalize_codeable_concept(raw) || "Service"
       end
 
-      # productOrService is a FHIR CodeableConcept — may be a Hash with
-      # text/coding in real payloads, or a simple String in lightweight
+      def codeable_from_item(item)
+        source = hash_like(item)
+        return nil unless source
+
+        source[:productOrService] || source["productOrService"]
+      end
+
+      # productOrService is a FHIR CodeableConcept — a Hash or Parameters
+      # (raw or permitted) with text/coding, or a String in lightweight
       # callers. Return a String suitable for persistence as service_requested.
       def normalize_codeable_concept(value)
-        case value
-        when String
-          value.presence
-        when Hash
-          v = value.deep_symbolize_keys
-          v[:text].presence ||
-            v.dig(:coding, 0, :display).presence ||
-            v.dig(:coding, 0, :code).presence
-        end
+        return value.presence if value.is_a?(String)
+
+        concept = hash_like(value)
+        return nil unless concept
+
+        labeled = concept.deep_symbolize_keys
+        labeled[:text].presence ||
+          labeled.dig(:coding, 0, :display).presence ||
+          labeled.dig(:coding, 0, :code).presence
       end
 
       def extract_estimated_cost(fhir_claim)
