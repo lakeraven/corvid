@@ -1,71 +1,198 @@
 # frozen_string_literal: true
 
 module Corvid
-  # Applies 835 remittances (as returned by Corvid.adapter.fetch_remittances)
-  # to the claims they settle.
+  # Applies 835 remittances to the claims they settle.
   #
-  # The 835 is where a payer's adjudicated decision arrives, so it is the
-  # source of truth for denials. A line item is a denial when the adapter marks
-  # it status "denied"; its CARC/RARC codes (adjustment_codes) are recorded on
-  # the claim so denial reasons can be counted. A line with money paid marks
-  # the claim paid. Anything else only updates the amounts it carries.
+  # The adapter is injected (ADR 0005) and read once per call. For each
+  # claim the batch names, amounts are summed over the batch together with
+  # that history. The batch is listed first. RemittanceAmounts keeps the
+  # first copy of each dedupe key, so the batch's copy of a remittance
+  # wins and a duplicate is counted once. Lines stay ordered by payment
+  # date; the merged array order breaks a tie, and that order is stable.
+  # A nil read is unknown, not an empty history: nothing is written for
+  # the batch's claims, they are counted as unknown, and the batch is
+  # never applied on its own. A batch of only the new lines would
+  # understate the claim, or go negative on a reversal. The merged list is
+  # deduplicated and indexed by stripped claim identifier once per call,
+  # so each claim is summed over only the remittances that name it.
   #
-  # Free-text denial reasons on the line item are not stored: per ADR 0003 text
-  # is kept only as a vault token, and the codes already say why.
+  # Amounts are written once per claim, from RemittanceAmounts, over every
+  # line for that claim. The last line does not replace an earlier payment.
+  # Duplicate remittances and reversals are netted there, in integer cents,
+  # the same rule ReferralBillingReconciliation uses.
   #
-  # Runs inside the caller's tenant context; line items whose claim is not in
-  # that tenant are skipped, never matched across tenants.
+  # Status comes from the latest status-setting line in that same payment
+  # order, chosen only from lines whose remittance is in this batch. An old
+  # denial or payment that exists only in the adapter history must not set
+  # status again: the app may have moved the claim since (for example to
+  # "appealed"). Membership is the dedupe key RemittanceAmounts uses: the
+  # remittance_identifier, or the whole remittance when it has none. A
+  # remittance present in both the history and the batch counts as the
+  # batch's. The batch should come from the same adapter as the history, so
+  # the dedupe keys match. A line sets status when it is marked "denied", or
+  # when its paid amount is a positive number of subunits. A denial records
+  # that line's CARC/RARC codes (adjustment_codes) through mark_denied!. A
+  # positive payment marks the claim paid. When no batch line sets status,
+  # only the amounts are written.
+  #
+  # The batch's writes share one ClaimSubmission transaction. A line that
+  # cannot be parsed raises, and every claim in the batch stays as it was.
+  #
+  # Free-text denial reasons on the line item are not stored: per ADR 0003
+  # text is kept only as a vault token, and the codes already say why.
+  #
+  # Runs inside the caller's tenant context; line items whose claim is not
+  # in that tenant are skipped, never matched across tenants. Each matched
+  # claim counts once toward paid, denied, updated, or unknown. A line that
+  # names no claim in this tenant counts as unmatched.
   class RemittanceProcessor
-    Result = Struct.new(:paid, :denied, :updated, :unmatched, keyword_init: true)
+    Result = Struct.new(:paid, :denied, :updated, :unmatched, :unknown, keyword_init: true)
 
-    def self.call(remittances)
-      new.call(remittances)
+    def self.call(remittances, adapter: Corvid.adapter)
+      new(adapter: adapter).call(remittances)
+    end
+
+    def initialize(adapter: Corvid.adapter)
+      @adapter = adapter
     end
 
     def call(remittances)
-      result = Result.new(paid: 0, denied: 0, updated: 0, unmatched: 0)
-
-      Array(remittances).each do |remittance|
-        Array(remittance[:line_items]).each do |item|
-          # A line with no claim identifier names no claim. Looking it up
-          # anyway would match an unsubmitted claim whose identifier is NULL.
-          claim_identifier = item[:claim_identifier].to_s.strip.presence
-          claim = claim_identifier && ClaimSubmission.find_by(claim_identifier: claim_identifier)
-          unless claim
-            result.unmatched += 1
-            next
-          end
-
-          case apply(claim, item, remittance)
-          when :denied then result.denied += 1
-          when :paid then result.paid += 1
-          else result.updated += 1
-          end
-        end
-      end
-
+      result = Result.new(paid: 0, denied: 0, updated: 0, unmatched: 0, unknown: 0)
+      batch = Array(remittances)
+      apply_with_history(claims_in(batch, result), batch, result)
       result
     end
 
     private
 
-    def apply(claim, item, remittance)
-      attrs = {}
-      attrs[:paid_amount] = item[:paid_amount] if item[:paid_amount]
-      attrs[:adjustment_amount] = item[:adjustment_amount] if item[:adjustment_amount]
-      attrs[:patient_responsibility] = item[:patient_responsibility] if item[:patient_responsibility]
-      attrs[:paid_date] = remittance[:payment_date] if remittance[:payment_date]
+    # One fetch for the whole call. Nil is unknown: leave the claims alone
+    # and do not fall back to summing the batch by itself. Batch is
+    # concatenated first so its copy wins the first-copy dedupe in
+    # RemittanceAmounts. Payment date still orders lines; array order
+    # only breaks a tie, and listing the batch first keeps that tie stable.
+    def apply_with_history(claims, batch, result)
+      history = @adapter.fetch_remittances
+      if history.nil?
+        result.unknown = claims.size
+        return
+      end
 
-      if item[:status].to_s == "denied"
-        claim.assign_attributes(attrs)
-        claim.mark_denied!(reason_codes: adjustment_codes(item))
-        :denied
-      elsif item[:paid_amount].to_f > 0
-        claim.update!(attrs.merge(status: "paid"))
-        :paid
-      else
-        claim.update!(attrs)
-        :updated
+      apply_batch(claims, remittances_by_claim(batch + history), batch_keys(batch), result)
+    end
+
+    def apply_batch(claims, index, keys, result)
+      ClaimSubmission.transaction do
+        claims.each do |claim|
+          remittances = index.fetch(claim.claim_identifier.to_s.strip, [])
+          tally(result, apply_claim(claim, remittances, keys))
+        end
+      end
+    end
+
+    # One pass over the merged list, before the transaction opens. The
+    # first copy of each dedupe key is kept, as RemittanceAmounts would
+    # keep it, so the batch's copy still wins. Each remittance is filed
+    # under every claim its lines name, in merged order, so payment-date
+    # ties still break the same way.
+    def remittances_by_claim(remittances)
+      seen = Set.new
+      remittances.each_with_object({}) do |remittance, index|
+        next unless seen.add?(RemittanceAmounts.remittance_key(remittance))
+
+        claim_identifiers(remittance).each { |id| (index[id] ||= []) << remittance }
+      end
+    end
+
+    def claim_identifiers(remittance)
+      Array(remittance[:line_items]).filter_map { |item| item[:claim_identifier].to_s.strip.presence }.uniq
+    end
+
+    # One entry per claim the batch names. Each unmatched line is counted
+    # on its own; a claim's amounts are written once.
+    def claims_in(remittances, result)
+      remittances.each_with_object({}) do |remittance, claims|
+        Array(remittance[:line_items]).each do |item|
+          claim = claim_for(item)
+          if claim
+            claims[claim.id] ||= claim
+          else
+            result.unmatched += 1
+          end
+        end
+      end.values
+    end
+
+    # A line with no claim identifier names no claim. Looking it up
+    # anyway would match an unsubmitted claim whose identifier is NULL.
+    # The lookup is the tenant-scoped finder, so another tenant's claim
+    # is not a match. Surrounding whitespace is not part of the identifier.
+    def claim_for(item)
+      claim_identifier = item[:claim_identifier].to_s.strip.presence
+      claim_identifier && ClaimSubmission.find_by(claim_identifier: claim_identifier)
+    end
+
+    def apply_claim(claim, remittances, keys)
+      amounts = RemittanceAmounts.call(claim: claim, remittances: remittances)
+      apply_status(claim, amounts, keys) if amounts
+    end
+
+    # A later zero payment in the batch does not take back a paid status.
+    # An undated denial sorts after a dated payment and does. Lines whose
+    # remittance is only in the adapter history do not set status.
+    def apply_status(claim, amounts, keys)
+      line = status_line(claim, amounts.lines, keys)
+      return write_amounts(claim, amounts) unless line
+      return deny_claim(claim, amounts, line) if denied?(line)
+
+      claim.update!(amounts.attributes.merge(status: "paid"))
+      :paid
+    end
+
+    def status_line(claim, lines, keys)
+      lines.reverse_each.find do |line|
+        keys.include?(line[:remittance_key]) && sets_status?(claim, line)
+      end
+    end
+
+    # Same dedupe key RemittanceAmounts uses, so a remittance that appears
+    # in the history and again in this batch is still this batch's.
+    def batch_keys(batch)
+      batch.each_with_object({}) do |remittance, keys|
+        keys[RemittanceAmounts.remittance_key(remittance)] = true
+      end
+    end
+
+    def sets_status?(claim, line)
+      denied?(line) || positive_paid?(line[:paid_amount], claim)
+    end
+
+    def denied?(line)
+      line[:status].to_s == "denied"
+    end
+
+    def write_amounts(claim, amounts)
+      claim.update!(amounts.attributes)
+      :updated
+    end
+
+    def deny_claim(claim, amounts, line)
+      claim.assign_attributes(amounts.attributes)
+      claim.mark_denied!(reason_codes: adjustment_codes(line))
+      :denied
+    end
+
+    def positive_paid?(amount, claim)
+      RemittanceAmounts.cents(
+        amount, claim.currency_iso,
+        claim_identifier: claim.claim_identifier, field: :paid_amount
+      ).positive?
+    end
+
+    def tally(result, outcome)
+      case outcome
+      when :denied then result.denied += 1
+      when :paid then result.paid += 1
+      when :updated then result.updated += 1
       end
     end
 

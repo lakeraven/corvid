@@ -139,6 +139,7 @@ module Corvid
         {
           "resourceType" => "Coverage",
           "id" => id,
+          "meta" => { "lastUpdated" => "2026-01-02T09:00:00Z" },
           "status" => "active",
           "type" => { "coding" => [ { "system" => "http://terminology.hl7.org/CodeSystem/v3-ActCode", "code" => "TRIB" } ] },
           "beneficiary" => { "reference" => "Patient/#{patient_id}" },

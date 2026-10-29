@@ -25,7 +25,7 @@ class Corvid::Adapters::FhirDemoAdapterContractTest < Minitest::Test
     FHIR_ADAPTER_CONTRACT_FAIL_CLOSED_STUBS
   end
 
-  def contract_seed!
+  def contract_seed!(coverage_answer_as_of: nil)
     fixtures = FhirAdapterContractFixtures
     @adapter = Corvid::Adapters::FhirDemoAdapter.new(
       resources: [
@@ -33,7 +33,7 @@ class Corvid::Adapters::FhirDemoAdapterContractTest < Minitest::Test
         fixtures.patient_resource_tribal_no_confidence("pt_contract_002", "TEST", "PATIENT 002"),
         fixtures.practitioner_resource("pr_contract_001", "TEST", "PROVIDER 001"),
         fixtures.service_request_resource("rf_contract_001", "pt_contract_001"),
-        fixtures.coverage_resource("cov_contract_001", "pt_contract_001"),
+        fixtures.coverage_resource("cov_contract_001", "pt_contract_001", last_updated: coverage_answer_as_of),
         fixtures.inactive_coverage_resource("cov_contract_002", "pt_contract_001"),
         fixtures.care_team_resource("ct_contract_001", "pt_contract_001", "pr_contract_001"),
         fixtures.claim_resource("clm_contract_001", "pt_contract_001")

@@ -5,6 +5,7 @@ require "json"
 require "uri"
 require "ipaddr"
 require "date"
+require "time"
 require "bigdecimal"
 require "openssl"
 require "zlib"
@@ -103,6 +104,20 @@ module Corvid
         (?:-(?<month>#{FHIR_MONTH})(?:-(?<day>#{FHIR_DAY})(?:#{FHIR_TIME})?)?)?
         \z
       /x
+      # FHIR instant: YYYY-MM-DDThh:mm:ss(.fraction)? then Z or ±hh:mm.
+      # Year 0000 is not a FHIR year. The offset is Z or within ±14:00:
+      # hours 00-13 with minutes 00-59, or exactly 14:00. Calendar ranges
+      # are not encoded here. Time.iso8601 rolls an impossible field
+      # forward, and the field round-trip rejects that.
+      FHIR_INSTANT = /
+        \A
+        (?<year>#{FHIR_YEAR})-(?<month>[0-9]{2})-(?<day>[0-9]{2})
+        T(?<hour>[0-9]{2}):(?<min>[0-9]{2}):(?<sec>[0-9]{2})
+        (?:\.[0-9]+)?
+        (?<offset>Z|[+-](?:(?:0[0-9]|1[0-3]):[0-5][0-9]|14:00))
+        \z
+      /x
+      FHIR_INSTANT_CLOCK = %i[year month day hour min sec].freeze
       # FHIR R4 id. Checked before a Medication read so a bad id is not requested.
       FHIR_ID = /\A[A-Za-z0-9\-\.]{1,64}\z/
 
@@ -504,7 +519,8 @@ module Corvid
           payer_name: coverage.dig("payor", 0, "display"),
           policy_number: coverage["subscriberId"],
           coverage_start: parse_period_date(coverage.dig("period", "start"), :start),
-          coverage_end: parse_period_date(coverage.dig("period", "end"), :end)
+          coverage_end: parse_period_date(coverage.dig("period", "end"), :end),
+          as_of: coverage_answer_as_of(coverage)
         }
       end
 
@@ -1478,6 +1494,52 @@ module Corvid
 
         line = Array(address_hash["line"]).join(" ")
         [ line, address_hash["city"], address_hash["state"] ].reject { |s| s.nil? || s.empty? }.join(", ")
+      end
+
+      # Coverage.meta.lastUpdated is when the source produced the answer.
+      # Only a FHIR instant is known. A non-Hash meta, or anything that
+      # is not an instant, is nil, never now.
+      def coverage_answer_as_of(coverage)
+        meta = coverage["meta"]
+        return unless meta.is_a?(Hash)
+
+        fhir_instant_time(meta["lastUpdated"])
+      end
+
+      # Parse a FHIR instant and return it in UTC. The source fields are
+      # checked against the parsed clock in the source offset so a
+      # rollover (Feb 30, second 60, hour 24) is nil.
+      def fhir_instant_time(value)
+        match = fhir_instant_match(value)
+        return unless match
+
+        parsed = Time.iso8601(value)
+        return unless fhir_instant_round_trip?(parsed, match)
+
+        parsed.utc
+      rescue ArgumentError, TypeError
+        nil
+      end
+
+      def fhir_instant_match(value)
+        FHIR_INSTANT.match(value) if value.is_a?(String)
+      end
+
+      def fhir_instant_round_trip?(parsed, match)
+        zoned = fhir_instant_zoned(parsed, match[:offset])
+        fhir_instant_clock(zoned) == fhir_instant_clock_fields(match)
+      end
+
+      def fhir_instant_zoned(parsed, offset)
+        offset == "Z" ? parsed.utc : parsed.getlocal(offset)
+      end
+
+      def fhir_instant_clock(time)
+        [ time.year, time.month, time.day, time.hour, time.min, time.sec ]
+      end
+
+      def fhir_instant_clock_fields(match)
+        FHIR_INSTANT_CLOCK.map { |part| match[part].to_i }
       end
 
       def parse_date(value)
