@@ -354,7 +354,7 @@ class Corvid::Adapters::FhirAdapterTokenSourceTest < Minitest::Test
     adapter = Corvid::Adapters::FhirAdapter.new(base_url: BASE, token_source: -> { "tok" })
     refuse_network(adapter)
     err = assert_raises(Corvid::Adapters::FhirAdapter::CredentialScopeError) do
-      adapter.send(:execute_http, :get, "https://elsewhere.example.net/r4/Patient/pt_test_001")
+      adapter.send(:execute_http, :get, "https://elsewhere.example.net/r4/Patient/pt-test-001")
     end
     refute_match(/pt_test_001|elsewhere/, err.message)
   end

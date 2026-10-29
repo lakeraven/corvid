@@ -25,11 +25,11 @@ module Corvid
       # Returns { cases_created:, obligations_created:, skipped:,
       # skipped_reasons:, patients_claims_unknown:, patients_unknown: }.
       # skipped_reasons is an Array of { claim:, code:, reason: } for lines that
-      # could not be priced (missing code / missing or unparseable amount) —
-      # surfaced, not silently dropped. patients_unknown lists roster ids
-      # find_patient could not read. patients_claims_unknown lists roster ids
-      # whose claims could not be read. Either list being non-empty means
-      # nothing from the call was written.
+      # could not be priced (unresolved patient, missing code, or missing or
+      # unparseable amount) — surfaced, not silently dropped. patients_unknown
+      # lists roster ids find_patient could not read. patients_claims_unknown
+      # lists roster ids whose claims could not be read. Either list being
+      # non-empty means nothing from the call was written.
       def ingest(facility:, patient_identifiers:, adapter: Corvid.adapter, imported_at: Time.current)
         ActiveRecord::Base.transaction(requires_new: true) do
           roster = read_roster(patient_identifiers, adapter)
@@ -144,6 +144,7 @@ module Corvid
       # rather than lumped in with an absent one.
       def skip_reason(line)
         reasons = []
+        reasons << "patient_unresolved" if line.patient_identifier.nil?
         reasons << "missing procedure code" if line.procedure_code.nil?
         if line.billed_amount.nil?
           reasons << (line.amount_error || "missing billed amount")
