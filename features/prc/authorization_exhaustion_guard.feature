@@ -13,6 +13,7 @@ Feature: Alternate resource exhaustion before authorization
   Scenario: A referral cannot be authorized before its alternate resources are exhausted
     Given the referral has reached "in alternate-resource review"
     And the referral does not require committee review
+    And the referral estimated cost is "$5,000"
     And the following alternate resource checks exist:
       | resource_type     | status       |
       | medicare_a        | not_enrolled |
@@ -38,6 +39,7 @@ Feature: Alternate resource exhaustion before authorization
   Scenario: A referral whose Medicaid check is 31 days old is re-verified before authorization
     Given the referral has reached "in alternate-resource review"
     And the referral does not require committee review
+    And the referral estimated cost is "$5,000"
     And today's date is "2025-07-01"
     And all twelve alternate resource checks are current except "medicaid" verified 31 days ago
     And the adapter confirms "medicaid" as not enrolled when re-verified
