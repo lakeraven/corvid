@@ -275,10 +275,15 @@ mlr_doc_copy_err() {
 
 # Writes "absent" or a sha256 hex digest to $1. Fails (non-zero) on probe/connection errors.
 # A missing schema_migrations or ar_internal_metadata relation is part of the snapshot
-# ("missing"), not a probe error. Counts miss a delete+reinsert of the same demo rows,
-# so each public table also contributes md5(string_agg(row text)) in deterministic order.
-# Every public sequence contributes last_value and is_called, so an insert/delete that
-# only advances a sequence still changes the digest.
+# ("missing"), not a probe error.
+# User schemas are every schema except pg_catalog, information_schema, pg_toast, and
+# the session temp schemas pg_temp_* / pg_toast_temp_*. The digest covers that sorted
+# schema list, a column fingerprint per table (schema, table, column, data type,
+# ordinal), each table's row count and content md5, and each sequence's last_value
+# and is_called. Identifiers are quoted with format(%I) or PG::Connection#quote_ident.
+# Counts miss a delete+reinsert of the same rows, so the content md5 is included.
+# An insert/delete that only advances a sequence still changes the digest, and
+# ADD COLUMN on an empty table changes the column fingerprint.
 # Every psql call uses -X (ignore ~/.psqlrc and $PSQLRC) and -q so timing chatter
 # and startup messages cannot change the captured rows. ON_ERROR_STOP is set on each call.
 mlr_doc_test_db_snapshot() {
@@ -286,7 +291,7 @@ mlr_doc_test_db_snapshot() {
   local test_db="$2"
   local errfile="$3"
   local snap_err="$tmp/mlr-doc-snapshot-probe.err"
-  local body quoted row tbl
+  local body="$tmp/mlr-doc-snapshot-body.txt"
 
   export MLR_DOC_TEST_DB="$test_db"
 
@@ -314,39 +319,75 @@ mlr_doc_test_db_snapshot() {
       "$tmp/mlr-doc-metadata.txt" "$errfile" "$snap_err"; then
       return 1
     fi
-    if ! psql -X -q -d "$test_db" -v ON_ERROR_STOP=1 -tAc \
-      "SELECT tablename FROM pg_tables WHERE schemaname = 'public' ORDER BY tablename" \
-      >"$tmp/mlr-doc-tables.txt" 2>"$snap_err"; then
+    if ! psql -X -q -d "$test_db" -v ON_ERROR_STOP=1 -tA -F "$(printf '\t')" \
+      >"$tmp/mlr-doc-schemas.txt" 2>"$snap_err" <<'SQL'
+SELECT nspname
+FROM pg_namespace
+WHERE nspname <> 'pg_catalog'
+  AND nspname <> 'information_schema'
+  AND nspname <> 'pg_toast'
+  AND nspname !~ '^pg_temp_'
+  AND nspname !~ '^pg_toast_temp_'
+ORDER BY nspname
+SQL
+    then
       mlr_doc_copy_err "$snap_err" "$errfile"
       return 1
     fi
-    body="$tmp/mlr-doc-snapshot-body.txt"
-    {
-      printf '%s\n' 'schema_migrations'
-      cat "$tmp/mlr-doc-migrations.txt"
-      printf '%s\n' 'ar_internal_metadata'
-      cat "$tmp/mlr-doc-metadata.txt"
-    } >"$body"
-    while IFS= read -r tbl; do
-      [ -z "$tbl" ] && continue
-      quoted="${tbl//\"/\"\"}"
-      if ! row="$(psql -X -q -d "$test_db" -v ON_ERROR_STOP=1 -tA -F "$(printf '\t')" -c \
-        "SELECT COUNT(*)::bigint, md5(COALESCE(string_agg(t::text, chr(10) ORDER BY t::text), '')) FROM public.\"${quoted}\" t" \
-        2>"$snap_err")"; then
-        mlr_doc_copy_err "$snap_err" "$errfile"
-        return 1
-      fi
-      printf '%s\t%s\n' "$tbl" "$row" >>"$body"
-    done <"$tmp/mlr-doc-tables.txt"
+    if ! psql -X -q -d "$test_db" -v ON_ERROR_STOP=1 -tA -F "$(printf '\t')" \
+      >"$tmp/mlr-doc-columns.txt" 2>"$snap_err" <<'SQL'
+SELECT c.table_schema, c.table_name, c.column_name, c.data_type, c.ordinal_position::text
+FROM information_schema.columns c
+WHERE c.table_schema <> 'pg_catalog'
+  AND c.table_schema <> 'information_schema'
+  AND c.table_schema <> 'pg_toast'
+  AND c.table_schema !~ '^pg_temp_'
+  AND c.table_schema !~ '^pg_toast_temp_'
+  AND EXISTS (
+    SELECT 1
+    FROM pg_tables t
+    WHERE t.schemaname = c.table_schema
+      AND t.tablename = c.table_name
+  )
+ORDER BY c.table_schema, c.table_name, c.ordinal_position, c.column_name
+SQL
+    then
+      mlr_doc_copy_err "$snap_err" "$errfile"
+      return 1
+    fi
+    # format(%I) quotes identifiers. \gexec runs one content query per table.
+    if ! psql -X -q -d "$test_db" -v ON_ERROR_STOP=1 -tA -F "$(printf '\t')" \
+      >"$tmp/mlr-doc-tables.txt" 2>"$snap_err" <<'SQL'
+SELECT format(
+  'SELECT %L, %L, COUNT(*)::bigint, md5(COALESCE(string_agg(t::text, chr(10) ORDER BY t::text), %L)) FROM %I.%I AS t',
+  schemaname, tablename, '', schemaname, tablename
+)
+FROM pg_tables
+WHERE schemaname <> 'pg_catalog'
+  AND schemaname <> 'information_schema'
+  AND schemaname <> 'pg_toast'
+  AND schemaname !~ '^pg_temp_'
+  AND schemaname !~ '^pg_toast_temp_'
+ORDER BY schemaname, tablename
+\gexec
+SQL
+    then
+      mlr_doc_copy_err "$snap_err" "$errfile"
+      return 1
+    fi
     if ! psql -X -q -d "$test_db" -v ON_ERROR_STOP=1 -tA -F "$(printf '\t')" \
       >"$tmp/mlr-doc-sequences.txt" 2>"$snap_err" <<'SQL'
 SELECT format(
-  'SELECT %L, last_value, is_called FROM %I.%I',
-  sequencename, schemaname, sequencename
+  'SELECT %L, %L, COALESCE(last_value::text, %L), CASE WHEN is_called THEN %L ELSE %L END FROM %I.%I',
+  schemaname, sequencename, '', 't', 'f', schemaname, sequencename
 )
 FROM pg_sequences
-WHERE schemaname = 'public'
-ORDER BY sequencename
+WHERE schemaname <> 'pg_catalog'
+  AND schemaname <> 'information_schema'
+  AND schemaname <> 'pg_toast'
+  AND schemaname !~ '^pg_temp_'
+  AND schemaname !~ '^pg_toast_temp_'
+ORDER BY schemaname, sequencename
 \gexec
 SQL
     then
@@ -354,9 +395,19 @@ SQL
       return 1
     fi
     {
+      printf '%s\n' 'schemas'
+      cat "$tmp/mlr-doc-schemas.txt"
+      printf '%s\n' 'columns'
+      cat "$tmp/mlr-doc-columns.txt"
+      printf '%s\n' 'schema_migrations'
+      cat "$tmp/mlr-doc-migrations.txt"
+      printf '%s\n' 'ar_internal_metadata'
+      cat "$tmp/mlr-doc-metadata.txt"
+      printf '%s\n' 'tables'
+      cat "$tmp/mlr-doc-tables.txt"
       printf '%s\n' 'sequences'
       cat "$tmp/mlr-doc-sequences.txt"
-    } >>"$body"
+    } >"$body"
     if ! sha256sum "$body" >"$tmp/mlr-doc-snapshot.sha"; then
       printf '%s\n' 'snapshot digest failed' >"$errfile"
       return 1
@@ -365,76 +416,103 @@ SQL
     return 0
   fi
 
-  # shellcheck disable=SC2016 # $1 is a query placeholder, not a shell expansion
-  if ! bundle exec ruby -rpg -rdigest -e '
+  if ! bundle exec ruby -rpg -rdigest >"$outfile" 2>"$snap_err" <<'RUBY'
     test_db = ENV.fetch("MLR_DOC_TEST_DB")
-    conn = PG.connect(
-      host: ENV.fetch("PGHOST"),
-      port: ENV.fetch("PGPORT", "5432"),
-      user: ENV.fetch("PGUSER"),
-      password: ENV.fetch("PGPASSWORD"),
-      dbname: "postgres"
-    )
+
+    def user_schema_sql(column)
+      "#{column} <> 'pg_catalog'" \
+        " AND #{column} <> 'information_schema'" \
+        " AND #{column} <> 'pg_toast'" \
+        " AND #{column} !~ '^pg_temp_'" \
+        " AND #{column} !~ '^pg_toast_temp_'"
+    end
+
+    def section(title, rows)
+      ([title] + rows).join("\n") + "\n"
+    end
+
+    def relation_present(conn, name)
+      !conn.exec_params("SELECT to_regclass($1) AS rel", [name]).first["rel"].nil?
+    end
+
+    def connect_db(dbname)
+      PG.connect(
+        host: ENV.fetch("PGHOST"),
+        port: ENV.fetch("PGPORT", "5432"),
+        user: ENV.fetch("PGUSER"),
+        password: ENV.fetch("PGPASSWORD"),
+        dbname: dbname
+      )
+    end
+
+    conn = connect_db("postgres")
     exists = conn.exec_params("SELECT 1 FROM pg_database WHERE datname = $1", [test_db]).ntuples.positive?
     conn.close
     unless exists
       puts "absent"
       exit 0
     end
-    conn = PG.connect(
-      host: ENV.fetch("PGHOST"),
-      port: ENV.fetch("PGPORT", "5432"),
-      user: ENV.fetch("PGUSER"),
-      password: ENV.fetch("PGPASSWORD"),
-      dbname: test_db
-    )
-    parts = []
-    def relation_present(conn, name)
-      !conn.exec_params("SELECT to_regclass($1) AS rel", [name]).first["rel"].nil?
-    end
+
+    conn = connect_db(test_db)
+    schemas = conn.exec("SELECT nspname FROM pg_namespace WHERE #{user_schema_sql("nspname")} ORDER BY nspname")
+      .map { |row| row["nspname"] }
+
+    columns = conn.exec(<<~SQL).map { |row| row.values.join("\t") }
+      SELECT c.table_schema, c.table_name, c.column_name, c.data_type, c.ordinal_position::text
+      FROM information_schema.columns c
+      WHERE #{user_schema_sql("c.table_schema")}
+        AND EXISTS (
+          SELECT 1 FROM pg_tables t
+          WHERE t.schemaname = c.table_schema AND t.tablename = c.table_name
+        )
+      ORDER BY c.table_schema, c.table_name, c.ordinal_position, c.column_name
+    SQL
+
     if relation_present(conn, "public.schema_migrations")
-      mig = conn.exec("SELECT version FROM schema_migrations ORDER BY version")
-      parts << "schema_migrations\n" + mig.map { |r| r["version"] }.join("\n")
+      mig = conn.exec("SELECT version FROM schema_migrations ORDER BY version").map { |row| row["version"] }
     else
-      parts << "schema_migrations\nmissing"
+      mig = ["missing"]
     end
     if relation_present(conn, "public.ar_internal_metadata")
       meta = conn.exec("SELECT key, value, created_at, updated_at FROM ar_internal_metadata ORDER BY key")
-      parts << "ar_internal_metadata\n" + meta.map { |r| r.values.join("\t") }.join("\n")
+        .map { |row| row.values.join("\t") }
     else
-      parts << "ar_internal_metadata\nmissing"
+      meta = ["missing"]
     end
-    tables = conn.exec_params(
-      "SELECT tablename FROM pg_tables WHERE schemaname = $1 ORDER BY tablename",
-      ["public"]
-    )
+
     empty_md5 = Digest::MD5.hexdigest("")
-    tables.each do |row|
+    tables = conn.exec("SELECT schemaname, tablename FROM pg_tables WHERE #{user_schema_sql("schemaname")} ORDER BY schemaname, tablename")
+    table_rows = tables.map do |row|
+      schema = row["schemaname"]
       tbl = row["tablename"]
-      q = "SELECT COUNT(*)::bigint AS c, md5(string_agg(t::text, chr(10) ORDER BY t::text)) AS h FROM public." + conn.quote_ident(tbl) + " t"
-      got = conn.exec(q).first
-      h = got["h"] || empty_md5
-      parts << "#{tbl}\t#{got["c"]}\t#{h}"
-    end
-    seq_lines = []
-    conn.exec_params(
-      "SELECT sequencename FROM pg_sequences WHERE schemaname = $1 ORDER BY sequencename",
-      ["public"]
-    ).each do |row|
-      name = row["sequencename"]
+      quoted = "#{conn.quote_ident(schema)}.#{conn.quote_ident(tbl)}"
       got = conn.exec(
-        "SELECT last_value::text AS last_value, is_called FROM " +
-        conn.quote_ident("public") + "." + conn.quote_ident(name)
+        "SELECT COUNT(*)::bigint AS c, md5(COALESCE(string_agg(t::text, chr(10) ORDER BY t::text), '')) AS h FROM #{quoted} AS t"
       ).first
-      called = got["is_called"]
-      called = "t" if called == true || called == "t" || called == "true"
-      called = "f" if called == false || called == "f" || called == "false"
-      seq_lines << [name, got["last_value"].to_s, called].join("\t")
+      [schema, tbl, got["c"], got["h"] || empty_md5].join("\t")
     end
-    parts << (["sequences"] + seq_lines).join("\n")
+
+    sequences = conn.exec("SELECT schemaname, sequencename FROM pg_sequences WHERE #{user_schema_sql("schemaname")} ORDER BY schemaname, sequencename")
+    seq_rows = sequences.map do |row|
+      schema = row["schemaname"]
+      name = row["sequencename"]
+      quoted = "#{conn.quote_ident(schema)}.#{conn.quote_ident(name)}"
+      got = conn.exec(
+        "SELECT COALESCE(last_value::text, '') AS last_value, CASE WHEN is_called THEN 't' ELSE 'f' END AS is_called FROM #{quoted}"
+      ).first
+      [schema, name, got["last_value"].to_s, got["is_called"].to_s].join("\t")
+    end
     conn.close
-    puts Digest::SHA256.hexdigest(parts.join("\n"))
-  ' >"$outfile" 2>"$snap_err"; then
+
+    body = section("schemas", schemas) \
+      + section("columns", columns) \
+      + section("schema_migrations", mig) \
+      + section("ar_internal_metadata", meta) \
+      + section("tables", table_rows) \
+      + section("sequences", seq_rows)
+    puts Digest::SHA256.hexdigest(body)
+RUBY
+  then
     mlr_doc_copy_err "$snap_err" "$errfile"
     return 1
   fi
@@ -462,142 +540,95 @@ mlr_doc_assert_pass() {
   return "$missing"
 }
 
-# Prints line numbers whose code (fenced blocks or inline spans) invokes
-# bin/rails without RAILS_ENV=development on that command. The line text is
-# not printed. Exits non-zero only when the file cannot be scanned.
+# Prints line numbers of rails/rake commands that lack RAILS_ENV=development,
+# and of any other line that contains RAILS_ENV=test or the test database
+# name from test/dummy/config/database.yml. Backslash-newline continuations
+# are joined first; the reported number is the first physical line.
+# Shell comments (# at line start or after whitespace) are stripped before
+# the check. A # inside a word or a URL is kept. The line text is not printed.
+# Exits non-zero only when the file or database.yml cannot be scanned.
+#
+# The methodology doc cites RAILS_ENV=test and the test database name as
+# prohibitions. Those two exact lines are not violations. Any other line
+# that contains either string is, including a copy of the citation with a
+# command added.
 mlr_doc_rails_env_violations() {
   ruby - "$1" <<'RUBY'
-def strip_shell_comment(text)
-  out = +""
+require "yaml"
+
+# Exact prose lines from docs/gm6_mlr_savings_methodology.md. They name the
+# forbidden settings so a reader will not use them. Matching is exact, so
+# editing either line (to add a command, for example) removes the exemption.
+ALLOWED_CITATIONS = [
+  "`RAILS_ENV=test`. It deletes and reinserts the demo's rate rows and claim",
+  "(as CI's demo-smoke job does) or be unset — never `corvid_dummy_test`."
+].freeze
+
+# rails or rake as a command token, with an optional path prefix
+# (bin/, ./bin/, ../bin/, ~/bin/, test/dummy/bin/, /usr/bin/, ...).
+COMMAND = /(?:^|[\s;|&(`])(?:~(?=\/))?(?:\.{1,2}(?=\/))?\/?(?:[\w.+@%-]+\/)*(?:rails|rake)(?![\w])/
+
+def continues?(line)
   in_single = false
   in_double = false
   i = 0
-  while i < text.length
-    ch = text[i]
-    if ch == "\\" && !in_single && i + 1 < text.length
-      out << ch << text[i + 1]
+  while i < line.length
+    ch = line[i]
+    if ch == "\\" && !in_single
+      return true if i + 1 == line.length
       i += 2
       next
     end
     if ch == "'" && !in_double
       in_single = !in_single
-      out << ch
-      i += 1
-      next
-    end
-    if ch == '"' && !in_single
+    elsif ch == '"' && !in_single
       in_double = !in_double
-      out << ch
-      i += 1
-      next
     end
-    break if ch == "#" && !in_single && !in_double
-    out << ch
     i += 1
   end
-  out
+  false
 end
 
-def split_commands(text)
-  parts = []
-  buf = +""
-  in_single = false
-  in_double = false
+def join_continuations(lines)
+  joined = []
   i = 0
-  while i < text.length
-    ch = text[i]
-    if ch == "\\" && !in_single && i + 1 < text.length
-      buf << ch << text[i + 1]
-      i += 2
-      next
-    end
-    if ch == "'" && !in_double
-      in_single = !in_single
-      buf << ch
+  while i < lines.length
+    start = i + 1
+    buf = lines[i].dup
+    while continues?(buf) && i + 1 < lines.length
+      buf = buf[0...-1]
       i += 1
-      next
+      buf << lines[i]
     end
-    if ch == '"' && !in_single
-      in_double = !in_double
-      buf << ch
-      i += 1
-      next
-    end
-    if !in_single && !in_double
-      if text[i, 2] == "&&" || text[i, 2] == "||"
-        parts << buf
-        buf = +""
-        i += 2
-        next
-      end
-      if ch == ";" || ch == "|" || ch == "\n"
-        parts << buf
-        buf = +""
-        i += 1
-        next
-      end
-    end
-    buf << ch
+    joined << [start, buf]
     i += 1
   end
-  parts << buf
-  parts
+  joined
 end
 
-def rails_env_value(before)
-  found = nil
-  before.scan(/RAILS_ENV=(?:"([^"]*)"|'([^']*)'|(\S+))/) do |dbl, sgl, bare|
-    found = dbl || sgl || bare
+def strip_shell_comment(line)
+  # # starts a comment only at column 0 or after whitespace.
+  line.sub(/(?:^|\s)\K#.*\z/, "")
+end
+
+def violation?(raw, stripped, test_db)
+  cited = ALLOWED_CITATIONS.include?(raw)
+  unless cited
+    return true if stripped.include?("RAILS_ENV=test")
+    return true if !test_db.empty? && stripped.include?(test_db)
   end
-  found
-end
-
-def boundary?(ch)
-  return true if ch.nil?
-  return true if ch.match?(/[[:space:]]/)
-  ";|&(`\"'".include?(ch)
-end
-
-def command_ok?(command)
-  idx = 0
-  needle = "bin/rails"
-  while (i = command.index(needle, idx))
-    prev = i.zero? ? nil : command[i - 1]
-    if boundary?(prev)
-      return false unless rails_env_value(command[0...i]) == "development"
-    end
-    idx = i + needle.length
+  if stripped.match?(COMMAND) && !stripped.include?("RAILS_ENV=development")
+    return true
   end
-  true
-end
-
-def text_ok?(text)
-  split_commands(strip_shell_comment(text)).all? { |cmd| command_ok?(cmd) }
+  false
 end
 
 path = ARGV.fetch(0)
-fence = false
-File.foreach(path, mode: "r:UTF-8").with_index(1) do |line, lineno|
-  body = line.sub(/\r?\n\z/, "")
-  if body.match?(/\A\s*```/)
-    fence = !fence
-    next
-  end
-  texts = []
-  if fence
-    texts << body
-  else
-    pos = 0
-    while (match = body.match(/`([^`]*)`/, pos))
-      texts << match[1]
-      pos = match.end(0)
-    end
-  end
-  texts.each do |text|
-    next if text_ok?(text)
-    puts lineno
-    break
-  end
+cfg = YAML.load_file("test/dummy/config/database.yml", aliases: true)
+test_db = cfg.fetch("test").fetch("database").to_s
+lines = File.foreach(path, mode: "r:UTF-8").map { |line| line.sub(/\r?\n\z/, "") }
+join_continuations(lines).each do |lineno, raw|
+  puts lineno if violation?(raw, strip_shell_comment(raw), test_db)
 end
 RUBY
 }
@@ -619,20 +650,20 @@ check_mlr_doc() {
 
   printf '== smoke: %s\n' "$name"
 
-  # Every bin/rails invocation in a code block or inline span must carry
-  # RAILS_ENV=development. The reproduce block is only the first bash fence,
-  # so later fences and inline cms:* lines are checked here. A violation is
-  # reported and the run still continues, so a test-database write is also
-  # caught by the snapshot comparison below.
+  # Every rails/rake command in the doc must carry RAILS_ENV=development on
+  # that same logical line, and no line may select the test database.
+  # Continuations are joined before the check. A violation is reported by
+  # line number and the run still continues, so a test-database write is
+  # also caught by the snapshot comparison below.
   if ! violations="$(mlr_doc_rails_env_violations "$doc" 2>"$tmp/mlr-doc-rails-env.err")"; then
-    printf '   FAIL: could not scan %s for bin/rails commands\n' "$doc"
+    printf '   FAIL: could not scan %s for rails/rake commands\n' "$doc"
     mlr_doc_redact <"$tmp/mlr-doc-rails-env.err" | sed 's/^/   | /'
     failures=$((failures + 1))
     return 0
   fi
   while IFS= read -r lineno; do
     [ -n "$lineno" ] || continue
-    printf '   FAIL: %s:%s: bin/rails must set RAILS_ENV=development\n' "$doc" "$lineno"
+    printf '   FAIL: %s:%s: rails/rake must set RAILS_ENV=development and must not target the test database\n' "$doc" "$lineno"
     static_failed=1
   done <<< "$violations"
 
