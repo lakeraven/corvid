@@ -229,19 +229,48 @@ above for each fiscal year and `gh release upload` the result.
 this table (#369). The table is keyed by CMS wage area (5-digit CBSA
 or 2-digit rural-state code), which overlaps the PFS locality codes
 in `PrcFacilityDictionary` (PFS "02" is Seattle; wage area "02" is
-rural Alaska). So `PrcOverpaymentAnalyzer` deliberately prices IPPS,
-OPPS and ASC claims at the NATIONAL wage row until a facility
-resolves to a real CBSA (#372's ZIP→CBSA resolution); passing the PFS
-locality would silently apply whichever wage area shares its digits.
+rural Alaska). `PrcOverpaymentAnalyzer` resolves the facility's
+`ZipCbsaCrosswalk` row once per institutional obligation with
+`PrcFacilityDictionary.crosswalk_for` and passes that row's wage area
+into the IPPS, OPPS, ASC, and stub lookups (#372). The wage-area
+argument is that crosswalk result, never the facility's PFS locality.
+With no crosswalk row for the service date's fiscal year, the
+argument is nil and pricing stays on the NATIONAL wage row. When the
+crosswalk resolves a code that has no wage-index row, pricing still
+falls back to the NATIONAL wage index. Institutional `Result#wage_area`
+is the locality of the wage-index row that priced the claim: the CBSA
+when that row was used, `NATIONAL` when the lookup fell back or the
+in-code stub ignored locality after a crosswalk row was consulted, and
+nil for a crosswalk miss. `crosswalk_release` stays the crosswalk
+label whenever a row was consulted. Institutional notes name that
+priced area. When the CBSA row was used and the crosswalk has a
+release label the sentence is `Wage area: <code> (crosswalk release
+<label>).`, or `Wage area: <code>.` when the label is blank. A
+NATIONAL wage-index fallback ends with `Wage area: NATIONAL (no
+wage-index row for CBSA <code>; crosswalk release <label>).` A stub
+estimate that consulted a crosswalk ends with `Wage area: NATIONAL
+(stub estimate does not use a wage area; crosswalk release <label>).`
+A missing or malformed ZIP ends with `Wage area: NATIONAL (facility
+ZIP missing or malformed).` A well-formed ZIP with no row ends with
+`Wage area: NATIONAL (no crosswalk row for the facility ZIP in FY
+<year>).` The sentence stays last, after any CAH text. Notes do not
+include the facility ZIP. A crosswalk `release_label` that starts
+with `stub` marks the
+institutional result `:stub` / `:stub_estimate` even when the rate
+rows are real CMS data. On the IPPS, OPPS, and ASC real paths that
+stub label is `rate_source_release` (if any input row is
+stub-derived, the stub label wins). The pricing sentence keeps the
+real-rule wording and the real provider release; the wage-area
+sentence names the crosswalk release. A loaded stub label, from a
+rate row or from the crosswalk, is `stub_data_loaded`. Nil
+`rate_source_release` is the in-code fallback. Professional PFS
+results leave `wage_area` nil and do not add that sentence.
 
 Remaining in this cluster:
 - **#370** — drop the now-unused `wage_index` column from
   `corvid_opps_conversion_factors` / `corvid_asc_conversion_factors`
   (kept in this PR to avoid a data-loss migration before #369 is
   proven in production).
-- **#372** — pass `PrcFacilityDictionary.cbsa_for` into institutional
-  pricing so a loaded crosswalk changes OPPS/ASC/IPPS wage indexes
-  on production obligations, not just in direct `cbsa_for` calls.
 
 ## ZIP to CBSA crosswalk (#371)
 
@@ -274,12 +303,83 @@ lock taken before the delete. A conflicting row aborts the import, so
 that year's previous rows stay in place:
 
 ```bash
-rake "cms:zip_cbsa:import[2026,/tmp/zip_cbsa_FY2026.csv,synthetic_example]"
+rake "cms:zip_cbsa:import[2026,/tmp/zip_cbsa_FY2026.csv,stub_synthetic_example]"
 ```
 
-`Corvid::PrcFacilityDictionary.cbsa_for(zip:, on:)` accepts `#####` or
-`#####-####` and returns the wage area for the federal fiscal year of
-`on` (October 1 starts the next FY). Any other ZIP shape returns nil.
-Each call is one indexed query; nothing is cached. With no row loaded
-for that year, `cbsa_for` returns nil and institutional pricing stays
-on the NATIONAL wage index.
+The example label starts with `stub_` because the file is synthetic.
+A crosswalk `release_label` with that prefix is stub-derived provenance:
+institutional IPPS, OPPS, and ASC results that use the row are
+`:stub` / `:stub_estimate` even when the rate rows themselves are real
+CMS data. On those real paths `rate_source_release` is the crosswalk's
+label. The pricing sentence keeps the real-rule wording and the real
+provider release; the wage-area sentence names the crosswalk release.
+A loaded stub label, from a rate row or from the crosswalk, means
+`stub_data_loaded`. Nil `rate_source_release` means the in-code
+fallback.
+
+`Corvid::PrcFacilityDictionary.crosswalk_for(zip:, on:)` accepts
+`#####` or `#####-####` and returns the `ZipCbsaCrosswalk` row for the
+federal fiscal year of `on` (October 1 starts the next FY). Any other
+ZIP shape returns nil. `cbsa_for` returns `crosswalk_for(...)&.cbsa`.
+`normalized_zip` and `fiscal_year_for` are those shared ZIP and
+fiscal-year rules and do not query. `crosswalk_for` and `cbsa_for`
+are each one indexed query; nothing is cached. With no row loaded
+for that year, both return nil and institutional pricing stays on
+the NATIONAL wage index.
+
+Once a crosswalk for that fiscal year is imported,
+`PrcOverpaymentAnalyzer` resolves that row once per institutional
+obligation and uses its wage area for IPPS, OPPS, and ASC, including
+both stub providers (#372). Professional PFS pricing still uses the
+facility's PFS locality. `crosswalk_for` returns nil for a non-String
+ZIP, a malformed ZIP, a missing ZIP, or a year with no row. The
+analyzer reuses `normalized_zip` and `fiscal_year_for` for the note
+and does not duplicate the ZIP pattern. A nil wage area leaves those
+institutional lookups on the NATIONAL wage index. A resolved code
+with no wage-index row still prices on the NATIONAL wage index.
+
+`Result#wage_area` is the wage area of the rate row that priced the
+claim. The provider lookup carries that locality (`IppsHospitalRate`
+for IPPS, and the `IppsHospitalRate` wage-index row OPPS and ASC
+already load). It is the CBSA when that row was used, and `NATIONAL`
+when the lookup fell back to the NATIONAL row or the in-code stub
+ignored locality after a crosswalk row was consulted. It stays nil
+when the ZIP does not resolve, so the note can still tell a missing
+ZIP from a missing row. `crosswalk_release` stays the crosswalk label
+whenever a crosswalk row was consulted. Institutional notes end with
+the wage-area sentence, after any CAH multiplier text, and never
+include the facility ZIP:
+
+- `Wage area: <code> (crosswalk release <label>).` when that code's wage-index row priced the claim and the crosswalk has a release label
+- `Wage area: <code>.` when that label is blank
+- `Wage area: NATIONAL (no wage-index row for CBSA <code>; crosswalk release <label>).` when the crosswalk resolved `<code>` and the wage-index lookup fell back to NATIONAL
+- `Wage area: NATIONAL (stub estimate does not use a wage area; crosswalk release <label>).` when the in-code stub priced the claim after a crosswalk row was consulted
+- `Wage area: NATIONAL (facility ZIP missing or malformed).` when the ZIP is nil, not a String, or not `#####` / `#####-####`
+- `Wage area: NATIONAL (no crosswalk row for the facility ZIP in FY <year>).` when the ZIP is well formed and that fiscal year has no row
+
+A blank crosswalk label omits the release clause on the NATIONAL
+fallback and stub sentences.
+
+`PrcImporter.reanalyze` stores that resolution on
+`corvid_prc_overpayment_analyses` (#372). `wage_area` is the CBSA when
+that wage-index row priced the claim, or `NATIONAL` when the lookup
+fell back, the stub ignored locality, or an institutional claim has
+no crosswalk row (`Result#wage_area` stays nil in the no-row and
+malformed-ZIP cases so the note can still distinguish them; the column
+stores `NATIONAL`). Professional rows leave `wage_area` null.
+`crosswalk_release` is the row's `release_label` when a crosswalk row
+was consulted, including a NATIONAL fallback and a stub estimate, or
+null when the label is blank or there is no row. A CHECK allows only
+null, `NATIONAL`, or the crosswalk CBSA shape (five digits or a
+two-digit rural-state code), the same shape as
+`corvid_zip_cbsa_crosswalks.cbsa`. The facility ZIP is not a column.
+
+The audit packet cites the same fields. `detail.csv` places
+`wage_area` and `crosswalk_release` immediately after
+`rate_source_release`. `wage_area` in that column is the wage area of
+the row that priced the claim: the CBSA, or `NATIONAL` for a
+wage-index fallback, a stub that ignored locality, or an institutional
+claim with no crosswalk row. `crosswalk_release` is present when a
+crosswalk row was consulted. `methodology.json` adds
+`crosswalk_releases`, the sorted distinct non-nil `crosswalk_release`
+values on recoverable rows, and still lists `rate_source_releases`.

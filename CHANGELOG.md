@@ -99,6 +99,64 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   nullable column and cannot restore values. (#702)
 
 ### Changed
+- Institutional IPPS, OPPS, and ASC pricing uses the facility's CMS
+  wage area (#372). `PrcOverpaymentAnalyzer` resolves the
+  `ZipCbsaCrosswalk` row once per institutional obligation with
+  `PrcFacilityDictionary.crosswalk_for` (facility ZIP and service
+  date) and passes that row's CBSA into the IPPS, OPPS, ASC, and stub
+  lookups. `cbsa_for` is `crosswalk_for(...)&.cbsa`. `normalized_zip`
+  and `fiscal_year_for` are the shared ZIP and fiscal-year rules.
+  Once a ZIP-to-CBSA crosswalk is imported, those rates follow that
+  area's wage index. Pricing still falls back to NATIONAL when the
+  resolved wage area has no wage-index row. `Result#wage_area` is the
+  wage area of the rate row that priced the claim: the CBSA when that
+  wage-index row was used, `NATIONAL` when the lookup fell back to the
+  NATIONAL row or the in-code stub ignored locality after a crosswalk
+  row was consulted, and nil when the ZIP is missing, malformed, or
+  that fiscal year has no row. `crosswalk_release` stays that row's
+  label whenever a crosswalk row was consulted. Institutional notes
+  end with `Wage area: <code> (crosswalk release <label>).` when that
+  code's wage-index row priced the claim and the crosswalk has a
+  release label, or `Wage area: <code>.` when that label is blank. A
+  NATIONAL wage-index fallback ends with `Wage area: NATIONAL (no
+  wage-index row for CBSA <code>; crosswalk release <label>).` A stub
+  estimate that consulted a crosswalk ends with `Wage area: NATIONAL
+  (stub estimate does not use a wage area; crosswalk release
+  <label>).` A missing or malformed ZIP (nil, non-String, or not
+  `#####` / `#####-####`) ends with `Wage area: NATIONAL (facility ZIP
+  missing or malformed).` A well-formed ZIP with no row ends with
+  `Wage area: NATIONAL (no crosswalk row for the facility ZIP in FY
+  <year>).` The sentence stays last, after any CAH multiplier text,
+  and never includes the facility ZIP. A crosswalk `release_label`
+  that starts with `stub` marks the institutional result `:stub` /
+  `:stub_estimate` even when the rate rows are real CMS data. On the
+  IPPS, OPPS, and ASC real paths that stub label is
+  `rate_source_release` (if any input row is stub-derived, the stub
+  label wins). The pricing sentence keeps the real-rule wording and
+  the real provider release; the wage-area sentence names the
+  crosswalk release. A loaded stub label, from a rate row or from
+  the crosswalk, is `stub_data_loaded`; nil `rate_source_release`
+  is the in-code fallback. Professional PFS
+  pricing still uses the facility's PFS locality, and professional
+  notes are unchanged. A missing crosswalk row for the fiscal year, a
+  missing or malformed ZIP, or a ZIP that is not a String leaves
+  institutional pricing on the NATIONAL wage index. PFS locality codes
+  overlap wage-area codes (PFS "02" is Seattle; wage area "02" is rural
+  Alaska), so the wage-area argument is only the crosswalk result.
+  `corvid_prc_overpayment_analyses` stores nullable `wage_area` and
+  `crosswalk_release` from that same result. `wage_area` is null,
+  `NATIONAL`, or the crosswalk CBSA shape (five digits or a two-digit
+  rural-state code). It is the CBSA when that wage-index row priced
+  the claim, and `NATIONAL` when the lookup fell back, the stub
+  ignored locality, or an institutional claim has no crosswalk row.
+  `crosswalk_release` is the crosswalk label when a row was consulted,
+  including a NATIONAL fallback and a stub estimate, and null when
+  there was no row. A professional claim stores null for both. The
+  facility ZIP is not stored. `detail.csv` adds `wage_area` and
+  `crosswalk_release` after `rate_source_release`. `methodology.json`
+  adds `crosswalk_releases`,
+  the sorted distinct non-nil crosswalk releases on recoverable rows,
+  and still lists `rate_source_releases`.
 - Postgres CHECK constraints and foreign keys now bound columns that
   accepted any string. Value lists: `corvid_prc_referrals.priority_system`
   (`corvid_v1`), `corvid_prc_eligibility_decisions.provider_confidence`

@@ -151,6 +151,8 @@ module Corvid
               prc_obligation: obligation,
               analyzer_version: ANALYZER_VERSION,
               rate_source_release: result.rate_source_release,
+              wage_area: analysis_wage_area(result),
+              crosswalk_release: result.crosswalk_release,
               payment_system: result.payment_system&.to_s,
               rate_source: result.rate_source&.to_s,
               recovery_confidence: result.recovery_confidence.to_s,
@@ -168,6 +170,19 @@ module Corvid
       end
 
       private
+
+      # Result#wage_area is the wage-index row that priced the claim:
+      # the CBSA, "NATIONAL" when the lookup fell back or the stub
+      # ignored locality, or nil when the ZIP did not resolve a
+      # crosswalk row. The audit column records that nil institutional
+      # miss as "NATIONAL". Professional and unmapped results stay nil.
+      # crosswalk_release is already on the result from the crosswalk
+      # row that was consulted, including a NATIONAL fallback.
+      def analysis_wage_area(result)
+        return result.wage_area if result.wage_area
+
+        %i[ipps opps asc].include?(result.payment_system) ? "NATIONAL" : nil
+      end
 
       # Bulk-upsert obligations in a single round trip. Dedupes within the
       # file by obligation_id (last record wins) and pre-queries existing

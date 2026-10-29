@@ -19,6 +19,14 @@ module Corvid
     # PrcOverpaymentAnalyzer payment systems. Null when the obligation is unmapped.
     # Same set as corvid_prc_overpayment_analyses_payment_system_check (ADR 0002).
     PAYMENT_SYSTEMS = %w[pfs ipps asc opps].freeze
+    # CMS wage area for an institutional analysis. Null for professional
+    # and unmapped rows. "NATIONAL" when the wage-index lookup fell back,
+    # the stub ignored locality, or the claim had no crosswalk row.
+    # Otherwise the CBSA of the wage-index row that priced the claim:
+    # five digits or a two-digit rural-state code. Same predicate as
+    # corvid_prc_overpayment_analyses_wage_area_check (ADR 0002).
+    # The facility ZIP is not stored (ADR 0003).
+    WAGE_AREA_FORMAT = /\A(?:NATIONAL|[0-9]{5}|[0-9]{2})\z/
     # PrcOverpaymentAnalyzer recovery confidence levels.
     # Same set as corvid_prc_overpayment_analyses_recovery_confidence_check.
     RECOVERY_CONFIDENCES = %w[
@@ -27,6 +35,7 @@ module Corvid
 
     validates :analyzer_version, presence: true
     validates :payment_system, inclusion: { in: PAYMENT_SYSTEMS }, allow_nil: true
+    validates :wage_area, format: { with: WAGE_AREA_FORMAT }, allow_nil: true
     validates :recovery_confidence, presence: true, inclusion: { in: RECOVERY_CONFIDENCES }
     validates :analyzed_at, presence: true
 

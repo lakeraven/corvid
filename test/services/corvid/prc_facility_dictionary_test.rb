@@ -57,6 +57,49 @@ class Corvid::PrcFacilityDictionaryTest < ActiveSupport::TestCase
 
   # ZIP → CBSA resolution (#371) — synthetic crosswalk rows only.
 
+  test "crosswalk_for returns the ZipCbsaCrosswalk row for a loaded zip and service date" do
+    row = Corvid::ZipCbsaCrosswalk.create!(
+      fiscal_year: 2026, zip: "88101", cbsa: "98765", release_label: "cucumber_crosswalk"
+    )
+    on = Date.new(2026, 1, 15)
+
+    assert_equal row, Corvid::PrcFacilityDictionary.crosswalk_for(zip: "88101", on: on)
+    assert_equal "98765", Corvid::PrcFacilityDictionary.crosswalk_for(zip: "88101", on: on).cbsa
+  end
+
+  test "crosswalk_for returns nil when no row exists for the fiscal year" do
+    assert_nil Corvid::PrcFacilityDictionary.crosswalk_for(zip: "88999", on: Date.new(2026, 1, 1))
+  end
+
+  test "crosswalk_for applies the same zip normalization and fiscal-year rules as cbsa_for" do
+    Corvid::ZipCbsaCrosswalk.create!(
+      fiscal_year: 2025, zip: "88303", cbsa: "55", release_label: "test"
+    )
+    Corvid::ZipCbsaCrosswalk.create!(
+      fiscal_year: 2026, zip: "88303", cbsa: "66666", release_label: "test"
+    )
+
+    assert_equal "55",
+                 Corvid::PrcFacilityDictionary.crosswalk_for(
+                   zip: "88303", on: Date.new(2025, 9, 30)
+                 )&.cbsa
+    assert_equal "66666",
+                 Corvid::PrcFacilityDictionary.crosswalk_for(
+                   zip: "88303-0001", on: Date.new(2025, 10, 1)
+                 )&.cbsa
+    assert_nil Corvid::PrcFacilityDictionary.crosswalk_for(zip: "88303abc", on: Date.new(2026, 1, 1))
+  end
+
+  test "cbsa_for returns crosswalk_for cbsa when a row is present" do
+    Corvid::ZipCbsaCrosswalk.create!(
+      fiscal_year: 2026, zip: "88101", cbsa: "98765", release_label: "test"
+    )
+    on = Date.new(2026, 1, 15)
+
+    crosswalk = Corvid::PrcFacilityDictionary.crosswalk_for(zip: "88101", on: on)
+    assert_equal crosswalk&.cbsa, Corvid::PrcFacilityDictionary.cbsa_for(zip: "88101", on: on)
+  end
+
   test "cbsa_for resolves a zip with a leading zero from an imported crosswalk row" do
     Corvid::ZipCbsaCrosswalk.create!(
       fiscal_year: 2026, zip: "01234", cbsa: "98765", release_label: "test"

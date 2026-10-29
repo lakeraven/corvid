@@ -20,7 +20,11 @@ module Corvid
   module AscRateProvider
     SOURCE = :asc_real
 
-    Lookup = Struct.new(:rate, :release_label, keyword_init: true)
+    # wage_area is the locality of the IppsHospitalRate row whose
+    # wage_index entered the formula, or NATIONAL when that lookup
+    # missed and the national index 1.0 was used. It is not the
+    # conversion-factor row's locality (#369). The row is already loaded.
+    Lookup = Struct.new(:rate, :release_label, :wage_area, keyword_init: true)
 
     class << self
       def rate_for(hcpcs_code:, locality: nil, date: nil)
@@ -42,12 +46,15 @@ module Corvid
 
         wage_row = IppsHospitalRate.lookup(fiscal_year: federal_fiscal_year(date), locality: normalized_locality)
         wage_index = wage_row&.wage_index || BigDecimal("1.0")
+        # Locality of the wage-index row already loaded. NATIONAL when
+        # that row is absent and wage_index stays the 1.0 default.
+        priced_wage_area = wage_row&.locality || IppsHospitalRate::NATIONAL_LOCALITY
 
         rate = (rate_row.payment_weight * cf_row.conversion_factor * wage_index).round(2)
         label = [ rate_row.release_label, cf_row.release_label, wage_row&.release_label ]
                   .compact.find { |l| l.to_s.start_with?("stub") } ||
                 rate_row.release_label.presence || cf_row.release_label.presence
-        Lookup.new(rate: rate, release_label: label)
+        Lookup.new(rate: rate, release_label: label, wage_area: priced_wage_area)
       end
 
       def source
