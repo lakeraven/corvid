@@ -11,7 +11,10 @@ class Corvid::PrcOverpaymentReportWageAreaProvenanceTest < ActiveSupport::TestCa
   RURAL_ZIP = "88202"
   RURAL_CBSA = "12"
   NATL_ZIP = "88999"
+  NOWL_ZIP = "77001"
+  NOWL_CBSA = "77077"
   CROSSWALK_RELEASE = "cucumber_synthetic_report"
+  NOWL_CROSSWALK_RELEASE = "xw_fy2009"
   SERVICE_DATE = Date.new(2026, 3, 1)
   OPPS_RELEASE = "cucumber_opps_2026"
 
@@ -27,6 +30,10 @@ class Corvid::PrcOverpaymentReportWageAreaProvenanceTest < ActiveSupport::TestCa
     Corvid::PrcFacilityDictionary.register(
       "NATL", name: "National fallback", city: "Test", state: "TS",
       zip: NATL_ZIP, locality: "99"
+    )
+    Corvid::PrcFacilityDictionary.register(
+      "NOWL", name: "Crosswalk without wage index", city: "Test", state: "TS",
+      zip: NOWL_ZIP, locality: "99"
     )
     Corvid::ZipCbsaCrosswalk.create!(
       fiscal_year: 2026, zip: RURAL_ZIP, cbsa: RURAL_CBSA, release_label: CROSSWALK_RELEASE
@@ -92,6 +99,47 @@ class Corvid::PrcOverpaymentReportWageAreaProvenanceTest < ActiveSupport::TestCa
       assert_equal CROSSWALK_RELEASE, rural_csv["crosswalk_release"]
       assert_equal "NATIONAL", natl_csv["wage_area"]
       assert natl_csv["crosswalk_release"].nil? || natl_csv["crosswalk_release"].empty?
+    end
+  end
+
+  test "detail.csv records NATIONAL wage_area when crosswalk CBSA has no wage-index row" do
+    with_tenant(TENANT) do
+      Corvid::ZipCbsaCrosswalk.create!(
+        fiscal_year: 2009, zip: NOWL_ZIP, cbsa: NOWL_CBSA, release_label: NOWL_CROSSWALK_RELEASE
+      )
+      Corvid::IppsHospitalRate.create!(
+        fiscal_year: 2009, locality: "NATIONAL", base_rate: 6_000.0, wage_index: 1.0
+      )
+      Corvid::OppsApcWeight.create!(
+        calendar_year: 2009, apc_code: "5071", relative_weight: 25.4378, release_label: OPPS_RELEASE
+      )
+      Corvid::OppsConversionFactor.create!(
+        calendar_year: 2009, locality: "NATIONAL",
+        conversion_factor: 70.0, wage_index: 1.0, release_label: OPPS_RELEASE
+      )
+      export = <<~PRC
+        H^PRC_EXPORT^NOWL^#{Date.new(2009, 5, 4).strftime("%Y%m%d")}^1
+        O^OBL-NOWL-OPPS^DFN001^VEND-HOSP^OUTPATIENT_WAGE_REPORT^20090504^A^5000.00^5000.00^0.00^0.00^2009
+        T^1^1^0^5000.00^0.00
+      PRC
+      Corvid::PrcImporter.import(export, source_file: "nowl_opps.prc")
+      Corvid::PrcImporter.reanalyze(tenant: TENANT)
+
+      row = Corvid::PrcOverpaymentReportService.detail(tenant: TENANT).find do |r|
+        r[:obligation_id] == "OBL-NOWL-OPPS"
+      end
+      refute_nil row
+      assert_in_delta 1780.65, row[:medicare_equivalent].to_f, 0.01
+      assert_equal "NATIONAL", row[:wage_area]
+      assert_equal NOWL_CROSSWALK_RELEASE, row[:crosswalk_release]
+
+      table = CSV.parse(
+        Corvid::PrcOverpaymentReportService.to_csv_detail(tenant: TENANT),
+        headers: true
+      )
+      csv_row = table.find { |r| r["obligation_id"] == "OBL-NOWL-OPPS" }
+      assert_equal "NATIONAL", csv_row["wage_area"]
+      assert_equal NOWL_CROSSWALK_RELEASE, csv_row["crosswalk_release"]
     end
   end
 

@@ -21,6 +21,7 @@ class Corvid::PrcOverpaymentAnalyzerWageAreaTest < ActiveSupport::TestCase
 
   NATIONAL_WAGE_NOTE_MISSING_OR_MALFORMED =
     "Wage area: NATIONAL (facility ZIP missing or malformed)."
+  REPRO_CROSSWALK_RELEASE = "xw_fy2009"
 
   def setup
     Corvid::FeeScheduleEntry.connection.execute("TRUNCATE corvid_fee_schedule_entries")
@@ -51,11 +52,10 @@ class Corvid::PrcOverpaymentAnalyzerWageAreaTest < ActiveSupport::TestCase
       ).results.first
       assert_equal :opps, result.payment_system
       assert_equal :stub_estimate, result.recovery_confidence
-      assert_equal SYNTH_CBSA, result.wage_area
       assert_institutional_wage_area_documentation(
         result,
         facility_zip: SYNTH_ZIP,
-        wage_area: SYNTH_CBSA,
+        national: :stub_estimate,
         crosswalk_release: CROSSWALK_RELEASE_LABEL
       )
     end
@@ -76,11 +76,10 @@ class Corvid::PrcOverpaymentAnalyzerWageAreaTest < ActiveSupport::TestCase
       ).results.first
       assert_equal :ipps, result.payment_system
       assert_equal :stub_estimate, result.recovery_confidence
-      assert_equal SYNTH_CBSA, result.wage_area
       assert_institutional_wage_area_documentation(
         result,
         facility_zip: SYNTH_ZIP,
-        wage_area: SYNTH_CBSA,
+        national: :stub_estimate,
         crosswalk_release: CROSSWALK_RELEASE_LABEL
       )
     end
@@ -144,6 +143,144 @@ class Corvid::PrcOverpaymentAnalyzerWageAreaTest < ActiveSupport::TestCase
       result,
       facility_zip: SYNTH_ZIP,
       wage_area: SYNTH_CBSA,
+      crosswalk_release: CROSSWALK_RELEASE_LABEL
+    )
+  end
+
+  # -- K2b: wage_area matches the row that priced the claim (#372) -----------
+
+  test "IPPS real pricing records NATIONAL wage area when crosswalk CBSA has no IppsHospitalRate row" do
+    register_facility_for_cbsa(code: "IPPS-NOWL", zip: SYNTH_ZIP)
+    seed_crosswalk_without_cbsa_wage_index_row(
+      fiscal_year: 2009, zip: SYNTH_ZIP, cbsa: SYNTH_CBSA,
+      crosswalk_release_label: REPRO_CROSSWALK_RELEASE
+    )
+    Corvid::IppsDrgWeight.create!(fiscal_year: 2009, drg_code: "470", relative_weight: 2.0743)
+
+    result = analyze_with_facility(
+      facility_code: "IPPS-NOWL", procedure: "HIP_REPLACE_THR", paid: 42_000
+    ).results.first
+
+    assert_equal :ipps, result.payment_system
+    assert_equal :clear, result.recovery_confidence
+    assert_in_delta expected_ipps_national_rate, result.medicare_equivalent.to_f, 0.01
+    assert_institutional_wage_area_documentation(
+      result,
+      facility_zip: SYNTH_ZIP,
+      national: :missing_wage_index_row,
+      resolved_cbsa: SYNTH_CBSA,
+      crosswalk_release: REPRO_CROSSWALK_RELEASE
+    )
+  end
+
+  test "OPPS real pricing records NATIONAL wage area when crosswalk CBSA has no wage-index row" do
+    register_outpatient_procedure!
+    register_facility_for_cbsa(code: "OPPS-NOWL", zip: SYNTH_ZIP)
+    seed_crosswalk_without_cbsa_wage_index_row(
+      fiscal_year: 2009, zip: SYNTH_ZIP, cbsa: SYNTH_CBSA
+    )
+    seed_opps_national_rows(calendar_year: 2009)
+
+    result = analyze_with_facility(
+      facility_code: "OPPS-NOWL", procedure: "OUTPATIENT_TEST", paid: 5_000
+    ).results.first
+
+    assert_equal :opps, result.payment_system
+    assert_equal :clear, result.recovery_confidence
+    assert_in_delta expected_opps_national_rate, result.medicare_equivalent.to_f, 0.01
+    assert_institutional_wage_area_documentation(
+      result,
+      facility_zip: SYNTH_ZIP,
+      national: :missing_wage_index_row,
+      resolved_cbsa: SYNTH_CBSA,
+      crosswalk_release: CROSSWALK_RELEASE_LABEL
+    )
+  end
+
+  test "ASC real pricing records NATIONAL wage area when crosswalk CBSA has no wage-index row" do
+    register_outpatient_procedure!
+    register_facility_for_cbsa(code: "ASC-NOWL", zip: SYNTH_ZIP)
+    seed_crosswalk_without_cbsa_wage_index_row(
+      fiscal_year: 2009, zip: SYNTH_ZIP, cbsa: SYNTH_CBSA
+    )
+    seed_asc_national_rows(calendar_year: 2009)
+    Corvid::AscFacility.create!(ccn: "ASC-VENDOR-1", effective_date: Date.new(2009, 1, 1))
+
+    result = analyze_with_facility(
+      facility_code: "ASC-NOWL", procedure: "OUTPATIENT_TEST", paid: 1_000, vendor_id: "ASC-VENDOR-1"
+    ).results.first
+
+    assert_equal :asc, result.payment_system
+    assert_equal :clear, result.recovery_confidence
+    assert_in_delta expected_asc_national_rate, result.medicare_equivalent.to_f, 0.01
+    assert_institutional_wage_area_documentation(
+      result,
+      facility_zip: SYNTH_ZIP,
+      national: :missing_wage_index_row,
+      resolved_cbsa: SYNTH_CBSA,
+      crosswalk_release: CROSSWALK_RELEASE_LABEL
+    )
+  end
+
+  test "IPPS stub fallback records NATIONAL wage area and stub wage-area note" do
+    register_facility_for_cbsa(code: "IPPS-STUB", zip: SYNTH_ZIP)
+    Corvid::ZipCbsaCrosswalk.create!(
+      fiscal_year: 2009, zip: SYNTH_ZIP, cbsa: SYNTH_CBSA, release_label: CROSSWALK_RELEASE_LABEL
+    )
+
+    result = analyze_with_facility(
+      facility_code: "IPPS-STUB", procedure: "HIP_REPLACE_THR", paid: 42_000
+    ).results.first
+
+    assert_equal :ipps, result.payment_system
+    assert_equal :stub_estimate, result.recovery_confidence
+    assert_institutional_wage_area_documentation(
+      result,
+      facility_zip: SYNTH_ZIP,
+      national: :stub_estimate,
+      crosswalk_release: CROSSWALK_RELEASE_LABEL
+    )
+  end
+
+  test "OPPS stub fallback records NATIONAL wage area and stub wage-area note" do
+    register_outpatient_procedure!
+    register_facility_for_cbsa(code: "OPPS-STUB", zip: SYNTH_ZIP)
+    Corvid::ZipCbsaCrosswalk.create!(
+      fiscal_year: 2009, zip: SYNTH_ZIP, cbsa: SYNTH_CBSA, release_label: CROSSWALK_RELEASE_LABEL
+    )
+
+    result = analyze_with_facility(
+      facility_code: "OPPS-STUB", procedure: "OUTPATIENT_TEST", paid: 5_000
+    ).results.first
+
+    assert_equal :opps, result.payment_system
+    assert_equal :stub_estimate, result.recovery_confidence
+    assert_institutional_wage_area_documentation(
+      result,
+      facility_zip: SYNTH_ZIP,
+      national: :stub_estimate,
+      crosswalk_release: CROSSWALK_RELEASE_LABEL
+    )
+  end
+
+  test "outpatient stub after ASC and OPPS miss records NATIONAL wage area and stub wage-area note" do
+    register_outpatient_procedure!
+    register_facility_for_cbsa(code: "ASC-STUB", zip: SYNTH_ZIP)
+    Corvid::ZipCbsaCrosswalk.create!(
+      fiscal_year: 2009, zip: SYNTH_ZIP, cbsa: SYNTH_CBSA, release_label: CROSSWALK_RELEASE_LABEL
+    )
+    Corvid::AscFacility.create!(ccn: "ASC-VENDOR-1", effective_date: Date.new(2009, 1, 1))
+
+    result = analyze_with_facility(
+      facility_code: "ASC-STUB", procedure: "OUTPATIENT_TEST", paid: 1_000, vendor_id: "ASC-VENDOR-1"
+    ).results.first
+
+    assert_equal :opps, result.payment_system
+    assert_equal :stub_estimate, result.recovery_confidence
+    assert_institutional_wage_area_documentation(
+      result,
+      facility_zip: SYNTH_ZIP,
+      national: :stub_estimate,
       crosswalk_release: CROSSWALK_RELEASE_LABEL
     )
   end
@@ -474,14 +611,19 @@ class Corvid::PrcOverpaymentAnalyzerWageAreaTest < ActiveSupport::TestCase
     count
   end
 
-  def national_wage_area_note(national:, fiscal_year: nil)
+  def national_wage_area_note(national:, fiscal_year: nil, resolved_cbsa: nil, crosswalk_release: nil)
     case national
     when :missing_or_malformed
       NATIONAL_WAGE_NOTE_MISSING_OR_MALFORMED
     when :no_crosswalk_row
       "Wage area: NATIONAL (no crosswalk row for the facility ZIP in FY #{fiscal_year})."
+    when :missing_wage_index_row
+      "Wage area: NATIONAL (no wage-index row for CBSA #{resolved_cbsa}; crosswalk release #{crosswalk_release})."
+    when :stub_estimate
+      "Wage area: NATIONAL (stub estimate does not use a wage area; crosswalk release #{crosswalk_release})."
     else
-      raise ArgumentError, "national must be :missing_or_malformed or :no_crosswalk_row"
+      raise ArgumentError,
+            "national must be :missing_or_malformed, :no_crosswalk_row, :missing_wage_index_row, or :stub_estimate"
     end
   end
 
@@ -490,9 +632,18 @@ class Corvid::PrcOverpaymentAnalyzerWageAreaTest < ActiveSupport::TestCase
   end
 
   def assert_institutional_wage_area_documentation(
-    result, facility_zip:, wage_area:, national: false, fiscal_year: nil, crosswalk_release: nil
+    result, facility_zip:, wage_area: nil, national: false, fiscal_year: nil, crosswalk_release: nil,
+    resolved_cbsa: nil
   )
-    if national
+    if national.in?([ :missing_wage_index_row, :stub_estimate ])
+      assert_equal "NATIONAL", result.wage_area
+      assert_equal crosswalk_release, result.crosswalk_release
+      expected = national_wage_area_note(
+        national: national, fiscal_year: fiscal_year,
+        resolved_cbsa: resolved_cbsa, crosswalk_release: crosswalk_release
+      )
+      assert result.notes.end_with?(expected), "expected national wage-area note; got: #{result.notes}"
+    elsif national
       assert_nil result.wage_area
       expected = national_wage_area_note(national: national, fiscal_year: fiscal_year)
       assert result.notes.end_with?(expected), "expected national wage-area note; got: #{result.notes}"
@@ -519,6 +670,17 @@ class Corvid::PrcOverpaymentAnalyzerWageAreaTest < ActiveSupport::TestCase
     Corvid::PrcProcedureDictionary.register(
       "OUTPATIENT_TEST", hcpcs: "12345", apc: "5071",
       description: "Test outpatient procedure"
+    )
+  end
+
+  def seed_crosswalk_without_cbsa_wage_index_row(
+    fiscal_year:, zip:, cbsa:, crosswalk_release_label: CROSSWALK_RELEASE_LABEL
+  )
+    Corvid::ZipCbsaCrosswalk.create!(
+      fiscal_year: fiscal_year, zip: zip, cbsa: cbsa, release_label: crosswalk_release_label
+    )
+    Corvid::IppsHospitalRate.create!(
+      fiscal_year: fiscal_year, locality: "NATIONAL", base_rate: 6_000.0, wage_index: 1.0
     )
   end
 
@@ -592,6 +754,14 @@ class Corvid::PrcOverpaymentAnalyzerWageAreaTest < ActiveSupport::TestCase
 
   def expected_opps_national_rate
     (BigDecimal("25.4378") * 70.0 * 1.0).round(2).to_f
+  end
+
+  def expected_ipps_national_rate
+    (BigDecimal("2.0743") * 6_000 * 1.0).round(2).to_f
+  end
+
+  def expected_asc_national_rate
+    (BigDecimal("20.0") * 42.0 * 1.0).round(2).to_f
   end
 
   def analyze_with_facility(facility_code:, procedure:, paid:, service_date: TEST_DATE, vendor_id: "V01")

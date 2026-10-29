@@ -54,6 +54,29 @@ class Corvid::PrcOverpaymentAnalysisWageAreaPersistenceTest < ActiveSupport::Tes
     end
   end
 
+  test "reanalyze persists NATIONAL wage_area and crosswalk_release when crosswalk CBSA has no wage-index row" do
+    register_ipps_facility!(code: "IPPS-NOWL", zip: SYNTH_ZIP)
+    Corvid::ZipCbsaCrosswalk.create!(
+      fiscal_year: 2009, zip: SYNTH_ZIP, cbsa: SYNTH_CBSA, release_label: CROSSWALK_RELEASE
+    )
+    Corvid::IppsHospitalRate.create!(
+      fiscal_year: 2009, locality: "NATIONAL", base_rate: 6_000.0, wage_index: 1.0
+    )
+    Corvid::IppsDrgWeight.create!(fiscal_year: 2009, drg_code: "470", relative_weight: 2.0743)
+
+    with_tenant(TENANT) do
+      import_and_reanalyze!(
+        facility: "IPPS-NOWL", obligation_id: "OBL-IPPS-NOWL", procedure: "HIP_REPLACE_THR"
+      )
+      analysis = latest_analysis("OBL-IPPS-NOWL")
+      assert_equal "ipps", analysis.payment_system
+      assert_equal "NATIONAL", analysis.wage_area
+      assert_equal CROSSWALK_RELEASE, analysis.crosswalk_release
+      assert_in_delta expected_ipps_national_rate, analysis.medicare_equivalent.to_f, 0.01
+      assert_wage_provenance_columns_never_store_zip(analysis, facility_zip: SYNTH_ZIP)
+    end
+  end
+
   test "reanalyze persists NATIONAL wage_area and nil crosswalk_release when institutional ZIP has no crosswalk row" do
     register_outpatient_procedure!
     register_ipps_facility!(code: "NATL-FAC", zip: NATL_ZIP)
@@ -154,5 +177,9 @@ class Corvid::PrcOverpaymentAnalysisWageAreaPersistenceTest < ActiveSupport::Tes
       refute_includes value.to_s, normalized,
                       "wage provenance columns must not echo facility ZIP (ADR 0003)"
     end
+  end
+
+  def expected_ipps_national_rate
+    (BigDecimal("2.0743") * 6_000 * 1.0).round(2).to_f
   end
 end
