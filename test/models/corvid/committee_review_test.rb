@@ -249,7 +249,7 @@ class Corvid::CommitteeReviewTest < ActiveSupport::TestCase
   test "requires_committee_review? returns false for low-cost referrals" do
     with_tenant(TENANT) do
       referral = create_referral
-      referral.update!(estimated_cost: 10_000)
+      referral.update!(estimated_cost: 10_000, medical_priority: 1)
       refute Corvid::CommitteeReview.requires_committee_review?(referral)
     end
   end
@@ -267,6 +267,52 @@ class Corvid::CommitteeReviewTest < ActiveSupport::TestCase
       referral = create_referral
       referral.update!(estimated_cost: 1_000, flagged_for_review: true)
       assert Corvid::CommitteeReview.requires_committee_review?(referral)
+    end
+  end
+
+  test "requires_committee_review? matches PrcReferral for EHR $60,000 cost" do
+    with_tenant("tnt_test") do
+      referral = create_referral
+      referral.update_columns(estimated_cost_cents: nil, medical_priority: 2, flagged_for_review: false)
+      Corvid.adapter.add_referral(
+        referral.referral_identifier,
+        patient_identifier: "pt_cr_test",
+        status: "pending",
+        estimated_cost: "$60,000",
+        medical_priority_level: 2,
+        emergent: false,
+        urgent: false,
+        chs_approval_status: "P",
+        service_requested: "TEST"
+      )
+      referral.reload
+
+      assert referral.requires_committee?
+      assert Corvid::CommitteeReview.requires_committee_review?(referral)
+      assert_equal referral.requires_committee?, Corvid::CommitteeReview.requires_committee_review?(referral)
+    end
+  end
+
+  test "requires_committee_review? does not raise for EHR string priority" do
+    with_tenant("tnt_test") do
+      referral = create_referral
+      referral.update!(estimated_cost: 1_000, medical_priority: 2)
+      Corvid.adapter.add_referral(
+        referral.referral_identifier,
+        patient_identifier: "pt_cr_test",
+        status: "pending",
+        estimated_cost: 1_000,
+        medical_priority_level: "2",
+        emergent: false,
+        urgent: false,
+        chs_approval_status: "P",
+        service_requested: "TEST"
+      )
+      referral.reload
+
+      assert_nothing_raised do
+        refute Corvid::CommitteeReview.requires_committee_review?(referral)
+      end
     end
   end
 

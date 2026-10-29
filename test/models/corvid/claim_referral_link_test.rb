@@ -76,6 +76,7 @@ class Corvid::ClaimReferralLinkTest < ActiveSupport::TestCase
         patient: referral.case.patient_identifier)
       claim.save!
       authorize!(referral)
+      record_delivered_fulfilment!(referral)
 
       claim.submit!
 
@@ -768,6 +769,7 @@ class Corvid::ClaimReferralLinkTest < ActiveSupport::TestCase
     referral.verify_alternate_resources!
     referral.reload
     exhaust_alternate_resources!(referral)
+    referral.update!(medical_priority: 1)
     referral.complete_priority_assignment!
     referral.reload
     # complete_priority_assignment lands on :authorized directly, or on
@@ -776,6 +778,7 @@ class Corvid::ClaimReferralLinkTest < ActiveSupport::TestCase
     # should fabricate.
     referral.authorize! if referral.may_authorize? && !referral.committee_review?
     referral.reload
+    record_delivered_fulfilment!(referral)
   end
 
   # Adapter returned an error status but assigned a claim identifier — treated as sent.

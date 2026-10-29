@@ -569,6 +569,33 @@ module Corvid
       end
     end
 
+    test "submit! raises FulfilmentNotRecorded before payer re-verification when fulfilment is missing" do
+      with_tenant(TENANT) do
+        travel_to Time.zone.parse("2025-07-01 12:00:00 UTC") do
+          referral = referral_at("fac_a", "REF-FULFIL-BEFORE-REVER")
+          authorize_referral!(referral, record_fulfilment: false)
+          referral.alternate_resource_checks.find_by!(resource_type: "medicaid").update!(checked_at: 31.days.ago)
+
+          claim = build_claim(
+            facility: "fac_a",
+            referral_identifier: "REF-FULFIL-BEFORE-REVER",
+            patient: referral.case.patient_identifier,
+            service_date: Date.new(2025, 6, 15)
+          )
+          claim.save!
+
+          Corvid.adapter.define_singleton_method(:verify_eligibility) do |_pid, _type|
+            raise "verify_eligibility must not run before fulfilment gate"
+          end
+          @verify_calls.clear
+
+          assert_raises(Corvid::ClaimSubmission::FulfilmentNotRecorded) { claim.submit! }
+          assert_empty @verify_calls
+          assert_equal "draft", claim.reload.status
+        end
+      end
+    end
+
     test "submit! without linked referral keeps existing behaviour" do
       with_tenant(TENANT) do
         claim = build_claim(
@@ -707,7 +734,7 @@ module Corvid
       end.new
     end
 
-    def authorize_referral!(referral)
+    def authorize_referral!(referral, record_fulfilment: true)
       referral.submit!
       referral.begin_eligibility_review!
       checklist = referral.eligibility_checklist
@@ -728,6 +755,7 @@ module Corvid
       referral.complete_priority_assignment!
       referral.authorize! if referral.may_authorize?
       referral.reload
+      record_delivered_fulfilment!(referral) if record_fulfilment
     end
   end
 end

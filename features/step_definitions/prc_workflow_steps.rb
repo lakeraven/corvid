@@ -50,6 +50,7 @@ Given("an authorized service request from {int} days ago") do |days|
   @referral.approve_management!
   exhaust_alternate_resources!(@referral)
   @referral.verify_alternate_resources!
+  @referral.update_columns(medical_priority: 1) if @referral.medical_priority.nil?
   exhaust_alternate_resources!(@referral)
   @referral.complete_priority_assignment!
   @referral.update!(authorization_number: "AUTH-001", updated_at: days.days.ago)

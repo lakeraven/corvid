@@ -178,6 +178,7 @@ Given("a submitted claim linked to that referral with service date {string}") do
     status: "draft"
   )
   assert_equal @referral.id, @claim.reload.prc_referral_id
+  record_delivered_fulfilment!(@referral)
   @claim.mark_submitted!(claim_identifier: "CLM-CU-SUBMITTED")
 end
 

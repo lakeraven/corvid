@@ -268,6 +268,126 @@ module Corvid
       end
     end
 
+    # -- effective medical priority (issue #675) -----------------------------
+
+    test "requires_committee? uses EHR medical_priority_level when local medical_priority is nil" do
+      with_tenant(TENANT) do
+        referral = referral_at_priority_assignment
+        referral.update_columns(medical_priority: nil, flagged_for_review: false, estimated_cost_cents: 500_000)
+        seed_adapter(referral, medical_priority_level: 4)
+        referral.reload
+
+        assert_equal 4, referral.service_request.medical_priority_level
+        assert referral.requires_committee?,
+          "priority 4 from the EHR must require committee when local medical_priority is nil"
+      end
+    end
+
+    test "complete_priority_assignment! routes to committee_review when only EHR priority is high" do
+      with_tenant(TENANT) do
+        referral = referral_at_priority_assignment
+        referral.update_columns(medical_priority: nil, flagged_for_review: false, estimated_cost_cents: 500_000)
+        seed_adapter(referral, medical_priority_level: 4)
+        referral.reload
+
+        assert referral.complete_priority_assignment!
+        assert_equal "committee_review", referral.reload.status
+        refute referral.authorized?
+      end
+    end
+
+    test "unknown medical priority requires committee review fail closed" do
+      with_tenant(TENANT) do
+        referral = referral_at_priority_assignment
+        referral.update_columns(medical_priority: nil, flagged_for_review: false, estimated_cost_cents: 500_000)
+        seed_adapter(referral, medical_priority_level: nil)
+        referral.reload
+
+        assert_nil referral.service_request.medical_priority_level
+        assert referral.requires_committee?,
+          "nil priority locally and from the EHR must not be treated as committee not required"
+      end
+    end
+
+    test "complete_priority_assignment! does not authorize directly when priority is unknown" do
+      with_tenant(TENANT) do
+        referral = referral_at_priority_assignment
+        referral.update_columns(medical_priority: nil, flagged_for_review: false, estimated_cost_cents: 500_000)
+        seed_adapter(referral, medical_priority_level: nil)
+        referral.reload
+
+        assert referral.complete_priority_assignment!
+        assert_equal "committee_review", referral.reload.status
+        refute referral.authorized?
+      end
+    end
+
+    test "requires_committee? treats EHR estimated_cost $60,000 as above threshold" do
+      with_tenant("tnt_test") do
+        referral = referral_at_priority_assignment
+        referral.update_columns(estimated_cost_cents: nil, medical_priority: 2, flagged_for_review: false)
+        seed_adapter(referral, medical_priority_level: 2)
+        Corvid.adapter.add_referral(
+          referral.referral_identifier,
+          patient_identifier: PATIENT,
+          status: "pending",
+          estimated_cost: "$60,000",
+          medical_priority_level: 2,
+          emergent: false,
+          urgent: false,
+          chs_approval_status: "P",
+          service_requested: "TEST"
+        )
+        referral.reload
+
+        assert referral.requires_committee?,
+          "formatted EHR cost must not coerce to zero and skip committee review"
+      end
+    end
+
+    test "requires_committee? does not raise when EHR medical_priority_level is string digits" do
+      with_tenant("tnt_test") do
+        referral = referral_at_priority_assignment
+        referral.update_columns(medical_priority: 2, flagged_for_review: false, estimated_cost_cents: 500_000)
+        Corvid.adapter.add_referral(
+          referral.referral_identifier,
+          patient_identifier: PATIENT,
+          status: "pending",
+          estimated_cost: referral.estimated_cost,
+          medical_priority_level: "2",
+          emergent: false,
+          urgent: false,
+          chs_approval_status: "P",
+          service_requested: "TEST"
+        )
+        referral.reload
+
+        assert_nothing_raised { refute referral.requires_committee? }
+      end
+    end
+
+    test "requires_committee? does not persist medical_priority from the EHR" do
+      with_tenant(TENANT) do
+        referral = referral_at_priority_assignment
+        referral.update_columns(
+          medical_priority: nil,
+          medical_priority_cached_at: nil,
+          flagged_for_review: false,
+          estimated_cost_cents: 500_000
+        )
+        seed_adapter(referral, medical_priority_level: 4)
+        referral.reload
+
+        before = referral.attributes.slice("medical_priority", "medical_priority_cached_at", "updated_at")
+
+        assert referral.requires_committee?
+
+        after = referral.reload.attributes.slice("medical_priority", "medical_priority_cached_at", "updated_at")
+        assert_equal before, after,
+          "requires_committee? must be a read; it must not refresh or persist medical_priority"
+      end
+    end
+
     private
 
     def create_referral_record
@@ -280,17 +400,26 @@ module Corvid
       )
     end
 
-    def seed_adapter(referral, emergent: false)
+    def seed_adapter(referral, emergent: false, medical_priority_level: nil)
       Corvid.adapter.add_referral(
         referral.referral_identifier,
         patient_identifier: PATIENT,
         status: "pending",
         estimated_cost: referral.estimated_cost || 5_000,
+        medical_priority_level: medical_priority_level,
         emergent: emergent,
         urgent: emergent,
         chs_approval_status: "P",
         service_requested: "TEST"
       )
+    end
+
+    def referral_at_priority_assignment
+      referral = referral_in_alternate_resource_review
+      create_all_determined_checks(referral)
+      assert referral.verify_alternate_resources!
+      assert_equal "priority_assignment", referral.status
+      referral
     end
 
     def complete_non_approval_checklist!(referral)
