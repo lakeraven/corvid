@@ -112,6 +112,7 @@ class Corvid::PrcOverpaymentAnalyzerTest < ActiveSupport::TestCase
       calendar_year: 2009, locality: "NATIONAL",
       conversion_factor: 70.0, wage_index: 1.0
     )
+    seed_opps_labor_share(calendar_year: 2009)
 
     summary = analyze_single_obligation(procedure: "OUTPATIENT_TEST", paid: 5_000)
     result = summary.results.first
@@ -120,9 +121,66 @@ class Corvid::PrcOverpaymentAnalyzerTest < ActiveSupport::TestCase
     assert_equal :clear, result.recovery_confidence,
                  "with real CMS OPPS data loaded, outpatient claim is fully priced"
     assert_equal :real, result.rate_source
-    # 25.4378 × 70.0 × 1.0 = 1780.65
+    # 25.4378 × 70.0 × (0.6 × 1.0 + 0.4) = 1780.65
     assert_in_delta 1_780.65, result.medicare_equivalent.to_f, 0.01
     assert_match(/real CMS OPPS/, result.notes)
+    assert_match(/wage index FY 2009/i, result.notes)
+    assert_match(/labor share 0\.6000/i, result.notes)
+  end
+
+  test "outpatient OPPS without labor share row falls back to stub rather than clear 100% labor pricing" do
+    Corvid::PrcProcedureDictionary.register(
+      "OUTPATIENT_TEST",
+      hcpcs: "12345", apc: "5071",
+      description: "Test outpatient procedure"
+    )
+    Corvid::OppsApcWeight.create!(
+      calendar_year: 2009, apc_code: "5071", relative_weight: 25.4378,
+      release_label: "cms_opps_2009"
+    )
+    Corvid::OppsConversionFactor.create!(
+      calendar_year: 2009, locality: "NATIONAL",
+      conversion_factor: 70.0, wage_index: 1.0, release_label: "cms_opps_2009"
+    )
+    Corvid::IppsHospitalRate.create!(
+      fiscal_year: 2009, locality: "NATIONAL", base_rate: 6_000.0, wage_index: 1.5
+    )
+    # Intentionally no Corvid::CmsLaborShare row for 2009.
+
+    result = analyze_single_obligation(procedure: "OUTPATIENT_TEST", paid: 5_000).results.first
+
+    refute_equal :clear, result.recovery_confidence,
+                 "missing labor share must not yield a :clear real OPPS price"
+    assert_equal :stub_estimate, result.recovery_confidence
+    assert_equal :stub, result.rate_source
+    refute_match(/labor share 1\.0000/i, result.notes.to_s)
+  end
+
+  test "outpatient ASC :clear notes cite wage index FY and labor share used (#722)" do
+    Corvid::PrcProcedureDictionary.register(
+      "OUTPATIENT_TEST", hcpcs: "12345", apc: "5071",
+      description: "Test outpatient procedure"
+    )
+    Corvid::AscHcpcsRate.create!(
+      calendar_year: 2009, hcpcs_code: "12345",
+      payment_indicator: "G2", payment_weight: 20.0, release_label: "cms_asc_2009"
+    )
+    Corvid::AscConversionFactor.create!(
+      calendar_year: 2009, locality: "NATIONAL",
+      conversion_factor: 42.0, wage_index: 1.0, release_label: "cms_asc_2009"
+    )
+    seed_asc_labor_share(calendar_year: 2009)
+    Corvid::AscFacility.create!(
+      ccn: "ASC-VENDOR-1", effective_date: Date.new(2009, 1, 1)
+    )
+
+    result = analyze_single_obligation(
+      procedure: "OUTPATIENT_TEST", paid: 1_000, vendor_id: "ASC-VENDOR-1"
+    ).results.first
+
+    assert_equal :clear, result.recovery_confidence
+    assert_match(/wage index FY 2009/i, result.notes)
+    assert_match(/labor share 0\.5000/i, result.notes)
   end
 
   test "outpatient claim with stub-labeled OPPS data still routes to :stub_estimate" do
@@ -139,6 +197,7 @@ class Corvid::PrcOverpaymentAnalyzerTest < ActiveSupport::TestCase
       calendar_year: 2009, locality: "NATIONAL",
       conversion_factor: 70.0, wage_index: 1.0, release_label: "stub_v1"
     )
+    seed_opps_labor_share(calendar_year: 2009)
 
     summary = analyze_single_obligation(procedure: "OUTPATIENT_TEST", paid: 5_000)
     result = summary.results.first
@@ -265,6 +324,7 @@ class Corvid::PrcOverpaymentAnalyzerTest < ActiveSupport::TestCase
       calendar_year: 2009, locality: "NATIONAL",
       conversion_factor: 70.0, wage_index: 1.0, release_label: ""
     )
+    seed_opps_labor_share(calendar_year: 2009)
 
     result = analyze_single_obligation(
       procedure: "OUTPATIENT_TEST", paid: 5_000, vendor_id: "REGULAR-HOSPITAL"
@@ -292,6 +352,7 @@ class Corvid::PrcOverpaymentAnalyzerTest < ActiveSupport::TestCase
       calendar_year: 2009, locality: "NATIONAL",
       conversion_factor: 42.0, wage_index: 1.0, release_label: ""
     )
+    seed_asc_labor_share(calendar_year: 2009)
     Corvid::AscFacility.create!(
       ccn: "ASC-VENDOR-1", effective_date: Date.new(2009, 1, 1)
     )
@@ -338,6 +399,7 @@ class Corvid::PrcOverpaymentAnalyzerTest < ActiveSupport::TestCase
       calendar_year: 2009, locality: "NATIONAL",
       conversion_factor: 42.0, wage_index: 1.0, release_label: "cms_asc_2009"
     )
+    seed_asc_labor_share(calendar_year: 2009)
     Corvid::AscFacility.create!(
       ccn: "ASC-VENDOR-1", effective_date: Date.new(2009, 1, 1)
     )
@@ -367,6 +429,7 @@ class Corvid::PrcOverpaymentAnalyzerTest < ActiveSupport::TestCase
       calendar_year: 2009, locality: "NATIONAL",
       conversion_factor: 70.0, wage_index: 1.0, release_label: "cms_opps_2009"
     )
+    seed_opps_labor_share(calendar_year: 2009)
     # ASC registry has a different CCN — current vendor not in it.
     Corvid::AscFacility.create!(
       ccn: "ASC-VENDOR-1", effective_date: Date.new(2009, 1, 1)
@@ -396,6 +459,7 @@ class Corvid::PrcOverpaymentAnalyzerTest < ActiveSupport::TestCase
       calendar_year: 2009, locality: "NATIONAL",
       conversion_factor: 70.0, wage_index: 1.0, release_label: "cms_opps_2009"
     )
+    seed_opps_labor_share(calendar_year: 2009)
 
     summary = analyze_single_obligation(
       procedure: "OUTPATIENT_TEST", paid: 5_000, vendor_id: "ASC-VENDOR-1"
@@ -549,6 +613,7 @@ class Corvid::PrcOverpaymentAnalyzerTest < ActiveSupport::TestCase
     )
     Corvid::OppsApcWeight.create!(calendar_year: 2009, apc_code: "5071", relative_weight: 25.4378)
     Corvid::OppsConversionFactor.create!(calendar_year: 2009, locality: "NATIONAL", conversion_factor: 70.0)
+    seed_opps_labor_share(calendar_year: 2009)
     seed_colliding_wage_areas(fiscal_year: 2009)
 
     result = analyze_single_obligation(procedure: "OUTPATIENT_TEST", paid: 5_000).results.first
@@ -566,6 +631,7 @@ class Corvid::PrcOverpaymentAnalyzerTest < ActiveSupport::TestCase
       calendar_year: 2009, hcpcs_code: "12345", payment_indicator: "G2", payment_weight: 20.0
     )
     Corvid::AscConversionFactor.create!(calendar_year: 2009, locality: "NATIONAL", conversion_factor: 42.0)
+    seed_asc_labor_share(calendar_year: 2009)
     Corvid::AscFacility.create!(ccn: "ASC-VENDOR-1", effective_date: Date.new(2009, 1, 1))
     seed_colliding_wage_areas(fiscal_year: 2009)
 

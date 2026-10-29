@@ -24,38 +24,71 @@ class Corvid::OppsRateProviderTest < ActiveSupport::TestCase
     Corvid::IppsHospitalRate.create!(
       fiscal_year: @cy, locality: "01", base_rate: 6_752.61, wage_index: 1.085
     )
+    seed_opps_labor_share(calendar_year: @cy)
   end
 
-  test "rate_for computes weight × CF × wage_index for known data" do
-    # 25.4378 × 89.169 × 1.0 = 2268.2622 → 2268.26
+  test "rate_for computes weight × CF × labor-adjusted wage factor for known data" do
     rate = Corvid::OppsRateProvider.rate_for(
       apc_code: "5071", locality: "NATIONAL", date: Date.new(2026, 6, 15)
     )
-    assert_in_delta 2_268.26, rate, 0.01
+    expected = opps_labor_adjusted_rate(
+      weight: 25.4378, conversion_factor: 89.169, wage_index: 1.0
+    )
+    assert_equal expected, rate
   end
 
-  test "rate_for applies locality-specific wage index" do
+  test "rate_for applies locality-specific wage index through labor share" do
     rate = Corvid::OppsRateProvider.rate_for(
       apc_code: "5071", locality: "01", date: Date.new(2026, 6, 15)
     )
-    # 25.4378 × 89.169 × 1.085 = 2461.06448695 → 2461.06 (std round)
-    assert_in_delta 2_461.06, rate, 0.01
+    expected = opps_labor_adjusted_rate(
+      weight: 25.4378, conversion_factor: 89.169, wage_index: 1.085
+    )
+    assert_equal expected, rate
   end
 
-  test "rate_for uses CALENDAR year — Jan 1 boundary, not Oct 1" do
-    # A November 2026 service date stays in CY 2026 (vs IPPS which
-    # would convert to FY 2027 for the same date).
-    rate = Corvid::OppsRateProvider.rate_for(
+  test "Oct-Dec CY 2026 service uses FY 2026 wage index not FY 2027 (#722)" do
+    Corvid::IppsHospitalRate.unscoped.delete_all
+    Corvid::IppsHospitalRate.create!(
+      fiscal_year: 2026, locality: "NATIONAL", base_rate: 6_752.61, wage_index: 1.10
+    )
+    Corvid::IppsHospitalRate.create!(
+      fiscal_year: 2027, locality: "NATIONAL", base_rate: 6_752.61, wage_index: 2.00
+    )
+
+    lookup = Corvid::OppsRateProvider.lookup_for(
       apc_code: "5071", locality: "NATIONAL", date: Date.new(2026, 11, 15)
     )
-    refute_nil rate
+    expected = opps_labor_adjusted_rate(
+      weight: 25.4378, conversion_factor: 89.169, wage_index: 1.10
+    )
+    wrong_fy = opps_labor_adjusted_rate(
+      weight: 25.4378, conversion_factor: 89.169, wage_index: 2.00
+    )
+
+    assert_equal expected, lookup.rate
+    refute_equal wrong_fy, lookup.rate
+    assert_equal 2026, lookup.wage_index_fiscal_year
+    assert_equal OPPS_LABOR_SHARE, lookup.labor_share
+  end
+
+  test "lookup_for returns nil when no labor share row exists for the calendar year" do
+    Corvid::CmsLaborShare.unscoped.delete_all
+    lookup = Corvid::OppsRateProvider.lookup_for(
+      apc_code: "5071", locality: "NATIONAL", date: Date.new(2026, 6, 15)
+    )
+    assert_nil lookup,
+               "missing labor share must not price silently at 100% labor share"
   end
 
   test "rate_for falls back to NATIONAL locality when locality-specific row missing" do
     rate = Corvid::OppsRateProvider.rate_for(
       apc_code: "5071", locality: "99", date: Date.new(2026, 6, 15)
     )
-    assert_in_delta 2_268.27, rate, 1.0,
+    expected = opps_labor_adjusted_rate(
+      weight: 25.4378, conversion_factor: 89.169, wage_index: 1.0
+    )
+    assert_in_delta expected, rate, 0.01,
                     "unknown locality should fall back to NATIONAL row"
   end
 
@@ -88,7 +121,9 @@ class Corvid::OppsRateProviderTest < ActiveSupport::TestCase
       rate = Corvid::OppsRateProvider.rate_for(
         apc_code: "5071", locality: loc, date: Date.new(2026, 6, 15)
       )
-      assert_in_delta 2_268.26, rate, 0.01,
+      assert_in_delta opps_labor_adjusted_rate(
+        weight: 25.4378, conversion_factor: 89.169, wage_index: 1.0
+      ), rate, 0.01,
                       "locality=#{loc.inspect} should fall back to NATIONAL"
     end
   end
@@ -141,8 +176,10 @@ class Corvid::OppsRateProviderTest < ActiveSupport::TestCase
     rate = Corvid::OppsRateProvider.rate_for(
       apc_code: "5071", locality: "NATIONAL", date: Date.new(2026, 6, 15)
     )
-    # 25.4378 × 89.169 × 1.0 = 2268.26
-    assert_in_delta 2_268.26, rate, 0.01
+    expected = opps_labor_adjusted_rate(
+      weight: 25.4378, conversion_factor: 89.169, wage_index: 1.0
+    )
+    assert_equal expected, rate
   end
 
   # release_label merge: the APC weight is row A, the conversion factor
