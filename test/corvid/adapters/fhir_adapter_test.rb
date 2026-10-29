@@ -2159,7 +2159,7 @@ class Corvid::Adapters::FhirAdapterTest < Minitest::Test
             "resourceType" => "Coverage",
             "id" => "cov_test_medicare",
             "status" => "active",
-            "type" => { "coding" => [ { "code" => "MCRSC" } ] },
+            "type" => { "coding" => [ { "code" => "medicare_a" } ] },
             "payor" => [ { "display" => "TEST MEDICARE PAYER" } ]
           }
         },
