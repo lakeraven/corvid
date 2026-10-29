@@ -35,6 +35,9 @@ def clean_corvid_tables!
   Corvid::OppsApcWeight.unscoped.delete_all
   Corvid::OppsConversionFactor.unscoped.delete_all
   Corvid::ZipLocality.unscoped.delete_all
+  if Corvid.const_defined?(:ZipCbsaCrosswalk, false)
+    Corvid::ZipCbsaCrosswalk.unscoped.delete_all
+  end
   Corvid::LocalityLookup.clear_cache!
   Corvid::ApiCallLog.unscoped.delete_all
   Corvid::Payment.unscoped.delete_all
@@ -62,6 +65,7 @@ After do
 end
 
 Before do
+  Corvid::PrcFacilityDictionary.reset!
   Corvid::TenantContext.reset!
   # Replace adapter with fresh instance to discard any singleton methods
   # added by scenarios (e.g., mocking submit_claim to raise).

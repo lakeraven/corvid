@@ -29,10 +29,17 @@ module Corvid
     # ADR 0002: string values, same sets the Postgres CHECKs allow.
     # Not an integer enum. Null on a non-medicaid row; group and source
     # are stored together or not at all, and eligibility_group_set_at is
-    # present exactly when the group is present.
+    # present exactly when the group is present. eligibility_group_as_of
+    # is null, or the source is a stated source.
     ELIGIBILITY_GROUPS = %w[expansion_adult waiver_adult other unknown].freeze
     ELIGIBILITY_GROUP_SOURCES = %w[
       eligibility_response state_case_data registration staff_entry inferred
+    ].freeze
+
+    # eligibility_group_as_of is allowed only with one of these. Same
+    # set as corvid_arc_eligibility_group_as_of_stated_source_check.
+    STATED_ELIGIBILITY_GROUP_SOURCES = %w[
+      eligibility_response state_case_data registration
     ].freeze
 
     # A coverage states a group only with one of these. "unknown" is not
@@ -53,6 +60,7 @@ module Corvid
     validate :eligibility_group_only_on_medicaid
     validate :eligibility_group_paired_with_source
     validate :eligibility_group_set_at_paired_with_group
+    validate :eligibility_group_as_of_only_for_stated_source
 
     RESOURCE_NAMES = {
       "medicare_a" => "Medicare Part A", "medicare_b" => "Medicare Part B",
@@ -494,6 +502,13 @@ module Corvid
       return if eligibility_group.nil? == eligibility_group_set_at.nil?
 
       errors.add(:eligibility_group_set_at, "must be present exactly when eligibility group is present")
+    end
+
+    def eligibility_group_as_of_only_for_stated_source
+      return if eligibility_group_as_of.nil?
+      return if STATED_ELIGIBILITY_GROUP_SOURCES.include?(eligibility_group_source)
+
+      errors.add(:eligibility_group_as_of, "is only recorded for a stated source")
     end
 
     class << self

@@ -8,7 +8,7 @@ require "rake"
 class DemoPrcRakeTest < ActiveSupport::TestCase
   TENANT = "tnt_broken_rock"
   FACILITY = "fac_broken_rock"
-  PATIENT_ID = "pt_demo_enrolled"
+  PATIENT_ID = "pt-demo-enrolled"
   REFERRAL_ID = "rf_broken_rock_demo"
 
   setup do

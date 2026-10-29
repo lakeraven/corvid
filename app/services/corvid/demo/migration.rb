@@ -24,16 +24,26 @@ module Corvid
       # The types the Data Governance Board consents to release for hero_1.
       CONSENTED_TYPES = %w[Patient Condition Observation].freeze
 
+      # Cases seeded before reference ids were hyphenated. reset! removes
+      # these exact ids at the demo tenant and the demo facility so a later
+      # seed does not leave a second pair. Only the old Broken Rock hero
+      # pair was persisted. The demo never stored pt_demo_001, pt_demo_other,
+      # or pt_demo_unknown.
+      LEGACY_PATIENT_IDENTIFIERS = %w[
+        pt_broken_rock_hero_1
+        pt_broken_rock_hero_2
+      ].freeze
+
       # Two synthetic hero patients (tokenized patient_ref). hero_1 is consented
       # and migrates; hero_2 has NO board consent and halts — the deny path is
       # what proves the sovereignty gate is real, not just trusted.
       HEROES = {
-        "pt_broken_rock_hero_1" => {
+        "pt-broken-rock-hero-1" => {
           name: "Riverstone, Dawn (synthetic)",
           consented: true,
           entries: [
             { resource_type: "Patient",
-              data: { "resourceType" => "Patient", "id" => "pt_broken_rock_hero_1",
+              data: { "resourceType" => "Patient", "id" => "pt-broken-rock-hero-1",
                       "name" => [ { "family" => "Riverstone", "given" => [ "Dawn" ] } ] } },
             { resource_type: "Condition",
               data: { "resourceType" => "Condition", "code" => { "text" => "synthetic hypertension" } } },
@@ -41,12 +51,12 @@ module Corvid
               data: { "resourceType" => "Observation", "valueString" => "synthetic BP 128/82" } }
           ]
         },
-        "pt_broken_rock_hero_2" => {
+        "pt-broken-rock-hero-2" => {
           name: "Cedarwind, Marcus (synthetic)",
           consented: false,
           entries: [
             { resource_type: "Patient",
-              data: { "resourceType" => "Patient", "id" => "pt_broken_rock_hero_2",
+              data: { "resourceType" => "Patient", "id" => "pt-broken-rock-hero-2",
                       "name" => [ { "family" => "Cedarwind", "given" => [ "Marcus" ] } ] } },
             { resource_type: "Condition",
               data: { "resourceType" => "Condition", "code" => { "text" => "synthetic diabetes" } } }
@@ -96,11 +106,18 @@ module Corvid
         end
       end
 
-      # Clear the seeded rows (dependent: :destroy also removes their audit
-      # Determinations). Returns the number of hero cases removed.
+      # Clear the seeded rows and cases still stored under the old
+      # underscore hero ids. Scoped to this tenant and the demo facility,
+      # and to those exact ids (dependent: :destroy also removes their
+      # audit Determinations). Returns the number of cases removed.
       def reset!(tenant: DEFAULT_TENANT)
         Corvid.with_tenant(tenant) do
-          cases = Corvid::Case.where(tenant_identifier: tenant, patient_identifier: HEROES.keys)
+          identifiers = HEROES.keys + LEGACY_PATIENT_IDENTIFIERS
+          cases = Corvid::Case.where(
+            tenant_identifier: tenant,
+            facility_identifier: FACILITY,
+            patient_identifier: identifiers
+          )
           count = cases.count
           cases.destroy_all
           count
