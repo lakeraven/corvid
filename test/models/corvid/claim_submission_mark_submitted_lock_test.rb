@@ -80,7 +80,8 @@ class Corvid::ClaimSubmissionMarkSubmittedLockTest < ActiveSupport::TestCase
 
       row = fresh_claim_row(claim.id)
       assert_equal before.status, row.status
-      assert_equal before.claim_identifier, row.claim_identifier
+      assert_nil before.claim_identifier
+      assert_nil row.claim_identifier
       refute submission_outcome_unknown_row?(row)
     end
   end
