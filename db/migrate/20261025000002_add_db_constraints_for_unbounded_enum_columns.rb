@@ -10,8 +10,9 @@
 #   missing_evidence      — FmapClassificationService::MISSING_EVIDENCE
 #   jurisdiction          — two uppercase letters
 # best_available_rule_key and rule_key both reference
-# corvid_fmap_rules.rule_key. corvid_care_team_members.role is free text
-# ("Care Manager", "Lead 1") and is not checked here; that is #705.
+# corvid_fmap_rules.rule_key. corvid_care_team_members.role_code is the
+# string enum from ReplaceCareTeamMemberRoleWithRoleCode (#705), not a
+# check in this migration.
 #
 # corvid_prc_obligations.status is an external report code. Its vocabulary
 # is the owner's decision, still pending, so this migration does not

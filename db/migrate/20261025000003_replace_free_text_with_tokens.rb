@@ -184,9 +184,12 @@ class ReplaceFreeTextWithTokens < ActiveRecord::Migration[8.1]
     "!exists(@.keyvalue() ? (@.key != \"supports\" && @.key != \"ref\"))"
   end
 
+  # An IN list is stored as ANY (ARRAY[...]::text[]). Loading the schema
+  # dump and reading it back adds a text cast on each element instead.
+  # Spell that cast so a down/up replay matches the schema-loaded CHECK.
   def activity_code_check_sql
-    codes = ACTIVITY_CODES.map { |code| quote(code) }.join(", ")
-    "current_activity_code IS NULL OR current_activity_code IN (#{codes})"
+    codes = ACTIVITY_CODES.map { |code| "#{quote(code)}::character varying" }.join(", ")
+    "current_activity_code IS NULL OR (current_activity_code::text = ANY (ARRAY[#{codes}]::text[]))"
   end
 
   def reviewer_identifier_check_sql

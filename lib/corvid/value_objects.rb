@@ -35,7 +35,8 @@ module Corvid
     def urgent? = urgent == true
   end
 
-  CareTeamMemberReference = Data.define(:practitioner_identifier, :role, :name, :status)
+  # role_code is the care-team role enum. Free text is not carried.
+  CareTeamMemberReference = Data.define(:practitioner_identifier, :role_code, :name, :status)
 
   # US Core problem-list or encounter diagnosis. In memory only; never
   # persisted or logged (ADR 0003).

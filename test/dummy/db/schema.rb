@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_10_28_000001) do
+ActiveRecord::Schema[8.1].define(version: 2026_10_29_000001) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
@@ -131,15 +131,16 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_28_000001) do
   create_table "corvid_care_team_members", force: :cascade do |t|
     t.bigint "care_team_id", null: false
     t.string "practitioner_identifier", null: false
-    t.string "role"
     t.boolean "lead", default: false
     t.date "start_date"
     t.date "end_date"
     t.datetime "created_at", null: false
     t.datetime "updated_at", null: false
+    t.string "role_code", null: false
     t.index ["care_team_id", "practitioner_identifier"], name: "idx_corvid_ctm_team_practitioner", unique: true
     t.index ["care_team_id"], name: "index_corvid_care_team_members_on_care_team_id"
     t.index ["practitioner_identifier"], name: "index_corvid_care_team_members_on_practitioner_identifier"
+    t.check_constraint "role_code::text = ANY (ARRAY['primary_care_provider'::character varying, 'care_manager'::character varying, 'consultant'::character varying, 'other'::character varying]::text[])", name: "corvid_care_team_members_role_code_check"
   end
 
   create_table "corvid_care_teams", force: :cascade do |t|

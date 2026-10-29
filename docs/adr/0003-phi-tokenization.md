@@ -68,7 +68,7 @@ The reference vault implementation is **lakeraven-ehr**, which already holds the
 | Workflow dates (committee_date, due_at, completed_at) | Stored as date. Workflow-essential. Documented combination risk. |
 | Status, priority, decision codes | Stored as enum strings. Not PHI alone. |
 | Amounts (estimated_cost, approved_amount) | Stored as decimal. Not PHI alone. |
-| `*_identifier` columns | Stored as opaque vault tokens. |
+| `*_identifier` columns | Opaque, and never PHI. Vault tokens, or an engine identifier (see Engine identifiers). |
 
 **Workflow dates:** Dates like `committee_date` are workflow-essential and stored. They can be identifying in combination with other data. The engine never stores DOB directly (that's identity-class PHI). Combination risk is documented as a host responsibility.
 
@@ -96,7 +96,15 @@ fac_01HK8B7Z9XCQVG3F8N5K0R4MWN   facility
 - Operators can grep logs by type (`grep pt_` for patient tokens)
 - Opaque to anyone without vault access
 
-The engine does not generate tokens (the vault does). Engine receives tokens from adapters and stores/queries them.
+PHI vault tokens are issued by the vault. The engine does not generate those. It does issue the identifiers in Engine identifiers; those are opaque and carry no PHI. Every other token is received from an adapter and stored or queried.
+
+### Engine identifiers
+
+The engine issues `CLM_` claim identifiers and `pt_`, `pr_`, and `rf_` reference identifiers. They are opaque and carry no PHI.
+
+`Adapters::MockAdapter#submit_claim` generates a `CLM_` identifier (the prefix plus a ULID) and returns it as `claim_identifier`. `FmapDetermination` accepts that form on `corvid_fmap_determinations.claim_identifier`, and `FmapClassificationService.classify!` stores the `claim_identifier:` it is given. A lowercase opaque token is also accepted on that column.
+
+`pt_`, `pr_`, and `rf_` are the reference identifiers from #672. `FhirReference.id_from` accepts `pt_` on Patient, `pr_` on Practitioner and PractitionerRole, and `rf_` on ServiceRequest. `Adapters::MockAdapter#create_referral` generates `rf_` plus a ULID. `MockAdapter#dereference` resolves `pt_`, `pr_`, and `rf_`. Those values are what the engine stores on `corvid_cases.patient_identifier`, `corvid_care_team_members.practitioner_identifier`, `corvid_tasks.assignee_identifier`, and `corvid_prc_referrals.referral_identifier`.
 
 ### 5. MockAdapter vault
 
