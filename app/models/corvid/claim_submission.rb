@@ -337,19 +337,19 @@ module Corvid
     end
 
     # Reconciliation of a send whose outcome is unknown records the
-    # identifier. submission_outcome_unknown? reads the persisted
-    # marker. While it is set, skip authorization and the
-    # alternate-resource re-verification, and do not re-verify. Without
-    # that marker both gates run, authorization then alternate
-    # resources, before the row lock, the same as submit!.
+    # identifier. Tenant context and unsaved changes are refused
+    # before any lock. The patient advisory lock and the row lock are
+    # taken first. Under those locks, the locked row's persisted
+    # submission_outcome_unknown_at chooses the path. While it is set,
+    # skip authorization, alternate-resource re-verification, and the
+    # pending Medicaid hold, and do not re-verify. Without it, the
+    # authorization gate, this claim's own referral alternate-resource
+    # check, and the hold run here. That check may re-verify stale
+    # checks. A staff override does not skip the re-verification. A
+    # referral link resolved in memory is discarded before the record,
+    # the same as submit!.
     def mark_submitted!(claim_identifier:)
       prepare_medicaid_hold_submission!
-      unless submission_outcome_unknown?
-        enforce_referral_authorization_gate!
-        enforce_alternate_resources_current!
-      end
-      discard_resolved_referral_link!
-      refuse_unsaved_claim_changes!
       with_medicaid_submission_lock { record_marked_submission!(claim_identifier) }
     end
 
@@ -1115,6 +1115,8 @@ module Corvid
     # The authorization gate links a blank prc_referral_id in memory.
     # That is not a caller edit. lock! refuses a dirty record, so drop
     # the link before taking the lock. The gate has already run.
+    # Dropping it under a lock already held does the same thing.
+    # record_claim_submission! resolves a blank link through the gate.
     def discard_resolved_referral_link!
       return unless persisted?
       return unless changed == [ "prc_referral_id" ]
@@ -1471,15 +1473,30 @@ module Corvid
       status == "accepted" ? "submitted" : status
     end
 
-    # Recording an identifier for a send whose outcome was unknown is
-    # reconciliation, not a new send, so the pending Medicaid hold does
-    # not apply. mark_submitted! has already skipped authorization and
-    # alternate-resource re-verification from the same persisted
-    # marker, and did not re-verify. This reads the marker again under
-    # the lock for the hold. The marker is cleared with the identifier.
+    # Runs under the patient advisory lock and the row lock. The
+    # locked row's persisted marker means reconciliation, not a new
+    # send: skip authorization, alternate-resource re-verification,
+    # and the pending Medicaid hold, and do not re-verify. Without
+    # the marker, those gates and the hold run. The gates' in-memory
+    # referral link is discarded so record_claim_submission! saves a
+    # blank link through the submission gate, the same as submit!.
+    # The marker is cleared with the identifier.
     def record_marked_submission!(claim_identifier)
-      enforce_pending_medicaid_hold! unless submission_outcome_unknown?
+      enforce_mark_submitted_gates! unless submission_outcome_unknown?
       record_claim_submission!(claim_identifier:, status: "submitted")
+    end
+
+    # Authorization, then this claim's own referral alternate-resource
+    # check, which may re-verify. A staff override does not skip that
+    # check. The resolved link is not a caller edit: drop it so the
+    # submission save resolves a blank link through the gate. Then the
+    # pending Medicaid hold.
+    def enforce_mark_submitted_gates!
+      enforce_referral_authorization_gate!
+      enforce_alternate_resources_current!
+      discard_resolved_referral_link!
+      refuse_unsaved_claim_changes!
+      enforce_pending_medicaid_hold!
     end
 
     # Clears the override through the internal writer so the direct-write
