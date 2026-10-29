@@ -637,7 +637,12 @@ module Corvid
       reverify_for_event(:verify_alternate_resources)
     end
 
+    # requires_committee? reads priority and cost from the service-request
+    # memo. Drop it before that guard so an EHR change after an earlier
+    # read routes this decision. A direct read keeps the memo. reload
+    # clears it for the next read.
     def reverify_before_complete_priority_assignment
+      @service_request = nil
       reverify_for_event(:complete_priority_assignment)
     end
 

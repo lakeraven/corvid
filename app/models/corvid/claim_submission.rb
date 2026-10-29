@@ -29,17 +29,18 @@ module Corvid
     # The stored prc_referral_id counts as linked even when this save
     # clears the association. A plain save also cannot attach a claim
     # that already carries sent markers or a sent status to a referral.
-    # An already-sent unlinked claim is not resolved when referral_identifier
-    # is unchanged. For that skip, stored claim_identifier, stored
-    # submitted_at, or a stored sent status counts, including submitted_at
-    # on an error row, so a referral entered later does not block
+    # An already-sent unlinked claim is not resolved on a plain save when
+    # referral_identifier is unchanged. For that skip, stored claim_identifier,
+    # stored submitted_at, or a stored sent status counts, including
+    # submitted_at on an error row, so a referral entered later does not block
     # check_status!, payment, remittance, or a plain edit. Changing
-    # referral_identifier still
-    # resolves and is refused. Assigning prc_referral is refused the
-    # same way. Unsent claims and new rows still resolve a blank link.
-    # submit! and mark_submitted! are the only paths that write those
-    # markers or enter "submitted" from an unsent row, and they re-run
-    # the gates. check_status! may record "submitted" on a claim that was
+    # referral_identifier still resolves and is refused. Assigning
+    # prc_referral is refused the same way. Unsent claims and new rows still
+    # resolve a blank link. submit! and mark_submitted! are the only paths
+    # that write those markers or enter "submitted" from an unsent row.
+    # Their gates read an unambiguous same-patient referral when the stored
+    # link is blank, without assigning it, and the gated save links it.
+    # check_status! may record "submitted" on a claim that was
     # already sent. Later moves among sent statuses, including an error
     # that was actually sent, do not depend on submitted_at. A row created
     # already sent is a historical import and is left unstamped.
@@ -462,16 +463,17 @@ module Corvid
     end
 
     # Recompute when the identifier, facility, or patient changes, and
-    # when an unsent claim's link is still blank. An already-sent claim
-    # with no link stays unlinked unless referral_identifier changes:
-    # a blank prc_referral_id is not an edit. Stored claim_identifier,
-    # stored submitted_at, or a stored sent status means already sent,
-    # including submitted_at on an error row. Assigning prc_referral is
-    # left in place for the ungated-sent guard. A new row still resolves,
-    # and submit! / mark_submitted! link through the gate.
+    # when a link is still blank. An already-sent claim with no link stays
+    # unlinked on a plain save unless referral_identifier changes: a blank
+    # prc_referral_id is not an edit. A save through the submission gate
+    # resolves that blank link, and the ungated-sent guard allows the
+    # attach. Stored claim_identifier, stored submitted_at, or a stored
+    # sent status means already sent, including submitted_at on an error
+    # row. Assigning prc_referral is left in place for that guard. A new
+    # row still resolves.
     def referral_link_inputs_changed?
       return false if referral_identifier.blank?
-      return will_save_change_to_referral_identifier? if unlinked_claim_already_sent?
+      return will_save_change_to_referral_identifier? if unlinked_claim_already_sent? && !@submission_through_gate
 
       prc_referral_id.blank? || referral_link_fields_changed?
     end
@@ -533,13 +535,13 @@ module Corvid
       candidate
     end
 
-    # A linked PRC referral is billable only when an external report names
-    # delivered care. Unlinked claims are ordinary billing and are left
-    # alone. The referral is referral_for_submission_gates: the one this
-    # save will link, read from the current identifier without assigning
-    # the association. A dirty referral_identifier must not be judged
-    # against the referral this claim used to name. Called before any
-    # clearinghouse call, so a refusal never submits and never changes
+    # A PRC referral is billable only when an external report names
+    # delivered care. The referral is referral_for_submission_gates: the
+    # one this save will link, read from the current identifier without
+    # assigning the association. No resolvable referral is ordinary
+    # billing and is left alone. A dirty referral_identifier must not be
+    # judged against the referral this claim used to name. Called before
+    # any clearinghouse call, so a refusal never submits and never changes
     # the claim. The message names the referral identifier and the
     # fulfilment status only (ADR 0003).
     def enforce_referral_fulfilment_gate!
@@ -554,9 +556,12 @@ module Corvid
 
     # Shared by the authorization gate, the fulfilment gate, and the
     # alternate-resource gate. Reads the referral the current identifier
-    # will link, and does not assign the association.
+    # will link, and does not assign the association. A blank stored link
+    # is read the same way, including an already-sent claim whose
+    # identifier is unchanged. The gated save assigns it. A plain save
+    # does not.
     def referral_for_submission_gates
-      return unambiguous_patient_referral if referral_link_inputs_changed?
+      return unambiguous_patient_referral if prc_referral_id.blank? || referral_link_inputs_changed?
 
       prc_referral
     end
@@ -574,8 +579,9 @@ module Corvid
     # and fulfilment gates use. The association is not assigned before
     # deciding: a dirty referral_identifier must not be judged against the
     # referral this claim used to name, and a refusal must not retarget
-    # the link. An already-sent unlinked claim is still not resolved when
-    # the identifier is unchanged.
+    # the link. A blank link is read for this decision without assigning
+    # it, including an already-sent claim. The gated save links it. A
+    # plain save does not.
     def enforce_alternate_resources_current!
       referral = referral_for_submission_gates
       return if referral.nil?
