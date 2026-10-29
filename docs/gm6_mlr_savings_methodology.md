@@ -14,11 +14,20 @@ referred-care (PRC) claim panel for a 2-provider Urban Indian Organization
 **Reproduce:**
 
 ```bash
-cd corvid
-bundle install                                                      # first time
-cd test/dummy && RAILS_ENV=test bin/rails db:prepare && cd ../..    # first time
-cd test/dummy && RAILS_ENV=test bin/rails demo:mlr_savings
+bundle install                                                                        # first time
+( cd test/dummy && bundle install )                                                   # first time
+( cd test/dummy && SKIP_TEST_DATABASE=1 RAILS_ENV=development bin/rails db:prepare )  # first time
+( cd test/dummy && RAILS_ENV=development bin/rails demo:mlr_savings )
 ```
+
+The demos use the development database and must never be run with
+`RAILS_ENV=test`. It deletes and reinserts the demo's rate rows and claim
+panel in whatever database it points at, so running it against the test
+database leaves those rows there. An exported `DATABASE_URL` overrides
+`RAILS_ENV` and `database.yml`, so it must name a development database
+(as CI's demo-smoke job does) or be unset — never `corvid_dummy_test`.
+`SKIP_TEST_DATABASE=1` stops a development `db:prepare` from also
+creating or migrating the test database.
 
 The task is idempotent — every seeded rate row and the whole claim panel are
 deleted/recreated on each run, so it's safe to re-run.
@@ -47,9 +56,9 @@ none of it is stub/estimated.
 
 | System | Rate basis | Source |
 |---|---|---|
-| PFS (professional) | work/PE/MP RVU × Montana (locality 01) GPCI × CY2026 conversion factor $33.4009 | CMS CY2026 PFS Final Rule (CMS-1832-F), `PPRRVU2026_Jan_nonQPP.csv` + `GPCI2026.csv` from `RVU26A.zip` (the same zip `rake cms:fetch[2026]` downloads) |
-| IPPS (inpatient) | DRG relative weight × $6,752.61 national base rate × wage index 1.0 | CMS FY2026 IPPS Final Rule (CMS-1833-F), `ipps_drg_weights_FY2026.csv` / `ipps_hospital_rates_FY2026.csv` (pulled live via `rake cms:ipps:fetch_release[2026]` and independently cross-checked against CMS's published FY2026 payment brief) |
-| OPPS (hospital outpatient) | APC relative weight × $91.4150 national conversion factor × wage index 1.0 | CMS CY2026 OPPS Final Rule (CMS-1834-FC), `opps_apc_weights_CY2026.csv` / `opps_conversion_factors_CY2026.csv` (pulled live via `rake cms:opps:fetch_release[2026]`, cross-checked against CMS's CY2026 OPPS fact sheet) |
+| PFS (professional) | work/PE/MP RVU × Montana (locality 01) GPCI × CY2026 conversion factor $33.4009 | CMS CY2026 PFS Final Rule (CMS-1832-F), `PPRRVU2026_Jan_nonQPP.csv` + `GPCI2026.csv` from `RVU26A.zip` (the same zip `( cd test/dummy && RAILS_ENV=development bin/rails "cms:fetch[2026]" )` downloads) |
+| IPPS (inpatient) | DRG relative weight × $6,752.61 national base rate × wage index 1.0 | CMS FY2026 IPPS Final Rule (CMS-1833-F), `ipps_drg_weights_FY2026.csv` / `ipps_hospital_rates_FY2026.csv` (pulled live via `( cd test/dummy && RAILS_ENV=development bin/rails "cms:ipps:fetch_release[2026]" )` and independently cross-checked against CMS's published FY2026 payment brief) |
+| OPPS (hospital outpatient) | APC relative weight × $91.4150 national conversion factor × wage index 1.0 | CMS CY2026 OPPS Final Rule (CMS-1834-FC), `opps_apc_weights_CY2026.csv` / `opps_conversion_factors_CY2026.csv` (pulled live via `( cd test/dummy && RAILS_ENV=development bin/rails "cms:opps:fetch_release[2026]" )`, cross-checked against CMS's CY2026 OPPS fact sheet) |
 
 Wage index is 1.0 (NATIONAL) for IPPS/OPPS rather than Billings, MT's real
 per-CBSA wage index (0.8961, CBSA 13740, validated in PR #467) — production
@@ -137,7 +146,7 @@ high-dollar hospital claims, even though they're a small share of claim
 
 Building this task surfaced two real defects in `Corvid::CmsFeeScheduleParser`
 on the CY2026+ PPRRVU file layout — the reason the PFS rates above are
-hand-verified literals rather than pulled through `rake cms:import[2026]`:
+hand-verified literals rather than pulled through `( cd test/dummy && RAILS_ENV=development bin/rails "cms:import[2026]" )`:
 
 1. **`parse_gpcis` locality-key collision.** GPCI rows are keyed only by
    the 2-digit locality code, which is not nationally unique — many MACs
@@ -153,7 +162,7 @@ hand-verified literals rather than pulled through `rake cms:import[2026]`:
    loads `mp_rvu: 0.0` for CPT 99213, vs. the correct `0.09` read directly
    off the CMS file.
 
-A third, smaller issue — `rake cms:ipps:fetch_release[year]`'s summary
+A third, smaller issue — the `cms:ipps:fetch_release` task's summary
 `puts` referenced an undefined `label` variable (`NameError` after the
 data import itself had already succeeded) — **is fixed in this branch**
 (`lib/tasks/cms_ipps.rake`), since it directly blocked this demo task
