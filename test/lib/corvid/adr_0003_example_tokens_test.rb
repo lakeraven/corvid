@@ -58,10 +58,21 @@ module Corvid
 
       body = section[1]
       assert_includes body, "CLM_"
+      assert_includes body, "PAY_"
       assert_includes body, "pt_"
       assert_includes body, "pr_"
       assert_includes body, "rf_"
       assert_includes body, "PHI"
+      refute_includes body, "lowercase"
+    end
+
+    test "ADR 0003 includes exactly one CLM example matching CLM_FORMAT" do
+      assert_predicate ADR_PATH, :exist?
+      clm_examples = ADR_PATH.read.scan(CLM_BODY_PATTERN).uniq
+      assert_equal 1, clm_examples.size,
+                   "expected exactly one full CLM_ example in ADR 0003"
+      assert FmapDetermination::CLM_FORMAT.match?(clm_examples.sole),
+             "expected ADR 0003 CLM example #{clm_examples.sole.inspect} to match CLM_FORMAT"
     end
 
     private
@@ -85,6 +96,8 @@ module Corvid
       end
 
       clm_examples = doc.scan(CLM_BODY_PATTERN).uniq
+      assert_equal 1, clm_examples.size,
+                   "expected exactly one full CLM_ example in ADR 0003"
       clm_examples.each do |token|
         assert FmapDetermination::CLM_FORMAT.match?(token),
                "expected ADR 0003 CLM example #{token.inspect} to match CLM_FORMAT"

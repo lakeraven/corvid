@@ -108,6 +108,38 @@ module Corvid
       ensure_up!
     end
 
+    test "down writes display labels then up restores every canonical role_code" do
+      member_ids = ReplaceCareTeamMemberRoleWithRoleCode::ROLE_CODES.index_with do |code|
+        insert_up_state_member!(role_code: code)
+      end
+
+      migrate_role_code!(:down)
+
+      ReplaceCareTeamMemberRoleWithRoleCode::ROLE_LABELS.each do |code, label|
+        assert_equal label, down_member_role(member_ids.fetch(code)),
+                     "expected down migration label for #{code}"
+      end
+
+      migrate_role_code!(:up)
+
+      ReplaceCareTeamMemberRoleWithRoleCode::ROLE_CODES.each do |code|
+        assert_equal code, CareTeamMember.find(member_ids.fetch(code)).role_code
+      end
+    ensure
+      member_ids&.each_value { |id| cleanup_member!(id) }
+      ensure_up!
+    end
+
+    test "P4 replayed role_code migration CHECK definition matches schema-load baseline" do
+      expected = fetch_check_constraint_definition(ReplaceCareTeamMemberRoleWithRoleCode::ROLE_CODE_CHECK)
+      migrate_role_code!(:down)
+      migrate_role_code!(:up)
+      replayed = fetch_check_constraint_definition(ReplaceCareTeamMemberRoleWithRoleCode::ROLE_CODE_CHECK)
+      assert_equal expected, replayed
+    ensure
+      ensure_up!
+    end
+
     private
 
     def require_role_code_migration!
@@ -166,6 +198,23 @@ module Corvid
         VALUES
           (#{team.id.to_i}, #{quote("pr_mig_#{SecureRandom.hex(2)}")}, #{quote(role)}, false, #{quote(now)}, #{quote(now)})
         RETURNING id
+      SQL
+    end
+
+    def insert_up_state_member!(role_code:)
+      team = CareTeam.create!(name: "Mig up team", facility_identifier: FACILITY)
+      CareTeamMember.create!(
+        care_team: team,
+        practitioner_identifier: "pr_mig_up_#{SecureRandom.hex(2)}",
+        role_code: role_code
+      ).id
+    end
+
+    def fetch_check_constraint_definition(name)
+      db_connection.select_value(<<~SQL)
+        SELECT pg_get_constraintdef(oid)
+        FROM pg_constraint
+        WHERE conname = #{quote(name)}
       SQL
     end
 

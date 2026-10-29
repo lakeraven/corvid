@@ -95,6 +95,28 @@ module Corvid
       assert_equal "other", member.reload.role_code
     end
 
+    %w[
+      primary_care
+      Consultant
+      other\ 
+      care-manager
+    ].each do |near_miss|
+      test "database CHECK rejects near-miss role_code #{near_miss.inspect}" do
+        assert_role_code_implemented!
+        member = create_member!(role_code: "consultant")
+        assert_raises(ActiveRecord::StatementInvalid, ActiveRecord::CheckViolation) do
+          CareTeamMember.transaction(requires_new: true) do
+            db_connection.exec_update(<<~SQL)
+              UPDATE corvid_care_team_members
+              SET role_code = #{db_connection.quote(near_miss)}
+              WHERE id = #{member.id.to_i}
+            SQL
+          end
+        end
+        assert_equal "consultant", member.reload.role_code
+      end
+    end
+
     private
 
     def db_connection
