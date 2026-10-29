@@ -130,6 +130,34 @@ class Corvid::AlternateResourceCheckFhirVerifyEligibilityTest < ActiveSupport::T
     end
   end
 
+  test "verify! leaves medicaid unchanged when active coverage has unreadable period end in current month" do
+    bundle = medicaid_selection_bundle(
+      coverage_resource(
+        id: "cov_unreadable_end",
+        status: "active",
+        payor: "UNREADABLE END PAYER",
+        period: { "start" => "2026-01-01", "end" => "2025-13-40" }
+      )
+    )
+    adapter = Corvid::Adapters::FhirAdapter.new(base_url: "https://example.test/fhir")
+
+    with_tenant(TENANT) do
+      travel_to Time.zone.local(2026, 10, 27, 9, 0, 0) do
+        check = medicaid_check_for("pt_test_001")
+        before = check.attributes.slice(*VERIFY_PERSISTED_KEYS)
+
+        adapter.stub(:fhir_search, bundle) do
+          refute check.verify!(date_of_service: INQUIRY, adapter: adapter)
+        end
+
+        check.reload
+        assert_equal before, check.attributes.slice(*VERIFY_PERSISTED_KEYS),
+                     "Unreadable period end must not persist enrolled via open-bound misread (review 1)"
+        refute_equal "enrolled", check.status
+      end
+    end
+  end
+
   test "verify! leaves medicaid unchanged when only entered-in-error coverage excludes the inquiry date" do
     bundle = medicaid_selection_bundle(
       coverage_resource(
@@ -174,7 +202,7 @@ class Corvid::AlternateResourceCheckFhirVerifyEligibilityTest < ActiveSupport::T
     }
   end
 
-  def coverage_resource(id:, status:, payor:, codings: [ { "code" => "MCDSC" } ], period: nil)
+  def coverage_resource(id:, status:, payor:, codings: [ { "code" => "MCDSC" } ], period: nil, meta: nil)
     resource = {
       "resourceType" => "Coverage",
       "id" => id,
@@ -183,6 +211,7 @@ class Corvid::AlternateResourceCheckFhirVerifyEligibilityTest < ActiveSupport::T
       "payor" => [ { "display" => payor } ]
     }
     resource["period"] = period if period
+    resource["meta"] = meta if meta
     resource
   end
 
