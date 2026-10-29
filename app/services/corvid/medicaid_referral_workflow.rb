@@ -11,17 +11,20 @@ module Corvid
   # A refusal raises Refused and persists nothing.
   #
   # An estimated cost that is nil on the referral and nil from the
-  # adapter is unknown. When nothing else requires committee review,
-  # that unknown cost is refused before any transition, so nothing is
-  # persisted. An unknown medical priority requires committee review
+  # adapter is unknown. complete_priority_assignment! drops any
+  # memoized service request and will not authorize unless that fresh
+  # read has a known cost. This workflow refuses from that same read,
+  # so an unknown cost never becomes authorized. Nothing is persisted.
+  # An unknown medical priority requires committee review
   # (PrcReferral#requires_committee?), and this workflow refuses it
   # with the committee-review reason, persisting nothing.
   #
   # From priority_assignment the guarded event is
   # complete_priority_assignment!, which sends requires_committee?
-  # referrals to committee_review. authorize! is not used, so committee
-  # review is never skipped. Already being in committee_review is
-  # refused the same way. The lock runs inside a savepoint
+  # referrals to committee_review and will not authorize without a
+  # known cost. authorize! is not used, so committee review is never
+  # skipped. Already being in committee_review is refused the same
+  # way. The lock runs inside a savepoint
   # (transaction requires_new) so a Refused rescued inside a caller's
   # transaction persists nothing: no coordination, no authorization,
   # no state change. When Refused or any other error escapes that
@@ -118,29 +121,36 @@ module Corvid
       referral.verify_alternate_resources!
     end
 
-    # complete_priority_assignment! routes requires_committee? referrals
-    # to committee_review and everyone else to authorized. authorize!
-    # would skip that fork. Unknown cost is refused before that event
-    # when committee review is not required. Landing in committee_review,
-    # already being there, or still requiring committee review persists
-    # nothing.
+    # complete_priority_assignment! drops the service-request memo, then
+    # routes requires_committee? referrals to committee_review. Its
+    # authorized branch also requires a known cost on that fresh read.
+    # authorize! would skip that fork. Drop the memo here first so
+    # may_? cannot skip that read because an earlier one required
+    # committee. When the event runs it drops the memo again; the
+    # unknown-cost refusal then uses the read the guards just took.
+    # When it does not run, the refusal uses the read may_? took.
+    # Landing in committee_review, already being there, or still
+    # requiring committee review persists nothing.
     def finish_priority_assignment!(referral)
       raise Refused, committee_review_refusal if referral.committee_review?
-      raise Refused, unknown_cost_refusal if refuses_for_unknown_cost?(referral)
 
+      referral.clear_service_request_memo
       referral.complete_priority_assignment! if referral.may_complete_priority_assignment?
       return if referral.authorized?
 
+      raise Refused, unknown_cost_refusal if refuses_for_unknown_cost?(referral)
       raise Refused, committee_review_refusal if committee_review_unresolved?(referral)
       raise Refused, blocked_authorization_message(referral)
     end
 
-    # Nil on the referral and nil from the adapter. A priority or a
-    # review flag still takes the committee path.
+    # Nil on the referral and nil from the adapter, on the service
+    # request the routing decision just read. A priority or a review
+    # flag still takes the committee path. An unparseable cost requires
+    # committee and is not this refusal.
     def refuses_for_unknown_cost?(referral)
       return false if referral.requires_committee?
 
-      referral.estimated_cost.nil? && referral.service_request&.estimated_cost.nil?
+      !referral.priority_assignment_cost_known?
     end
 
     def unknown_cost_refusal

@@ -127,8 +127,11 @@ module Corvid
         transitions from: :priority_assignment, to: :committee_review, guard: :requires_committee?
         # The authorized sync is published once after commit
         # (publish_committed_referral_status); committee_review does not sync.
+        # Both costs absent does not require committee. It also must not
+        # authorize. The cost guard reads the service request the
+        # before-callback just refreshed.
         transitions from: :priority_assignment, to: :authorized,
-                    guard: :alternate_resources_exhausted?
+                    guard: [ :alternate_resources_exhausted?, :priority_assignment_cost_known? ]
       end
 
       event :authorize, before: :reverify_before_authorize do
@@ -172,6 +175,14 @@ module Corvid
 
     def service_request
       @service_request ||= Corvid.adapter.find_referral(referral_identifier) if referral_identifier.present?
+    end
+
+    # Committee routing and the unknown-cost rule read this memo. Drop it
+    # so the next read is the EHR's current service request. reload does
+    # this too. complete_priority_assignment! does it before its guards,
+    # so those guards and a refusal that follows them share one read.
+    def clear_service_request_memo
+      @service_request = nil
     end
 
     # 42 CFR 136.61 — PRC pays last. True only when every alternate resource
@@ -223,11 +234,21 @@ module Corvid
 
     # EHR cost when it is not nil, otherwise the local column. An unknown
     # cost or priority requires committee. Both costs absent does not.
-    # A known priority in 1..4 requires review at 3 or 4. Nil priority
-    # does too, and so does a priority outside 1..4. A non-finite,
-    # negative, or non-USD cost is unknown.
+    # Absence is not authorization: the authorized branch requires
+    # priority_assignment_cost_known?. A known priority in 1..4 requires
+    # review at 3 or 4. Nil priority does too, and so does a priority
+    # outside 1..4. A non-finite, negative, or non-USD cost is unknown.
     def requires_committee?
       committee_cost_requires_review? || committee_priority_requires_review? || flagged_for_review?
+    end
+
+    # A parsed amount from the EHR service request when that cost is
+    # present, otherwise from the local column. Nil from both is not a
+    # cost. Zero is a known cost. An unparseable cost is not known; it
+    # also requires committee, so this is the authorized branch's check
+    # that absence cannot authorize.
+    def priority_assignment_cost_known?
+      parse_committee_cost(committee_cost_value).is_a?(Numeric)
     end
 
     def committee_threshold
@@ -314,7 +335,7 @@ module Corvid
     end
 
     def refresh_medical_priority_from_rcis!
-      @service_request = nil
+      clear_service_request_memo
 
       rcis_priority = service_request&.medical_priority_level
 
@@ -346,7 +367,7 @@ module Corvid
     end
 
     def refresh_authorization_number_from_rcis!
-      @service_request = nil
+      clear_service_request_memo
 
       rcis_auth = service_request&.identifier
 
@@ -469,7 +490,7 @@ module Corvid
     # drops any pending publication mark.
     def reload(...)
       super.tap do
-        @service_request = nil
+        clear_service_request_memo
         reset_referral_publication_mark
       end
     end
@@ -637,12 +658,13 @@ module Corvid
       reverify_for_event(:verify_alternate_resources)
     end
 
-    # requires_committee? reads priority and cost from the service-request
-    # memo. Drop it before that guard so an EHR change after an earlier
-    # read routes this decision. A direct read keeps the memo. reload
-    # clears it for the next read.
+    # requires_committee? and priority_assignment_cost_known? read
+    # priority and cost from the service-request memo. Drop it before
+    # those guards so one fresh EHR read routes this decision. An absent
+    # cost on that read cannot take the authorized branch. A direct read
+    # keeps the memo. reload clears it for the next read.
     def reverify_before_complete_priority_assignment
-      @service_request = nil
+      clear_service_request_memo
       reverify_for_event(:complete_priority_assignment)
     end
 
