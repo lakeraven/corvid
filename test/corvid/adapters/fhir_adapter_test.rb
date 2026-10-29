@@ -2219,9 +2219,16 @@ class Corvid::Adapters::FhirAdapterTest < Minitest::Test
   end
 
   def test_verify_eligibility_malformed_period_dates_stay_nil
-    result = eligibility_for_period("start" => "2026-13", "end" => "not-a-date")
-    assert_nil result[:coverage_start]
-    assert_nil result[:coverage_end]
+    malformed_start = "2026-13"
+    malformed_end = "not-a-date"
+    result = eligibility_for_period("start" => malformed_start, "end" => malformed_end)
+    assert_nil result,
+             "Present but invalid FHIR period bounds must make verify_eligibility unknown"
+    [ malformed_start, malformed_end ].each do |bad|
+      refute result.is_a?(Hash) &&
+               result.values_at(:coverage_start, :coverage_end).include?(bad),
+             "Malformed period bound #{bad.inspect} must not be echoed as a string"
+    end
   end
 
   # Issue #712 R11 / R12: pick covering active Coverage; period bounds vs inquiry date.
