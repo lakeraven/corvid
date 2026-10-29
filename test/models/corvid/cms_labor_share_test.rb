@@ -63,6 +63,13 @@ module Corvid
       assert dup.errors[:calendar_year].any? | dup.errors[:payment_system].any?
     end
 
+    test "second create! for the same payment_system and calendar_year raises" do
+      CmsLaborShare.create!(valid_opps_attrs)
+      assert_raises(ActiveRecord::RecordInvalid) do
+        CmsLaborShare.create!(valid_opps_attrs)
+      end
+    end
+
     test "shipped CMS labor share CSV loads and every row cites a source" do
       path = Corvid::Engine.root.join("db/data/cms_labor_shares.csv")
       assert path.exist?, "builder must ship cited labor share data at #{path}"

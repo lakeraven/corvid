@@ -518,6 +518,7 @@ class Corvid::PrcImporterTest < ActiveSupport::TestCase
         wage_index: 1.0,
         release_label: "cms_opps_cy2026_final_rule"
       )
+      seed_opps_labor_share(calendar_year: 2026)
 
       Corvid::PrcImporter.reanalyze(tenant: TENANT)
 
@@ -527,6 +528,50 @@ class Corvid::PrcImporterTest < ActiveSupport::TestCase
       assert_equal "clear", analysis.recovery_confidence
       assert_equal "cms_opps_cy2026_final_rule", analysis.rate_source_release
       assert_in_delta 2_268.26, analysis.medicare_equivalent.to_f, 0.01
+    ensure
+      Corvid::PrcProcedureDictionary.reset!
+    end
+  end
+
+  test "reanalyze does not auto-install labor shares when corvid_cms_labor_shares is empty" do
+    with_tenant(TENANT) do
+      assert_equal 0, Corvid::CmsLaborShare.count
+
+      Corvid::PrcProcedureDictionary.register(
+        "OUTPATIENT_SCOPE",
+        hcpcs: "45380",
+        apc: "5071",
+        description: "Hospital outpatient colonoscopy"
+      )
+      outpatient = <<~PRC
+        H^PRC_EXPORT^SEA^20260601^1
+        O^OBL-OPPS-NOLABOR^DFN000456^VEND-HOSP^OUTPATIENT_SCOPE^20260615^A^5000.00^3000.00^2000.00^0.00^2026
+        P^OBL-OPPS-NOLABOR^PMT-OPPS-NOLABOR^20260630^CHK-OPPS^3000.00^SEA_HOSPITAL
+        T^1^1^1^3000.00^0.00
+      PRC
+      Corvid::PrcImporter.import(outpatient, source_file: "opps_no_labor.prc")
+      Corvid::OppsApcWeight.create!(
+        calendar_year: 2026,
+        apc_code: "5071",
+        relative_weight: 25.4378,
+        release_label: "cms_opps_cy2026_final_rule"
+      )
+      Corvid::OppsConversionFactor.create!(
+        calendar_year: 2026,
+        locality: "NATIONAL",
+        conversion_factor: 89.169,
+        wage_index: 1.0,
+        release_label: "cms_opps_cy2026_final_rule"
+      )
+
+      Corvid::PrcImporter.reanalyze(tenant: TENANT)
+
+      assert_equal 0, Corvid::CmsLaborShare.count,
+                   "reanalyze must not load db/data/cms_labor_shares.csv; use rake cms:labor_shares:import"
+      analysis = Corvid::PrcObligation.find_by(obligation_id: "OBL-OPPS-NOLABOR").latest_analysis
+      assert_equal "stub_estimate", analysis.recovery_confidence,
+                   "without labor shares, real OPPS rows are undetermined and fall back to stub pricing"
+      refute_equal "clear", analysis.recovery_confidence
     ensure
       Corvid::PrcProcedureDictionary.reset!
     end

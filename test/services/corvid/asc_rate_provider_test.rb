@@ -124,6 +124,16 @@ class Corvid::AscRateProviderTest < ActiveSupport::TestCase
     assert_equal expected, rate
   end
 
+  test "lookup_for leaves wage_index_fiscal_year nil when defaulting wage index to 1.0 with no IPPS row (#722)" do
+    Corvid::IppsHospitalRate.unscoped.delete_all
+    lookup = Corvid::AscRateProvider.lookup_for(
+      hcpcs_code: "0102T", locality: "NATIONAL", date: Date.new(2026, 6, 15)
+    )
+    refute_nil lookup
+    assert_nil lookup.wage_index_fiscal_year,
+               "no FY wage-index row was used; default 1.0 must not invent an FY"
+  end
+
   test "January CY 2026 service maps calendar year to FY 2026 wage index (#722)" do
     Corvid::IppsHospitalRate.unscoped.delete_all
     Corvid::IppsHospitalRate.create!(

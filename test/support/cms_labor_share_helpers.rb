@@ -7,23 +7,25 @@ module CmsLaborShareHelpers
   ASC_LABOR_SHARE = BigDecimal("0.5000")
 
   def seed_opps_labor_share(calendar_year:, labor_share: OPPS_LABOR_SHARE, source: "synthetic test fixture")
-    Corvid::CmsLaborShare.create!(
+    Corvid::CmsLaborShare.find_or_create_by!(
       payment_system: "opps",
-      calendar_year: calendar_year,
-      labor_share: labor_share,
-      source: source,
-      release_label: "test_opps_cy#{calendar_year}"
-    )
+      calendar_year: calendar_year
+    ) do |row|
+      row.labor_share = labor_share
+      row.source = source
+      row.release_label = "test_opps_cy#{calendar_year}"
+    end
   end
 
   def seed_asc_labor_share(calendar_year:, labor_share: ASC_LABOR_SHARE, source: "synthetic test fixture")
-    Corvid::CmsLaborShare.create!(
+    Corvid::CmsLaborShare.find_or_create_by!(
       payment_system: "asc",
-      calendar_year: calendar_year,
-      labor_share: labor_share,
-      source: source,
-      release_label: "test_asc_cy#{calendar_year}"
-    )
+      calendar_year: calendar_year
+    ) do |row|
+      row.labor_share = labor_share
+      row.source = source
+      row.release_label = "test_asc_cy#{calendar_year}"
+    end
   end
 
   # ADR 0004: exact BigDecimal, rounded to cents at the end.

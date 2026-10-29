@@ -182,6 +182,16 @@ class Corvid::OppsRateProviderTest < ActiveSupport::TestCase
     assert_equal expected, rate
   end
 
+  test "lookup_for leaves wage_index_fiscal_year nil when defaulting wage index to 1.0 with no IPPS row (#722)" do
+    Corvid::IppsHospitalRate.unscoped.delete_all
+    lookup = Corvid::OppsRateProvider.lookup_for(
+      apc_code: "5071", locality: "NATIONAL", date: Date.new(2026, 6, 15)
+    )
+    refute_nil lookup
+    assert_nil lookup.wage_index_fiscal_year,
+               "no FY wage-index row was used; default 1.0 must not invent an FY"
+  end
+
   # release_label merge: the APC weight is row A, the conversion factor
   # is row B. Assertions compare the raw label, never via .presence.
 
