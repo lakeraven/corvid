@@ -1,11 +1,13 @@
 # frozen_string_literal: true
 
 require "test_helper"
+require_relative "../../support/medicaid_priority_assignment_fresh_read_test_helper"
 
 # Issue #675 / PR #693: reload must drop memoized EHR service_request so
 # committee routing sees current adapter data.
 module Corvid
   class PrcReferralServiceRequestReloadTest < ActiveSupport::TestCase
+    include MedicaidPriorityAssignmentFreshReadTestHelper
     TENANT = "tnt_g693_stale_sr"
     FACILITY = "fac_g693"
     PATIENT = "TEST,PATIENT STALE"
@@ -98,6 +100,21 @@ module Corvid
           "must read fresh EHR priority at decision time, not memoized service_request"
         assert_equal "committee_review", referral.reload.status
         refute referral.authorized?
+      end
+    end
+
+    test "complete_priority_assignment! does not authorize when fresh EHR read drops committee need but cost stays unknown" do
+      with_tenant(TENANT) do
+        referral = referral_at_priority_assignment
+        configure_unknown_cost_two_read_scenario!(referral, patient_identifier: PATIENT)
+        status_before = referral.status
+
+        refute referral.complete_priority_assignment!,
+          "unknown cost after a fresh read must not authorize when committee review is not required"
+        referral.reload
+        refute referral.authorized?
+        assert_equal status_before, referral.status
+        refute_equal "A", Corvid.adapter.find_referral(referral.referral_identifier).chs_approval_status
       end
     end
 

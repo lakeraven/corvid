@@ -1,11 +1,13 @@
 # frozen_string_literal: true
 
 require "test_helper"
+require_relative "../../support/medicaid_priority_assignment_fresh_read_test_helper"
 
 # Issue #675 / PR #693: Medicaid primary authorization must refuse committee
 # routing using a fresh EHR read after reload, not a stale service_request memo.
 module Corvid
   class MedicaidReferralWorkflowFreshEhrCommitteeTest < ActiveSupport::TestCase
+    include MedicaidPriorityAssignmentFreshReadTestHelper
     TENANT = "tnt_g693_wf_committee"
     FACILITY = "fac_g693"
     PATIENT = "TEST,PATIENT WF G693"
@@ -66,7 +68,45 @@ module Corvid
       end
     end
 
+    test "finish_priority_assignment! refuses unknown cost when stale memo required committee but fresh read does not" do
+      with_tenant(TENANT) do
+        referral = referral_at_priority_assignment
+        configure_unknown_cost_two_read_scenario!(referral, patient_identifier: PATIENT)
+        status_before = referral.status
+
+        workflow = Corvid::MedicaidReferralWorkflow.new
+        error = assert_raises(MedicaidReferralWorkflow::Refused) do
+          workflow.send(:finish_priority_assignment!, referral)
+        end
+
+        assert_match(/unknown cost/i, error.message)
+        refute referral.reload.authorized?
+        assert_equal status_before, referral.status
+        assert_equal 0, referral.committee_reviews.count
+        refute_equal "A", Corvid.adapter.find_referral(referral.referral_identifier).chs_approval_status
+      end
+    end
+
     private
+
+    def create_all_determined_checks(referral)
+      AlternateResourceCheck::RESOURCE_TYPES.each do |type|
+        check = referral.alternate_resource_checks.find_or_initialize_by(resource_type: type)
+        check.status = "not_enrolled"
+        check.save!
+        stamp_alternate_resource_check_current!(check) unless check.not_checked? || check.checking?
+      end
+      referral.alternate_resource_checks.reload
+    end
+
+    def referral_at_priority_assignment
+      referral = referral_in_alternate_resource_review
+      create_all_determined_checks(referral)
+      assert referral.verify_alternate_resources!
+      assert_equal "priority_assignment", referral.status
+      referral
+    end
+
 
     def create_referral_record
       kase = Case.create!(patient_identifier: PATIENT, facility_identifier: FACILITY)

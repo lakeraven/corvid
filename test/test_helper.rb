@@ -6,6 +6,7 @@ require_relative "dummy/config/environment"
 require "rails/test_help"
 require_relative "../features/support/alternate_resource_exhaustion_helper"
 require_relative "support/referral_fulfilment_test_helper"
+require_relative "support/two_read_find_referral_adapter_delegate"
 
 # FK-correct table cleanup. Mirrors features/support/env.rb so minitest
 # and cucumber share the same deletion order.
