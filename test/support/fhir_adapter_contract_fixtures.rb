@@ -51,8 +51,9 @@ module FhirAdapterContractFixtures
     }
   end
 
-  def coverage_resource(id, patient_id)
-    {
+  # last_updated, a Time, becomes meta.lastUpdated: the source answer time.
+  def coverage_resource(id, patient_id, last_updated: nil)
+    resource = {
       "resourceType" => "Coverage",
       "id" => id,
       "status" => "active",
@@ -62,6 +63,8 @@ module FhirAdapterContractFixtures
       "subscriberId" => "TEST-POLICY-001",
       "period" => { "start" => "2026-01-01", "end" => "2026-12-31" }
     }
+    resource["meta"] = { "lastUpdated" => last_updated.utc.iso8601 } if last_updated
+    resource
   end
 
   # A coverage the payer has ended, so verify_eligibility must answer
