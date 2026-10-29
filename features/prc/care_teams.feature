@@ -30,32 +30,43 @@ Feature: Integrated care teams
 
   Scenario: Add members to care team
     Given a care team "Blue Team" exists
-    When I add a member with role "Primary Care Provider" and practitioner IEN "101"
-    And I add a member with role "Care Manager" and practitioner IEN "102"
-    And I add a member with role "Behavioral Health" and practitioner IEN "103"
+    When I add a member with role code "primary_care_provider" and practitioner IEN "101"
+    And I add a member with role code "care_manager" and practitioner IEN "102"
+    And I add a member with role code "other" and practitioner IEN "103"
     Then "Blue Team" should have 3 members
+    And the member with practitioner IEN "101" should have role display "Primary care provider"
+    And the member with practitioner IEN "102" should have role display "Care manager"
+    And the member with practitioner IEN "103" should have role display "Other"
 
-  Scenario: Care team member requires role
+  Scenario: Care team member requires role code
     Given a care team "Blue Team" exists
-    When I try to add a member without a role
+    When I try to add a member without a role code
     Then the member should be invalid
-    And there should be an error on member "role"
+    And there should be an error on member "role_code"
+
+  Scenario: Care team member rejects invalid role code
+    Given a care team "Blue Team" exists
+    When I try to add a member with role code "team_lead" and practitioner IEN "199"
+    Then the member should be invalid
+    And there should be an error on member "role_code"
+    And the member error messages should not include "team_lead"
 
   Scenario: Remove member from care team
     Given a care team "Blue Team" exists
-    And the care team has a member with role "Primary Care Provider" and practitioner IEN "101"
+    And the care team has a member with role code "primary_care_provider" and practitioner IEN "101"
     When I remove the member with practitioner IEN "101"
     Then "Blue Team" should have 0 members
 
   Scenario: Member can have a start and end date
     Given a care team "Blue Team" exists
-    When I add a member with role "Consultant" and practitioner IEN "105" starting "2024-01-01"
+    When I add a member with role code "consultant" and practitioner IEN "105" starting "2024-01-01"
     Then the member should have start date "2024-01-01"
     And the member should be active
+    And the member should have role display "Consultant"
 
   Scenario: Member with end date is inactive
     Given a care team "Blue Team" exists
-    And the care team has a member with role "Former PCP" ending "2023-12-31"
+    And the care team has a member with role code "primary_care_provider" ending "2023-12-31"
     Then the member should be inactive
     And "Blue Team" should have 0 active members
 
@@ -86,14 +97,14 @@ Feature: Integrated care teams
 
   Scenario: Care team can have a lead
     Given a care team "Blue Team" exists
-    When I add a member with role "Team Lead" and practitioner IEN "101" as lead
+    When I add a member with role code "care_manager" and practitioner IEN "101" as lead
     Then "Blue Team" should have a lead
     And the lead should have practitioner IEN "101"
 
   Scenario: Only one lead per care team
     Given a care team "Blue Team" exists
     And the care team has a lead with practitioner IEN "101"
-    When I add a member with role "Team Lead" and practitioner IEN "102" as lead
+    When I add a member with role code "care_manager" and practitioner IEN "102" as lead
     Then the lead should have practitioner IEN "102"
     And the former lead should still be a member
 
@@ -125,10 +136,10 @@ Feature: Integrated care teams
   Scenario: FHIR CareTeam resource
     Given a care team "Blue Team" exists
     And the care team has the following members:
-      | role                   | practitioner_ien |
-      | Primary Care Provider  | 101              |
-      | Care Manager           | 102              |
-      | Behavioral Health      | 103              |
+      | role_code             | practitioner_ien |
+      | primary_care_provider | 101              |
+      | care_manager            | 102              |
+      | other                   | 103              |
     When I request the FHIR representation
     Then I should receive a valid FHIR CareTeam resource
     And the FHIR resource should have 3 participants
@@ -151,7 +162,7 @@ Feature: Integrated care teams
 
   Scenario: Task can be assigned to care team member
     Given a care team "Blue Team" exists
-    And the care team has a member with role "Care Manager" and practitioner IEN "102"
+    And the care team has a member with role code "care_manager" and practitioner IEN "102"
     And a case exists for patient "Mary Jones" assigned to "Blue Team"
     When I create a task "Schedule follow-up" assigned to practitioner "102"
     Then the task assignee should be practitioner "102"
