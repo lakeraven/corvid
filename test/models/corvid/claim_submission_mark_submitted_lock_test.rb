@@ -18,6 +18,8 @@ class Corvid::ClaimSubmissionMarkSubmittedLockTest < ActiveSupport::TestCase
   teardown do
     travel_back
     restore_with_medicaid_submission_lock!
+    restore_enforce_pending_medicaid_hold!
+    Corvid.adapter.reset! if Corvid.adapter.respond_to?(:reset!)
     Corvid::TenantContext.reset!
     truncate_corvid_claim_graph!
   end
@@ -116,12 +118,68 @@ class Corvid::ClaimSubmissionMarkSubmittedLockTest < ActiveSupport::TestCase
     end
   end
 
+  test "mark_submitted! refused for AlternateResourcesNotCurrent keeps re-verified medicare_a status and checked_at" do
+    with_tenant(TENANT) do
+      claim = clear_to_submit_draft_claim!
+      stale_checked_at = RETRO_SCENARIO_TIME - 3.years
+      stale_medicare_a_on_own_referral!(claim.id, checked_at: stale_checked_at)
+      fresh_as_of = RETRO_SCENARIO_TIME
+      stub_verify_eligibility!(medicare_a: { eligible: true, as_of: fresh_as_of })
+      identifier = "CLM-MS-RV-ARC-#{SecureRandom.hex(3)}"
+
+      assert_raises(Corvid::ClaimSubmission::AlternateResourcesNotCurrent) do
+        claim.mark_submitted!(claim_identifier: identifier)
+      end
+
+      check = fresh_medicare_a_check_for_claim!(claim.id)
+      assert_equal "enrolled", check.status
+      assert_in_delta fresh_as_of.to_f, check.checked_at.to_f, 1.0
+      assert_draft_not_marked_submitted!(fresh_claim_row(claim.id))
+    end
+  end
+
+  test "mark_submitted! refused for HeldForPendingMedicaid keeps re-verified medicare_a checked_at" do
+    with_tenant(TENANT) do
+      claim = held_draft_claim!
+      stale_checked_at = RETRO_SCENARIO_TIME - 3.years
+      stale_medicare_a_on_own_referral!(claim.id, checked_at: stale_checked_at)
+      fresh_as_of = RETRO_SCENARIO_TIME
+      stub_verify_eligibility!(medicare_a: { eligible: false, as_of: fresh_as_of })
+      identifier = "CLM-MS-RV-HOLD-#{SecureRandom.hex(3)}"
+
+      assert_raises(Corvid::ClaimSubmission::HeldForPendingMedicaid) do
+        claim.mark_submitted!(claim_identifier: identifier)
+      end
+
+      check = fresh_medicare_a_check_for_claim!(claim.id)
+      assert_equal "not_enrolled", check.status
+      assert_in_delta fresh_as_of.to_f, check.checked_at.to_f, 1.0
+      assert_draft_not_marked_submitted!(fresh_claim_row(claim.id))
+    end
+  end
+
+  test "mark_submitted! raises AlternateResourcesNotCurrent when own referral medicare_a enrolls after gates and before record" do
+    with_tenant(TENANT) do
+      claim = clear_to_submit_draft_claim!
+      identifier = "CLM-MS-EXH-GAP-#{SecureRandom.hex(3)}"
+      hook_enforce_pending_medicaid_hold_flip_own_referral!(claim.id)
+
+      assert_raises(Corvid::ClaimSubmission::AlternateResourcesNotCurrent) do
+        claim.mark_submitted!(claim_identifier: identifier)
+      end
+
+      assert_draft_not_marked_submitted!(fresh_claim_row(claim.id))
+    end
+  end
+
   private
 
   @with_medicaid_submission_lock_original = nil
+  @enforce_pending_medicaid_hold_original = nil
 
   class << self
     attr_accessor :with_medicaid_submission_lock_original
+    attr_accessor :enforce_pending_medicaid_hold_original
   end
 
   def hook_mark_submitted_pre_lock_gap!(claim_id)
@@ -146,6 +204,72 @@ class Corvid::ClaimSubmissionMarkSubmittedLockTest < ActiveSupport::TestCase
     return unless original
 
     Corvid::ClaimSubmission.define_method(:with_medicaid_submission_lock, original)
+  end
+
+  def hook_enforce_pending_medicaid_hold_flip_own_referral!(claim_id)
+    flipped = false
+    test_case = self
+    tenant = TENANT
+    original = enforce_pending_medicaid_hold_original_method
+    Corvid::ClaimSubmission.define_method(:enforce_pending_medicaid_hold!) do |*args, **kwargs, &block|
+      if !flipped && id == claim_id
+        flipped = true
+        ActiveRecord::Base.connection_pool.with_connection do
+          Corvid::TenantContext.with_tenant(tenant) do
+            test_case.send(:enroll_medicare_a_on_own_referral!, claim_id)
+          end
+        end
+      end
+      original.bind_call(self, *args, **kwargs, &block)
+    end
+  end
+
+  def enforce_pending_medicaid_hold_original_method
+    self.class.enforce_pending_medicaid_hold_original ||=
+      Corvid::ClaimSubmission.instance_method(:enforce_pending_medicaid_hold!)
+  end
+
+  def restore_enforce_pending_medicaid_hold!
+    original = self.class.enforce_pending_medicaid_hold_original
+    return unless original
+
+    Corvid::ClaimSubmission.define_method(:enforce_pending_medicaid_hold!, original)
+  end
+
+  def stale_medicare_a_on_own_referral!(claim_id, checked_at:)
+    peer = Corvid::ClaimSubmission.find(claim_id)
+    peer.send(:resolve_prc_referral_from_identifier) if peer.prc_referral.blank? && peer.referral_identifier.present?
+    referral = peer.prc_referral
+    raise "precondition: claim must bill an own PRC referral" if referral.nil?
+
+    check = referral.alternate_resource_checks.find_by!(resource_type: "medicare_a")
+    check.update!(
+      status: "not_enrolled",
+      checked_at: checked_at,
+      coverage_start: nil,
+      coverage_end: nil,
+      renewal_date: nil
+    )
+  end
+
+  def stub_verify_eligibility!(medicare_a:)
+    Corvid.adapter.define_singleton_method(:verify_eligibility) do |_patient_identifier, resource_type|
+      return medicare_a if resource_type == "medicare_a"
+
+      { eligible: false, as_of: medicare_a[:as_of] }
+    end
+  end
+
+  def fresh_medicare_a_check_for_claim!(claim_id)
+    peer = Corvid::ClaimSubmission.find(claim_id)
+    peer.send(:resolve_prc_referral_from_identifier) if peer.prc_referral.blank? && peer.referral_identifier.present?
+    referral = peer.prc_referral
+    Corvid::AlternateResourceCheck.uncached do
+      Corvid::AlternateResourceCheck.unscoped.find_by!(
+        prc_referral_id: referral.id,
+        resource_type: "medicare_a"
+      )
+    end
   end
 
   def assert_draft_not_marked_submitted!(row)
