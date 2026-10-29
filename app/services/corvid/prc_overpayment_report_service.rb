@@ -13,7 +13,11 @@ module Corvid
   #
   # Every detail row carries the provenance fields auditors and recovery
   # counterparties need to answer "where does this number come from?":
-  # analyzer_version, rate_source, rate_source_release, source_file.
+  # analyzer_version, rate_source, rate_source_release, wage_area,
+  # crosswalk_release, source_file. wage_area is the CMS wage area for
+  # an institutional claim ("NATIONAL" when no crosswalk row resolved)
+  # and nil for professional claims. crosswalk_release is the ZIP→CBSA
+  # release label, or nil when the claim did not use a labeled row.
   #
   # Recoverable-now overpayments (recovery_confidence = "clear") are
   # reported separately from stub-estimate ("stub_estimate") so a tribal
@@ -36,6 +40,7 @@ module Corvid
       payment_system recovery_confidence currency
       billed_amount paid_amount medicare_equivalent overpayment
       analyzer_version rate_source rate_source_release
+      wage_area crosswalk_release
       source_file analyzed_at
     ].freeze
 
@@ -227,12 +232,14 @@ module Corvid
       # version that contributed a row (so a single packet that mixes
       # phase_1.5 + phase_2 rows is self-documenting) and every
       # rate_source_release used in the recoverable bucket (the dollars
-      # the auditor will actually try to verify). Also pins the rule
+      # the auditor will actually try to verify) and every
+      # crosswalk_release on those same rows. Also pins the rule
       # constants so the packet is interpretable years later even if the
       # engine widens its source set.
       def methodology_manifest(tenant:, filters:, recoverable_rows:, exception_rows:)
         analyzer_versions = (recoverable_rows + exception_rows).map { |r| r[:analyzer_version] }.compact.uniq.sort
         rate_releases = recoverable_rows.map { |r| r[:rate_source_release] }.compact.uniq.sort
+        crosswalk_releases = recoverable_rows.map { |r| r[:crosswalk_release] }.compact.uniq.sort
 
         JSON.pretty_generate(
           tenant: tenant,
@@ -240,6 +247,7 @@ module Corvid
           filters: filters.compact,
           analyzer_versions: analyzer_versions,
           rate_source_releases: rate_releases,
+          crosswalk_releases: crosswalk_releases,
           rule: {
             recoverable_confidence: Corvid::RecoverableRule::RECOVERABLE_CONFIDENCE,
             recoverable_rate_sources: Corvid::RecoverableRule::RECOVERABLE_RATE_SOURCES.to_a
@@ -359,6 +367,8 @@ module Corvid
           analyzer_version: analysis.analyzer_version,
           rate_source: analysis.rate_source,
           rate_source_release: analysis.rate_source_release,
+          wage_area: analysis.wage_area,
+          crosswalk_release: analysis.crosswalk_release,
           source_file: obligation.source_file,
           analyzed_at: analysis.analyzed_at
         }

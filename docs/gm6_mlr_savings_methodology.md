@@ -63,6 +63,16 @@ rate rows are real CMS data, and on the real paths that label is
 `rate_source_release`.
 Pricing still falls back to NATIONAL when the resolved wage area has
 no wage-index row.
+
+The audit packet carries that wage-area choice (#372). `detail.csv`
+adds `wage_area` and `crosswalk_release` immediately after
+`rate_source_release`. An institutional claim with no crosswalk row
+stores `NATIONAL` and a null crosswalk release. A professional claim
+stores null for both. The facility ZIP is not in the packet.
+`methodology.json` adds `crosswalk_releases`, the sorted distinct
+non-nil crosswalk release labels from recoverable rows, and still
+lists `rate_source_releases`.
+
 Because Billings' real wage index is **below** 1.0, a CBSA-adjusted
 MLR would be **lower**, and the savings number **higher**. This demo
 undersells the number a loaded crosswalk would show.

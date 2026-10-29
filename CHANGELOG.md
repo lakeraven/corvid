@@ -134,6 +134,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   institutional pricing on the NATIONAL wage index. PFS locality codes
   overlap wage-area codes (PFS "02" is Seattle; wage area "02" is rural
   Alaska), so the wage-area argument is only the crosswalk result.
+  `corvid_prc_overpayment_analyses` stores nullable `wage_area` and
+  `crosswalk_release` from that same result. `wage_area` is null,
+  `NATIONAL`, or the crosswalk CBSA shape (five digits or a two-digit
+  rural-state code). An institutional claim with no crosswalk row
+  stores `NATIONAL` and a null `crosswalk_release`. A professional
+  claim stores null for both. The facility ZIP is not stored.
+  `detail.csv` adds `wage_area` and `crosswalk_release` after
+  `rate_source_release`. `methodology.json` adds `crosswalk_releases`,
+  the sorted distinct non-nil crosswalk releases on recoverable rows,
+  and still lists `rate_source_releases`.
 - Postgres CHECK constraints and foreign keys now bound columns that
   accepted any string. Value lists: `corvid_prc_referrals.priority_system`
   (`corvid_v1`), `corvid_prc_eligibility_decisions.provider_confidence`

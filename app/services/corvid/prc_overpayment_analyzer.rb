@@ -43,8 +43,10 @@ module Corvid
   #   - Result#wage_area is the CMS wage area for an institutional
   #     result (IPPS, OPPS, ASC): the crosswalk code, or nil when the
   #     facility ZIP is missing or malformed or that fiscal year has
-  #     no crosswalk row (priced as NATIONAL). Professional PFS,
-  #     unmapped, and missing-date results leave it nil. Institutional
+  #     no crosswalk row (priced as NATIONAL). Result#crosswalk_release
+  #     is that row's release_label, or nil when the label is blank or
+  #     there is no row. Professional PFS,
+  #     unmapped, and missing-date results leave both nil. Institutional
   #     notes end with "Wage area: <code> (crosswalk release <label>)."
   #     when the row has a release label, or "Wage area: <code>." when
   #     that label is blank. A missing or malformed ZIP ends with
@@ -81,7 +83,14 @@ module Corvid
     # wage_area is the crosswalk code for institutional results, or
     # nil when the ZIP is missing, malformed, or that fiscal year has
     # no crosswalk row. Nil for professional, unmapped, and
-    # missing-date results. It is not a PFS locality.
+    # missing-date results. It is not a PFS locality. It stays nil
+    # for a NATIONAL price so the note can tell a missing ZIP from a
+    # missing row; the persisted analysis column stores "NATIONAL"
+    # for that institutional miss.
+    # crosswalk_release is that row's release_label, or nil when the
+    # label is blank or there is no row. Professional, unmapped, and
+    # missing-date results leave it nil. Both values come from the
+    # crosswalk row already loaded for the obligation.
     Result = Struct.new(
       :obligation_id, :patient_dfn, :vendor_id,
       :procedure_code, :hcpcs, :drg, :apc, :procedure_description,
@@ -91,6 +100,7 @@ module Corvid
       :payment_system, :rate_source, :recovery_confidence,
       :rate_source_release,
       :wage_area,
+      :crosswalk_release,
       :notes,
       keyword_init: true
     )
@@ -506,6 +516,9 @@ module Corvid
       def append_wage_area_note(result, crosswalk)
         return result unless %i[ipps opps asc].include?(result.payment_system)
 
+        # Same row analyze_obligation already loaded. Blank labels
+        # collapse to nil so methodology.json does not list "".
+        result.crosswalk_release = crosswalk&.release_label.presence
         sentence = wage_area_note(result, crosswalk)
         existing = result.notes.to_s
         result.notes = existing.empty? ? sentence : "#{existing} #{sentence}"

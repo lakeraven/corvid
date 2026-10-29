@@ -337,3 +337,20 @@ any CAH multiplier text, and never include the facility ZIP:
 - `Wage area: <code>.` when that label is blank
 - `Wage area: NATIONAL (facility ZIP missing or malformed).` when the ZIP is nil, not a String, or not `#####` / `#####-####`
 - `Wage area: NATIONAL (no crosswalk row for the facility ZIP in FY <year>).` when the ZIP is well formed and that fiscal year has no row
+
+`PrcImporter.reanalyze` stores that resolution on
+`corvid_prc_overpayment_analyses` (#372). `wage_area` is the resolved
+code, or `NATIONAL` when an institutional claim has no crosswalk row
+(`Result#wage_area` stays nil in that case so the note can still
+distinguish a missing ZIP from a missing row). Professional rows
+leave `wage_area` null. `crosswalk_release` is the row's
+`release_label`, or null when the label is blank or there is no row.
+A CHECK allows only null, `NATIONAL`, or the crosswalk CBSA shape
+(five digits or a two-digit rural-state code), the same shape as
+`corvid_zip_cbsa_crosswalks.cbsa`. The facility ZIP is not a column.
+
+The audit packet cites the same fields. `detail.csv` places
+`wage_area` and `crosswalk_release` immediately after
+`rate_source_release`. `methodology.json` adds `crosswalk_releases`,
+the sorted distinct non-nil `crosswalk_release` values on recoverable
+rows, and still lists `rate_source_releases`.
