@@ -17,7 +17,8 @@ module OpaqueTokenCheckMutants
       "#{prefix}_#{body.downcase}",
       "x_#{body}",
       "#{prefix}_#{body[0, 25]}",
-      "#{valid}X"
+      "#{valid}X",
+      "#{valid}\n"
     ]
     FORBIDDEN_ULID_LETTERS.each do |letter|
       anchors << "#{prefix}_#{body.sub(/.$/, letter)}"
@@ -40,7 +41,10 @@ module OpaqueTokenCheckMutants
       "CLM-#{body}",
       "123456789",
       "clm_example_1",
-      "#{valid}X"
+      "#{valid}X",
+      "#{valid}\n",
+      "CLN_#{body}",
+      "Clm_#{body}"
     ]
     clm_opaque = "clm_#{body}"
     anchors << clm_opaque unless Corvid::OpaqueToken.valid?(clm_opaque)

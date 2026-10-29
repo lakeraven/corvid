@@ -45,6 +45,30 @@ module Corvid
       assert_includes determination.errors[:evidence_refs], SUPPORTS_KIND_ERROR
     end
 
+    test "symbol-keyed supports with an unsupported kind is rejected without echoing the kind" do
+      bad_kind = "unsupported_kind"
+      determination = build_hundred_percent_determination(
+        evidence_refs: [ { supports: bad_kind, ref: TOKEN } ]
+      )
+      refute determination.valid?
+      assert_includes determination.errors[:evidence_refs], SUPPORTS_KIND_ERROR
+      determination.errors.full_messages.each do |message|
+        refute_includes message, bad_kind
+      end
+    end
+
+    test "symbol-keyed aian_status evidence is accepted and stored with string keys" do
+      determination = build_hundred_percent_determination(
+        evidence_refs: [ { supports: "aian_status", ref: TOKEN } ]
+      )
+      assert determination.valid?, determination.errors.full_messages.join(", ")
+      determination.save!
+      stored = determination.reload.evidence_refs.sole
+      assert_equal %w[ref supports], stored.keys.sort
+      assert_equal "aian_status", stored["supports"]
+      assert_equal TOKEN, stored["ref"]
+    end
+
     test "F1 model new rejects a missing ref key" do
       determination = build_hundred_percent_determination(
         evidence_refs: [ { "supports" => "aian_status" } ]

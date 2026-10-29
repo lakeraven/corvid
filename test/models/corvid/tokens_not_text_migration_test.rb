@@ -274,6 +274,16 @@ module Corvid
       ensure_up!
     end
 
+    test "P4 replayed token migration CHECK definitions match schema-load baseline" do
+      expected = fetch_check_constraint_definitions(token_migration_check_names)
+      migrate_tokens!(:down)
+      migrate_tokens!(:up)
+      replayed = fetch_check_constraint_definitions(token_migration_check_names)
+      assert_equal expected, replayed
+    ensure
+      ensure_up!
+    end
+
     test "P2 replayed CHECK constraints reject malformed token anchors after down then up" do
       determination_id = nil
       referral_id = nil
@@ -477,6 +487,26 @@ module Corvid
 
     def malformed_token_anchors
       OpaqueTokenCheckMutants.malformed_opaque_token_anchors(prefix: "ab")
+    end
+
+    def token_migration_check_names
+      [
+        ReplaceFreeTextWithTokens::CLAIM_CHECK,
+        ReplaceFreeTextWithTokens::EVIDENCE_CHECK,
+        ReplaceFreeTextWithTokens::ACTIVITY_CODE_CHECK,
+        ReplaceFreeTextWithTokens::REVIEWER_CHECK,
+        ReplaceFreeTextWithTokens::ASSIGNED_REVIEWER_CHECK
+      ]
+    end
+
+    def fetch_check_constraint_definitions(names)
+      names.index_with do |name|
+        db_connection.select_value(<<~SQL)
+          SELECT pg_get_constraintdef(oid)
+          FROM pg_constraint
+          WHERE conname = #{quote(name)}
+        SQL
+      end
     end
 
     def insert_up_state_determination!

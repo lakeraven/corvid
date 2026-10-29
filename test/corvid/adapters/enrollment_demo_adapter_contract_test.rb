@@ -93,7 +93,7 @@ class Corvid::Adapters::EnrollmentDemoAdapterContractTest < Minitest::Test
       [
         {
           practitioner_identifier: "pr-demo-001",
-          role: "practitioner",
+          role_code: "other",
           name: "DEMO CARE TEAM",
           status: "active"
         }
