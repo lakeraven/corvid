@@ -26,13 +26,17 @@ module Corvid
   # **Screening estimate, not adjudication.** The IPPS pricing formula
   # (`weight × base_rate × wage_index`) is the standard operating
   # payment, intentionally without IME, DSH, capital, outlier, or
-  # transfer adjustments. The OPPS formula
-  # (`apc_weight × conversion_factor × wage_index`) similarly omits
-  # status-indicator packaging, copay/coinsurance, outlier, and
-  # device/drug pass-through adjustments. Both are recovery-triage
-  # screening estimates — not claim-adjudication amounts. Demand-letter
-  # dollar figures should cite the analyzer's source/confidence labels
-  # alongside any total.
+  # transfer adjustments. The OPPS and ASC formulas apply the wage
+  # index only to the labor-related share
+  # (`weight × conversion_factor × (labor_share × wage_index + (1 − labor_share))`)
+  # and still omit status-indicator packaging, copay/coinsurance,
+  # outlier, and device/drug pass-through adjustments. CMS prices
+  # calendar year N with the fiscal year N IPPS wage index. A calendar
+  # year with no labor-share row is undetermined and falls through to
+  # the stub provider rather than pricing at a 100% labor share. These
+  # are recovery-triage screening estimates — not claim-adjudication
+  # amounts. Demand-letter dollar figures should cite the analyzer's
+  # source/confidence labels alongside any total.
   #
   # Public contract notes for callers:
   #   - Result#recovery_confidence values: :clear, :stub_estimate,
@@ -273,11 +277,12 @@ module Corvid
               rate_source: stub_derived ? :stub : :real,
               recovery_confidence: stub_derived ? :stub_estimate : :clear,
               rate_source_release: asc_lookup.release_label.presence,
-              notes: stub_derived ?
+              notes: (stub_derived ?
                 "Ambulatory surgical center (HCPCS #{proc_info.hcpcs}). Priced via " \
                 "stub-derived ASC canonical CSV (release=#{asc_lookup.release_label})." :
                 "Ambulatory surgical center (HCPCS #{proc_info.hcpcs}). " \
-                "Priced via real CMS ASC Final Rule (release=#{asc_lookup.release_label})."
+                "Priced via real CMS ASC Final Rule (release=#{asc_lookup.release_label}).") +
+                wage_and_labor_note(asc_lookup)
             )
           )
         end
@@ -298,11 +303,12 @@ module Corvid
               rate_source: stub_derived ? :stub : :real,
               recovery_confidence: stub_derived ? :stub_estimate : :clear,
               rate_source_release: lookup.release_label.presence,
-              notes: stub_derived ?
+              notes: (stub_derived ?
                 "Hospital outpatient (APC #{proc_info.apc}). Priced via " \
                 "stub-derived OPPS canonical CSV (release=#{lookup.release_label})." :
                 "Hospital outpatient (APC #{proc_info.apc}). " \
-                "Priced via real CMS OPPS Final Rule (release=#{lookup.release_label})."
+                "Priced via real CMS OPPS Final Rule (release=#{lookup.release_label}).") +
+                wage_and_labor_note(lookup)
             )
           )
         else
@@ -371,6 +377,16 @@ module Corvid
           recovery_confidence: :missing_service_date,
           notes: "Obligation has no parseable service_date (upstream date malformed); " \
                  "cannot select a fee schedule. Clean the obligation row, then re-import."
+        )
+      end
+
+      # Provenance for a real OPPS or ASC lookup: the fiscal year of the
+      # IPPS wage index (CY N → FY N) and the labor share applied to it.
+      def wage_and_labor_note(lookup)
+        format(
+          " Wage index FY %d, labor share %.4f.",
+          lookup.wage_index_fiscal_year,
+          lookup.labor_share
         )
       end
 

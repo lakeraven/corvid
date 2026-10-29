@@ -138,6 +138,7 @@ module Corvid
       # tenant; append one corvid_prc_overpayment_analyses row per obligation.
       # Existing analyses are preserved.
       def reanalyze(tenant:)
+        ensure_shipped_labor_shares!
         analyses_written = 0
 
         Corvid::TenantContext.with_tenant(tenant) do
@@ -168,6 +169,18 @@ module Corvid
       end
 
       private
+
+      # The bundled OPPS/ASC labor shares are reference data. A database
+      # that has never imported them would otherwise price every real
+      # OPPS/ASC rate as undetermined and fall through to the stub.
+      # Install the snapshot only when the table is empty so a host that
+      # already loaded shares — including a year deliberately left out —
+      # is left alone. A year still absent after the snapshot stays nil.
+      def ensure_shipped_labor_shares!
+        return if CmsLaborShare.exists?
+
+        CmsLaborShareLoader.load!
+      end
 
       # Bulk-upsert obligations in a single round trip. Dedupes within the
       # file by obligation_id (last record wins) and pre-queries existing

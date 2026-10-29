@@ -22,6 +22,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   instead of `denial_reason_token`.
 
 ### Added
+- OPPS and ASC calendar year N is priced with the fiscal year N IPPS
+  wage index, applied only to that year's labor-related share (#722).
+  Shares live in `corvid_cms_labor_shares` and
+  `db/data/cms_labor_shares.csv` (`rake cms:labor_shares:import`).
+  Each shipped row cites that calendar year's OPPS/ASC final rule.
+  OPPS labor-related share is 60% and ASC is 50% for CY 2007–CY 2026.
+  A calendar year with no labor-share row is undetermined: the rate
+  provider returns nil instead of pricing at a 100% labor share.
+  Lookups and analyzer notes record the wage-index fiscal year and
+  the labor share used. `PrcImporter.reanalyze` installs that snapshot
+  when the table is still empty, so a real OPPS or ASC rate is not
+  downgraded to a stub only because the shares were never imported.
 - ZIP-to-CBSA wage-area crosswalk (#371). `corvid_zip_cbsa_crosswalks`
   stores the CMS crosswalk by federal fiscal year (`zip` is five ASCII
   digits; `cbsa` is a five-digit CBSA or a two-digit rural-state code;

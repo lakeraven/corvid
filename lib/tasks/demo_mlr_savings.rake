@@ -281,6 +281,20 @@ module Corvid
             conversion_factor: OPPS_CONVERSION_FACTOR, wage_index: OPPS_WAGE_INDEX,
             release_label: OPPS_RELEASE_LABEL
           )
+          # Labor-related share 60% (CY 2026 OPPS/ASC Final Rule). Wage
+          # index 1.0 makes the adjustment factor 1, so the headline
+          # dollars stay the published figures. Without this row the
+          # provider returns nil and the panel drops out of :clear.
+          Corvid::CmsLaborShare.where(
+            payment_system: "opps", calendar_year: OPPS_CALENDAR_YEAR
+          ).delete_all
+          Corvid::CmsLaborShare.create!(
+            payment_system: "opps",
+            calendar_year: OPPS_CALENDAR_YEAR,
+            labor_share: BigDecimal("0.6000"),
+            source: "CY 2026 OPPS/ASC Final Rule",
+            release_label: OPPS_RELEASE_LABEL
+          )
         end
 
         def register_dictionaries!

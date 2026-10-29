@@ -4,9 +4,30 @@ The PRC overpayment analyzer routes outpatient (APC-mapped) claims to
 **ASC pricing** (lower CF than OPPS) when the obligation's vendor is
 on the CMS Ambulatory Surgical Center registry on the service date.
 
-This doc covers the ASC **facility registry** sourcing. The ASC APC
-weight + conversion factor data is a separate slice — Addendum AA
-from each year's OPPS Final Rule.
+This doc covers the ASC **facility registry** sourcing. The ASC
+HCPCS weight + conversion factor data is a separate slice — Addendum
+AA from each year's OPPS/ASC Final Rule.
+
+## Payment formula (#722)
+
+ASC screening rates use the calendar-year HCPCS payment weight and
+ASC conversion factor, and the fiscal-year N IPPS wage index for
+calendar year N. FY N starts 1 October of N−1. That is the wage index
+numbered the same as the calendar year, not the fiscal year the
+service date falls in. October–December of CY N still uses FY N.
+
+```
+payment_weight × ASC conversion factor × (labor_share × wage_index + (1 − labor_share))
+```
+
+The labor-related share is a sourced row in `corvid_cms_labor_shares`
+(`payment_system` `asc`), shipped in `db/data/cms_labor_shares.csv`
+and loaded with `rake cms:labor_shares:import`. Each row cites that
+calendar year's OPPS/ASC final rule. The ASC labor-related share in
+that file is 50%. A calendar year with no row is undetermined:
+`AscRateProvider` returns nil rather than pricing at a 100% labor
+share. Money is exact `BigDecimal`, rounded to cents once (ADR 0004).
+The lookup records the wage-index fiscal year and the labor share used.
 
 ## Source
 

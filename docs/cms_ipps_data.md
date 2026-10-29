@@ -215,9 +215,11 @@ specific hospital's actual payable wage index.
 
 Validated end-to-end against the real FY2026 CMS file (465 CBSA/
 rural-state rows): Billings, MT (CBSA 13740) carries a 0.8961 wage
-index — an OPPS APC 5071 screening rate of $2,083.79 vs. $2,325.40 at
-the flat NATIONAL default, a ~10% difference that matters for tribal
-PRC recovery-triage accuracy in low-wage-index rural areas.
+index — an OPPS APC 5071 screening rate of $2,180.43 vs. $2,325.40 at
+the flat NATIONAL default, about 6% lower once that index is applied
+only to the 60% OPPS labor-related share (#722). The difference
+matters for tribal PRC recovery-triage accuracy in low-wage-index
+rural areas.
 
 **Data loaded in the shared `cms-fee-schedules-v1` GitHub Release:**
 none yet. The per-CBSA FY 2026 file was validated locally only; the
