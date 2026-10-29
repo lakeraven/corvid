@@ -130,6 +130,34 @@ class Corvid::AlternateResourceCheckFhirVerifyEligibilityTest < ActiveSupport::T
     end
   end
 
+  test "verify! leaves medicaid unchanged when only entered-in-error coverage excludes the inquiry date" do
+    bundle = medicaid_selection_bundle(
+      coverage_resource(
+        id: "cov_entered_in_error_2020",
+        status: "entered-in-error",
+        payor: "STALE MEDICAID",
+        period: { "start" => "2020-01-01", "end" => "2025-12-31" }
+      )
+    )
+    adapter = Corvid::Adapters::FhirAdapter.new(base_url: "https://example.test/fhir")
+
+    with_tenant(TENANT) do
+      travel_to Time.zone.local(2026, 10, 27, 9, 0, 0) do
+        check = medicaid_check_for("pt_test_001")
+        before = check.attributes.slice(*VERIFY_PERSISTED_KEYS)
+
+        adapter.stub(:fhir_search, bundle) do
+          refute check.verify!(date_of_service: INQUIRY, adapter: adapter)
+        end
+
+        check.reload
+        assert_equal before, check.attributes.slice(*VERIFY_PERSISTED_KEYS),
+                     "verify! must not persist not_enrolled when adapter answer is unknown (issue #712 review 1)"
+        refute_equal "not_enrolled", check.status
+      end
+    end
+  end
+
   private
 
   def medicaid_check_for(patient_identifier)

@@ -105,40 +105,104 @@ class Corvid::Adapters::FhirAdapterVerifyEligibilityCoverageSelectionTest < Mini
     end
   end
 
-  def test_verify_eligibility_false_from_bounds_when_only_non_active_rows_have_ended_periods
-    %w[entered-in-error].each do |status|
-      bundle = coverage_bundle(
-        coverage_entry(
-          id: "cov_#{status.tr('-', '_')}",
-          status: status,
-          payor: "TERMINATED PAYER",
-          period: { "start" => "2020-01-01", "end" => "2025-12-31" }
-        )
+  def test_verify_eligibility_nil_when_only_unknown_status_rows_exclude_inquiry
+    repro = coverage_bundle(
+      coverage_entry(
+        id: "cov_entered_in_error_2020",
+        status: "entered-in-error",
+        payor: "STALE MEDICAID",
+        period: { "start" => "2020-01-01", "end" => "2025-12-31" }
       )
+    )
 
-      with_bundle(bundle) do
-        result = @adapter.verify_eligibility("pt_test_001", "medicaid", date_of_service: INQUIRY)
-        assert result.is_a?(Hash),
-               "#{status} with ended period and no applicable rows must answer eligible: false (K1e)"
-        refute result[:eligible]
-      end
+    with_bundle(repro) do
+      assert_nil @adapter.verify_eligibility("pt_test_001", "medicaid", date_of_service: INQUIRY),
+                 "entered-in-error Coverage whose period excludes the inquiry must be unknown (issue #712 review 1)"
     end
+  end
 
+  def test_verify_eligibility_nil_when_draft_coverage_period_excludes_inquiry
     bundle = coverage_bundle(
       coverage_entry(
-        id: "cov_no_status",
+        id: "cov_draft_excluded",
+        status: "draft",
+        payor: "DRAFT EXCLUDED PAYER",
+        period: { "start" => "2020-01-01", "end" => "2025-12-31" }
+      )
+    )
+
+    with_bundle(bundle) do
+      assert_nil @adapter.verify_eligibility("pt_test_001", "medicaid", date_of_service: INQUIRY),
+                 "draft with excluding bounds must be unknown when nothing applies (review 1)"
+    end
+  end
+
+  def test_verify_eligibility_nil_when_absent_status_period_excludes_inquiry
+    bundle = coverage_bundle(
+      coverage_entry(
+        id: "cov_no_status_excluded",
         status: nil,
-        payor: "TERMINATED PAYER",
+        payor: "ABSENT STATUS PAYER",
         period: { "start" => "2020-01-01", "end" => "2025-12-31" }
       )
     )
     bundle["entry"].first["resource"].delete("status")
 
     with_bundle(bundle) do
-      result = @adapter.verify_eligibility("pt_test_001", "medicaid", date_of_service: INQUIRY)
-      assert result.is_a?(Hash), "Absent status with ended period must answer eligible: false when nothing applies (K1e)"
+      assert_nil @adapter.verify_eligibility("pt_test_001", "medicaid", date_of_service: INQUIRY),
+                 "Absent status with excluding bounds must be unknown when nothing applies (review 1)"
+    end
+  end
+
+  def test_verify_eligibility_false_when_active_or_cancelled_period_excludes_inquiry
+    [
+      [ "active", "ACTIVE EXCLUDED" ],
+      [ "cancelled", "CANCELLED EXCLUDED" ]
+    ].each do |status, payor|
+      bundle = coverage_bundle(
+        coverage_entry(
+          id: "cov_#{status}_excluded",
+          status: status,
+          payor: payor,
+          period: { "start" => "2020-01-01", "end" => "2025-12-31" }
+        )
+      )
+
+      with_bundle(bundle) do
+        result = @adapter.verify_eligibility("pt_test_001", "medicaid", date_of_service: INQUIRY)
+        assert result.is_a?(Hash), "#{status} with excluding bounds must answer eligible: false"
+        refute result[:eligible], "#{status} excluding period must deny when no applicable row (review 1 pin)"
+      end
+    end
+  end
+
+  def test_verify_eligibility_excluding_active_denial_is_order_independent
+    early = coverage_entry(
+      id: "cov_early_excluded",
+      status: "active",
+      payor: "EARLY EXCLUDED PAYER",
+      period: { "start" => "2020-01-01", "end" => "2025-12-31" }
+    )
+    late = coverage_entry(
+      id: "cov_late_excluded",
+      status: "active",
+      payor: "LATE EXCLUDED PAYER",
+      period: { "start" => "2018-01-01", "end" => "2019-12-31" }
+    )
+
+    results = [ coverage_bundle(early, late), coverage_bundle(late, early) ].map do |bundle|
+      with_bundle(bundle) do
+        @adapter.verify_eligibility("pt_test_001", "medicaid", date_of_service: INQUIRY)
+      end
+    end
+
+    results.each do |result|
+      assert result.is_a?(Hash), "Two excluding active rows must still answer false, not nil"
       refute result[:eligible]
     end
+    assert_equal results.first[:payer_name], results.last[:payer_name],
+                 "Denial must come from latest period start among judged rows, not bundle order (review gap)"
+    assert_equal "EARLY EXCLUDED PAYER", results.first[:payer_name]
   end
 
   def test_verify_eligibility_nil_when_non_active_status_has_covering_period
@@ -162,6 +226,12 @@ class Corvid::Adapters::FhirAdapterVerifyEligibilityCoverageSelectionTest < Mini
   def test_verify_eligibility_true_prefers_payer_from_latest_period_start_among_agreeing_active_rows
     bundle = dual_medicaid_bundle(
       coverage_entry(
+        id: "cov_nil_start",
+        status: "active",
+        payor: "NIL START PAYER",
+        period: { "end" => "2026-12-31" }
+      ),
+      coverage_entry(
         id: "cov_early",
         status: "active",
         payor: "EARLY START PAYER",
@@ -178,8 +248,73 @@ class Corvid::Adapters::FhirAdapterVerifyEligibilityCoverageSelectionTest < Mini
     with_bundle(bundle) do
       result = @adapter.verify_eligibility("pt_test_001", "medicaid", date_of_service: INQUIRY)
       assert result[:eligible], "Agreeing active Coverages must verify enrollment (K1f)"
-      assert_equal "LATEST START PAYER", result[:payer_name]
+      assert_equal "LATEST START PAYER", result[:payer_name],
+                   "Nil period start ranks earliest; latest real start wins (review gap)"
       assert_equal Date.new(2026, 6, 1), result[:coverage_start]
+    end
+  end
+
+  def test_verify_eligibility_medicare_d_primary_type_does_not_match_medicare_a_or_b
+    coverage = coverage_entry(
+      id: "cov_medicare_d",
+      status: "active",
+      codings: [ { "code" => "medicare_d" }, { "code" => "MCRSC" } ],
+      payor: "PART D PAYER",
+      period: { "start" => "2026-01-01", "end" => "2026-12-31" }
+    )
+    bundle = coverage_bundle(coverage)
+
+    with_bundle(bundle) do
+      result = @adapter.verify_eligibility("pt_test_001", "medicare_d", date_of_service: INQUIRY)
+      assert result[:eligible], "medicare_d Coverage must match on primary type name (review 2)"
+      assert_equal "PART D PAYER", result[:payer_name]
+
+      assert_nil @adapter.verify_eligibility("pt_test_001", "medicare_a", date_of_service: INQUIRY),
+                 "Shared MCRSC secondary coding must not match medicare_a (review 2)"
+      assert_nil @adapter.verify_eligibility("pt_test_001", "medicare_b", date_of_service: INQUIRY),
+                 "Shared MCRSC secondary coding must not match medicare_b (review 2)"
+    end
+  end
+
+  def test_verify_eligibility_mcrsc_primary_only_is_unknown_for_medicare_siblings
+    bundle = coverage_bundle(
+      coverage_entry(
+        id: "cov_mcrsc_only_active",
+        status: "active",
+        codings: [ { "code" => "MCRSC" } ],
+        payor: "AMBIGUOUS MEDICARE",
+        period: { "start" => "2026-01-01", "end" => "2026-12-31" }
+      )
+    )
+
+    with_bundle(bundle) do
+      assert_nil @adapter.verify_eligibility("pt_test_001", "medicare_a", date_of_service: INQUIRY),
+                 "Primary shared ActCode without type name must stay unknown for medicare_a (review 2)"
+      assert_nil @adapter.verify_eligibility("pt_test_001", "medicare_b", date_of_service: INQUIRY),
+                 "Primary shared ActCode without type name must stay unknown for medicare_b (review 2)"
+    end
+  end
+
+  def test_verify_eligibility_medicaid_matches_primary_type_name_or_act_code
+    [
+      [ [ { "code" => "medicaid" } ], "TYPE NAME PAYER" ],
+      [ [ { "code" => "MCDSC" } ], "ACT CODE PAYER" ]
+    ].each do |codings, payor|
+      bundle = coverage_bundle(
+        coverage_entry(
+          id: "cov_medicaid_#{payor.tr(' ', '_').downcase}",
+          status: "active",
+          codings: codings,
+          payor: payor,
+          period: { "start" => "2026-01-01", "end" => "2026-12-31" }
+        )
+      )
+
+      with_bundle(bundle) do
+        result = @adapter.verify_eligibility("pt_test_001", "medicaid", date_of_service: INQUIRY)
+        assert result[:eligible], "medicaid inquiry must match Coverage typed #{codings.first['code']} (review 2)"
+        assert_equal payor, result[:payer_name]
+      end
     end
   end
 
@@ -217,21 +352,21 @@ class Corvid::Adapters::FhirAdapterVerifyEligibilityCoverageSelectionTest < Mini
     end
   end
 
-  def test_verify_eligibility_shared_mcrsc_code_true_when_active_plan_covers_inquiry
+  def test_verify_eligibility_shared_mcrsc_code_true_when_primary_type_name_matches
     bundle = coverage_bundle(
       coverage_entry(
-        id: "cov_medicare_active",
+        id: "cov_medicare_a_named",
         status: "active",
-        codings: [ { "code" => "MCRSC" } ],
-        payor: "ACTIVE MEDICARE",
+        codings: [ { "code" => "medicare_a" }, { "code" => "MCRSC" } ],
+        payor: "ACTIVE MEDICARE A",
         period: { "start" => "2026-01-01", "end" => "2026-12-31" }
       )
     )
 
     with_bundle(bundle) do
       result = @adapter.verify_eligibility("pt_test_001", "medicare_a", date_of_service: INQUIRY)
-      assert result[:eligible], "Active shared-type Coverage must still verify when it covers the inquiry (K2)"
-      assert_equal "ACTIVE MEDICARE", result[:payer_name]
+      assert result[:eligible], "Primary medicare_a type name must verify when plan covers the inquiry (K2)"
+      assert_equal "ACTIVE MEDICARE A", result[:payer_name]
     end
   end
 
