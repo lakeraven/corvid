@@ -48,13 +48,19 @@ module Corvid
     # Only Encounter.status "finished" produces lines. An unknown or
     # contradictory modality stops the build. Class must come from v3-ActCode;
     # ambulatory together with a telephone type or a home location does not
-    # resolve. A line is emitted when the procedure is completed, belongs to
-    # this encounter, is the first copy of its id, carries a charge-set code
-    # from CPT or HCPCS, has a valid serviced date, every diagnosis it uses
-    # resolves to a billable ICD-10-CM condition, and has a finite
-    # non-negative BigDecimal price from the injected price list. Anything
-    # short of that is a ChargeProblem and not a line.
+    # resolve. Home is physical type "ho" only in the HL7 location physical
+    # type system. Audio-only is SNOMED CT 185317003; the same code in another
+    # system does not count. A line is emitted when the procedure has an id,
+    # is completed, belongs to this encounter, is the first copy of its id,
+    # carries a charge-set code from CPT or HCPCS, has a valid serviced date,
+    # every diagnosis it uses resolves to a billable ICD-10-CM condition, and
+    # has a finite non-negative BigDecimal price from the injected price list.
+    # A missing id is one :procedure_missing_id and not a line. Anything short
+    # of a line is a ChargeProblem.
     #
+    # Claim diagnoses come only from billed lines, numbered from 1 in the
+    # order those lines first use each ICD-10-CM code, so sequence 1 is a
+    # diagnosis of a billed line. A procedure that does not bill adds none.
     # Encounter diagnoses are listed in positive-integer rank order. A missing
     # rank sorts last; any other rank is invalid and the encounter list is
     # not a fallback. Procedure.reasonReference, in that order, supplies the
@@ -62,19 +68,24 @@ module Corvid
     # procedure that names its own reasons never falls back to the encounter.
     # With no reasonReference the line points at the principal encounter
     # diagnosis, and only when every encounter diagnosis resolves to a
-    # billable code. A later diagnosis is never promoted. One ICD-10-CM code
-    # is one diagnosis, and a line cannot point at more than four.
-    # verificationStatus refuted, entered-in-error, or unconfirmed is not
-    # billable. confirmed, provisional, differential, and a missing status are.
+    # billable code. The claim then carries that whole encounter list. A
+    # later diagnosis is never promoted. One ICD-10-CM code is one diagnosis,
+    # and a line cannot point at more than four. verificationStatus is
+    # billable when it is absent, or when a condition-ver-status coding is
+    # confirmed, provisional, or differential. Any other code, or a coding
+    # from another system, is not billable.
     #
     # The serviced date is the calendar date written on performedDateTime, or
     # on performedPeriod.start when that is the instant present. The period
     # end is never the service date. A malformed date or dateTime is missing.
-    # Rendering provider is a Practitioner NPI, by reference or by type. An
-    # actor named as another resource, including Organization, does not count.
-    # An actor that names no resource type still counts. Two Practitioner NPIs
-    # on one procedure are ambiguous. Coverage is the reference Coverage/<id>
-    # and the FHIR status, never the member identifier.
+    # Units stay 1; performedPeriod length is documented_minutes, not units.
+    # Rendering provider is a Practitioner NPI. An actor counts when its
+    # reference starts with "Practitioner/", or when it has no reference and
+    # its type is "Practitioner". A reference to another resource does not
+    # count, even if the type says Practitioner. An identifier or display
+    # alone does not count. Two Practitioner NPIs on one procedure are
+    # ambiguous. Coverage is the reference Coverage/<id> and the FHIR status,
+    # never the member identifier.
     #
     # The charge set carries codes, amounts, dates, NPIs, and references.
     # Names, birth dates, addresses, and narrative text are never copied
@@ -320,23 +331,24 @@ module Corvid
         private_class_method :parsed_time
       end
 
-      # Claim diagnosis list. Encounter diagnoses are added first, in rank
-      # order; procedure reasons append conditions that are not already
-      # listed. One ICD-10-CM code is one Diagnosis. A reference that does
-      # not resolve, or a condition that is not billable, blocks a line that
-      # needed it. The encounter list is a fallback only when every entry
-      # resolves to a billable code. A later diagnosis is never promoted
-      # to principal.
+      # Claim diagnosis list. A code is appended only when a billed line uses
+      # it, numbered in first-use order. Resolving a reference records a
+      # problem when it cannot be billed and does not append that code.
+      # One ICD-10-CM code is one Diagnosis. The encounter list is a fallback
+      # only when every entry resolves to a billable code. A later diagnosis
+      # is never promoted to principal.
       class DiagnosisList
         def initialize(conditions)
           @conditions = index_conditions(conditions)
           @items = []
-          @by_id = {}
-          @by_code = {}
+          @resolved = {}
           @blocked = {}
+          @by_code = {}
           @problems = []
-          @principal_sequence = nil
+          @encounter_refs = []
           @fallback_blocked = false
+          @fallback_prepared = false
+          @fallback_codes = nil
         end
 
         attr_reader :items, :problems
@@ -345,51 +357,68 @@ module Corvid
           @fallback_blocked = true
         end
 
-        def add_encounter(references)
-          resolved = references.each_with_index.map do |reference, index|
-            add_reference(reference, principal: index.zero?)
-          end
-          @fallback_blocked ||= resolved.empty? || resolved.any?(&:nil?)
-          @principal_sequence = nil if @fallback_blocked
+        def use_encounter(references)
+          @encounter_refs = references
         end
 
-        def sequences_for(references)
-          resolved = references.map { |reference| add_reference(reference) }
-          return nil if resolved.empty? || resolved.any?(&:nil?)
+        # Unique ICD-10-CM codes in reference order, or nil when any reference
+        # cannot be billed. Does not append claim diagnoses.
+        def codes_for(references)
+          codes = references.map { |reference| code_for(reference) }
+          return nil if codes.empty? || codes.any?(&:nil?)
 
-          resolved.uniq
+          codes.uniq
         end
 
-        def fallback_sequence
-          return nil if @fallback_blocked
+        # Encounter diagnosis codes in rank order when every one bills.
+        # Nil when the list is empty, blocked, or any entry cannot be billed.
+        def fallback_codes
+          prepare_fallback
+          @fallback_codes
+        end
 
-          @principal_sequence
+        # Append codes in first-use order. Fallback registers the whole
+        # encounter list and the line points at the principal only.
+        def commit_sequences(codes, principal_only:)
+          sequences = codes.map { |code| claim_sequence(code) }
+          principal_only ? [ sequences.first ] : sequences
         end
 
         private
 
-        def add_reference(reference, principal: false)
-          sequence = sequence_for(reference)
-          @principal_sequence = sequence if principal
-          sequence
+        def prepare_fallback
+          return if @fallback_prepared
+
+          @fallback_prepared = true
+          @fallback_codes = resolved_fallback
         end
 
-        def sequence_for(reference)
+        def resolved_fallback
+          return nil if @fallback_blocked || @encounter_refs.empty?
+
+          codes_for(@encounter_refs)
+        end
+
+        def code_for(reference)
           id = FhirHash.reference_id(reference, "Condition")
           return missing_reference if id.nil?
-          return @by_id[id] if @by_id.key?(id)
-          return nil if @blocked.key?(id)
+          return @resolved[id] if @resolved.key?(id)
+          return nil if @blocked[id]
 
-          remember(id)
+          resolve_id(id)
         end
 
-        def remember(id)
+        def resolve_id(id)
           condition = @conditions[id]
           code = icd10_code(condition)
           return block_condition(id, :diagnosis_unresolved) if code.nil?
           return block_condition(id, :diagnosis_not_billable) unless billable?(condition)
 
-          @by_id[id] = @by_code[code] ||= append_code(code)
+          @resolved[id] = code
+        end
+
+        def claim_sequence(code)
+          @by_code[code] ||= append_code(code)
         end
 
         def append_code(code)
@@ -441,6 +470,7 @@ module Corvid
       end
 
       Modality = Data.define(:name, :place_of_service, :modifiers)
+      DiagnosisPlan = Data.define(:codes, :principal_only)
 
       def self.build(encounter:, procedures:, conditions:, coverage:, price_list:)
         new(encounter:, procedures:, conditions:, coverage:, price_list:).build
@@ -476,7 +506,7 @@ module Corvid
         @diagnoses = DiagnosisList.new(@conditions)
         ranks = invalid_rank_problems
         @diagnoses.block_fallback if ranks.any?
-        @diagnoses.add_encounter(ranked_condition_references)
+        @diagnoses.use_encounter(ranked_condition_references)
         collect_lines
         rendering, extra = rendering_outcome
         result(
@@ -493,35 +523,78 @@ module Corvid
         @line_refs = []
         @npi_conflicts = []
         @seen_procedure_ids = {}
+        @missing_procedure_id = false
         @procedures.each { |procedure| consider_procedure(procedure) }
       end
 
       def consider_procedure(raw)
-        return add_problem(:procedure_not_in_encounter) unless raw.is_a?(Hash)
+        procedure = accepted_procedure(raw)
+        return unless procedure
 
-        procedure = FhirHash.new(raw)
         reference = procedure.reference("Procedure")
-        return add_problem(:duplicate_procedure, reference) if duplicate_procedure?(procedure)
-        return add_problem(:procedure_not_in_encounter, reference) unless in_encounter?(procedure)
-        return add_problem(:procedure_not_completed, reference) unless completed?(procedure)
-
         code = billable_code(procedure)
         return add_problem(:code_not_in_charge_set, reference) if code.nil?
 
         date = serviced_date(procedure)
         return add_problem(:serviced_date_missing, reference) if date.nil?
 
-        sequences = diagnosis_sequences(procedure, reference)
-        return if sequences.nil?
+        plan = diagnosis_plan(procedure, reference)
+        return if plan.nil?
 
-        build_priced_line(procedure, reference, code, date, sequences)
+        build_priced_line(procedure, reference, code, date, plan)
       end
 
-      def build_priced_line(procedure, reference, code, date, sequences)
+      def accepted_procedure(raw)
+        procedure = readable_procedure(raw)
+        return nil if procedure.nil? || rejected_procedure?(procedure)
+
+        procedure
+      end
+
+      def readable_procedure(raw)
+        unless raw.is_a?(Hash)
+          add_problem(:procedure_not_in_encounter)
+          return nil
+        end
+
+        procedure = FhirHash.new(raw)
+        return procedure if procedure.string_at("id")
+
+        record_missing_procedure_id
+        nil
+      end
+
+      # No id, so no FHIR reference. One problem covers every such procedure.
+      def record_missing_procedure_id
+        return if @missing_procedure_id
+
+        @missing_procedure_id = true
+        add_problem(:procedure_missing_id)
+      end
+
+      def rejected_procedure?(procedure)
+        reference = procedure.reference("Procedure")
+        problem = gate_problem(procedure)
+        return false if problem.nil?
+
+        add_problem(problem, reference)
+        true
+      end
+
+      def gate_problem(procedure)
+        return :duplicate_procedure if duplicate_procedure?(procedure)
+        return :procedure_not_in_encounter unless in_encounter?(procedure)
+        return :procedure_not_completed unless completed?(procedure)
+
+        nil
+      end
+
+      def build_priced_line(procedure, reference, code, date, plan)
         amount = quoted_price(code)
         problem_code = price_problem(amount)
         return add_problem(problem_code, reference) if problem_code
 
+        sequences = @diagnoses.commit_sequences(plan.codes, principal_only: plan.principal_only)
         append_line(procedure, reference, code, date, sequences, amount)
       end
 
@@ -547,27 +620,31 @@ module Corvid
         )
       end
 
-      def diagnosis_sequences(procedure, reference)
+      def diagnosis_plan(procedure, reference)
         reasons = reason_references(procedure)
-        return fallback_diagnosis(reference) if reasons.nil?
+        return fallback_plan(reference) if reasons.nil?
 
-        sequences = @diagnoses.sequences_for(reasons)
-        return reject_diagnosis(reference, :no_diagnosis) if sequences.nil?
-        return reject_diagnosis(reference, :too_many_diagnoses) if sequences.length > MAX_DIAGNOSIS_POINTERS
+        reason_plan(reasons, reference)
+      end
 
-        sequences
+      def reason_plan(reasons, reference)
+        codes = @diagnoses.codes_for(reasons)
+        return reject_diagnosis(reference, :no_diagnosis) if codes.nil?
+        return reject_diagnosis(reference, :too_many_diagnoses) if codes.length > MAX_DIAGNOSIS_POINTERS
+
+        DiagnosisPlan.new(codes: codes, principal_only: false)
+      end
+
+      def fallback_plan(reference)
+        codes = @diagnoses.fallback_codes
+        return reject_diagnosis(reference, :no_diagnosis) if codes.nil?
+
+        DiagnosisPlan.new(codes: codes, principal_only: true)
       end
 
       def reject_diagnosis(reference, code)
         add_problem(code, reference)
         nil
-      end
-
-      def fallback_diagnosis(reference)
-        sequence = @diagnoses.fallback_sequence
-        return [ sequence ] if sequence
-
-        reject_diagnosis(reference, :no_diagnosis)
       end
 
       def reason_references(procedure)
@@ -617,10 +694,11 @@ module Corvid
         amount.is_a?(BigDecimal) && amount.finite? && amount >= 0
       end
 
-      # Practitioner NPIs only. An actor typed or referenced as another
-      # resource, including Organization, does not count. An actor that names
-      # no resource type still counts. Two different NPIs on one procedure are
-      # ambiguous: the line is built and the NPI is nil.
+      # Practitioner NPIs only. An actor counts when its reference starts with
+      # Practitioner/, or when it has no reference and its type is Practitioner.
+      # The reference wins over type. An identifier or display alone does not
+      # count. Two different NPIs on one procedure are ambiguous: the line is
+      # built and the NPI is nil.
       def line_npi(procedure)
         found = practitioner_npis(procedure).uniq
         conflict = found.length > 1
@@ -647,17 +725,12 @@ module Corvid
       end
 
       def practitioner_actor?(actor)
-        !other_actor_type?(actor["type"]) && !other_actor_reference?(actor["reference"])
-      end
+        reference = actor["reference"]
+        if reference.is_a?(String) && !reference.empty?
+          return reference.start_with?("Practitioner/")
+        end
 
-      def other_actor_type?(type)
-        type.is_a?(String) && !type.empty? && type != "Practitioner"
-      end
-
-      def other_actor_reference?(reference)
-        return false unless reference.is_a?(String) && !reference.empty?
-
-        !reference.start_with?("Practitioner/")
+        reference.nil? && actor["type"] == "Practitioner"
       end
 
       def rendering_outcome
@@ -766,12 +839,14 @@ module Corvid
         FhirHash.coded(@encounter.dig("class"), ACT_CODE_SYSTEM)
       end
 
+      # 185317003 counts only in SNOMED CT.
       def audio_only?
         @encounter.array("type").any? do |type|
           FhirHash.coded(type, SNOMED_SYSTEM) == TELEPHONE_ENCOUNTER_CODE
         end
       end
 
+      # "ho" counts only in the HL7 location-physical-type system.
       def patient_home?
         @encounter.array("location").any? do |location|
           next false unless location.is_a?(Hash)
@@ -862,7 +937,7 @@ module Corvid
         @problems << problem(code, reference)
       end
 
-      private_constant :FhirHash, :DiagnosisList, :Modality
+      private_constant :FhirHash, :DiagnosisList, :DiagnosisPlan, :Modality
     end
   end
 end

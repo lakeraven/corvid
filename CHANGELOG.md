@@ -29,11 +29,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   modality, a code outside the set or in the wrong code system, a missing
   or malformed serviced date, a missing price, an unresolved or non-billable
   diagnosis, an invalid diagnosis rank, more than four diagnosis pointers,
-  or a repeated procedure id is a problem and not a line. Every diagnosis a
-  line uses must resolve; a broken encounter list is not a fallback, and
-  the next diagnosis is never promoted. Diagnoses collapse to one per
-  ICD-10-CM code. Only a Practitioner NPI renders. Telehealth place of
-  service and modifiers follow the scrub rules (POS 02 or 10, modifier 95,
+  a missing procedure id, or a repeated procedure id is a problem and not a
+  line. Claim diagnoses come only from billed lines and are numbered in
+  first-use order. Every diagnosis a line uses must resolve; a broken
+  encounter list is not a fallback, and the next diagnosis is never
+  promoted. Diagnoses collapse to one per ICD-10-CM code. A condition is
+  billable only when verificationStatus is absent or is confirmed,
+  provisional, or differential in condition-ver-status. Rendering counts a
+  Practitioner reference, or type Practitioner when there is no reference.
+  Home and audio-only are recognized only from the HL7 location-physical-type
+  and SNOMED CT systems. Units stay 1. Telehealth place of service and
+  modifiers follow the scrub rules (POS 02 or 10, modifier 95,
   audio-only 93 unless the coverage names a non-blank code). Coverage is
   `Coverage/<id>` with the FHIR status, not the member id. The charge set
   carries tokens and references only.
