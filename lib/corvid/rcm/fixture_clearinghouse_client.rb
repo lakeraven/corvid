@@ -7,10 +7,11 @@ require_relative "edi_835_reader"
 
 module Corvid
   module Rcm
-    # A `ClearinghouseClient` backed by synthetic 835 files and a canned
-    # acknowledgment table. No network, no credentials, no clock skew — the
-    # same inputs always produce the same outputs, so the posting and routing
-    # logic can be tested against real X12 syntax without a payer connection.
+    # A `ClearinghouseClient` backed by synthetic 835 files, a canned
+    # acknowledgment table, and a synthetic payer directory. No network, no
+    # credentials, no clock skew — the same inputs always produce the same
+    # outputs, so the posting and routing logic can be tested against real
+    # X12 syntax without a payer connection.
     #
     # The 835 fixtures are parsed, not hand-built as hashes: if the reader
     # mis-parses a segment the tests fail, which is the point.
@@ -42,11 +43,14 @@ module Corvid
       )
 
       def initialize(scenarios: SCENARIOS, fixture_dir: FIXTURE_DIR,
-                     acknowledgment_table: ACKNOWLEDGMENT_TABLE, clock: -> { Time.now.utc })
+                     acknowledgment_table: ACKNOWLEDGMENT_TABLE,
+                     payer_directory: PayerDirectory::DEFAULT_PATH,
+                     clock: -> { Time.now.utc })
         @scenarios = Array(scenarios)
         @fixture_dir = fixture_dir
         @clock = clock
         @table = YAML.safe_load_file(acknowledgment_table)
+        @payer_directory = PayerDirectory.load(payer_directory)
         @submitted = []
       end
 
@@ -70,6 +74,10 @@ module Corvid
         @scenarios.map { |scenario| remittance(scenario) }.select do |rem|
           date_range.nil? || rem.payment_date.nil? || date_range.cover?(rem.payment_date)
         end
+      end
+
+      def search_payers(query)
+        @payer_directory.search(query)
       end
 
       # One scenario by name, e.g. `client.remittance("denial_duplicate_co18")`.

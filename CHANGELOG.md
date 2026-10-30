@@ -22,6 +22,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   instead of `denial_reason_token`.
 
 ### Added
+- Payer directory lookup on the clearinghouse port (#737).
+  `Corvid::Rcm::PayerDirectoryEntry` records whether a payer supports each
+  transaction and whether enrollment is required. Support is recognized only
+  from an explicit true. Enrollment is required unless the directory says
+  false. `ClearinghouseClient#search_payers` is the seam, and
+  `FixtureClearinghouseClient` answers from the synthetic directory at
+  `lib/corvid/rcm/data/payer_directory.yml`.
 - ZIP-to-CBSA wage-area crosswalk (#371). `corvid_zip_cbsa_crosswalks`
   stores the CMS crosswalk by federal fiscal year (`zip` is five ASCII
   digits; `cbsa` is a five-digit CBSA or a two-digit rural-state code;
