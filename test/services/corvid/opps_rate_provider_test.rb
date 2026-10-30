@@ -72,6 +72,22 @@ class Corvid::OppsRateProviderTest < ActiveSupport::TestCase
     assert_equal OPPS_LABOR_SHARE, lookup.labor_share
   end
 
+  test "lookup_for prices with labor share read from the loaded row not a hardcoded constant (#722)" do
+    share = BigDecimal("0.6200")
+    Corvid::CmsLaborShare.unscoped.delete_all
+    seed_opps_labor_share(calendar_year: @cy, labor_share: share)
+
+    lookup = Corvid::OppsRateProvider.lookup_for(
+      apc_code: "5071", locality: "01", date: Date.new(2026, 6, 15)
+    )
+    expected = opps_labor_adjusted_rate(
+      weight: 25.4378, conversion_factor: 89.169, wage_index: 1.085, labor_share: share
+    )
+
+    assert_equal expected, lookup.rate
+    assert_equal share, lookup.labor_share
+  end
+
   test "lookup_for returns nil when no labor share row exists for the calendar year" do
     Corvid::CmsLaborShare.unscoped.delete_all
     lookup = Corvid::OppsRateProvider.lookup_for(

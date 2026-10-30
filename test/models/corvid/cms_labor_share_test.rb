@@ -33,6 +33,18 @@ module Corvid
       )
     end
 
+    test "labor_share with more than four decimal places is rejected at validation" do
+      row = CmsLaborShare.new(valid_opps_attrs.merge(labor_share: BigDecimal("0.60005")))
+      refute row.valid?
+      assert row.errors[:labor_share].present?
+
+      before = CmsLaborShare.count
+      assert_raises(ActiveRecord::RecordInvalid) do
+        CmsLaborShare.create!(valid_opps_attrs.merge(labor_share: BigDecimal("0.60005")))
+      end
+      assert_equal before, CmsLaborShare.count
+    end
+
     test "labor_share must be strictly between 0 and 1" do
       row = CmsLaborShare.new(valid_opps_attrs.merge(labor_share: BigDecimal("1.0000")))
       refute row.valid?

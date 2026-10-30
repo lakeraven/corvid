@@ -158,6 +158,38 @@ class Corvid::PrcOverpaymentAnalyzerTest < ActiveSupport::TestCase
     assert_equal :stub_estimate, result.recovery_confidence
     assert_equal :stub, result.rate_source
     refute_match(/labor share 1\.0000/i, result.notes.to_s)
+    assert_equal(
+      "Hospital outpatient (APC 5071). Missing OPPS labor share for calendar year 2009; " \
+      "real OPPS price is undetermined. Using stub national-average estimate.",
+      result.notes
+    )
+    refute_match(/Real OPPS rate unavailable/i, result.notes)
+  end
+
+  test "outpatient OPPS without APC weight keeps generic stub note (#722)" do
+    Corvid::PrcProcedureDictionary.register(
+      "OUTPATIENT_TEST",
+      hcpcs: "12345", apc: "5071",
+      description: "Test outpatient procedure"
+    )
+    Corvid::OppsConversionFactor.create!(
+      calendar_year: 2009, locality: "NATIONAL",
+      conversion_factor: 70.0, wage_index: 1.0, release_label: "cms_opps_2009"
+    )
+    seed_opps_labor_share(calendar_year: 2009)
+    Corvid::IppsHospitalRate.create!(
+      fiscal_year: 2009, locality: "NATIONAL", base_rate: 6_000.0, wage_index: 1.0
+    )
+
+    result = analyze_single_obligation(procedure: "OUTPATIENT_TEST", paid: 5_000).results.first
+
+    assert_equal :stub_estimate, result.recovery_confidence
+    assert_equal(
+      "Hospital outpatient (APC 5071). Real OPPS rate unavailable for this (year, APC, locality); " \
+      "using stub national-average estimate.",
+      result.notes
+    )
+    refute_match(/Missing OPPS labor share/i, result.notes)
   end
 
   test "real OPPS :clear note cites default wage index without FY when no IPPS wage row is loaded (#722)" do

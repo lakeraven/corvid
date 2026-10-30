@@ -175,6 +175,22 @@ class Corvid::AscRateProviderTest < ActiveSupport::TestCase
     assert_equal 2026, lookup.wage_index_fiscal_year
   end
 
+  test "lookup_for prices with labor share read from the loaded row not a hardcoded constant (#722)" do
+    share = BigDecimal("0.4700")
+    Corvid::CmsLaborShare.unscoped.delete_all
+    seed_asc_labor_share(calendar_year: @cy, labor_share: share)
+
+    lookup = Corvid::AscRateProvider.lookup_for(
+      hcpcs_code: "0102T", locality: "01", date: Date.new(2026, 6, 15)
+    )
+    expected = asc_labor_adjusted_rate(
+      weight: 29.2047, conversion_factor: 56.322, wage_index: 1.085, labor_share: share
+    )
+
+    assert_equal expected, lookup.rate
+    assert_equal share, lookup.labor_share
+  end
+
   test "lookup_for returns nil when no labor share row exists for the calendar year" do
     Corvid::CmsLaborShare.unscoped.delete_all
     assert_nil Corvid::AscRateProvider.lookup_for(
