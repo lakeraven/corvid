@@ -36,9 +36,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (earliest start and latest end, excluding a D8 307 eligibility day),
   and `eligibility_date` is that day. An otherwise active answer is
   `:undetermined` when the service date is outside the restrictive
-  window (a nil bound is not checked). An otherwise inactive answer is
-  `:undetermined` when a stated window contains the service date, or
-  when `eligibility_date` is a different day. A reversed plan-date
+  window (a nil bound is not checked), or when `eligibility_date` is
+  present and is a different day. A nil service date skips that
+  check. An otherwise inactive answer is `:undetermined` when a
+  stated window contains the service date, or when `eligibility_date`
+  is a different day. A reversed plan-date
   range, or restrictive bounds that start after they end, is a
   malformed 271. More than one information-source loop yields no plan.
   The plan name is a coverage benefit's EB05 only. A DateTime service

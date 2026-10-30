@@ -218,7 +218,9 @@ module Corvid
       # falls outside a contributing plan's coverage window: `coverage_start`
       # after the service date, or `coverage_end` before it. The window is
       # inclusive. A nil bound is unknown — a year-9999 end is stored as nil
-      # — and is not checked on that side. A nil `service_date` skips the check.
+      # — and is not checked on that side. The answer is also
+      # `:undetermined` when any plan's `eligibility_date` is present and
+      # differs from `service_date`. A nil `service_date` skips both checks.
       #
       # An otherwise `:inactive` answer is `:undetermined` when any stated
       # window contains `service_date`. The window needs at least one bound.
@@ -250,6 +252,7 @@ module Corvid
         return inactive_outcome(plans, service_date) if inactive
         return :undetermined unless active
         return :undetermined if service_date_outside_window?(plans, service_type_codes, service_date)
+        return :undetermined if eligibility_dates_differ?(plans, service_date)
 
         :active
       end
@@ -360,6 +363,15 @@ module Corvid
         (start_on.nil? || service_date >= start_on) && (end_on.nil? || service_date <= end_on)
       end
       private_class_method :window_contains?
+
+      # An eligibility day other than the service date means the payer
+      # answered for another day. A nil service date skips the check.
+      def self.eligibility_dates_differ?(plans, service_date)
+        return false if service_date.nil?
+
+        Array(plans).any? { |plan| eligibility_date_differs?(plan, service_date) }
+      end
+      private_class_method :eligibility_dates_differ?
 
       def self.eligibility_date_differs?(plan, service_date)
         date = plan.eligibility_date
