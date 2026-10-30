@@ -44,6 +44,9 @@ module Corvid
     # `raw_reference` is an optional handle for the transport's own copy of
     # this acknowledgment (a file name, a vendor message id). It defaults to
     # nil so existing callers keep working. It is not a patient identifier.
+    #
+    # `edits` is stored as a frozen copy of the given list, so the caller's
+    # array and this acknowledgment do not share a list either side can clear.
     Acknowledgment = Data.define(
       :claim_identifier,
       :trace_number,
@@ -60,7 +63,15 @@ module Corvid
           raise ArgumentError, "unknown acknowledgment outcome #{outcome.inspect}"
         end
 
-        super
+        super(
+          claim_identifier: claim_identifier,
+          trace_number: trace_number,
+          outcome: outcome,
+          transaction_set: transaction_set,
+          received_at: received_at,
+          edits: Array(edits).dup.freeze,
+          raw_reference: raw_reference
+        )
       end
 
       def accepted?

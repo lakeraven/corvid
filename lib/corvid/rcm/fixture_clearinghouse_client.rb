@@ -18,12 +18,15 @@ module Corvid
     # `submit_claim` returns the immediate front-door acknowledgment and
     # records a later one. The immediate `received_at` is the first call to
     # the injected clock; the later `received_at` is a second call made after
-    # that. `fetch_acknowledgments` returns those later acknowledgments in
-    # submission order and does not read the clock. A canned
-    # `delayed_rejection` stays accepted at the front door — the clearinghouse
-    # took the claim — and is rejected later with the payer's 277CA edits. A
-    # front-door rejection, such as a missing billing provider NPI, is
-    # rejected immediately and the later acknowledgment repeats it. A delayed
+    # that. Each call must return a Time. Both acknowledgments, and both
+    # clock readings, are computed before anything is recorded. A submit that
+    # raises records nothing. `fetch_acknowledgments` returns those later
+    # acknowledgments in submission order and does not read the clock. A
+    # canned `delayed_rejection` stays accepted at the front door — the
+    # clearinghouse took the claim — and is rejected later with the payer's
+    # 277CA edits. A front-door rejection, such as a missing billing provider
+    # NPI, is rejected immediately and the later acknowledgment repeats it. A
+    # delayed rejection is still subject to that front-door rule. A delayed
     # rejection with no usable edit fails closed at submit.
     class FixtureClearinghouseClient < ClearinghouseClient
       FIXTURE_DIR = File.expand_path("fixtures/835", __dir__)
@@ -57,6 +60,9 @@ module Corvid
       DELAYED_REJECTION_EDIT_MESSAGE =
         "delayed rejection requires one or more edits, each with a non-blank code and description"
 
+      # Fixed text. A clock reading that is not a Time must not be stored.
+      CLOCK_MUST_RETURN_TIME_MESSAGE = "clock must return a Time"
+
       def initialize(scenarios: SCENARIOS, fixture_dir: FIXTURE_DIR,
                      acknowledgment_table: ACKNOWLEDGMENT_TABLE, clock: -> { Time.now.utc })
         @scenarios = Array(scenarios)
@@ -68,15 +74,20 @@ module Corvid
       end
 
       # Claims `submit_claim` recorded, in order. Phase 0's stand-in for the
-      # submission event log (wave 2, with #507). A submit that raises is not
-      # recorded.
+      # submission event log (wave 2, with #507). A submit that raises records
+      # nothing.
       attr_reader :submitted
 
+      # Returns the immediate front-door acknowledgment and keeps the later
+      # one for `fetch_acknowledgments`. The delayed-row check, both
+      # acknowledgments, and both clock readings finish before `submitted` or
+      # the later list changes. A submit that raises records nothing.
       def submit_claim(claim)
         assert_delayed_rejection_has_usable_edit!(claim)
-        @submitted << claim
         immediate = immediate_acknowledgment(claim)
-        @later_acknowledgments << later_acknowledgment(claim, immediate)
+        later = later_acknowledgment(claim, immediate)
+        @submitted << claim
+        @later_acknowledgments << later
         immediate
       end
 
@@ -250,25 +261,36 @@ module Corvid
         )
       end
 
-      # Only call site for the injected clock. `submit_claim` builds the
-      # immediate acknowledgment first and the later one second, so the later
-      # `received_at` is the second reading. Fetch does not build acknowledgments.
+      # `submit_claim` builds the immediate acknowledgment first and the later
+      # one second, so the later `received_at` is the second reading. Fetch
+      # does not build acknowledgments.
       def build_acknowledgment(claim, outcome, transaction_set:, edits: [], later: false)
-        received_at = @clock.call
         Acknowledgment.new(
           claim_identifier: claim.identifier,
           trace_number: acknowledgment_trace_number(claim, later: later),
           outcome: outcome,
           transaction_set: transaction_set,
-          received_at: received_at,
+          received_at: read_clock,
           edits: edits.dup
         )
       end
 
+      # The later trace is this submission's place in the log. The
+      # acknowledgment is built before the claim is appended, so the suffix
+      # is one past the claims already recorded.
       def acknowledgment_trace_number(claim, later:)
         return "ACK-#{claim.identifier}" unless later
 
-        "ACK-#{claim.identifier}-LATER-#{@submitted.length}"
+        "ACK-#{claim.identifier}-LATER-#{@submitted.length + 1}"
+      end
+
+      # Only call site for the injected clock. Each reading must be a Time;
+      # `submit_claim` takes both readings before it records anything.
+      def read_clock
+        reading = @clock.call
+        return reading if reading.is_a?(Time)
+
+        raise ArgumentError, CLOCK_MUST_RETURN_TIME_MESSAGE
       end
 
       def ensure_since_is_time!(since)
