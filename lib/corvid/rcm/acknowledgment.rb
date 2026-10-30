@@ -18,6 +18,10 @@ module Corvid
     # Treating a rejection as a denial is the classic way a book of business
     # silently ages out past timely filing: the claim is sitting in an appeals
     # queue that has nothing to appeal, while the filing clock runs.
+    #
+    # A payer-level 277CA can arrive hours or days after the clearinghouse has
+    # already accepted the claim. That later answer is still a REJECTION: the
+    # claim was never adjudicated, and the response is still fix-and-resubmit.
 
     # One intake edit. On a 999 this is the IK3/IK4 segment pair; on a 277CA it
     # is the STC status composite. Both collapse to the same shape: a code, a
@@ -36,16 +40,22 @@ module Corvid
 
     # The response to a claim submission — 999 and/or 277CA collapsed into one
     # answer to "did this claim get in the door?".
+    #
+    # `raw_reference` is an optional handle for the transport's own copy of
+    # this acknowledgment (a file name, a vendor message id). It defaults to
+    # nil so existing callers keep working. It is not a patient identifier.
     Acknowledgment = Data.define(
       :claim_identifier,
       :trace_number,
       :outcome,
       :transaction_set,
       :received_at,
-      :edits
+      :edits,
+      :raw_reference
     ) do
       def initialize(claim_identifier:, trace_number:, outcome:,
-                     transaction_set: "277CA", received_at: nil, edits: [])
+                     transaction_set: "277CA", received_at: nil, edits: [],
+                     raw_reference: nil)
         unless ACKNOWLEDGMENT_OUTCOMES.include?(outcome)
           raise ArgumentError, "unknown acknowledgment outcome #{outcome.inspect}"
         end

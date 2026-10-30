@@ -14,6 +14,17 @@ module Corvid
     #
     # The 835 fixtures are parsed, not hand-built as hashes: if the reader
     # mis-parses a segment the tests fail, which is the point.
+    #
+    # `submit_claim` returns the immediate front-door acknowledgment and
+    # records a later one. The immediate `received_at` is the first call to
+    # the injected clock; the later `received_at` is a second call made after
+    # that. `fetch_acknowledgments` returns those later acknowledgments in
+    # submission order and does not read the clock. A canned
+    # `delayed_rejection` stays accepted at the front door — the clearinghouse
+    # took the claim — and is rejected later with the payer's 277CA edits. A
+    # front-door rejection, such as a missing billing provider NPI, is
+    # rejected immediately and the later acknowledgment repeats it. A delayed
+    # rejection with no usable edit fails closed at submit.
     class FixtureClearinghouseClient < ClearinghouseClient
       FIXTURE_DIR = File.expand_path("fixtures/835", __dir__)
       ACKNOWLEDGMENT_TABLE = File.expand_path("data/clearinghouse_acknowledgments.yml", __dir__)
@@ -41,6 +52,11 @@ module Corvid
         level: "claim"
       )
 
+      # Fixed text. A corrupt delayed_rejection row must not echo a claim id
+      # or anything from the patient into the error.
+      DELAYED_REJECTION_EDIT_MESSAGE =
+        "delayed rejection requires one or more edits, each with a non-blank code and description"
+
       def initialize(scenarios: SCENARIOS, fixture_dir: FIXTURE_DIR,
                      acknowledgment_table: ACKNOWLEDGMENT_TABLE, clock: -> { Time.now.utc })
         @scenarios = Array(scenarios)
@@ -48,20 +64,27 @@ module Corvid
         @clock = clock
         @table = YAML.safe_load_file(acknowledgment_table)
         @submitted = []
+        @later_acknowledgments = []
       end
 
-      # Every claim handed to `submit_claim`, in order. Phase 0's stand-in for
-      # the submission event log (wave 2, with #507).
+      # Claims `submit_claim` recorded, in order. Phase 0's stand-in for the
+      # submission event log (wave 2, with #507). A submit that raises is not
+      # recorded.
       attr_reader :submitted
 
       def submit_claim(claim)
+        assert_delayed_rejection_has_usable_edit!(claim)
         @submitted << claim
-        edits = rejection_edits(claim)
-        return acknowledgment(claim, :accepted, transaction_set: default_transaction_set) if edits.empty?
+        immediate = immediate_acknowledgment(claim)
+        @later_acknowledgments << later_acknowledgment(claim, immediate)
+        immediate
+      end
 
-        acknowledgment(claim, :rejected,
-                       transaction_set: transaction_set_for(claim),
-                       edits: edits)
+      # Later acknowledgments recorded by `submit_claim`, in submission order.
+      # Does not read the clock; each `received_at` was stamped at submit.
+      def fetch_acknowledgments(since: nil)
+        ensure_since_is_time!(since)
+        selected_later_acknowledgments(since).dup
       end
 
       # An undated remittance is kept rather than filtered out: dropping one
@@ -102,29 +125,162 @@ module Corvid
         rejections.dig(claim.identifier.to_s, "transaction_set") || default_transaction_set
       end
 
-      def rejection_edits(claim)
-        canned = Array(rejections.dig(claim.identifier.to_s, "edits")).map do |edit|
-          AcknowledgmentEdit.new(
-            code: edit.fetch("code"),
-            description: edit.fetch("description"),
-            element: edit["element"],
-            level: edit.fetch("level", "claim")
-          )
-        end
-        return canned if canned.any?
+      def assert_delayed_rejection_has_usable_edit!(claim)
+        return unless delayed_rejection?(claim)
+        return if delayed_edits_usable?(claim)
 
-        claim.billing_provider_npi.to_s.strip.empty? ? [ MISSING_BILLING_NPI_EDIT ] : []
+        raise ArgumentError, DELAYED_REJECTION_EDIT_MESSAGE
       end
 
-      def acknowledgment(claim, outcome, transaction_set:, edits: [])
-        Acknowledgment.new(
-          claim_identifier: claim.identifier,
-          trace_number: "ACK-#{claim.identifier}",
-          outcome: outcome,
-          transaction_set: transaction_set,
-          received_at: @clock.call,
+      def delayed_rejection?(claim)
+        rejections.dig(claim.identifier.to_s, "delayed_rejection") == true
+      end
+
+      # Every listed edit must be usable. A blank code or description is not
+      # a payer edit we can route, so the row fails closed instead of being
+      # dropped or half-applied.
+      def delayed_edits_usable?(claim)
+        edits = raw_edits(claim)
+        !edits.empty? && edits.all? { |edit| usable_edit?(edit) }
+      end
+
+      def raw_edits(claim)
+        Array(rejections.dig(claim.identifier.to_s, "edits"))
+      end
+
+      def usable_edit?(edit)
+        return false unless edit.is_a?(Hash)
+
+        non_blank_string?(edit["code"]) && non_blank_string?(edit["description"])
+      end
+
+      def non_blank_string?(value)
+        value.is_a?(String) && !value.strip.empty?
+      end
+
+      def immediate_acknowledgment(claim)
+        edits = immediate_rejection_edits(claim)
+        return acceptance_acknowledgment(claim) if edits.empty?
+
+        rejection_acknowledgment(
+          claim,
+          transaction_set: transaction_set_for(claim),
           edits: edits
         )
+      end
+
+      # Canned rejections that are not delayed still win over the billing-NPI
+      # check, as they did before later acknowledgments existed. A delayed
+      # row is not an immediate rejection; only the front-door rules are.
+      def immediate_rejection_edits(claim)
+        unless delayed_rejection?(claim)
+          canned = canned_edits(claim)
+          return canned if canned.any?
+        end
+
+        missing_billing_npi_edits(claim)
+      end
+
+      def missing_billing_npi_edits(claim)
+        return [] unless claim.billing_provider_npi.to_s.strip.empty?
+
+        [ MISSING_BILLING_NPI_EDIT ]
+      end
+
+      def later_acknowledgment(claim, immediate)
+        if immediate.rejected?
+          later_rejection(
+            claim,
+            transaction_set: immediate.transaction_set,
+            edits: immediate.edits
+          )
+        elsif delayed_rejection?(claim)
+          later_delayed_rejection(claim)
+        else
+          acceptance_acknowledgment(claim, later: true)
+        end
+      end
+
+      def later_delayed_rejection(claim)
+        later_rejection(
+          claim,
+          transaction_set: transaction_set_for(claim),
+          edits: canned_edits(claim)
+        )
+      end
+
+      def later_rejection(claim, transaction_set:, edits:)
+        rejection_acknowledgment(
+          claim,
+          transaction_set: transaction_set,
+          edits: edits,
+          later: true
+        )
+      end
+
+      def acceptance_acknowledgment(claim, later: false)
+        build_acknowledgment(
+          claim,
+          :accepted,
+          transaction_set: default_transaction_set,
+          later: later
+        )
+      end
+
+      def rejection_acknowledgment(claim, transaction_set:, edits:, later: false)
+        build_acknowledgment(
+          claim,
+          :rejected,
+          transaction_set: transaction_set,
+          edits: edits,
+          later: later
+        )
+      end
+
+      def canned_edits(claim)
+        raw_edits(claim).map { |edit| acknowledgment_edit(edit) }
+      end
+
+      def acknowledgment_edit(edit)
+        AcknowledgmentEdit.new(
+          code: edit.fetch("code"),
+          description: edit.fetch("description"),
+          element: edit["element"],
+          level: edit.fetch("level", "claim")
+        )
+      end
+
+      # Only call site for the injected clock. `submit_claim` builds the
+      # immediate acknowledgment first and the later one second, so the later
+      # `received_at` is the second reading. Fetch does not build acknowledgments.
+      def build_acknowledgment(claim, outcome, transaction_set:, edits: [], later: false)
+        received_at = @clock.call
+        Acknowledgment.new(
+          claim_identifier: claim.identifier,
+          trace_number: acknowledgment_trace_number(claim, later: later),
+          outcome: outcome,
+          transaction_set: transaction_set,
+          received_at: received_at,
+          edits: edits.dup
+        )
+      end
+
+      def acknowledgment_trace_number(claim, later:)
+        return "ACK-#{claim.identifier}" unless later
+
+        "ACK-#{claim.identifier}-LATER-#{@submitted.length}"
+      end
+
+      def ensure_since_is_time!(since)
+        return if since.nil? || since.is_a?(Time)
+
+        raise ArgumentError, "since must be a Time"
+      end
+
+      def selected_later_acknowledgments(since)
+        return @later_acknowledgments if since.nil?
+
+        @later_acknowledgments.select { |later| later.received_at >= since }
       end
     end
   end

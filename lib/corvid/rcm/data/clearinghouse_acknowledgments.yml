@@ -3,6 +3,14 @@
 # These are REJECTIONS — front-door refusals, never adjudicated, never
 # appealable. The only correct response is fix-and-resubmit. Keyed by claim
 # identifier so a scenario is reproduced by submitting the same claim id.
+#
+# delayed_rejection: accepted at the front door, rejected later by the payer.
+# The clearinghouse takes the claim, so `submit_claim` returns accepted unless
+# a front-door rule (such as a missing billing provider NPI) rejects it. That
+# front-door rejection is also the later acknowledgment. Otherwise the payer's
+# 277CA is what `fetch_acknowledgments` returns. A delayed_rejection with no
+# usable edit — none, an empty list, or a blank code or description — is
+# invalid and raises when that claim is submitted.
 default_outcome: accepted
 default_transaction_set: "277CA"
 
@@ -32,3 +40,11 @@ rejections:
         description: "Missing or invalid information — the place of service code conflicts with the submitted modifier."
         element: "SV105 place of service"
         level: line
+  CLM-RJ-DELAYED-0001:
+    delayed_rejection: true
+    transaction_set: "277CA"
+    edits:
+      - code: "SYN:277CA"
+        description: "Payer-level claim acknowledgment — the claim was refused on a later 277CA after the clearinghouse accepted it."
+        element: "STC claim status"
+        level: claim

@@ -22,6 +22,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   instead of `denial_reason_token`.
 
 ### Added
+- `Corvid::Rcm::ClearinghouseClient#fetch_acknowledgments` returns
+  acknowledgments that arrive after submission. A 277CA, including a
+  payer-level rejection of a claim the clearinghouse already accepted, can
+  land hours or days later. `since:` is nil or a Time; the result is a new
+  array of later acknowledgments received at or after that time, in
+  submission order. `FixtureClearinghouseClient` records that later
+  acknowledgment during `submit_claim` from a second read of the injected
+  clock, and does not read the clock again on fetch. A canned
+  `delayed_rejection` is accepted at the front door and rejected on fetch.
+  One without a usable edit raises at submit. `Acknowledgment` accepts
+  `raw_reference:` and defaults it to nil. (#739)
 - ZIP-to-CBSA wage-area crosswalk (#371). `corvid_zip_cbsa_crosswalks`
   stores the CMS crosswalk by federal fiscal year (`zip` is five ASCII
   digits; `cbsa` is a five-digit CBSA or a two-digit rural-state code;
