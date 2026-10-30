@@ -114,7 +114,7 @@ class Corvid::Rcm::PostingPlanTest < Minitest::Test
 
     patient_rows = entries.select { |e| e.kind == :patient_responsibility }.sort_by(&:reason_code)
     assert_equal 3, patient_rows.length
-    assert_equal [ BigDecimal("10.00"), BigDecimal("20.00"), BigDecimal("30.00") ],
+    assert_equal [ BigDecimal("30.00"), BigDecimal("20.00"), BigDecimal("10.00") ],
                  patient_rows.map(&:amount)
     assert_equal %w[1 2 3], patient_rows.map(&:reason_code)
     assert_equal [ "PR", "PR", "PR" ], patient_rows.map(&:group_code)
@@ -183,7 +183,7 @@ class Corvid::Rcm::PostingPlanTest < Minitest::Test
       claim_identifier: "CLM-MAP",
       payer_control_number: "PAYER-MAP",
       status_code: Corvid::Rcm::CLAIM_STATUS_PROCESSED_PRIMARY,
-      billed_amount: BigDecimal("60.00"),
+      billed_amount: BigDecimal("70.00"),
       paid_amount: BigDecimal("10.00"),
       services: [],
       adjustments: [
