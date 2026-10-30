@@ -194,6 +194,33 @@ class Corvid::Rcm::FixtureClearinghouseClientTest < Minitest::Test
 
   EXPECTED_DIRECTORY_ORDER = [ COMMERCIAL_ID, MEDICAID_ID, PAPER_ID, UNKNOWN_ID ].freeze
 
+  SHIPPED_TRANSACTION_EXPECTATIONS = {
+    COMMERCIAL_ID => TRANSACTIONS.each_with_object({}) do |transaction, expectations|
+      expectations[transaction] = { supports: true, enrollment_required: false }
+    end,
+    MEDICAID_ID => {
+      professional_claim: { supports: true, enrollment_required: false },
+      institutional_claim: { supports: false, enrollment_required: false },
+      dental_claim: { supports: false, enrollment_required: false },
+      remittance: { supports: true, enrollment_required: true },
+      eligibility: { supports: true, enrollment_required: false },
+      claim_status: { supports: false, enrollment_required: false },
+      coverage_discovery: { supports: false, enrollment_required: false },
+      coordination_of_benefits: { supports: false, enrollment_required: false },
+      paper_claim: { supports: false, enrollment_required: false }
+    },
+    PAPER_ID => TRANSACTIONS.each_with_object({}) do |transaction, expectations|
+      if transaction == :paper_claim
+        expectations[transaction] = { supports: true, enrollment_required: false }
+      else
+        expectations[transaction] = { supports: false, enrollment_required: false }
+      end
+    end,
+    UNKNOWN_ID => TRANSACTIONS.each_with_object({}) do |transaction, expectations|
+      expectations[transaction] = { supports: false, enrollment_required: true }
+    end
+  }.freeze
+
   def payer_directory_client(payer_directory: nil)
     kwargs = { clock: FIXED_CLOCK }
     kwargs[:payer_directory] = payer_directory if payer_directory
@@ -209,6 +236,38 @@ class Corvid::Rcm::FixtureClearinghouseClientTest < Minitest::Test
       flunk("missing payer #{payer_identifier.inspect} in #{results.map(&:payer_identifier).inspect}")
   end
 
+  def transactions_yaml(overrides = {})
+    TRANSACTIONS.map do |transaction|
+      attrs = overrides.fetch(transaction, { supported: false, enrollment_required: false })
+      supported = attrs.fetch(:supported)
+      enrollment_required = attrs.fetch(:enrollment_required)
+      [
+        "      #{transaction}:",
+        "        supported: #{supported.inspect}",
+        "        enrollment_required: #{enrollment_required.inspect}"
+      ].join("\n")
+    end.join("\n")
+  end
+
+  def payer_row(payer_identifier:, name:, aliases: [], transaction_overrides: {})
+    lines = [ "  - payer_identifier: #{payer_identifier}" ]
+    if aliases.empty?
+      lines << "    aliases: []"
+    else
+      lines << "    aliases:"
+      aliases.each { |alias_id| lines << "      - #{alias_id}" }
+    end
+    lines << "    name: #{name}"
+    lines << "    as_of: 2026-01-01"
+    lines << "    transactions:"
+    lines << transactions_yaml(transaction_overrides)
+    lines.join("\n")
+  end
+
+  def write_directory_file(path, *payer_rows)
+    File.write(path, "payers:\n#{payer_rows.join("\n")}\n")
+  end
+
   def test_fixture_search_payers_returns_entries_from_the_default_directory
     setup_payer_directory_client
     results = @directory_client.search_payers("example")
@@ -217,44 +276,21 @@ class Corvid::Rcm::FixtureClearinghouseClientTest < Minitest::Test
     results.each { |entry| assert_kind_of Corvid::Rcm::PayerDirectoryEntry, entry }
   end
 
-  def test_commercial_payer_supports_every_transaction
+  def test_shipped_directory_supports_and_enrollment_for_every_transaction_on_every_payer
     setup_payer_directory_client
-    commercial = find_payer(@directory_client.search_payers(COMMERCIAL_ID), COMMERCIAL_ID)
-
-    TRANSACTIONS.each do |transaction|
-      assert commercial.supports?(transaction), "expected #{transaction} supported for #{COMMERCIAL_ID}"
+    payers_by_id = EXPECTED_DIRECTORY_ORDER.each_with_object({}) do |payer_id, memo|
+      memo[payer_id] = find_payer(@directory_client.search_payers("example"), payer_id)
     end
-  end
 
-  def test_medicaid_payer_transaction_support_and_enrollment
-    setup_payer_directory_client
-    medicaid = find_payer(@directory_client.search_payers(MEDICAID_ID), MEDICAID_ID)
-
-    assert medicaid.supports?(:professional_claim)
-    assert medicaid.supports?(:eligibility)
-    assert medicaid.supports?(:remittance)
-    assert medicaid.enrollment_required?(:remittance)
-    refute medicaid.supports?(:dental_claim)
-  end
-
-  def test_paper_only_payer_supports_paper_claim_not_electronic_claims
-    setup_payer_directory_client
-    paper = find_payer(@directory_client.search_payers(PAPER_ID), PAPER_ID)
-
-    assert paper.supports?(:paper_claim)
-    refute paper.supports?(:professional_claim)
-    refute paper.supports?(:institutional_claim)
-    refute paper.supports?(:dental_claim)
-  end
-
-  def test_unknown_support_payer_treats_every_transaction_as_unsupported_requiring_enrollment
-    setup_payer_directory_client
-    unknown = find_payer(@directory_client.search_payers(UNKNOWN_ID), UNKNOWN_ID)
-
-    TRANSACTIONS.each do |transaction|
-      refute unknown.supports?(transaction), "expected #{transaction} unsupported for #{UNKNOWN_ID}"
-      assert unknown.enrollment_required?(transaction),
-             "expected enrollment required for #{transaction} on #{UNKNOWN_ID}"
+    SHIPPED_TRANSACTION_EXPECTATIONS.each do |payer_id, expectations|
+      payer = payers_by_id.fetch(payer_id)
+      TRANSACTIONS.each do |transaction|
+        expected = expectations.fetch(transaction)
+        assert_equal expected[:supports], payer.supports?(transaction),
+                     "supports?(#{transaction}) for #{payer_id}"
+        assert_equal expected[:enrollment_required], payer.enrollment_required?(transaction),
+                     "enrollment_required?(#{transaction}) for #{payer_id}"
+      end
     end
   end
 
@@ -290,10 +326,24 @@ class Corvid::Rcm::FixtureClearinghouseClientTest < Minitest::Test
   def test_blank_and_nil_queries_return_empty_arrays
     setup_payer_directory_client
 
-    [ "", "   ", nil ].each do |query|
+    [ "", "   ", "\t\n", nil ].each do |query|
       assert_equal [], @directory_client.search_payers(query),
                    "expected empty results for query #{query.inspect}"
     end
+  end
+
+  def test_shipped_directory_search_does_not_match_identifier_or_alias_by_substring
+    setup_payer_directory_client
+
+    assert_equal [], @directory_client.search_payers("01").map(&:payer_identifier)
+    assert_equal [], @directory_client.search_payers("excomm").map(&:payer_identifier)
+  end
+
+  def test_shipped_directory_search_matches_exact_alias
+    setup_payer_directory_client
+
+    assert_equal [ COMMERCIAL_ID ],
+                 @directory_client.search_payers("EXCOMM-ALT").map(&:payer_identifier)
   end
 
   def test_search_with_no_match_returns_empty
@@ -303,10 +353,59 @@ class Corvid::Rcm::FixtureClearinghouseClientTest < Minitest::Test
   end
 
   def test_search_deduplicates_when_name_and_alias_both_match
-    setup_payer_directory_client
+    Dir.mktmpdir do |dir|
+      path = File.join(dir, "payer_directory.yml")
+      write_directory_file(
+        path,
+        payer_row(
+          payer_identifier: "ACME01",
+          name: "EXAMPLE ACME PAYER",
+          aliases: [ "ACME" ]
+        )
+      )
 
-    assert_equal [ COMMERCIAL_ID ],
-                 @directory_client.search_payers("excomm").map(&:payer_identifier)
+      client = payer_directory_client(payer_directory: path)
+
+      assert_equal [ "ACME01" ], client.search_payers("acme").map(&:payer_identifier)
+    end
+  end
+
+  def test_search_returns_exact_identifier_match_not_a_longer_identifiers_substring
+    Dir.mktmpdir do |dir|
+      path = File.join(dir, "payer_directory.yml")
+      dental_true = { dental_claim: { supported: true, enrollment_required: false } }
+      write_directory_file(
+        path,
+        payer_row(
+          payer_identifier: "SYN123",
+          name: "EXAMPLE ALPHA PAYER",
+          transaction_overrides: dental_true
+        ),
+        payer_row(
+          payer_identifier: "SYN12",
+          name: "EXAMPLE BETA PAYER"
+        )
+      )
+
+      client = payer_directory_client(payer_directory: path)
+
+      assert_equal [ "SYN12" ], client.search_payers("SYN12").map(&:payer_identifier)
+    end
+  end
+
+  def test_search_orders_exact_identifier_matches_before_name_substring_matches
+    Dir.mktmpdir do |dir|
+      path = File.join(dir, "payer_directory.yml")
+      write_directory_file(
+        path,
+        payer_row(payer_identifier: "PAYER_A", name: "EXAMPLE GAMMA HEALTH PLAN"),
+        payer_row(payer_identifier: "GAMMA", name: "EXAMPLE OTHER PAYER")
+      )
+
+      client = payer_directory_client(payer_directory: path)
+
+      assert_equal %w[GAMMA PAYER_A], client.search_payers("gamma").map(&:payer_identifier)
+    end
   end
 
   def test_search_payers_accepts_an_injectable_directory_path

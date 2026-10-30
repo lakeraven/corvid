@@ -1,6 +1,8 @@
 # frozen_string_literal: true
 
 require "minitest/autorun"
+require "securerandom"
+require "tmpdir"
 require "corvid/rcm"
 
 class Corvid::Rcm::PayerDirectoryEntryTest < Minitest::Test
@@ -186,6 +188,119 @@ class Corvid::Rcm::PayerDirectoryEntryTest < Minitest::Test
     refute directory_entry.matches?("EXMCD")
     refute directory_entry.matches?("EXMCD01X")
     refute directory_entry.matches?("ALT")
+  end
+end
+
+class Corvid::Rcm::PayerDirectoryTest < Minitest::Test
+  TRANSACTIONS = Corvid::Rcm::PayerDirectoryEntryTest::TRANSACTIONS
+
+  def directory_class
+    Corvid::Rcm::PayerDirectory
+  end
+
+  def transactions_yaml(overrides = {})
+    TRANSACTIONS.map do |transaction|
+      attrs = overrides.fetch(transaction, { supported: false, enrollment_required: false })
+      supported = attrs.fetch(:supported)
+      enrollment_required = attrs.fetch(:enrollment_required)
+      [
+        "      #{transaction}:",
+        "        supported: #{supported.inspect}",
+        "        enrollment_required: #{enrollment_required.inspect}"
+      ].join("\n")
+    end.join("\n")
+  end
+
+  def payer_row(payer_identifier:, name:, aliases: [], transaction_overrides: {})
+    lines = [ "  - payer_identifier: #{payer_identifier}" ]
+    if aliases.empty?
+      lines << "    aliases: []"
+    else
+      lines << "    aliases:"
+      aliases.each { |alias_id| lines << "      - #{alias_id}" }
+    end
+    lines << "    name: #{name}"
+    lines << "    as_of: 2026-01-01"
+    lines << "    transactions:"
+    lines << transactions_yaml(transaction_overrides)
+    lines.join("\n")
+  end
+
+  def write_directory(path, *payer_rows)
+    File.write(path, "payers:\n#{payer_rows.join("\n")}\n")
+  end
+
+  def load_directory_at(path)
+    directory_class.load(path)
+  end
+
+  def test_load_refuses_ambiguous_alias_and_identifier_collision_without_naming_either_identifier
+    Dir.mktmpdir do |dir|
+      path = File.join(dir, "payer_directory.yml")
+      write_directory(
+        path,
+        payer_row(payer_identifier: "SYN99", name: "EXAMPLE SYN99 PAYER", aliases: [ "SYN12" ]),
+        payer_row(payer_identifier: "SYN12", name: "EXAMPLE SYN12 PAYER")
+      )
+
+      error = assert_raises(ArgumentError) { load_directory_at(path) }
+
+      refute_includes error.message, "SYN99"
+      refute_includes error.message, "SYN12"
+    end
+  end
+
+  def test_load_refuses_duplicate_payer_identifiers_without_naming_the_identifier
+    Dir.mktmpdir do |dir|
+      path = File.join(dir, "payer_directory.yml")
+      write_directory(
+        path,
+        payer_row(payer_identifier: "EXDUP01", name: "EXAMPLE FIRST DUP PAYER"),
+        payer_row(payer_identifier: "EXDUP01", name: "EXAMPLE SECOND DUP PAYER")
+      )
+
+      error = assert_raises(ArgumentError) { load_directory_at(path) }
+
+      refute_includes error.message, "EXDUP01"
+    end
+  end
+
+  def test_load_allows_an_alias_that_equals_the_rows_own_payer_identifier
+    Dir.mktmpdir do |dir|
+      path = File.join(dir, "payer_directory.yml")
+      write_directory(
+        path,
+        payer_row(payer_identifier: "REDUN01", name: "EXAMPLE REDUNDANT ALIAS PAYER", aliases: [ "REDUN01" ])
+      )
+
+      directory = load_directory_at(path)
+
+      assert_equal 1, directory.search("redun01").length
+    end
+  end
+
+  def test_load_raises_argument_error_on_yaml_syntax_error_without_path_or_file_content
+    Dir.mktmpdir do |dir|
+      path = File.join(dir, "broken.yml")
+      marker = "SECRET_YAML_MARKER_#{SecureRandom.hex(8)}"
+      File.write(path, "payers:\n  - payer_identifier: \"#{marker}\n")
+
+      error = assert_raises(ArgumentError) { load_directory_at(path) }
+
+      refute_includes error.message, path
+      refute_includes error.message, marker
+    end
+  end
+
+  def test_load_raises_argument_error_when_file_is_missing_without_path_in_message
+    Dir.mktmpdir do |dir|
+      path = File.join(dir, "no_such_payer_directory.yml")
+
+      error = assert_raises(ArgumentError) { load_directory_at(path) }
+
+      refute_includes error.message, path
+      refute_includes error.message, "no_such_payer_directory.yml"
+    end
   end
 end
 
