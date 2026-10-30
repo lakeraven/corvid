@@ -780,7 +780,262 @@ class Corvid::Rcm::PostingPlanTest < Minitest::Test
     end
   end
 
+  # -- issue #749 review round 3 (J1–J6) -------------------------------------
+
+  def test_issue_749_j1_non_reversal_negative_billed_no_lines_unbalanced_and_not_posted
+    claim = Corvid::Rcm::RemittanceClaim.new(
+      claim_identifier: "CLM-J1",
+      payer_control_number: "PAYER-J1",
+      status_code: Corvid::Rcm::CLAIM_STATUS_PROCESSED_PRIMARY,
+      billed_amount: BigDecimal("-50.00"),
+      paid_amount: BigDecimal("0.00"),
+      services: [],
+      adjustments: [
+        Corvid::Rcm::Adjustment.new(group_code: "CO", reason_code: "45", amount: BigDecimal("-50.00"))
+      ]
+    )
+    plan = plan_from(synthetic_remittance("REM-J1", BigDecimal("0.00"), [ claim ]))
+
+    assert_unbalanced_no_entries(plan, "CLM-J1", "PAYER-J1")
+  end
+
+  def test_issue_749_j2_claim_level_negative_billed_with_zero_line_unbalanced_and_not_posted
+    serviced = Date.new(2026, 8, 18)
+    line = Corvid::Rcm::RemittanceService.new(
+      procedure_code: "90837",
+      billed_amount: BigDecimal("0.00"),
+      paid_amount: BigDecimal("0.00"),
+      serviced_date: serviced,
+      adjustments: []
+    )
+    claim = Corvid::Rcm::RemittanceClaim.new(
+      claim_identifier: "CLM-J2-CLNEG",
+      payer_control_number: "PAYER-J2-CLNEG",
+      status_code: Corvid::Rcm::CLAIM_STATUS_PROCESSED_PRIMARY,
+      billed_amount: BigDecimal("-50.00"),
+      paid_amount: BigDecimal("0.00"),
+      services: [ line ],
+      adjustments: [
+        Corvid::Rcm::Adjustment.new(group_code: "CO", reason_code: "45", amount: BigDecimal("-50.00"))
+      ]
+    )
+    plan = plan_from(synthetic_remittance("REM-J2-CLNEG", BigDecimal("0.00"), [ claim ]))
+
+    assert_unbalanced_no_entries(plan, "CLM-J2-CLNEG", "PAYER-J2-CLNEG")
+  end
+
+  def test_issue_749_j2_balanced_totals_with_negative_line_billed_unbalanced_and_not_posted
+    serviced = Date.new(2026, 8, 18)
+    line_a = Corvid::Rcm::RemittanceService.new(
+      procedure_code: "90837",
+      billed_amount: BigDecimal("150.00"),
+      paid_amount: BigDecimal("100.00"),
+      serviced_date: serviced,
+      adjustments: [
+        Corvid::Rcm::Adjustment.new(group_code: "CO", reason_code: "45", amount: BigDecimal("50.00"))
+      ]
+    )
+    line_b = Corvid::Rcm::RemittanceService.new(
+      procedure_code: "90785",
+      billed_amount: BigDecimal("-50.00"),
+      paid_amount: BigDecimal("0.00"),
+      serviced_date: serviced,
+      adjustments: [
+        Corvid::Rcm::Adjustment.new(group_code: "CO", reason_code: "45", amount: BigDecimal("-50.00"))
+      ]
+    )
+    claim = Corvid::Rcm::RemittanceClaim.new(
+      claim_identifier: "CLM-J2-NEGLINE",
+      payer_control_number: "PAYER-J2-NEGLINE",
+      status_code: Corvid::Rcm::CLAIM_STATUS_PROCESSED_PRIMARY,
+      billed_amount: BigDecimal("100.00"),
+      paid_amount: BigDecimal("100.00"),
+      services: [ line_a, line_b ],
+      adjustments: []
+    )
+    plan = plan_from(synthetic_remittance("REM-J2-NEGLINE", BigDecimal("100.00"), [ claim ]))
+
+    assert_unbalanced_no_entries(plan, "CLM-J2-NEGLINE", "PAYER-J2-NEGLINE")
+  end
+
+  def test_issue_749_j3_each_line_must_balance_even_when_claim_totals_reconcile
+    serviced = Date.new(2026, 8, 18)
+    line_a = Corvid::Rcm::RemittanceService.new(
+      procedure_code: "90837",
+      billed_amount: BigDecimal("100.00"),
+      paid_amount: BigDecimal("80.00"),
+      serviced_date: serviced,
+      adjustments: [
+        Corvid::Rcm::Adjustment.new(group_code: "CO", reason_code: "45", amount: BigDecimal("20.00"))
+      ]
+    )
+    line_b = Corvid::Rcm::RemittanceService.new(
+      procedure_code: "90785",
+      billed_amount: BigDecimal("100.00"),
+      paid_amount: BigDecimal("90.00"),
+      serviced_date: serviced,
+      adjustments: [
+        Corvid::Rcm::Adjustment.new(group_code: "CO", reason_code: "45", amount: BigDecimal("20.00"))
+      ]
+    )
+    line_c = Corvid::Rcm::RemittanceService.new(
+      procedure_code: "99213",
+      billed_amount: BigDecimal("100.00"),
+      paid_amount: BigDecimal("70.00"),
+      serviced_date: serviced,
+      adjustments: [
+        Corvid::Rcm::Adjustment.new(group_code: "CO", reason_code: "45", amount: BigDecimal("20.00"))
+      ]
+    )
+    claim = Corvid::Rcm::RemittanceClaim.new(
+      claim_identifier: "CLM-J3",
+      payer_control_number: "PAYER-J3",
+      status_code: Corvid::Rcm::CLAIM_STATUS_PROCESSED_PRIMARY,
+      billed_amount: BigDecimal("300.00"),
+      paid_amount: BigDecimal("240.00"),
+      services: [ line_a, line_b, line_c ],
+      adjustments: []
+    )
+    plan = plan_from(synthetic_remittance("REM-J3", BigDecimal("240.00"), [ claim ]))
+
+    assert_unbalanced_no_entries(plan, "CLM-J3", "PAYER-J3")
+  end
+
+  def test_issue_749_j4_denied_claim_with_positive_paid_and_no_cas_unbalanced_and_not_posted
+    claim = Corvid::Rcm::RemittanceClaim.new(
+      claim_identifier: "CLM-J4-BAD",
+      payer_control_number: "PAYER-J4-BAD",
+      status_code: Corvid::Rcm::CLAIM_STATUS_DENIED,
+      billed_amount: BigDecimal("100.00"),
+      paid_amount: BigDecimal("100.00"),
+      services: [],
+      adjustments: []
+    )
+    plan = plan_from(synthetic_remittance("REM-J4-BAD", BigDecimal("100.00"), [ claim ]))
+
+    assert_unbalanced_no_entries(plan, "CLM-J4-BAD", "PAYER-J4-BAD")
+  end
+
+  def test_issue_749_j4_denied_claim_zero_paid_with_co50_posts_contractual_adjustment
+    claim = Corvid::Rcm::RemittanceClaim.new(
+      claim_identifier: "CLM-J4-OK",
+      payer_control_number: "PAYER-J4-OK",
+      status_code: Corvid::Rcm::CLAIM_STATUS_DENIED,
+      billed_amount: BigDecimal("100.00"),
+      paid_amount: BigDecimal("0.00"),
+      services: [],
+      adjustments: [
+        Corvid::Rcm::Adjustment.new(group_code: "CO", reason_code: "50", amount: BigDecimal("100.00"))
+      ]
+    )
+    plan = plan_from(synthetic_remittance("REM-J4-OK", BigDecimal("0.00"), [ claim ]))
+    entries = entries_for(plan, "CLM-J4-OK")
+
+    assert_empty plan.unbalanced
+    refute entries.any? { |e| e.kind == :payer_payment }
+    assert_equal 1, entries.length
+    assert_equal :contractual_adjustment, entries.first.kind
+    assert_equal BigDecimal("100.00"), entries.first.amount
+    assert_equal "CO", entries.first.group_code
+    assert_equal "50", entries.first.reason_code
+  end
+
+  def test_issue_749_j5_split_payer_payment_and_contractual_per_service_line
+    serviced = Date.new(2026, 8, 18)
+    line_90837 = Corvid::Rcm::RemittanceService.new(
+      procedure_code: "90837",
+      billed_amount: BigDecimal("100.00"),
+      paid_amount: BigDecimal("60.00"),
+      serviced_date: serviced,
+      adjustments: [
+        Corvid::Rcm::Adjustment.new(group_code: "CO", reason_code: "45", amount: BigDecimal("40.00"))
+      ]
+    )
+    line_90785 = Corvid::Rcm::RemittanceService.new(
+      procedure_code: "90785",
+      billed_amount: BigDecimal("50.00"),
+      paid_amount: BigDecimal("30.00"),
+      serviced_date: serviced,
+      adjustments: [
+        Corvid::Rcm::Adjustment.new(group_code: "CO", reason_code: "45", amount: BigDecimal("20.00"))
+      ]
+    )
+    claim = Corvid::Rcm::RemittanceClaim.new(
+      claim_identifier: "CLM-J5",
+      payer_control_number: "PAYER-J5",
+      status_code: Corvid::Rcm::CLAIM_STATUS_PROCESSED_PRIMARY,
+      billed_amount: BigDecimal("150.00"),
+      paid_amount: BigDecimal("90.00"),
+      services: [ line_90837, line_90785 ],
+      adjustments: []
+    )
+    plan = plan_from(synthetic_remittance("REM-J5", BigDecimal("90.00"), [ claim ]))
+    entries = entries_for(plan, "CLM-J5")
+
+    assert_empty plan.unbalanced
+    payment_90837 = entries.find do |e|
+      e.kind == :payer_payment && e.service_line&.procedure_code == "90837"
+    end
+    refute_nil payment_90837
+    assert_equal BigDecimal("60.00"), payment_90837.amount
+
+    payment_90785 = entries.find do |e|
+      e.kind == :payer_payment && e.service_line&.procedure_code == "90785"
+    end
+    refute_nil payment_90785
+    assert_equal BigDecimal("30.00"), payment_90785.amount
+
+    contractual_90837 = entries.find do |e|
+      e.kind == :contractual_adjustment && e.service_line&.procedure_code == "90837"
+    end
+    refute_nil contractual_90837
+    assert_equal BigDecimal("40.00"), contractual_90837.amount
+    assert_equal "CO", contractual_90837.group_code
+    assert_equal "45", contractual_90837.reason_code
+
+    contractual_90785 = entries.find do |e|
+      e.kind == :contractual_adjustment && e.service_line&.procedure_code == "90785"
+    end
+    refute_nil contractual_90785
+    assert_equal BigDecimal("20.00"), contractual_90785.amount
+    assert_equal "CO", contractual_90785.group_code
+    assert_equal "45", contractual_90785.reason_code
+  end
+
+  def test_issue_749_j6_reversal_keeps_zero_amount_co45_adjustment_alongside_payment
+    claim = Corvid::Rcm::RemittanceClaim.new(
+      claim_identifier: "CLM-J6",
+      payer_control_number: "PAYER-J6",
+      status_code: Corvid::Rcm::CLAIM_STATUS_REVERSAL,
+      billed_amount: BigDecimal("-100.00"),
+      paid_amount: BigDecimal("-100.00"),
+      services: [],
+      adjustments: [
+        Corvid::Rcm::Adjustment.new(group_code: "CO", reason_code: "45", amount: BigDecimal("0.00"))
+      ]
+    )
+    plan = plan_from(synthetic_remittance("REM-J6", BigDecimal("-100.00"), [ claim ]))
+    entries = entries_for(plan, "CLM-J6")
+
+    assert_empty plan.unbalanced
+    payment = entries.find { |e| e.kind == :reversal && e.group_code.nil? }
+    refute_nil payment
+    assert_equal BigDecimal("-100.00"), payment.amount
+
+    zero_co = entries.find { |e| e.kind == :reversal && e.group_code == "CO" && e.reason_code == "45" }
+    refute_nil zero_co
+    assert_equal BigDecimal("0.00"), zero_co.amount
+  end
+
   private
+
+  def assert_unbalanced_no_entries(plan, claim_identifier, payer_control_number)
+    assert_equal 1, plan.unbalanced.length
+    row = unbalanced_for(plan, claim_identifier)
+    refute_nil row
+    assert_equal payer_control_number, row.payer_control_number
+    assert_empty entries_for(plan, claim_identifier)
+  end
 
   def synthetic_remittance(remittance_identifier, payment_amount, claims)
     Corvid::Rcm::Remittance.new(
