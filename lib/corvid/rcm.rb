@@ -32,8 +32,10 @@ module Corvid
   # ChargeBuilder turns a finished Encounter and its Procedures, Conditions,
   # and Coverage into an in-memory ChargeSet. It reads hashes only. It does
   # not call an adapter and it does not persist. Prices come from the injected
-  # price list. Lines carry codes, amounts, tokens, and references, not names,
-  # birth dates, or narrative text (ADR 0003).
+  # price list. A line is kept only when every diagnosis it uses resolves;
+  # an ambiguous modality, provider, rank, or date is a problem. Lines carry
+  # codes, amounts, tokens, and references, not names, birth dates, or
+  # narrative text (ADR 0003).
   #
   # What is deliberately NOT here (wave 2 and later, per the marker issue):
   #   - persistence of any kind (tables, models, the claim event log with #507)
