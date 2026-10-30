@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require_relative "acknowledgment"
+require_relative "blank"
 
 module Corvid
   module Rcm
@@ -11,15 +12,15 @@ module Corvid
     # fix-and-resubmit. See acknowledgment.rb. Corvid's own scrub runs first;
     # this check runs last, before the claim is submitted.
     #
-    # `claim_identifier` names the claim. Nil and whitespace-only values are
-    # refused with a fixed ArgumentError that does not repeat the identifier.
-    # `valid` is exactly true or exactly false, and it is true only when
-    # `edits` is empty. Every edit is an `AcknowledgmentEdit`. A failing
-    # validation's edits each need a non-blank code and a non-blank
-    # description; a blank one is refused with a fixed ArgumentError that
-    # does not repeat the claim identifier or the edit text. `raw_reference`
-    # is the transport's own handle for the response, when it has one;
-    # callers that have no transport leave it nil.
+    # `claim_identifier` names the claim. Nil and blank values are refused
+    # with a fixed ArgumentError that does not repeat the identifier. Blank
+    # is `Blank.blank?`. `valid` is exactly true or exactly false, and it is
+    # true only when `edits` is empty. Every edit is an `AcknowledgmentEdit`.
+    # A failing validation's edits each need a code and a description that
+    # are not blank under the same check; a blank one is refused with a
+    # fixed ArgumentError that does not repeat the claim identifier or the
+    # edit text. `raw_reference` is the transport's own handle for the
+    # response, when it has one; callers that have no transport leave it nil.
     #
     # A failure answers as a rejected `Acknowledgment` with transaction_set
     # "validation", so disposition and work queue follow a rejected 277CA.
@@ -67,7 +68,7 @@ module Corvid
       private
 
       def require_claim_identifier(claim_identifier)
-        return claim_identifier unless blank?(claim_identifier)
+        return claim_identifier unless Blank.blank?(claim_identifier)
 
         raise ArgumentError, "claim_identifier must be non-blank"
       end
@@ -98,14 +99,10 @@ module Corvid
         return if valid
 
         edits.each do |edit|
-          next unless blank?(edit.code) || blank?(edit.description)
+          next unless Blank.blank?(edit.code) || Blank.blank?(edit.description)
 
           raise ArgumentError, "a failing validation edit must have a non-blank code and description"
         end
-      end
-
-      def blank?(value)
-        value.nil? || value.to_s.strip.empty?
       end
     end
   end

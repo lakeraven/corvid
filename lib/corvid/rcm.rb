@@ -2,6 +2,7 @@
 
 require_relative "rcm/claim"
 require_relative "rcm/acknowledgment"
+require_relative "rcm/blank"
 require_relative "rcm/claim_validation"
 require_relative "rcm/remittance"
 require_relative "rcm/edi_835_reader"
