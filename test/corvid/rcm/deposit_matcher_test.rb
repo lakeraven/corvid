@@ -374,6 +374,72 @@ class Corvid::Rcm::DepositMatcherTest < Minitest::Test
     assert_equal [ deposit ], result.unmatched_deposits
   end
 
+  def test_blank_traces_on_both_sides_never_pair
+    remittance = build_remittance(
+      remittance_identifier: "  ",
+      payment_amount: BigDecimal("10.00"),
+      payment_method: "ACH"
+    )
+    deposit = build_deposit(
+      deposit_identifier: "DEP-BLANK-BOTH",
+      trace_number: "",
+      amount: BigDecimal("10.00")
+    )
+
+    result = match(remittances: [ remittance ], deposits: [ deposit ])
+
+    assert_empty result.matched
+    assert_empty result.amount_mismatches
+    assert_same remittance, result.unmatched_remittances.first
+    assert_equal 1, result.unmatched_remittances.length
+    assert_same deposit, result.unmatched_deposits.first
+    assert_equal 1, result.unmatched_deposits.length
+  end
+
+  def test_nil_traces_on_both_sides_never_pair
+    remittance = build_remittance(
+      remittance_identifier: nil,
+      payment_amount: BigDecimal("10.00"),
+      payment_method: "ACH"
+    )
+    deposit = build_deposit(
+      deposit_identifier: "DEP-NIL-BOTH",
+      trace_number: nil,
+      amount: BigDecimal("10.00")
+    )
+
+    result = match(remittances: [ remittance ], deposits: [ deposit ])
+
+    assert_empty result.matched
+    assert_empty result.amount_mismatches
+    assert_same remittance, result.unmatched_remittances.first
+    assert_equal 1, result.unmatched_remittances.length
+    assert_same deposit, result.unmatched_deposits.first
+    assert_equal 1, result.unmatched_deposits.length
+  end
+
+  def test_blank_trace_deposit_does_not_pair_with_nil_trace_remittance
+    remittance = build_remittance(
+      remittance_identifier: nil,
+      payment_amount: BigDecimal("10.00"),
+      payment_method: "ACH"
+    )
+    deposit = build_deposit(
+      deposit_identifier: "DEP-BLANK-VS-NIL",
+      trace_number: "   ",
+      amount: BigDecimal("10.00")
+    )
+
+    result = match(remittances: [ remittance ], deposits: [ deposit ])
+
+    assert_empty result.matched
+    assert_empty result.amount_mismatches
+    assert_same remittance, result.unmatched_remittances.first
+    assert_equal 1, result.unmatched_remittances.length
+    assert_same deposit, result.unmatched_deposits.first
+    assert_equal 1, result.unmatched_deposits.length
+  end
+
   # -- exclusion rules -------------------------------------------------------
 
   def test_non_payment_method_is_stripped_and_upcased_before_exclusion
