@@ -22,16 +22,22 @@ module Corvid
     # clock readings, are computed before anything is recorded. A submit that
     # raises records nothing. `fetch_acknowledgments` returns those later
     # acknowledgments in submission order and does not read the clock. A
-    # canned `delayed_rejection` stays accepted at the front door — the
+    # canned row is a delayed rejection only when `delayed_rejection` is
+    # literal true. That claim stays accepted at the front door — the
     # clearinghouse took the claim — and is rejected later with the payer's
-    # 277CA edits. A front-door rejection, such as a missing billing provider
-    # NPI, is rejected immediately and the later acknowledgment repeats it. A
-    # delayed rejection is still subject to that front-door rule. Any claim
-    # listed under rejections must yield at least one edit, each a hash with
-    # a non-blank string code and description; otherwise submit raises and
+    # 277CA edits. A quoted "false" or "yes" is rejected at submit. A
+    # front-door rejection, such as a missing billing provider NPI, is
+    # rejected immediately and the later acknowledgment repeats it. A delayed
+    # rejection is still subject to that front-door rule. Any claim listed
+    # under rejections must yield at least one edit, each a hash with a
+    # non-blank string code and description; otherwise submit raises and
     # records nothing. Rejection keys that are not strings are refused when
-    # the client is built. `submitted` returns a frozen copy of the log, and
-    # the later trace suffix comes from an internal counter.
+    # the client is built. The acknowledgment table is loaded deep-frozen
+    # (`YAML.safe_load_file` with `freeze: true`). Each acknowledgment edit's
+    # code, description, element, and level are frozen strings copied from
+    # that table, so neither an immediate nor a later acknowledgment shares a
+    # mutable string with it. `submitted` returns a frozen copy of the log,
+    # and the later trace suffix comes from an internal counter.
     class FixtureClearinghouseClient < ClearinghouseClient
       FIXTURE_DIR = File.expand_path("fixtures/835", __dir__)
       ACKNOWLEDGMENT_TABLE = File.expand_path("data/clearinghouse_acknowledgments.yml", __dir__)
@@ -79,7 +85,7 @@ module Corvid
         @scenarios = Array(scenarios)
         @fixture_dir = fixture_dir
         @clock = clock
-        @table = YAML.safe_load_file(acknowledgment_table)
+        @table = YAML.safe_load_file(acknowledgment_table, freeze: true)
         assert_rejection_keys_are_strings!
         @submitted = []
         @later_acknowledgments = []
@@ -175,6 +181,7 @@ module Corvid
         rejections.key?(claim.identifier.to_s)
       end
 
+      # Literal true only. A quoted "false" or "yes" is an immediate rejection.
       def delayed_rejection?(claim)
         row = rejection_row(claim)
         row.is_a?(Hash) && row["delayed_rejection"] == true
@@ -300,13 +307,20 @@ module Corvid
         raw_edits(claim).map { |edit| acknowledgment_edit(edit) }
       end
 
+      # Copies, then freezes. The table is already deep-frozen; these strings
+      # are a separate frozen set so an acknowledgment does not expose the
+      # table's own code, description, element, or level.
       def acknowledgment_edit(edit)
         AcknowledgmentEdit.new(
-          code: edit.fetch("code"),
-          description: edit.fetch("description"),
-          element: edit["element"],
-          level: edit.fetch("level", "claim")
+          code: frozen_edit_string(edit.fetch("code")),
+          description: frozen_edit_string(edit.fetch("description")),
+          element: frozen_edit_string(edit["element"]),
+          level: frozen_edit_string(edit.fetch("level", "claim"))
         )
+      end
+
+      def frozen_edit_string(value)
+        value.is_a?(String) ? value.dup.freeze : value
       end
 
       # `submit_claim` builds the immediate acknowledgment first and the later
