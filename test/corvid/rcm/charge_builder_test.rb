@@ -34,6 +34,22 @@ class Corvid::Rcm::ChargeBuilderTest < Minitest::Test
     end
   end
 
+  def assert_problems_include(charge_set, code, reference: nil)
+    match = charge_set.problems.find do |problem|
+      problem.code == code && (reference.nil? || problem.reference == reference)
+    end
+    refute_nil match, "expected #{code.inspect} #{reference.inspect} in #{charge_set.problems.inspect}"
+  end
+
+  def refute_problems_include(charge_set, code, reference: nil)
+    charge_set.problems.each do |problem|
+      next unless problem.code == code
+      next unless reference.nil? || problem.reference == reference
+
+      flunk("unexpected #{code.inspect} #{reference.inspect} in #{charge_set.problems.inspect}")
+    end
+  end
+
   def refute_price_list_called
     ->(_code, _modifiers) { flunk("price_list must not be called") }
   end
@@ -462,7 +478,6 @@ class Corvid::Rcm::ChargeBuilderTest < Minitest::Test
     cov = charge_set.coverage
     refute_nil cov
     assert_equal "PAYER-SYNTH-01", cov.payer_identifier
-    assert_equal "cov-synth-1", cov.identifier
     assert_equal "active", cov.status
     assert_nil cov.subscriber_given_name
     assert_nil cov.subscriber_family_name
@@ -479,6 +494,365 @@ class Corvid::Rcm::ChargeBuilderTest < Minitest::Test
 
     assert_nil charge_set.coverage
     assert_empty charge_set.problems
+  end
+
+  # -- issue #748 rules D1–D11 (synthetic fixtures only) ----------------------
+
+  def test_d1_every_diagnosis_reference_must_resolve_without_encounter_fallback_shortcuts
+    enc = Factory.encounter
+    c1 = Factory.condition(id: "c1", icd10: "F41.1")
+    mixed_proc = Factory.procedure(
+      id: "p-mixed", encounter_id: enc.fetch("id"), code: "90834",
+      reason_condition_ids: [ "c1", "cX" ]
+    )
+    mixed = build(encounter: enc, procedures: [ mixed_proc ], conditions: [ c1 ])
+    assert_empty mixed.lines
+    assert_problems_include(mixed, :diagnosis_unresolved, reference: "Condition/cX")
+    assert_problems_include(mixed, :no_diagnosis, reference: "Procedure/p-mixed")
+
+    enc_fallback = Factory.encounter(
+      diagnosis: [
+        Factory.encounter_diagnosis_ref("c-missing", rank: 1),
+        Factory.encounter_diagnosis_ref("c-secondary", rank: 2)
+      ]
+    )
+    c_secondary = Factory.condition(id: "c-secondary", icd10: "F32.9")
+    fallback_proc = Factory.procedure(id: "p-fallback", encounter_id: enc_fallback.fetch("id"), code: "90834")
+    fallback = build(
+      encounter: enc_fallback,
+      procedures: [ fallback_proc ],
+      conditions: [ c_secondary ]
+    )
+    assert_empty fallback.lines
+    assert_problems_include(fallback, :diagnosis_unresolved, reference: "Condition/c-missing")
+    assert_problems_include(fallback, :no_diagnosis, reference: "Procedure/p-fallback")
+    refute_equal [ 1 ], fallback.lines.map(&:diagnosis_sequences).flatten
+
+    enc_principal = Factory.encounter(
+      diagnosis: [ Factory.encounter_diagnosis_ref("c1", rank: 1) ]
+    )
+    blocked_proc = Factory.procedure(
+      id: "p-blocked", encounter_id: enc_principal.fetch("id"), code: "90834",
+      reason_condition_ids: [ "c-missing" ]
+    )
+    blocked = build(
+      encounter: enc_principal,
+      procedures: [ blocked_proc ],
+      conditions: [ c1 ]
+    )
+    assert_empty blocked.lines
+    assert_problems_include(blocked, :diagnosis_unresolved, reference: "Condition/c-missing")
+    assert_problems_include(blocked, :no_diagnosis, reference: "Procedure/p-blocked")
+  end
+
+  def test_d2_non_billable_condition_verification_status_blocks_lines
+    enc = Factory.encounter
+    proc = Factory.procedure(id: "p1", encounter_id: enc.fetch("id"), code: "90834",
+                             reason_condition_ids: [ "c-refuted" ])
+
+    %w[refuted entered-in-error unconfirmed].each do |status|
+      cond = Factory.condition(id: "c-refuted", icd10: "F41.1", verification_status: status)
+      charge_set = build(encounter: enc, procedures: [ proc ], conditions: [ cond ])
+      assert_empty charge_set.lines
+      assert_problems_include(charge_set, :diagnosis_not_billable, reference: "Condition/c-refuted")
+      assert_problems_include(charge_set, :no_diagnosis, reference: "Procedure/p1")
+    end
+
+    %w[confirmed provisional differential].each do |status|
+      cond = Factory.condition(id: "c-ok", icd10: "F41.1", verification_status: status)
+      charge_set = build(
+        encounter: enc,
+        procedures: [ Factory.procedure(id: "p-ok", encounter_id: enc.fetch("id"), code: "90834",
+                                      reason_condition_ids: [ "c-ok" ]) ],
+        conditions: [ cond ]
+      )
+      assert_equal 1, charge_set.lines.length
+      refute_problems_include(charge_set, :diagnosis_not_billable)
+    end
+
+    cond_absent = Factory.condition(id: "c-absent", icd10: "F41.1")
+    charge_set = build(
+      encounter: enc,
+      procedures: [ Factory.procedure(id: "p-absent", encounter_id: enc.fetch("id"), code: "90834",
+                                    reason_condition_ids: [ "c-absent" ]) ],
+      conditions: [ cond_absent ]
+    )
+    assert_equal 1, charge_set.lines.length
+  end
+
+  def test_d3_encounter_diagnosis_rank_must_be_positive_integer_when_present
+    enc = Factory.encounter(
+      diagnosis: [ Factory.encounter_diagnosis_ref("c1", rank: "1") ]
+    )
+    c1 = Factory.condition(id: "c1", icd10: "F41.1")
+    proc = Factory.procedure(id: "p1", encounter_id: enc.fetch("id"), code: "90834")
+    charge_set = build(encounter: enc, procedures: [ proc ], conditions: [ c1 ])
+    assert_empty charge_set.lines
+    assert_problems_include(charge_set, :diagnosis_rank_invalid, reference: "Condition/c1")
+    assert_problems_include(charge_set, :no_diagnosis, reference: "Procedure/p1")
+
+    [ 0, -1 ].each do |bad_rank|
+      enc_bad = Factory.encounter(
+        diagnosis: [ Factory.encounter_diagnosis_ref("c-bad", rank: bad_rank) ]
+      )
+      cond = Factory.condition(id: "c-bad", icd10: "F32.9")
+      bad_set = build(
+        encounter: enc_bad,
+        procedures: [ Factory.procedure(id: "p-bad", encounter_id: enc_bad.fetch("id"), code: "90834") ],
+        conditions: [ cond ]
+      )
+      assert_empty bad_set.lines
+      assert_problems_include(bad_set, :diagnosis_rank_invalid, reference: "Condition/c-bad")
+    end
+
+    enc_sort = Factory.encounter(
+      diagnosis: [
+        Factory.encounter_diagnosis_ref("c-unranked"),
+        Factory.encounter_diagnosis_ref("c-ranked", rank: 1)
+      ]
+    )
+    c_ranked = Factory.condition(id: "c-ranked", icd10: "F41.1")
+    c_unranked = Factory.condition(id: "c-unranked", icd10: "F32.9")
+    sorted = build(
+      encounter: enc_sort,
+      procedures: [ Factory.procedure(id: "p-sort", encounter_id: enc_sort.fetch("id"), code: "90834") ],
+      conditions: [ c_unranked, c_ranked ]
+    )
+    assert_equal [ "F41.1", "F32.9" ], sorted.diagnoses.map(&:code)
+    assert_equal 1, sorted.lines.length
+  end
+
+  def test_d4_diagnoses_deduplicate_by_icd10_and_cap_at_four_per_line
+    enc = Factory.encounter
+    c_a = Factory.condition(id: "c-a", icd10: "F41.1")
+    c_b = Factory.condition(id: "c-b", icd10: "F41.1")
+    dedupe_proc = Factory.procedure(
+      id: "p-dedupe", encounter_id: enc.fetch("id"), code: "90834",
+      reason_condition_ids: [ "c-a", "c-b" ]
+    )
+    deduped = build(encounter: enc, procedures: [ dedupe_proc ], conditions: [ c_a, c_b ])
+    assert_equal 1, deduped.diagnoses.length
+    assert_equal [ 1 ], deduped.lines.first.diagnosis_sequences
+
+    codes = %w[F41.1 F32.9 F33.0 F34.1 F40.0]
+    conditions = codes.each_with_index.map do |code, index|
+      Factory.condition(id: "c#{index}", icd10: code)
+    end
+    too_many_proc = Factory.procedure(
+      id: "p-many", encounter_id: enc.fetch("id"), code: "90837",
+      reason_condition_ids: conditions.map { |c| c.fetch("id") }
+    )
+    too_many = build(encounter: enc, procedures: [ too_many_proc ], conditions: conditions)
+    assert_empty too_many.lines
+    assert_problems_include(too_many, :too_many_diagnoses, reference: "Procedure/p-many")
+  end
+
+  def test_d5_rendering_provider_counts_practitioner_performer_npi_only
+    enc = Factory.encounter
+    c1 = Factory.condition(id: "c1", icd10: "F41.1")
+
+    org_only = Factory.procedure(
+      id: "p-org", encounter_id: enc.fetch("id"), code: "90834",
+      performers: [ Factory.organization_performer(npi: Factory::RENDERING_NPI) ],
+      reason_condition_ids: [ "c1" ]
+    )
+    org_set = build(encounter: enc, procedures: [ org_only ], conditions: [ c1 ])
+    assert_equal 1, org_set.lines.length
+    assert_nil org_set.rendering_provider_npi
+    assert_problems_include(org_set, :rendering_provider_missing, reference: "Procedure/p-org")
+
+    ref_practitioner = Factory.procedure(
+      id: "p-ref", encounter_id: enc.fetch("id"), code: "90834",
+      performers: [ Factory.practitioner_reference_performer(npi: Factory::RENDERING_NPI) ],
+      reason_condition_ids: [ "c1" ]
+    )
+    ref_set = build(encounter: enc, procedures: [ ref_practitioner ], conditions: [ c1 ])
+    assert_equal Factory::RENDERING_NPI, ref_set.rendering_provider_npi
+
+    dual = Factory.procedure(
+      id: "p-dual", encounter_id: enc.fetch("id"), code: "90834",
+      performers: [
+        Factory.practitioner_performer(npi: Factory::RENDERING_NPI),
+        Factory.practitioner_performer(npi: Factory::SECOND_RENDERING_NPI)
+      ],
+      reason_condition_ids: [ "c1" ]
+    )
+    dual_set = build(encounter: enc, procedures: [ dual ], conditions: [ c1 ])
+    assert_equal 1, dual_set.lines.length
+    assert_nil dual_set.rendering_provider_npi
+    assert_problems_include(dual_set, :multiple_rendering_providers)
+
+    non_npi = Factory.procedure(
+      id: "p-non-npi", encounter_id: enc.fetch("id"), code: "90834", npi: nil,
+      performers: [ {
+        "actor" => {
+          "identifier" => [ { "system" => "http://example.org/local-id", "value" => "LOCAL-1" } ]
+        }
+      } ],
+      reason_condition_ids: [ "c1" ]
+    )
+    non_npi_set = build(encounter: enc, procedures: [ non_npi ], conditions: [ c1 ])
+    assert_problems_include(non_npi_set, :rendering_provider_missing, reference: "Procedure/p-non-npi")
+  end
+
+  def test_d6_contradictory_or_unknown_encounter_modality_fails_closed
+    enc = Factory.encounter(class_code: "AMB", audio_only_type: true)
+    proc = Factory.procedure(
+      id: "p-amb-phone", encounter_id: enc.fetch("id"), code: "90834",
+      reason_condition_ids: [ "c1" ]
+    )
+    amb_phone = build(
+      encounter: enc,
+      procedures: [ proc ],
+      conditions: [ Factory.condition(id: "c1", icd10: "F41.1") ]
+    )
+    assert_empty amb_phone.lines
+    assert_equal [ :encounter_modality_unknown ], problem_codes(amb_phone)
+
+    enc_home = Factory.encounter(class_code: "AMB", at_home: true)
+    amb_home = build(
+      encounter: enc_home,
+      procedures: [ Factory.procedure(id: "p-amb-home", encounter_id: enc_home.fetch("id"), code: "90834",
+                                      reason_condition_ids: [ "c1" ]) ],
+      conditions: [ Factory.condition(id: "c1", icd10: "F41.1") ]
+    )
+    assert_empty amb_home.lines
+    assert_equal [ :encounter_modality_unknown ], problem_codes(amb_home)
+
+    enc_bad_system = Factory.encounter(class_code: "VR", class_system: "http://example.org/local-act")
+    bad_system = build(
+      encounter: enc_bad_system,
+      procedures: [ Factory.procedure(id: "p-bad-class", encounter_id: enc_bad_system.fetch("id"),
+                                    code: "90834", reason_condition_ids: [ "c1" ]) ],
+      conditions: [ Factory.condition(id: "c1", icd10: "F41.1") ]
+    )
+    assert_empty bad_system.lines
+    assert_equal [ :encounter_modality_unknown ], problem_codes(bad_system)
+  end
+
+  def test_d7_audio_only_defaults_and_video_pos_by_location_physical_type
+    c1 = Factory.condition(id: "c1", icd10: "F41.1")
+
+    enc_home = Factory.encounter(class_code: "VR", at_home: true, audio_only_type: true)
+    home_default = build(
+      encounter: enc_home,
+      procedures: [ Factory.procedure(id: "p-audio-home", encounter_id: enc_home.fetch("id"), code: "90837",
+                                      reason_condition_ids: [ "c1" ]) ],
+      conditions: [ c1 ]
+    )
+    home_line = home_default.lines.first
+    assert_equal "10", home_line.place_of_service
+    assert_equal [ "93" ], home_line.modifiers
+
+    enc_away = Factory.encounter(class_code: "VR", at_home: false, audio_only_type: true)
+    away_default = build(
+      encounter: enc_away,
+      procedures: [ Factory.procedure(id: "p-audio-away", encounter_id: enc_away.fetch("id"), code: "90837",
+                                      reason_condition_ids: [ "c1" ]) ],
+      conditions: [ c1 ]
+    )
+    away_line = away_default.lines.first
+    assert_equal "02", away_line.place_of_service
+    assert_equal [ "93" ], away_line.modifiers
+
+    blank_override = build(
+      encounter: enc_home,
+      procedures: [ Factory.procedure(id: "p-blank-mod", encounter_id: enc_home.fetch("id"), code: "90837",
+                                      reason_condition_ids: [ "c1" ]) ],
+      conditions: [ c1 ],
+      coverage: Factory.coverage(audio_only_modifier: "   ")
+    )
+    assert_equal [ "93" ], blank_override.lines.first.modifiers
+
+    enc_room = Factory.encounter(class_code: "VR", location_physical_type: "ro")
+    video_room = build(
+      encounter: enc_room,
+      procedures: [ Factory.procedure(id: "p-video-room", encounter_id: enc_room.fetch("id"), code: "90837",
+                                      reason_condition_ids: [ "c1" ]) ],
+      conditions: [ c1 ]
+    )
+    room_line = video_room.lines.first
+    assert_equal "02", room_line.place_of_service
+    assert_equal [ "95" ], room_line.modifiers
+  end
+
+  def test_d8_charge_set_enforces_icd10_cm_and_cpt_hcpcs_procedure_systems
+    enc = Factory.encounter
+    snomed_only = Factory.condition(id: "c-snomed", snomed_code: "48694002")
+    proc = Factory.procedure(id: "p1", encounter_id: enc.fetch("id"), code: "90834",
+                             reason_condition_ids: [ "c-snomed" ])
+    unresolved = build(encounter: enc, procedures: [ proc ], conditions: [ snomed_only ])
+    assert_empty unresolved.lines
+    assert_problems_include(unresolved, :diagnosis_unresolved, reference: "Condition/c-snomed")
+
+    local_proc = Factory.procedure(
+      id: "p-local", encounter_id: enc.fetch("id"), code: "90834",
+      code_system: "http://example.org/local-codes",
+      reason_condition_ids: [ "c1" ]
+    )
+    local = build(
+      encounter: enc,
+      procedures: [ local_proc ],
+      conditions: [ Factory.condition(id: "c1", icd10: "F41.1") ]
+    )
+    assert_empty local.lines
+    assert_problems_include(local, :code_not_in_charge_set, reference: "Procedure/p-local")
+  end
+
+  def test_d9_serviced_date_uses_period_start_and_rejects_malformed_datetimes
+    enc = Factory.encounter
+    c1 = Factory.condition(id: "c1", icd10: "F41.1")
+    period_proc = Factory.procedure(
+      id: "p-period", encounter_id: enc.fetch("id"), code: "90837",
+      performed_at: "2026-08-15T23:30:00-07:00",
+      performed_end: "2026-08-16T00:20:00-07:00",
+      reason_condition_ids: [ "c1" ]
+    )
+    period_set = build(encounter: enc, procedures: [ period_proc ], conditions: [ c1 ])
+    line = period_set.lines.first
+    assert_equal Date.new(2026, 8, 15), line.serviced_date
+    assert_equal 50, line.documented_minutes
+
+    %w[2026-08-15Tnonsense 2026-13-01].each do |bad_instant|
+      bad_proc = Factory.procedure(
+        id: "p-bad-date", encounter_id: enc.fetch("id"), code: "90834",
+        performed_at: bad_instant, reason_condition_ids: [ "c1" ]
+      )
+      bad_set = build(encounter: enc, procedures: [ bad_proc ], conditions: [ c1 ])
+      assert_empty bad_set.lines
+      assert_problems_include(bad_set, :serviced_date_missing, reference: "Procedure/p-bad-date")
+    end
+  end
+
+  def test_d10_duplicate_procedure_id_emits_one_line_and_duplicate_procedure_problem
+    enc = Factory.encounter
+    c1 = Factory.condition(id: "c1", icd10: "F41.1")
+    proc = Factory.procedure(id: "p-dup", encounter_id: enc.fetch("id"), code: "90834",
+                             reason_condition_ids: [ "c1" ])
+    charge_set = build(encounter: enc, procedures: [ proc, proc.dup ], conditions: [ c1 ])
+
+    assert_equal 1, charge_set.lines.length
+    assert_problems_include(charge_set, :duplicate_procedure, reference: "Procedure/p-dup")
+  end
+
+  def test_d11_coverage_status_and_reference_without_member_identifier_in_inspect
+    enc = Factory.encounter
+    c1 = Factory.condition(id: "c1", icd10: "F41.1")
+    proc = Factory.procedure(id: "p1", encounter_id: enc.fetch("id"), code: "90834",
+                             reason_condition_ids: [ "c1" ])
+    member_id = "MEMBER-SYNTH-999"
+    charge_set = build(
+      encounter: enc,
+      procedures: [ proc ],
+      conditions: [ c1 ],
+      coverage: Factory.coverage(id: "cov-synth-1", status: "cancelled", member_id: member_id)
+    )
+
+    cov = charge_set.coverage
+    refute_nil cov
+    assert_equal "cancelled", cov.status
+    assert_equal "Coverage/cov-synth-1", cov.identifier
+    refute_includes charge_set.inspect, member_id
   end
 
   # -- ADR 0003 ---------------------------------------------------------------
