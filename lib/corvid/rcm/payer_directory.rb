@@ -124,10 +124,21 @@ module Corvid
 
     # A checked-in payer directory. The file is data; the rules for what
     # "supported" and "enrollment required" mean live on `PayerDirectoryEntry`.
+    # `#search` returns payers whose name contains the stripped,
+    # case-insensitive query, or whose payer identifier or an alias exactly
+    # matches it. Identifiers and aliases are never matched by substring.
+    # Exact identifier and alias matches come first, then name-substring
+    # matches, each in file order, with no duplicates. Blank, whitespace-only,
+    # and nil queries return nothing.
     #
-    # A malformed file raises `ArgumentError` with a fixed message. The
-    # message does not include the path, the payer, or the offending value,
-    # so a directory cannot leak its contents through an exception.
+    # Loading refuses an ambiguous directory: two rows sharing a payer
+    # identifier, or an identifier or alias of one row equal (case-insensitive,
+    # stripped) to an identifier or alias of another row. An alias equal to
+    # its own row's identifier is allowed. An ambiguous directory, a malformed
+    # entry, a YAML syntax error, or a missing or unreadable file raises
+    # `ArgumentError` with a fixed message that includes no path, identifier,
+    # or file content. A YAML syntax error or a missing or unreadable file is
+    # raised with a nil cause.
     class PayerDirectory
       DEFAULT_PATH = File.expand_path("data/payer_directory.yml", __dir__)
       INVALID_ENTRY = "invalid payer directory entry"
@@ -142,7 +153,16 @@ module Corvid
         private
 
         def read_entries(path)
-          entries_from(YAML.safe_load_file(path, permitted_classes: [ Date ]))
+          entries_from(load_document(path))
+        end
+
+        # Psych quotes the path and can quote the line. The operating system
+        # quotes the path for a missing or unreadable file. The fixed message
+        # replaces both, and a nil cause drops the original so it cannot leak.
+        def load_document(path)
+          YAML.safe_load_file(path, permitted_classes: [ Date ])
+        rescue Psych::SyntaxError, SystemCallError
+          raise ArgumentError, INVALID_ENTRY, cause: nil
         end
 
         def entries_from(document)
@@ -151,7 +171,26 @@ module Corvid
           rows = document["payers"]
           raise ArgumentError, INVALID_ENTRY unless rows.is_a?(Array)
 
-          rows.map { |row| build_entry(row) }
+          reject_ambiguous!(rows.map { |row| build_entry(row) })
+        end
+
+        def reject_ambiguous!(entries)
+          accepted = []
+          entries.each do |entry|
+            raise ArgumentError, INVALID_ENTRY if ambiguous_entry?(entry, accepted)
+
+            accepted << entry
+          end
+          entries
+        end
+
+        # Cross-row only. `matches?` is exact, case-insensitive, and stripped.
+        # The row is not compared with itself, so an alias equal to its own
+        # identifier is allowed.
+        def ambiguous_entry?(entry, accepted)
+          [ entry.payer_identifier, *entry.aliases ].any? do |identifier|
+            accepted.any? { |prior| prior.matches?(identifier) }
+          end
         end
 
         def build_entry(row)
@@ -243,30 +282,24 @@ module Corvid
         @entries = entries.freeze
       end
 
-      # Blank queries match nothing. Otherwise a payer is returned when the
-      # query occurs in its name, payer identifier, or an alias, or when
-      # `matches?` accepts the query as that identifier. Comparison is
-      # case-insensitive, and whitespace around the query is ignored.
-      # Each payer is returned at most once, in file order.
+      # Blank, whitespace-only, and nil queries return nothing. A payer is
+      # returned when its name contains the stripped, case-insensitive query,
+      # or when its payer identifier or an alias exactly matches
+      # (`PayerDirectoryEntry#matches?`). Identifiers and aliases are never
+      # matched by substring. Exact identifier and alias matches come first,
+      # then name-substring matches, each in file order, with no duplicates.
       def search(query)
         needle = query.to_s.strip.downcase
         return [] if needle.empty?
 
-        @entries.select { |entry| hit?(entry, needle) }
+        exact, rest = @entries.partition { |entry| entry.matches?(needle) }
+        exact + rest.select { |entry| name_contains?(entry, needle) }
       end
 
       private
 
-      def hit?(entry, needle)
-        entry.matches?(needle) || searchable_values(entry).any? { |value| includes_needle?(value, needle) }
-      end
-
-      def searchable_values(entry)
-        [ entry.name, entry.payer_identifier, *entry.aliases ]
-      end
-
-      def includes_needle?(value, needle)
-        value.to_s.strip.downcase.include?(needle)
+      def name_contains?(entry, needle)
+        entry.name.to_s.downcase.include?(needle)
       end
     end
   end

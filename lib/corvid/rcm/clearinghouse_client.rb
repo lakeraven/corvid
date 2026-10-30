@@ -50,8 +50,15 @@ module Corvid
 
       # Search the payer directory.
       #
-      # @param query [String, nil] a name fragment, payer identifier, or alias.
-      #   Blank and nil match nothing.
+      # Returns payers whose name contains the stripped, case-insensitive
+      # query, or whose payer identifier or an alias exactly matches it.
+      # Identifiers and aliases are never matched by substring. Exact
+      # identifier and alias matches come first, then name-substring
+      # matches, each in directory order, with no duplicates. Blank,
+      # whitespace-only, and nil queries return nothing.
+      #
+      # @param query [String, nil] a name fragment, or an exact payer
+      #   identifier or alias
       # @return [Array<Corvid::Rcm::PayerDirectoryEntry>]
       def search_payers(query)
         raise NotImplementedError, "#{self.class}#search_payers not implemented"

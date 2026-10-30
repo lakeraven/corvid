@@ -26,7 +26,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `Corvid::Rcm::PayerDirectoryEntry` records whether a payer supports each
   transaction and whether enrollment is required. Support is recognized only
   from an explicit true. Enrollment is required unless the directory says
-  false. `ClearinghouseClient#search_payers` is the seam, and
+  false. `PayerDirectory#search` returns payers whose name contains the
+  stripped, case-insensitive query, or whose payer identifier or an alias
+  exactly matches it. Identifiers and aliases are never matched by
+  substring. Exact identifier and alias matches come first, then
+  name-substring matches, each in file order, with no duplicates. Blank,
+  whitespace-only, and nil queries return nothing.
+  `ClearinghouseClient#search_payers` is the seam, and
   `FixtureClearinghouseClient` answers from the synthetic directory at
   `lib/corvid/rcm/data/payer_directory.yml`.
 - ZIP-to-CBSA wage-area crosswalk (#371). `corvid_zip_cbsa_crosswalks`
