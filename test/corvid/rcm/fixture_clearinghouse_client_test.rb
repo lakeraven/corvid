@@ -396,4 +396,190 @@ class Corvid::Rcm::FixtureClearinghouseClientTest < Minitest::Test
   ensure
     table&.unlink
   end
+
+  # -- #739 review round 1 (decided rules) -----------------------------------
+
+  DELAYED_EDIT_MESSAGE = Corvid::Rcm::FixtureClearinghouseClient::DELAYED_REJECTION_EDIT_MESSAGE
+  INVALID_CLOCK_MESSAGE = "clock must return a Time"
+  MISSING_NPI_EDIT = Corvid::Rcm::FixtureClearinghouseClient::MISSING_BILLING_NPI_EDIT
+
+  def with_acknowledgment_table(yaml_body, clock: advancing_clock)
+    table = Tempfile.new([ "ack_table", ".yml" ])
+    table.write(yaml_body)
+    table.close
+    client = Corvid::Rcm::FixtureClearinghouseClient.new(
+      acknowledgment_table: table.path,
+      clock: clock
+    )
+    yield client, table.path
+  ensure
+    table&.unlink
+  end
+
+  def test_delayed_rejection_with_missing_billing_npi_is_rejected_at_submit_and_on_fetch
+    [ nil, "  " ].each do |billing_provider_npi|
+      client = client_with_advancing_clock
+      claim = Factory.claim(
+        identifier: "CLM-RJ-DELAYED-0001",
+        billing_provider_npi: billing_provider_npi
+      )
+
+      immediate = client.submit_claim(claim)
+      later = client.fetch_acknowledgments.fetch(0)
+
+      assert immediate.rejected?, "missing billing NPI must reject at submit even for delayed_rejection"
+      assert later.rejected?
+      assert_equal [ MISSING_NPI_EDIT ], immediate.edits
+      assert_equal immediate.edits, later.edits
+    end
+  end
+
+  def test_broken_delayed_rejection_argument_error_message_is_fixed_and_redacted
+    claim_id = "CLM-BROKEN-MSG-739"
+    patient_identifier = "pt_redact_in_delayed_error_739"
+
+    with_acknowledgment_table(<<~YAML) do |client, _path|
+      default_outcome: accepted
+      default_transaction_set: "277CA"
+      rejections:
+        #{claim_id}:
+          delayed_rejection: true
+          edits: []
+    YAML
+      error = assert_raises(ArgumentError) do
+        client.submit_claim(Factory.claim(identifier: claim_id, patient_identifier: patient_identifier))
+      end
+
+      assert_equal DELAYED_EDIT_MESSAGE, error.message
+      refute_includes error.message, claim_id
+      refute_includes error.message, patient_identifier
+    end
+  end
+
+  def test_delayed_rejection_with_unusable_single_edit_raises_at_submit
+    tables = {
+      "CLM-DELAYED-BLANK-CODE-739" => <<~YAML,
+        default_outcome: accepted
+        default_transaction_set: "277CA"
+        rejections:
+          CLM-DELAYED-BLANK-CODE-739:
+            delayed_rejection: true
+            edits:
+              - code: ""
+                description: "Synthetic payer edit with an empty code."
+      YAML
+      "CLM-DELAYED-BLANK-DESC-739" => <<~YAML,
+        default_outcome: accepted
+        default_transaction_set: "277CA"
+        rejections:
+          CLM-DELAYED-BLANK-DESC-739:
+            delayed_rejection: true
+            edits:
+              - code: "A7:1"
+                description: "   "
+      YAML
+      "CLM-DELAYED-NO-CODE-739" => <<~YAML,
+        default_outcome: accepted
+        default_transaction_set: "277CA"
+        rejections:
+          CLM-DELAYED-NO-CODE-739:
+            delayed_rejection: true
+            edits:
+              - description: "Synthetic edit missing a code key."
+      YAML
+      "CLM-DELAYED-NO-DESC-739" => <<~YAML
+        default_outcome: accepted
+        default_transaction_set: "277CA"
+        rejections:
+          CLM-DELAYED-NO-DESC-739:
+            delayed_rejection: true
+            edits:
+              - code: "A7:1"
+      YAML
+    }
+
+    tables.each do |claim_id, yaml_body|
+      with_acknowledgment_table(yaml_body) do |client, _path|
+        assert_raises(ArgumentError) do
+          client.submit_claim(Factory.claim(identifier: claim_id))
+        end
+      end
+    end
+  end
+
+  def test_raising_submit_leaves_submitted_empty_and_no_later_acknowledgment_for_that_claim
+    claim_id = "CLM-RAISE-NO-RECORD-739"
+
+    with_acknowledgment_table(<<~YAML) do |client, _path|
+      default_outcome: accepted
+      default_transaction_set: "277CA"
+      rejections:
+        #{claim_id}:
+          delayed_rejection: true
+          edits: []
+    YAML
+      assert_raises(ArgumentError) { client.submit_claim(Factory.claim(identifier: claim_id)) }
+      assert_empty client.submitted
+      assert_nil client.fetch_acknowledgments.find { |ack| ack.claim_identifier == claim_id }
+    end
+
+    canned_id = "CLM-CANNED-NO-DESC-739"
+
+    with_acknowledgment_table(<<~YAML) do |client, _path|
+      default_outcome: accepted
+      default_transaction_set: "277CA"
+      rejections:
+        #{canned_id}:
+          transaction_set: "277CA"
+          edits:
+            - code: "A7:1"
+              level: claim
+    YAML
+      assert_raises(StandardError) { client.submit_claim(Factory.claim(identifier: canned_id)) }
+      assert_empty client.submitted
+      assert_nil client.fetch_acknowledgments.find { |ack| ack.claim_identifier == canned_id }
+    end
+
+    clock_calls = 0
+    broken_clock = lambda do
+      clock_calls += 1
+      raise "clock stopped" if clock_calls > 1
+
+      Time.utc(2026, 9, 1, 12, 0, 0)
+    end
+    client = Corvid::Rcm::FixtureClearinghouseClient.new(clock: broken_clock)
+
+    assert_raises(RuntimeError) { client.submit_claim(Factory.claim(identifier: "CLM-CLOCK-RAISE-739")) }
+    assert_empty client.submitted
+    assert_nil client.fetch_acknowledgments.find { |ack| ack.claim_identifier == "CLM-CLOCK-RAISE-739" }
+  end
+
+  def test_fetched_later_acknowledgment_edits_are_frozen_and_survive_mutation_attempts
+    client = client_with_advancing_clock
+
+    client.submit_claim(Factory.claim(identifier: "CLM-RJ-DELAYED-0001"))
+    ack = client.fetch_acknowledgments.fetch(0)
+
+    assert ack.edits.frozen?
+    assert_raises(FrozenError) { ack.edits.clear }
+
+    again = client.fetch_acknowledgments.fetch(0)
+    refute_empty again.edits
+    assert_equal ack.edits, again.edits
+  end
+
+  def test_invalid_clock_return_value_raises_with_fixed_message_and_records_nothing
+    claim_id = "CLM-BAD-CLOCK-739"
+
+    [ nil, "2026-09-01T12:00:00Z" ].each do |bad_time|
+      client = Corvid::Rcm::FixtureClearinghouseClient.new(clock: -> { bad_time })
+
+      error = assert_raises(ArgumentError) do
+        client.submit_claim(Factory.claim(identifier: claim_id))
+      end
+      assert_equal INVALID_CLOCK_MESSAGE, error.message
+      assert_empty client.submitted
+      assert_nil client.fetch_acknowledgments.find { |ack| ack.claim_identifier == claim_id }
+    end
+  end
 end

@@ -39,4 +39,34 @@ class Corvid::Rcm::AcknowledgmentTest < Minitest::Test
     assert ack.accepted?
     assert_nil ack.raw_reference
   end
+
+  def test_acknowledgment_edits_array_is_frozen
+    edit = Corvid::Rcm::AcknowledgmentEdit.new(code: "A7:562", description: "missing NPI")
+    ack = Corvid::Rcm::Acknowledgment.new(
+      claim_identifier: "CLM-1",
+      trace_number: "ACK-1",
+      outcome: :rejected,
+      edits: [ edit ]
+    )
+
+    assert ack.edits.frozen?
+    assert_raises(FrozenError) { ack.edits << edit }
+  end
+
+  def test_acknowledgment_edits_do_not_alias_the_callers_array
+    edits = [
+      Corvid::Rcm::AcknowledgmentEdit.new(code: "A7:562", description: "missing NPI")
+    ]
+    ack = Corvid::Rcm::Acknowledgment.new(
+      claim_identifier: "CLM-1",
+      trace_number: "ACK-1",
+      outcome: :rejected,
+      edits: edits
+    )
+
+    edits.clear
+
+    refute_empty ack.edits
+    assert_equal 1, ack.edits.length
+  end
 end
