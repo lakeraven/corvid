@@ -448,6 +448,148 @@ class Corvid::Rcm::PostingPlanTest < Minitest::Test
     assert_empty entries_for(plan, "CLM-BADREV")
   end
 
+  def test_reversal_with_non_positive_claim_totals_but_positive_service_line_amounts_is_unbalanced
+    serviced = Date.new(2026, 8, 18)
+    positive_line = Corvid::Rcm::RemittanceService.new(
+      procedure_code: "90837",
+      billed_amount: BigDecimal("50.00"),
+      paid_amount: BigDecimal("50.00"),
+      serviced_date: serviced,
+      adjustments: []
+    )
+    negative_line = Corvid::Rcm::RemittanceService.new(
+      procedure_code: "90785",
+      billed_amount: BigDecimal("-150.00"),
+      paid_amount: BigDecimal("-150.00"),
+      serviced_date: serviced,
+      adjustments: []
+    )
+    claim = Corvid::Rcm::RemittanceClaim.new(
+      claim_identifier: "CLM-REVPOSLINE",
+      payer_control_number: "PAYER-REVPOSLINE",
+      status_code: Corvid::Rcm::CLAIM_STATUS_REVERSAL,
+      billed_amount: BigDecimal("-100.00"),
+      paid_amount: BigDecimal("-100.00"),
+      services: [ positive_line, negative_line ],
+      adjustments: []
+    )
+    plan = plan_from(synthetic_remittance("REM-REVPOSLINE", BigDecimal("-100.00"), [ claim ]))
+
+    assert_equal 1, plan.unbalanced.length
+    refute_nil unbalanced_for(plan, "CLM-REVPOSLINE")
+    assert_empty entries_for(plan, "CLM-REVPOSLINE")
+  end
+
+  def test_non_reversal_with_negative_claim_paid_amount_is_unbalanced_and_not_posted
+    claim = Corvid::Rcm::RemittanceClaim.new(
+      claim_identifier: "CLM-NEGPAID",
+      payer_control_number: "PAYER-NEGPAID",
+      status_code: Corvid::Rcm::CLAIM_STATUS_PROCESSED_PRIMARY,
+      billed_amount: BigDecimal("100.00"),
+      paid_amount: BigDecimal("-50.00"),
+      services: [],
+      adjustments: [
+        Corvid::Rcm::Adjustment.new(group_code: "CO", reason_code: "45", amount: BigDecimal("150.00"))
+      ]
+    )
+    plan = plan_from(synthetic_remittance("REM-NEGPAID", BigDecimal("-50.00"), [ claim ]))
+
+    assert_equal 1, plan.unbalanced.length
+    refute_nil unbalanced_for(plan, "CLM-NEGPAID")
+    assert_empty entries_for(plan, "CLM-NEGPAID")
+  end
+
+  def test_non_reversal_with_negative_service_line_paid_while_claim_totals_balance_is_unbalanced
+    serviced = Date.new(2026, 8, 18)
+    negative_paid_line = Corvid::Rcm::RemittanceService.new(
+      procedure_code: "90837",
+      billed_amount: BigDecimal("100.00"),
+      paid_amount: BigDecimal("-20.00"),
+      serviced_date: serviced,
+      adjustments: [
+        Corvid::Rcm::Adjustment.new(group_code: "CO", reason_code: "45", amount: BigDecimal("120.00"))
+      ]
+    )
+    offset_line = Corvid::Rcm::RemittanceService.new(
+      procedure_code: "90785",
+      billed_amount: BigDecimal("100.00"),
+      paid_amount: BigDecimal("120.00"),
+      serviced_date: serviced,
+      adjustments: [
+        Corvid::Rcm::Adjustment.new(group_code: "CO", reason_code: "45", amount: BigDecimal("-20.00"))
+      ]
+    )
+    claim = Corvid::Rcm::RemittanceClaim.new(
+      claim_identifier: "CLM-NEGLINEPAID",
+      payer_control_number: "PAYER-NEGLINEPAID",
+      status_code: Corvid::Rcm::CLAIM_STATUS_PROCESSED_PRIMARY,
+      billed_amount: BigDecimal("200.00"),
+      paid_amount: BigDecimal("100.00"),
+      services: [ negative_paid_line, offset_line ],
+      adjustments: []
+    )
+    plan = plan_from(synthetic_remittance("REM-NEGLINEPAID", BigDecimal("100.00"), [ claim ]))
+
+    assert_equal 1, plan.unbalanced.length
+    refute_nil unbalanced_for(plan, "CLM-NEGLINEPAID")
+    assert_empty entries_for(plan, "CLM-NEGLINEPAID")
+  end
+
+  def test_balanced_claim_totals_with_each_service_line_off_in_opposite_directions_is_unbalanced
+    serviced = Date.new(2026, 8, 18)
+    short_line = Corvid::Rcm::RemittanceService.new(
+      procedure_code: "90837",
+      billed_amount: BigDecimal("100.00"),
+      paid_amount: BigDecimal("80.00"),
+      serviced_date: serviced,
+      adjustments: []
+    )
+    long_line = Corvid::Rcm::RemittanceService.new(
+      procedure_code: "90785",
+      billed_amount: BigDecimal("100.00"),
+      paid_amount: BigDecimal("80.00"),
+      serviced_date: serviced,
+      adjustments: [
+        Corvid::Rcm::Adjustment.new(group_code: "CO", reason_code: "45", amount: BigDecimal("40.00"))
+      ]
+    )
+    claim = Corvid::Rcm::RemittanceClaim.new(
+      claim_identifier: "CLM-OPPLINEOFF",
+      payer_control_number: "PAYER-OPPLINEOFF",
+      status_code: Corvid::Rcm::CLAIM_STATUS_PROCESSED_PRIMARY,
+      billed_amount: BigDecimal("200.00"),
+      paid_amount: BigDecimal("160.00"),
+      services: [ short_line, long_line ],
+      adjustments: []
+    )
+    plan = plan_from(synthetic_remittance("REM-OPPLINEOFF", BigDecimal("160.00"), [ claim ]))
+
+    assert_equal 1, plan.unbalanced.length
+    refute_nil unbalanced_for(plan, "CLM-OPPLINEOFF")
+    assert_empty entries_for(plan, "CLM-OPPLINEOFF")
+  end
+
+  def test_reversal_claim_status_22_fixture_reversal_entries_carry_matching_service_line_context
+    remittance = @client.remittance("reversal_claim_status_22")
+    claim = remittance.claims.first
+    plan = plan_from(remittance)
+    entries = entries_for(plan, claim.claim_identifier)
+    expected_line = Corvid::Rcm::PostingServiceLine.new(
+      procedure_code: "90837",
+      serviced_date: Date.new(2026, 8, 30)
+    )
+
+    payment = entries.find { |e| e.kind == :reversal && e.group_code.nil? }
+    refute_nil payment
+    assert_equal BigDecimal("-150.00"), payment.amount
+    assert_equal expected_line, payment.service_line
+
+    co_45 = entries.find { |e| e.kind == :reversal && e.group_code == "CO" && e.reason_code == "45" }
+    refute_nil co_45
+    assert_equal BigDecimal("-50.00"), co_45.amount
+    assert_equal expected_line, co_45.service_line
+  end
+
   def test_reversal_with_positive_billed_amount_is_unbalanced_and_not_posted
     claim = Corvid::Rcm::RemittanceClaim.new(
       claim_identifier: "CLM-REVPOSBILLED",
