@@ -134,11 +134,13 @@ module Corvid
     # Loading refuses an ambiguous directory: two rows sharing a payer
     # identifier, or an identifier or alias of one row equal (case-insensitive,
     # stripped) to an identifier or alias of another row. An alias equal to
-    # its own row's identifier is allowed. An ambiguous directory, a malformed
-    # entry, a YAML syntax error, or a missing or unreadable file raises
-    # `ArgumentError` with a fixed message that includes no path, identifier,
-    # or file content. A YAML syntax error or a missing or unreadable file is
-    # raised with a nil cause.
+    # its own row's identifier is allowed. A duplicate mapping key anywhere
+    # in the YAML document is refused. An ambiguous directory, a malformed
+    # entry, a duplicate mapping key, a YAML syntax error, or a missing or
+    # unreadable file raises `ArgumentError` with a fixed message that
+    # includes no path, identifier, or file content. A duplicate mapping key,
+    # a YAML load error, or a missing or unreadable file is raised with a
+    # nil cause.
     class PayerDirectory
       DEFAULT_PATH = File.expand_path("data/payer_directory.yml", __dir__)
       INVALID_ENTRY = "invalid payer directory entry"
@@ -157,12 +159,41 @@ module Corvid
         end
 
         # Psych quotes the path and can quote the line. The operating system
-        # quotes the path for a missing or unreadable file. The fixed message
-        # replaces both, and a nil cause drops the original so it cannot leak.
+        # quotes the path for a missing or unreadable file. Duplicate mapping
+        # keys are refused from the parsed node tree before the document is
+        # converted to Ruby. The fixed message replaces the original, and a
+        # nil cause drops it so it cannot leak.
         def load_document(path)
-          YAML.safe_load_file(path, permitted_classes: [ Date ])
-        rescue Psych::SyntaxError, SystemCallError
+          contents = File.open(path, "r:bom|utf-8", &:read)
+          reject_duplicate_mapping_keys!(Psych.parse(contents))
+          YAML.safe_load(contents, permitted_classes: [ Date ], aliases: false)
+        rescue Psych::Exception, SystemCallError
           raise ArgumentError, INVALID_ENTRY, cause: nil
+        end
+
+        # Psych keeps the last duplicate key when it builds a Hash. Compare
+        # scalar key values on each mapping so a repeated transaction, row
+        # field, or transaction field is refused before that conversion.
+        def reject_duplicate_mapping_keys!(node)
+          return unless node.is_a?(Psych::Nodes::Node)
+
+          raise ArgumentError, INVALID_ENTRY, cause: nil if duplicate_scalar_keys?(node)
+          return if node.children.nil?
+
+          node.children.each { |child| reject_duplicate_mapping_keys!(child) }
+        end
+
+        def duplicate_scalar_keys?(node)
+          return false unless node.is_a?(Psych::Nodes::Mapping)
+
+          seen = {}
+          node.children.each_slice(2) do |key, _value|
+            next unless key.is_a?(Psych::Nodes::Scalar)
+            return true if seen[key.value]
+
+            seen[key.value] = true
+          end
+          false
         end
 
         def entries_from(document)
