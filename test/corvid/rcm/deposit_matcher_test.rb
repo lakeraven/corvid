@@ -403,7 +403,8 @@ class Corvid::Rcm::DepositMatcherTest < Minitest::Test
 
     assert_empty result.matched
     assert_empty result.unmatched_remittances
-    assert_empty result.unmatched_deposits
+    assert_equal [ deposit ], result.unmatched_deposits
+    assert_same deposit, result.unmatched_deposits.first
     assert_empty result.amount_mismatches
   end
 
