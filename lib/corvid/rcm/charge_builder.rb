@@ -46,46 +46,64 @@ module Corvid
     # is persisted.
     #
     # Only Encounter.status "finished" produces lines. An unknown or
-    # contradictory modality stops the build. Class must come from v3-ActCode;
-    # ambulatory together with a telephone type or a home location does not
-    # resolve. Home is physical type "ho" only in the HL7 location physical
-    # type system. Audio-only is SNOMED CT 185317003; the same code in another
-    # system does not count. A line is emitted when the procedure has an id,
-    # is completed, belongs to this encounter, is the first copy of its id,
-    # carries a charge-set code from CPT or HCPCS, has a valid serviced date,
-    # every diagnosis it uses resolves to a billable ICD-10-CM condition, and
-    # has a finite non-negative BigDecimal price from the injected price list.
-    # A missing id is one :procedure_missing_id and not a line. Anything short
-    # of a line is a ChargeProblem.
+    # contradictory modality stops the build. Class must come from v3-ActCode
+    # as one coding; more than one coding does not resolve. Ambulatory
+    # together with a telephone type or a home location does not resolve.
+    # Home is physical type "ho" only in the HL7 location physical type
+    # system, and only on a location whose status is absent, "active", or
+    # "completed". Audio-only is SNOMED CT 185317003; the same code in
+    # another system does not count. A line is emitted when the procedure
+    # has an id, is completed, belongs to this encounter, is the first copy
+    # of its id, carries one charge-set code from CPT or HCPCS, has a valid
+    # serviced date, every diagnosis it uses resolves to a billable
+    # ICD-10-CM condition, and has a finite non-negative BigDecimal price
+    # from the injected price list. Two different CPT or HCPCS codes on one
+    # procedure are :procedure_code_ambiguous and not a line. The same code
+    # repeated is one code. A missing id is one :procedure_missing_id and
+    # not a line. Anything short of a line is a ChargeProblem.
     #
-    # Claim diagnoses come only from billed lines, numbered from 1 in the
-    # order those lines first use each ICD-10-CM code, so sequence 1 is a
-    # diagnosis of a billed line. A procedure that does not bill adds none.
-    # Encounter diagnoses are listed in positive-integer rank order. A missing
-    # rank sorts last; any other rank is invalid and the encounter list is
-    # not a fallback. Procedure.reasonReference, in that order, supplies the
-    # line's diagnosis pointers, and only when every reference resolves. A
-    # procedure that names its own reasons never falls back to the encounter.
-    # With no reasonReference the line points at the principal encounter
-    # diagnosis, and only when every encounter diagnosis resolves to a
-    # billable code. The claim then carries that whole encounter list. A
-    # later diagnosis is never promoted. One ICD-10-CM code is one diagnosis,
-    # and a line cannot point at more than four. verificationStatus is
-    # billable when it is absent, or when a condition-ver-status coding is
-    # confirmed, provisional, or differential. Any other code, or a coding
-    # from another system, is not billable.
+    # Claim diagnoses are only the diagnoses a billed line points at,
+    # numbered from 1 in the order those lines first use each ICD-10-CM
+    # code. A procedure that does not bill adds none. Encounter diagnoses
+    # are listed in positive-integer rank order. A missing rank sorts last;
+    # any other rank is invalid and the encounter list is not a fallback.
+    # The same positive rank on two diagnoses is :diagnosis_rank_ambiguous
+    # and not a fallback. Procedure.reasonReference, in that order, supplies
+    # the line's diagnosis pointers, and only when every reference resolves.
+    # A procedure that names its own reasons never falls back to the
+    # encounter. With no reasonReference the line points at the principal
+    # (lowest rank) only, and only when every encounter diagnosis resolves
+    # to a billable code. That principal is the only fallback diagnosis
+    # added to the claim. A later diagnosis is never promoted. One ICD-10-CM
+    # code is one diagnosis, and a line cannot point at more than four.
+    # verificationStatus is billable when it is absent, or when every coding
+    # is in condition-ver-status and the code is confirmed, provisional, or
+    # differential. Any other code, or a coding from another system, is not
+    # billable.
     #
     # The serviced date is the calendar date written on performedDateTime, or
-    # on performedPeriod.start when that is the instant present. The period
+    # on performedPeriod.start when performedDateTime is absent. The period
     # end is never the service date. A malformed date or dateTime is missing.
-    # Units stay 1; performedPeriod length is documented_minutes, not units.
-    # Rendering provider is a Practitioner NPI. An actor counts when its
-    # reference starts with "Practitioner/", or when it has no reference and
-    # its type is "Practitioner". A reference to another resource does not
-    # count, even if the type says Practitioner. An identifier or display
-    # alone does not count. Two Practitioner NPIs on one procedure are
-    # ambiguous. Coverage is the reference Coverage/<id> and the FHIR status,
-    # never the member identifier.
+    # Hour 24 is missing: Time.iso8601 would roll it to the next midnight.
+    # A present performedDateTime that does not parse does not fall through
+    # to the period. Units stay 1; performedPeriod length is
+    # documented_minutes, not units. Rendering provider is a Practitioner
+    # NPI in the US NPI system. An actor counts when its reference starts
+    # with "Practitioner/", or when it has no reference and its type is
+    # "Practitioner". A reference to another resource does not count, even
+    # if the type says Practitioner. An identifier or display alone does not
+    # count, and an identifier in another system is not an NPI. Two
+    # Practitioner NPIs on one procedure are ambiguous. Coverage is the
+    # reference Coverage/<id> and the FHIR status, never the member
+    # identifier. payor[0] supplies the payer identifier only when its
+    # reference starts with "Organization/", or when it has no reference and
+    # its type is "Organization". A Patient, RelatedPerson, or untyped payor
+    # leaves the payer identifier nil, records
+    # :coverage_payer_not_organization, and its identifier is not copied.
+    # Audio-only uses modifier 93 unless the coverage names a code of
+    # exactly two uppercase letters or digits. Blank or whitespace is no
+    # override. Any other override is :audio_only_modifier_invalid and
+    # yields no audio-only lines; that text is not copied.
     #
     # The charge set carries codes, amounts, dates, NPIs, and references.
     # Names, birth dates, addresses, and narrative text are never copied
@@ -100,9 +118,13 @@ module Corvid
       SNOMED_SYSTEM = "http://snomed.info/sct"
       CONDITION_VER_STATUS_SYSTEM = "http://terminology.hl7.org/CodeSystem/condition-ver-status"
       AUDIO_ONLY_MODIFIER_EXTENSION = "https://corvid.example/fhir/StructureDefinition/audio-only-modifier"
+      # Exactly two uppercase letters or digits, such as "FQ" or "93".
+      # Blank is no override. Anything else is not a modifier.
+      AUDIO_ONLY_MODIFIER_FORMAT = /\A[A-Z0-9]{2}\z/
       # Confirmed, provisional, and differential may be billed. A missing
-      # verificationStatus may too. Any other code, or a status not from
-      # condition-ver-status, is not billable.
+      # verificationStatus may too. When it is present, every coding must
+      # be in condition-ver-status and use one of those codes. Any other
+      # code, or a coding from another system, is not billable.
       BILLABLE_VERIFICATION = %w[confirmed provisional differential].freeze
       MAX_DIAGNOSIS_POINTERS = 4
 
@@ -113,6 +135,9 @@ module Corvid
       VIRTUAL_CLASS = "VR"
       FINISHED_STATUS = "finished"
       COMPLETED_STATUS = "completed"
+      # No status, active, or completed can place the patient at home.
+      # planned and every other status cannot.
+      HOME_LOCATION_STATUSES = %w[active completed].freeze
 
       # First behavioral-health charge set. Any other code is
       # :code_not_in_charge_set and does not become a line.
@@ -125,9 +150,11 @@ module Corvid
       # step with place_of_service_matches_encounter_modality in
       # data/scrub_rules.yml. Audio-only uses POS 10 when the encounter
       # location physical type is home and POS 02 otherwise. Its modifier is
-      # 93 unless Coverage#audio_only_modifier names a non-blank payer code.
-      # Blank or whitespace is no override. Video uses modifier 95, POS 10
-      # at home (physical type ho) and POS 02 for any other place.
+      # 93 unless Coverage#audio_only_modifier is exactly two uppercase
+      # letters or digits. Blank or whitespace is no override. Any other
+      # value is invalid and produces no audio-only line. Video uses
+      # modifier 95, POS 10 at home (physical type ho on a location whose
+      # status is absent, active, or completed) and POS 02 otherwise.
       MODALITY_BILLING = {
         in_person: { place_of_service: "11", modifiers: [].freeze }.freeze,
         telehealth_patient_home: { place_of_service: "10", modifiers: [ "95" ].freeze }.freeze,
@@ -196,17 +223,20 @@ module Corvid
           nil
         end
 
-        def self.procedure_code(codings)
-          return nil unless codings.is_a?(Array)
+        def self.procedure_codes(codings)
+          return [] unless codings.is_a?(Array)
 
-          codings.each do |coding|
-            next unless coding.is_a?(Hash) && PROCEDURE_CODE_SYSTEMS.include?(coding["system"])
-            next unless matching_code_text?(coding["code"])
-
-            return coding["code"]
-          end
-          nil
+          codings.filter_map { |coding| charge_system_code(coding) }
         end
+
+        def self.charge_system_code(coding)
+          return nil unless coding.is_a?(Hash)
+          return nil unless PROCEDURE_CODE_SYSTEMS.include?(coding["system"])
+          return nil unless matching_code_text?(coding["code"])
+
+          coding["code"]
+        end
+        private_class_method :charge_system_code
 
         def self.reference_id(reference, type)
           return nil unless reference.is_a?(String)
@@ -229,6 +259,8 @@ module Corvid
           nil
         end
 
+        # Only the HL7 US NPI system counts. A staff id on the same
+        # Practitioner is not an NPI, whichever identifier comes first.
         def self.npi(identifier)
           identifier_items(identifier).each do |item|
             next unless item["system"] == NPI_SYSTEM
@@ -241,7 +273,8 @@ module Corvid
 
         # Calendar date as written on a FHIR date or dateTime. The offset is
         # not applied, so a late evening in a negative offset stays that date.
-        # A dateTime whose time or offset is malformed is not a date.
+        # A dateTime whose time or offset is malformed is not a date. Hour 24
+        # is not a date: Time.iso8601 would roll it to the next midnight.
         def self.written_date(value)
           return nil unless acceptable_date?(value)
 
@@ -259,16 +292,6 @@ module Corvid
           return nil unless elapsed.finite? && elapsed.positive?
 
           (elapsed / 60).floor
-        end
-
-        def payor_identifier
-          array("payor").each do |payor|
-            next unless payor.is_a?(Hash)
-
-            value = self.class.identifier_value(payor["identifier"])
-            return value if value
-          end
-          nil
         end
 
         def extension_code(url)
@@ -317,9 +340,19 @@ module Corvid
         private_class_method :acceptable_date?
 
         def self.date_time?(value)
-          DATE_TIME.match?(value) && !parsed_time(value).nil?
+          return false unless DATE_TIME.match?(value)
+          return false unless valid_clock_hour?(value)
+
+          !parsed_time(value).nil?
         end
         private_class_method :date_time?
+
+        # Hour 24 matches the shape regex and Time.iso8601 rolls it forward.
+        # The hour written on the resource has to be 00 through 23.
+        def self.valid_clock_hour?(value)
+          value[11, 2].to_i < 24
+        end
+        private_class_method :valid_clock_hour?
 
         def self.parsed_time(value)
           return nil unless value.is_a?(String)
@@ -331,12 +364,13 @@ module Corvid
         private_class_method :parsed_time
       end
 
-      # Claim diagnosis list. A code is appended only when a billed line uses
-      # it, numbered in first-use order. Resolving a reference records a
-      # problem when it cannot be billed and does not append that code.
-      # One ICD-10-CM code is one Diagnosis. The encounter list is a fallback
-      # only when every entry resolves to a billable code. A later diagnosis
-      # is never promoted to principal.
+      # Claim diagnosis list. A code is appended only when a billed line
+      # points at it, numbered in first-use order. Resolving a reference
+      # records a problem when it cannot be billed and does not append that
+      # code. One ICD-10-CM code is one Diagnosis. The encounter list is a
+      # fallback only when every entry resolves to a billable code. The
+      # fallback line points at the principal only, and only that code is
+      # appended. A later diagnosis is never promoted to principal.
       class DiagnosisList
         def initialize(conditions)
           @conditions = index_conditions(conditions)
@@ -372,16 +406,18 @@ module Corvid
 
         # Encounter diagnosis codes in rank order when every one bills.
         # Nil when the list is empty, blocked, or any entry cannot be billed.
+        # The caller adds only the principal to the claim.
         def fallback_codes
           prepare_fallback
           @fallback_codes
         end
 
-        # Append codes in first-use order. Fallback registers the whole
-        # encounter list and the line points at the principal only.
+        # Append the codes this line points at, in first-use order. A
+        # fallback line points at the principal only, so the other encounter
+        # diagnoses are not added to the claim.
         def commit_sequences(codes, principal_only:)
-          sequences = codes.map { |code| claim_sequence(code) }
-          principal_only ? [ sequences.first ] : sequences
+          pointed_at = principal_only ? codes.take(1) : codes
+          pointed_at.map { |code| claim_sequence(code) }
         end
 
         private
@@ -438,13 +474,40 @@ module Corvid
           nil
         end
 
+        # Absent verificationStatus may be billed. When it is present, every
+        # coding must be condition-ver-status and confirmed, provisional, or
+        # differential. Order does not matter. One coding from another system
+        # is enough to refuse the condition.
         def billable?(condition)
           return false unless condition.is_a?(Hash)
 
           node = condition["verificationStatus"]
           return true if node.nil?
 
-          BILLABLE_VERIFICATION.include?(FhirHash.coded(node, CONDITION_VER_STATUS_SYSTEM))
+          verification_billable?(node)
+        end
+
+        def verification_billable?(node)
+          codings = verification_codings(node)
+          return false if codings.empty?
+
+          codings.all? { |coding| billable_verification_coding?(coding) }
+        end
+
+        def verification_codings(node)
+          return [] unless node.is_a?(Hash)
+
+          listed = node["coding"]
+          return listed if listed.is_a?(Array)
+
+          [ node ]
+        end
+
+        def billable_verification_coding?(coding)
+          return false unless coding.is_a?(Hash)
+          return false unless coding["system"] == CONDITION_VER_STATUS_SYSTEM
+
+          BILLABLE_VERIFICATION.include?(coding["code"])
         end
 
         def index_conditions(conditions)
@@ -480,14 +543,17 @@ module Corvid
         @encounter = FhirHash.new(encounter)
         @procedures = procedures.is_a?(Array) ? procedures : []
         @conditions = conditions.is_a?(Array) ? conditions : []
-        @coverage = read_coverage(coverage)
         @price_list = price_list
         @problems = []
+        @coverage_payer_problem = nil
+        @audio_only_modifier_invalid = false
+        @coverage = read_coverage(coverage)
       end
 
       def build
         return unfinished_result unless finished?
         return unknown_modality_result if (@modality = resolve_modality).nil?
+        return invalid_audio_modifier_result if invalid_audio_modifier?
 
         assemble
       end
@@ -500,6 +566,14 @@ module Corvid
 
       def unknown_modality_result
         result(problems: [ problem(:encounter_modality_unknown) ])
+      end
+
+      def invalid_audio_modifier_result
+        result(problems: [ problem(:audio_only_modifier_invalid, @coverage&.identifier) ])
+      end
+
+      def invalid_audio_modifier?
+        @audio_only_modifier_invalid && @modality.name == :audio_only
       end
 
       def assemble
@@ -532,8 +606,8 @@ module Corvid
         return unless procedure
 
         reference = procedure.reference("Procedure")
-        code = billable_code(procedure)
-        return add_problem(:code_not_in_charge_set, reference) if code.nil?
+        code = charge_code(procedure, reference)
+        return if code.nil?
 
         date = serviced_date(procedure)
         return add_problem(:serviced_date_missing, reference) if date.nil?
@@ -654,20 +728,37 @@ module Corvid
         refs.map { |item| item.is_a?(Hash) ? item["reference"] : nil }
       end
 
-      def billable_code(procedure)
-        code = FhirHash.procedure_code(procedure.dig("code", "coding"))
-        CHARGE_CODES.include?(code) ? code : nil
+      def charge_code(procedure, reference)
+        codes = distinct_procedure_codes(procedure)
+        return ambiguous_procedure_code(reference) if codes.length > 1
+        return codes.first if CHARGE_CODES.include?(codes.first)
+
+        add_problem(:code_not_in_charge_set, reference)
+        nil
+      end
+
+      def distinct_procedure_codes(procedure)
+        FhirHash.procedure_codes(procedure.dig("code", "coding")).uniq
+      end
+
+      def ambiguous_procedure_code(reference)
+        add_problem(:procedure_code_ambiguous, reference)
+        nil
       end
 
       # performedDateTime when that element is present, otherwise
-      # performedPeriod.start. The period end is never the service date, and
-      # a present but malformed instant does not fall through to the period.
+      # performedPeriod.start. The period end is never the service date.
+      # A present value is kept even when it is not a date, so a malformed
+      # performedDateTime does not fall through to the period.
       def serviced_date(procedure)
         FhirHash.written_date(serviced_instant(procedure))
       end
 
       def serviced_instant(procedure)
-        procedure.dig("performedDateTime") || procedure.dig("performedPeriod", "start")
+        performed = procedure.dig("performedDateTime")
+        return performed unless performed.nil?
+
+        procedure.dig("performedPeriod", "start")
       end
 
       def documented_minutes(procedure)
@@ -836,7 +927,15 @@ module Corvid
       end
 
       def class_code
-        FhirHash.coded(@encounter.dig("class"), ACT_CODE_SYSTEM)
+        node = @encounter.dig("class")
+        return nil if multiple_class_codings?(node)
+
+        FhirHash.coded(node, ACT_CODE_SYSTEM)
+      end
+
+      def multiple_class_codings?(node)
+        codings = node.is_a?(Hash) ? node["coding"] : nil
+        codings.is_a?(Array) && codings.length > 1
       end
 
       # 185317003 counts only in SNOMED CT.
@@ -846,13 +945,21 @@ module Corvid
         end
       end
 
-      # "ho" counts only in the HL7 location-physical-type system.
+      # "ho" counts only in the HL7 location-physical-type system, and only
+      # on a location whose status is absent, active, or completed.
       def patient_home?
-        @encounter.array("location").any? do |location|
-          next false unless location.is_a?(Hash)
+        @encounter.array("location").any? { |location| home_location?(location) }
+      end
 
-          FhirHash.coded(location["physicalType"], LOCATION_PHYSICAL_TYPE_SYSTEM) == HOME_PHYSICAL_TYPE
-        end
+      def home_location?(location)
+        return false unless location.is_a?(Hash)
+        return false unless home_location_status?(location["status"])
+
+        FhirHash.coded(location["physicalType"], LOCATION_PHYSICAL_TYPE_SYSTEM) == HOME_PHYSICAL_TYPE
+      end
+
+      def home_location_status?(status)
+        status.nil? || HOME_LOCATION_STATUSES.include?(status)
       end
 
       def ranked_condition_references
@@ -865,7 +972,25 @@ module Corvid
       end
 
       def invalid_rank_problems
-        diagnosis_entries.filter_map { |entry, _index| rank_problem(entry) }
+        problems = diagnosis_entries.filter_map { |entry, _index| rank_problem(entry) }
+        problems << ambiguous_rank_problem if duplicate_diagnosis_rank?
+        problems
+      end
+
+      def ambiguous_rank_problem
+        problem(:diagnosis_rank_ambiguous, @encounter.reference("Encounter"))
+      end
+
+      def duplicate_diagnosis_rank?
+        ranks = positive_diagnosis_ranks
+        ranks.uniq.length != ranks.length
+      end
+
+      def positive_diagnosis_ranks
+        diagnosis_entries.filter_map do |entry, _index|
+          rank = entry["rank"]
+          rank if positive_rank?(rank)
+        end
       end
 
       def rank_problem(entry)
@@ -910,12 +1035,53 @@ module Corvid
 
         fhir = FhirHash.new(raw)
         Coverage.new(
-          payer_identifier: fhir.payor_identifier,
+          payer_identifier: payer_identifier_for(fhir),
           identifier: fhir.reference("Coverage"),
           status: fhir.string_at("status"),
           relationship: nil,
-          audio_only_modifier: fhir.extension_code(AUDIO_ONLY_MODIFIER_EXTENSION)
+          audio_only_modifier: audio_modifier_for(fhir)
         )
+      end
+
+      # payor[0] only. An Organization reference, or no reference with type
+      # Organization, may supply the identifier. Any other payor is a problem
+      # and its identifier is not copied onto the charge set.
+      def payer_identifier_for(fhir)
+        payor = fhir.array("payor").first
+        return nil if payor.nil?
+        return organization_payer_identifier(payor) if organization_payor?(payor)
+
+        @coverage_payer_problem = problem(:coverage_payer_not_organization, fhir.reference("Coverage"))
+        nil
+      end
+
+      def organization_payer_identifier(payor)
+        FhirHash.identifier_value(payor["identifier"])
+      end
+
+      def organization_payor?(payor)
+        return false unless payor.is_a?(Hash)
+
+        reference = payor["reference"]
+        if reference.is_a?(String) && !reference.empty?
+          return reference.start_with?("Organization/")
+        end
+
+        reference.nil? && payor["type"] == "Organization"
+      end
+
+      # A blank extension is no override. A code of exactly two uppercase
+      # letters or digits is kept. Any other text is refused and not copied.
+      def audio_modifier_for(fhir)
+        text = fhir.extension_code(AUDIO_ONLY_MODIFIER_EXTENSION)
+        return text if acceptable_audio_modifier?(text)
+
+        @audio_only_modifier_invalid = true
+        nil
+      end
+
+      def acceptable_audio_modifier?(text)
+        text.nil? || AUDIO_ONLY_MODIFIER_FORMAT.match?(text)
       end
 
       def result(lines: [], diagnoses: [], problems: [], rendering_provider_npi: nil)
@@ -924,9 +1090,15 @@ module Corvid
           lines: lines,
           diagnoses: diagnoses,
           coverage: @coverage,
-          problems: problems,
+          problems: problems + coverage_payer_problems,
           rendering_provider_npi: rendering_provider_npi
         )
+      end
+
+      def coverage_payer_problems
+        return [] if @coverage_payer_problem.nil?
+
+        [ @coverage_payer_problem ]
       end
 
       def problem(code, reference = nil)

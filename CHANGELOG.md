@@ -26,23 +26,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   encounter in memory (#748). A completed procedure in the behavioral-health
   code set becomes a claim line priced by an injected price list. The build
   fails closed: an unfinished encounter, an unknown or contradictory
-  modality, a code outside the set or in the wrong code system, a missing
-  or malformed serviced date, a missing price, an unresolved or non-billable
-  diagnosis, an invalid diagnosis rank, more than four diagnosis pointers,
-  a missing procedure id, or a repeated procedure id is a problem and not a
-  line. Claim diagnoses come only from billed lines and are numbered in
-  first-use order. Every diagnosis a line uses must resolve; a broken
-  encounter list is not a fallback, and the next diagnosis is never
-  promoted. Diagnoses collapse to one per ICD-10-CM code. A condition is
-  billable only when verificationStatus is absent or is confirmed,
+  modality, an encounter class with more than one coding, a code outside
+  the set or in the wrong code system, two different CPT or HCPCS codes on
+  one procedure, a missing or malformed serviced date, a missing price, an
+  unresolved or non-billable diagnosis, an invalid or duplicated diagnosis
+  rank, more than four diagnosis pointers, a missing procedure id, or a
+  repeated procedure id is a problem and not a line. Hour 24 is a missing
+  serviced date, and a present performedDateTime never falls back to
+  performedPeriod.start. Claim diagnoses come only from billed lines: each
+  one is a diagnosis a billed line points at, numbered in first-use order.
+  A fallback line points only at the principal (lowest rank) and does not
+  put the other encounter diagnoses on the claim. Every diagnosis the
+  line depends on must resolve; a broken or rank-tied encounter list is
+  not a fallback, and the next diagnosis is never promoted. Diagnoses
+  collapse to one per ICD-10-CM code. A condition is billable only when
+  verificationStatus is absent, or when every coding is confirmed,
   provisional, or differential in condition-ver-status. Rendering counts a
-  Practitioner reference, or type Practitioner when there is no reference.
-  Home and audio-only are recognized only from the HL7 location-physical-type
-  and SNOMED CT systems. Units stay 1. Telehealth place of service and
-  modifiers follow the scrub rules (POS 02 or 10, modifier 95,
-  audio-only 93 unless the coverage names a non-blank code). Coverage is
-  `Coverage/<id>` with the FHIR status, not the member id. The charge set
-  carries tokens and references only.
+  Practitioner reference, or type Practitioner when there is no reference,
+  and only an identifier in the US NPI system. Home and audio-only are
+  recognized only from the HL7 location-physical-type and SNOMED CT
+  systems. A home location counts only when its status is absent, active,
+  or completed. Units stay 1. Telehealth place of service and modifiers
+  follow the scrub rules (POS 02 or 10, modifier 95, audio-only 93 unless
+  the coverage names a code of exactly two uppercase letters or digits).
+  Any other audio-only override is a problem and yields no audio-only
+  lines. Coverage is `Coverage/<id>` with the FHIR status, not the member
+  id. The payer identifier is taken from payor[0] only when that payor is
+  an Organization. A Patient, RelatedPerson, or untyped payor leaves it
+  nil and records a problem, and that identifier is not copied. The charge
+  set carries tokens and references only.
 - ZIP-to-CBSA wage-area crosswalk (#371). `corvid_zip_cbsa_crosswalks`
   stores the CMS crosswalk by federal fiscal year (`zip` is five ASCII
   digits; `cbsa` is a five-digit CBSA or a two-digit rural-state code;
