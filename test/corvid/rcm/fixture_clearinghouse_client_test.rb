@@ -24,6 +24,80 @@ class Corvid::Rcm::FixtureClearinghouseClientTest < Minitest::Test
 
     assert_raises(NotImplementedError) { bare.submit_claim(Factory.claim) }
     assert_raises(NotImplementedError) { bare.fetch_remittances }
+    assert_raises(NotImplementedError) { bare.check_claim_status("CLM-1") }
+  end
+
+  # -- claim status (277 STC, typed) -----------------------------------------
+
+  INVALID_CLAIM_IDENTIFIER_MESSAGE = "claim_identifier must be a non-blank String"
+
+  def test_a_pending_claim_status_from_the_fixture_table
+    status = @client.check_claim_status("CLM-ST-PENDING")
+
+    assert_equal "CLM-ST-PENDING", status.claim_identifier
+    assert_equal :pending, status.category
+    assert_equal "P1", status.category_code
+    refute_empty status.status_code.to_s.strip
+    assert_nil status.paid_amount
+    assert_nil status.raw_reference
+    assert_equal FIXED_CLOCK.call, status.as_of
+    assert status.pending?
+    refute status.final?
+  end
+
+  def test_a_paid_claim_status_carries_exact_money_and_dates
+    status = @client.check_claim_status("CLM-ST-PAID")
+
+    assert_equal :finalized_paid, status.category
+    assert_equal "F1", status.category_code
+    assert_equal BigDecimal("125.40"), status.paid_amount
+    assert_kind_of Date, status.paid_date
+    refute_empty status.payer_control_number.to_s.strip
+    refute_empty status.status_code.to_s.strip
+    assert status.paid?
+    assert status.final?
+    refute status.denied?
+    refute status.rejected?
+  end
+
+  def test_a_denied_claim_status_is_adjudicated_not_rejected
+    status = @client.check_claim_status("CLM-ST-DENIED")
+
+    assert_equal :finalized_denied, status.category
+    assert_equal "F2", status.category_code
+    assert_nil status.paid_amount
+    refute_empty status.status_code.to_s.strip
+    assert status.denied?
+    refute status.rejected?, "adjudicated denial must stay separate from front-end rejection"
+    assert status.final?
+  end
+
+  def test_a_rejected_claim_status_is_front_end_not_denied
+    status = @client.check_claim_status("CLM-ST-REJECTED")
+
+    assert_equal :rejected, status.category
+    assert_equal "A7", status.category_code
+    refute_empty status.status_code.to_s.strip
+    assert status.rejected?
+    refute status.denied?
+    refute status.final?
+  end
+
+  def test_an_unknown_claim_identifier_is_not_found
+    status = @client.check_claim_status("CLM-NOT-ON-FILE")
+
+    assert_equal :not_found, status.category
+    assert_equal "CLM-NOT-ON-FILE", status.claim_identifier
+    assert_nil status.raw_reference
+    assert_equal FIXED_CLOCK.call, status.as_of
+  end
+
+  def test_check_claim_status_rejects_blank_or_non_string_identifiers
+    [ nil, "", "   ", 12_345 ].each do |bad|
+      error = assert_raises(ArgumentError) { @client.check_claim_status(bad) }
+
+      assert_equal INVALID_CLAIM_IDENTIFIER_MESSAGE, error.message
+    end
   end
 
   # -- submission ------------------------------------------------------------
