@@ -61,7 +61,7 @@ class Corvid::Rcm::ClaimValidationTest < Minitest::Test
   def test_claim_identifier_must_be_non_blank
     pin = "CLM-PIN-738"
 
-    [ nil, "", "  " ].each do |bad_identifier|
+    [ nil, "", "  ", "\u00A0" ].each do |bad_identifier|
       error = assert_raises(ArgumentError) do
         Validation.new(claim_identifier: bad_identifier, valid: true, edits: [])
       end
@@ -78,7 +78,9 @@ class Corvid::Rcm::ClaimValidationTest < Minitest::Test
 
     bad_edits = [
       Edit.new(code: nil, description: secret_description, level: "claim"),
-      Edit.new(code: secret_code, description: "", level: "claim")
+      Edit.new(code: secret_code, description: "", level: "claim"),
+      Edit.new(code: "\u2003", description: secret_description, level: "claim"),
+      Edit.new(code: secret_code, description: "\u200B", level: "claim")
     ]
 
     bad_edits.each do |bad_edit|

@@ -2,6 +2,7 @@
 
 require "minitest/autorun"
 require "tempfile"
+require "yaml"
 require "corvid"
 require "corvid/rcm"
 require_relative "claim_factory"
@@ -94,6 +95,16 @@ class Corvid::Rcm::FixtureClearinghouseClientTest < Minitest::Test
 
     assert ack.rejected?
     assert_match(/billing provider NPI is missing/, ack.reasons.first)
+  end
+
+  def test_unicode_whitespace_billing_provider_npi_fails_validation_with_missing_npi_edit
+    missing = Corvid::Rcm::FixtureClearinghouseClient::MISSING_BILLING_NPI_EDIT
+
+    result = @client.validate_claim(Factory.claim(billing_provider_npi: "\u00A0"))
+
+    refute result.valid?
+    assert_equal [ missing ], result.edits
+    assert_empty @client.submitted
   end
 
   def test_an_unknown_outcome_cannot_be_constructed
@@ -262,6 +273,53 @@ class Corvid::Rcm::FixtureClearinghouseClientTest < Minitest::Test
     YAML
   end
 
+  def test_rejection_table_integer_yaml_key_matches_string_claim_identifier
+    table = Tempfile.new([ "integer_key_ack_table", ".yml" ])
+    table.write(<<~YAML)
+      default_transaction_set: "277CA"
+      rejections:
+        2001:
+          transaction_set: "277CA"
+          edits:
+            - code: "SYN:2001"
+              description: "Synthetic canned rejection for a numeric YAML rejection key."
+              element: "NM1*85 billing provider"
+              level: claim
+    YAML
+    table.close
+
+    claim = Factory.claim(identifier: "2001")
+    expected_edit = edit(
+      "SYN:2001",
+      "Synthetic canned rejection for a numeric YAML rejection key.",
+      "NM1*85 billing provider",
+      "claim"
+    )
+
+    validate_client = Corvid::Rcm::FixtureClearinghouseClient.new(
+      acknowledgment_table: table.path,
+      clock: FIXED_CLOCK
+    )
+    validation = validate_client.validate_claim(claim)
+
+    refute validation.valid?
+    assert_equal [ expected_edit ], validation.edits
+    assert_equal "2001", validation.claim_identifier
+    assert_empty validate_client.submitted
+
+    submit_client = Corvid::Rcm::FixtureClearinghouseClient.new(
+      acknowledgment_table: table.path,
+      clock: FIXED_CLOCK
+    )
+    ack = submit_client.submit_claim(claim)
+
+    assert ack.rejected?
+    assert_equal [ expected_edit ], ack.edits
+    assert_equal "2001", ack.claim_identifier
+  ensure
+    table&.unlink
+  end
+
   def test_claim_not_listed_in_rejections_table_with_billing_npi_validates_clean
     table = Tempfile.new([ "partial_ack_table", ".yml" ])
     table.write(<<~YAML)
@@ -363,18 +421,31 @@ class Corvid::Rcm::FixtureClearinghouseClientTest < Minitest::Test
 
   private
 
+  CLM_RJ_0001_ENTRY_BODY_INDENT = "          "
+
   def assert_broken_clm_rj_0001_rejection_table_fails_closed(rejection_body)
+    indented_body = indent_clm_rj_0001_entry_body(rejection_body)
+
     table = Tempfile.new([ "broken_ack_table", ".yml" ])
     table.write(<<~YAML)
       default_transaction_set: "277CA"
       rejections:
         CLM-RJ-0001:
     YAML
-    table.write(rejection_body)
-    unless rejection_body.end_with?("\n")
-      table.write("\n")
-    end
+    table.write(indented_body)
     table.close
+
+    parsed = YAML.safe_load_file(table.path)
+    entry = parsed.fetch("rejections").fetch("CLM-RJ-0001")
+    if rejection_body.strip.empty?
+      assert_nil entry
+    else
+      assert_instance_of Hash, entry
+      expected_entry = YAML.safe_load(indented_body)
+      expected_entry.each do |key, value|
+        assert_equal value, entry[key], "rejections['CLM-RJ-0001'][#{key.inspect}]"
+      end
+    end
 
     claim = Factory.claim(identifier: "CLM-RJ-0001")
 
@@ -399,6 +470,13 @@ class Corvid::Rcm::FixtureClearinghouseClientTest < Minitest::Test
     assert_empty submit_client.submitted
   ensure
     table&.unlink
+  end
+
+  def indent_clm_rj_0001_entry_body(rejection_body)
+    rejection_body.lines.map do |line|
+      content = line.chomp
+      content.empty? ? "\n" : "#{CLM_RJ_0001_ENTRY_BODY_INDENT}#{content}\n"
+    end.join
   end
 
   def edit(code, description, element, level)
