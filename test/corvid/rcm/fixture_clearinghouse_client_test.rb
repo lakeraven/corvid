@@ -1,6 +1,8 @@
 # frozen_string_literal: true
 
 require "minitest/autorun"
+require "yaml"
+
 require "corvid"
 require "corvid/rcm"
 require_relative "claim_factory"
@@ -581,5 +583,222 @@ class Corvid::Rcm::FixtureClearinghouseClientTest < Minitest::Test
       assert_empty client.submitted
       assert_nil client.fetch_acknowledgments.find { |ack| ack.claim_identifier == claim_id }
     end
+  end
+
+  # -- #739 review round 2 (decided rules) -----------------------------------
+
+  REJECTION_EDIT_MESSAGE =
+    "rejection requires one or more edits, each with a non-blank code and description"
+  INVALID_REJECTIONS_KEY_MESSAGE = "rejections keys must be strings"
+
+  ACK_TABLE_HEADER = [
+    "default_outcome: accepted\n",
+    "default_transaction_set: \"277CA\"\n",
+    "rejections:\n"
+  ].freeze
+
+  def acknowledgment_table_path(rejection_key, rejection_body_lines)
+    table = Tempfile.new([ "ack_table", ".yml" ])
+    table.write(ACK_TABLE_HEADER.join)
+    table.write("  #{rejection_key}:\n")
+    rejection_body_lines.each { |line| table.write(line) }
+    table.close
+    table.path
+  end
+
+  def load_acknowledgment_table(path)
+    YAML.safe_load(File.read(path))
+  end
+
+  def with_literal_acknowledgment_table(rejection_key, rejection_body_lines, clock: advancing_clock)
+    path = acknowledgment_table_path(rejection_key, rejection_body_lines)
+    loaded = load_acknowledgment_table(path)
+    yield loaded, path, Corvid::Rcm::FixtureClearinghouseClient.new(
+      acknowledgment_table: path,
+      clock: clock
+    )
+  ensure
+    File.unlink(path) if path && File.exist?(path)
+  end
+
+  def test_any_listed_rejection_with_empty_edits_raises_at_submit_and_records_nothing
+    claim_id = "CLM-R2-EMPTY-EDITS-739"
+    body = [
+      "    transaction_set: \"277CA\"\n",
+      "    edits: []\n"
+    ]
+
+    with_literal_acknowledgment_table(claim_id, body) do |loaded, _path, client|
+      assert_equal({ "transaction_set" => "277CA", "edits" => [] }, loaded.fetch("rejections").fetch(claim_id))
+
+      error = assert_raises(ArgumentError) { client.submit_claim(Factory.claim(identifier: claim_id)) }
+      assert_equal REJECTION_EDIT_MESSAGE, error.message
+      assert_empty client.submitted
+      assert_nil client.fetch_acknowledgments.find { |ack| ack.claim_identifier == claim_id }
+    end
+  end
+
+  def test_any_listed_rejection_with_transaction_set_only_raises_at_submit_and_records_nothing
+    claim_id = "CLM-R2-999-ONLY-739"
+    body = [
+      "    transaction_set: \"999\"\n"
+    ]
+
+    with_literal_acknowledgment_table(claim_id, body) do |loaded, _path, client|
+      assert_equal({ "transaction_set" => "999" }, loaded.fetch("rejections").fetch(claim_id))
+
+      error = assert_raises(ArgumentError) { client.submit_claim(Factory.claim(identifier: claim_id)) }
+      assert_equal REJECTION_EDIT_MESSAGE, error.message
+      assert_empty client.submitted
+      assert_nil client.fetch_acknowledgments.find { |ack| ack.claim_identifier == claim_id }
+    end
+  end
+
+  def test_any_listed_rejection_with_null_row_raises_at_submit_and_records_nothing
+    claim_id = "CLM-R2-NULL-ROW-739"
+    path = acknowledgment_table_path(claim_id, [])
+    loaded = load_acknowledgment_table(path)
+    assert_nil loaded.fetch("rejections").fetch(claim_id)
+
+    client = Corvid::Rcm::FixtureClearinghouseClient.new(
+      acknowledgment_table: path,
+      clock: advancing_clock
+    )
+
+    error = assert_raises(ArgumentError) { client.submit_claim(Factory.claim(identifier: claim_id)) }
+    assert_equal REJECTION_EDIT_MESSAGE, error.message
+    assert_empty client.submitted
+    assert_nil client.fetch_acknowledgments.find { |ack| ack.claim_identifier == claim_id }
+  ensure
+    File.unlink(path) if path && File.exist?(path)
+  end
+
+  def test_delayed_rejection_with_one_good_edit_and_one_blank_code_edit_raises_at_submit
+    claim_id = "CLM-R2-DELAYED-MIXED-739"
+    body = [
+      "    delayed_rejection: true\n",
+      "    edits:\n",
+      "      - code: \"A7:1\"\n",
+      "        description: \"Synthetic payer edit with a usable code and description.\"\n",
+      "      - code: \"\"\n",
+      "        description: \"Synthetic payer edit with a blank code must fail the row.\"\n"
+    ]
+    expected_edits = [
+      {
+        "code" => "A7:1",
+        "description" => "Synthetic payer edit with a usable code and description."
+      },
+      {
+        "code" => "",
+        "description" => "Synthetic payer edit with a blank code must fail the row."
+      }
+    ]
+
+    with_literal_acknowledgment_table(claim_id, body) do |loaded, _path, client|
+      row = loaded.fetch("rejections").fetch(claim_id)
+      assert_equal true, row.fetch("delayed_rejection")
+      assert_equal expected_edits, row.fetch("edits")
+
+      error = assert_raises(ArgumentError) { client.submit_claim(Factory.claim(identifier: claim_id)) }
+      assert_equal DELAYED_EDIT_MESSAGE, error.message
+      assert_empty client.submitted
+      assert_nil client.fetch_acknowledgments.find { |ack| ack.claim_identifier == claim_id }
+    end
+  end
+
+  def test_acknowledgment_table_with_integer_rejection_key_raises_at_construction
+    body = [
+      "    transaction_set: \"277CA\"\n",
+      "    edits:\n",
+      "      - code: \"SYN:INT-KEY\"\n",
+      "        description: \"Synthetic rejection row keyed by an unquoted YAML number.\"\n"
+    ]
+    path = Tempfile.new([ "ack_table", ".yml" ])
+    path.write(ACK_TABLE_HEADER.join)
+    path.write("  12345:\n")
+    body.each { |line| path.write(line) }
+    path.close
+
+    loaded = load_acknowledgment_table(path.path)
+    assert_equal 12345, loaded.fetch("rejections").keys.first
+    assert_equal(
+      {
+        "transaction_set" => "277CA",
+        "edits" => [
+          {
+            "code" => "SYN:INT-KEY",
+            "description" => "Synthetic rejection row keyed by an unquoted YAML number."
+          }
+        ]
+      },
+      loaded.fetch("rejections").fetch(12345)
+    )
+
+    error = assert_raises(ArgumentError) do
+      Corvid::Rcm::FixtureClearinghouseClient.new(acknowledgment_table: path.path)
+    end
+    assert_equal INVALID_REJECTIONS_KEY_MESSAGE, error.message
+    refute_includes error.message, "12345"
+  ensure
+    path&.unlink
+  end
+
+  def clock_a_forward_then_b_backward
+    sequence = [
+      Time.utc(2026, 9, 1, 12, 0, 0),
+      Time.utc(2026, 9, 1, 12, 1, 0),
+      Time.utc(2026, 9, 1, 11, 0, 0),
+      Time.utc(2026, 9, 1, 11, 1, 0)
+    ]
+    index = 0
+    lambda do
+      reading = sequence.fetch(index)
+      index += 1
+      reading
+    end
+  end
+
+  def test_fetch_acknowledgments_since_filters_by_received_at_not_submission_order
+    client = Corvid::Rcm::FixtureClearinghouseClient.new(clock: clock_a_forward_then_b_backward)
+
+    client.submit_claim(Factory.claim(identifier: "CLM-R2-SINCE-A-739"))
+    client.submit_claim(Factory.claim(identifier: "CLM-R2-SINCE-B-739"))
+
+    filtered = client.fetch_acknowledgments(since: Time.utc(2026, 9, 1, 12, 0, 0))
+
+    assert_equal 1, filtered.length
+    assert_equal "CLM-R2-SINCE-A-739", filtered.fetch(0).claim_identifier
+    assert_equal Time.utc(2026, 9, 1, 12, 1, 0), filtered.fetch(0).received_at
+  end
+
+  def test_submitted_mutation_does_not_clear_the_clients_submission_log
+    client = client_with_advancing_clock
+
+    client.submit_claim(Factory.claim(identifier: "CLM-R2-SUB-A-739"))
+    client.submit_claim(Factory.claim(identifier: "CLM-R2-SUB-B-739"))
+
+    returned = client.submitted
+    begin
+      returned.clear
+    rescue FrozenError
+      # A frozen copy must not mutate the client's log.
+    end
+
+    assert_equal 2, client.submitted.length
+    assert_equal %w[CLM-R2-SUB-A-739 CLM-R2-SUB-B-739], client.submitted.map(&:identifier)
+    refute_same returned, client.submitted
+  end
+
+  def test_duplicate_claim_submissions_get_distinct_later_trace_numbers
+    client = client_with_advancing_clock
+    claim_id = "CLM-R2-DUP-TRACE-739"
+
+    client.submit_claim(Factory.claim(identifier: claim_id))
+    client.submit_claim(Factory.claim(identifier: claim_id))
+
+    traces = client.fetch_acknowledgments.map(&:trace_number)
+
+    assert_equal 2, traces.length
+    refute_equal traces.fetch(0), traces.fetch(1)
   end
 end
