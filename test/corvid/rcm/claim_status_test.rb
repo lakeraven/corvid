@@ -15,6 +15,18 @@ class Corvid::Rcm::ClaimStatusTest < Minitest::Test
   INVALID_CLAIM_IDENTIFIER_MESSAGE = "claim_identifier must be a non-blank String"
   CATEGORY_DISAGREES_MESSAGE = Corvid::Rcm::ClaimStatus::CATEGORY_DISAGREES
   PAID_DATE_NOT_ALLOWED_MESSAGE = "paid_date is only allowed for category finalized_paid"
+  PAID_AMOUNT_NOT_ALLOWED_MESSAGE = "paid_amount is only allowed for category finalized_paid"
+  SYNTHETIC_PAID_AMOUNT = BigDecimal("125.40")
+  SYNTHETIC_PAID_DATE = Date.new(2026, 8, 15)
+
+  NON_FINALIZED_PAID_CATEGORIES = [
+    [ :finalized_denied, "F2" ],
+    [ :rejected, "A7" ],
+    [ :not_found, nil ],
+    [ :acknowledged, "A1" ],
+    [ :pending, "P1" ],
+    [ :undetermined, "F0" ]
+  ].freeze
   INVALID_AS_OF_MESSAGE = "as_of must be nil or a Time"
   INVALID_FINALIZED_PAID_AMOUNT_MESSAGE =
     "paid_amount must be a finite non-negative BigDecimal with at most two decimal places"
@@ -305,6 +317,62 @@ class Corvid::Rcm::ClaimStatusTest < Minitest::Test
 
     assert_nil valid_status(as_of: nil).as_of
     assert_equal FIXED_AS_OF, valid_status(as_of: FIXED_AS_OF).as_of
+  end
+
+  # -- review round 2 (#740): paid fields, string copies ---------------------
+
+  NON_FINALIZED_PAID_CATEGORIES.each do |category, category_code|
+    define_method("test_paid_amount_is_rejected_for_#{category}") do
+      assert_fixed_refusal(
+        PAID_AMOUNT_NOT_ALLOWED_MESSAGE,
+        category: category,
+        category_code: category_code,
+        status_code: category == :not_found ? "21" : "20",
+        paid_amount: SYNTHETIC_PAID_AMOUNT
+      )
+    end
+  end
+
+  NON_FINALIZED_PAID_CATEGORIES.each do |category, category_code|
+    define_method("test_paid_date_is_rejected_for_#{category}") do
+      assert_fixed_refusal(
+        PAID_DATE_NOT_ALLOWED_MESSAGE,
+        category: category,
+        category_code: category_code,
+        status_code: category == :not_found ? "21" : "20",
+        paid_date: SYNTHETIC_PAID_DATE
+      )
+    end
+  end
+
+  def test_string_fields_keep_a_frozen_copy_immune_to_caller_mutation
+    category_code = +"F1"
+    status_code = +"65"
+    claim_identifier = +"CLM-SYN-FROZEN"
+    payer_control_number = +"PCN-SYN-740"
+
+    status = valid_status(
+      claim_identifier: claim_identifier,
+      payer_control_number: payer_control_number,
+      category: :finalized_paid,
+      category_code: category_code,
+      status_code: status_code,
+      paid_amount: SYNTHETIC_PAID_AMOUNT,
+      paid_date: SYNTHETIC_PAID_DATE
+    )
+
+    category_code.replace("Z9")
+    status_code.replace("00")
+    claim_identifier.replace("MUTATED")
+    payer_control_number.replace("MUTATED")
+
+    assert_equal "F1", status.category_code
+    assert status.category_code.frozen?
+    assert status.paid?
+    assert_equal :finalized_paid, Corvid::Rcm::ClaimStatus.category_for(status.category_code)
+
+    assert_equal "CLM-SYN-FROZEN", status.claim_identifier
+    assert status.claim_identifier.frozen?
   end
 
   def test_the_shipped_category_table_has_one_paid_code_and_one_denied_code

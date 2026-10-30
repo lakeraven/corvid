@@ -105,6 +105,23 @@ class Corvid::Rcm::FixtureClearinghouseClientTest < Minitest::Test
     assert_equal FIXED_CLOCK.call, status.as_of
   end
 
+  # -- review round 2 (#740): exact claim identifier lookup ------------------
+
+  EXACT_LOOKUP_NOT_FOUND_IDENTIFIERS = [
+    " CLM-ST-PAID",
+    "CLM-ST-PAID ",
+    "clm-st-paid"
+  ].freeze
+
+  EXACT_LOOKUP_NOT_FOUND_IDENTIFIERS.each do |identifier|
+    define_method("test_check_claim_status_treats_#{identifier.gsub(/\W/, '_')}_as_not_found") do
+      status = @client.check_claim_status(identifier)
+
+      assert_equal :not_found, status.category
+      refute_equal :finalized_paid, status.category
+    end
+  end
+
   def test_check_claim_status_rejects_blank_or_non_string_identifiers
     [ nil, "", "   ", 12_345 ].each do |bad|
       error = assert_raises(ArgumentError) { @client.check_claim_status(bad) }
