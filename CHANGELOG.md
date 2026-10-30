@@ -23,24 +23,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - Typed real-time eligibility (#736). `Corvid::Rcm::EligibilityInquiry`,
-  `EligibilityResponse`, `EligibilityPlan`, `EligibilityBenefit`, and
-  `EligibilityError` are the clearinghouse port's 271 shapes.
-  `ClearinghouseClient#check_eligibility` is the seam;
+  `EligibilityResponse`, `EligibilityPlan`, `EligibilityWindow`,
+  `EligibilityBenefit`, and `EligibilityError` are the clearinghouse
+  port's 271 shapes. `ClearinghouseClient#check_eligibility` is the seam;
   `FixtureClearinghouseClient` answers from synthetic X12 271 fixtures
   parsed by `Edi271Reader`. The outcome counts only coverage benefits
   (EB01 `1` or `6`) for the service types the inquiry asked; a benefit
   with no service type counts only when `30` was asked. Plan bounds are
   the latest start and the earliest end across plan-date segments; a
   year-9999 date stays open-ended and does not override a real bound.
-  An otherwise active answer is `:undetermined` when the service date
-  is outside that window (a nil bound is not checked). An otherwise
-  inactive answer is `:undetermined` when the window contains the
-  service date; a plan with no dates does not contradict inactive.
-  A present inquiry payer must match every contributing plan's payer,
-  or the outcome is `:undetermined`. An AAA reject, an unmapped reject,
-  a missing fixture, a malformed fixture, or any other non-answer is
-  `:undetermined`. Live 270 generation and clearinghouse transport
-  are not included.
+  Each loop that stated plan dates also keeps an `EligibilityWindow`
+  (earliest start and latest end, excluding a D8 307 eligibility day),
+  and `eligibility_date` is that day. An otherwise active answer is
+  `:undetermined` when the service date is outside the restrictive
+  window (a nil bound is not checked). An otherwise inactive answer is
+  `:undetermined` when a stated window contains the service date, or
+  when `eligibility_date` is a different day. A reversed plan-date
+  range, or restrictive bounds that start after they end, is a
+  malformed 271. More than one information-source loop yields no plan.
+  The plan name is a coverage benefit's EB05 only. A DateTime service
+  date is stored as the plain Date for that day. A present inquiry
+  payer must match every contributing plan's payer, or the outcome is
+  `:undetermined`. An AAA reject, an unmapped reject, a missing fixture,
+  a malformed fixture, or any other non-answer is `:undetermined`.
+  Live 270 generation and clearinghouse transport are not included.
 - ZIP-to-CBSA wage-area crosswalk (#371). `corvid_zip_cbsa_crosswalks`
   stores the CMS crosswalk by federal fiscal year (`zip` is five ASCII
   digits; `cbsa` is a five-digit CBSA or a two-digit rural-state code;

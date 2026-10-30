@@ -24,27 +24,39 @@ module Corvid
     # subscriber loop, unless a dependent loop is present — then they come
     # from the dependent loop only, and subscriber-loop EBs are ignored.
     # The payer identifier still comes from the information-source NM1.
-    # More than one subscriber loop or more than one dependent loop in
-    # the transaction is ambiguous: the reader returns no plan, rather than
-    # picking one and calling the patient active. AAA at any level is still
-    # reported.
+    # More than one information-source loop, more than one subscriber
+    # loop, or more than one dependent loop in the transaction is
+    # ambiguous: the reader returns no plan, rather than picking one and
+    # calling the patient active. AAA at any level is still reported.
     #
     # Plan coverage dates are DTP segments before the first EB of a loop.
-    # The window is the latest start and the earliest end. When a dependent
-    # loop is selected, those bounds run across the subscriber loop and the
+    # `coverage_start` and `coverage_end` are the most restrictive bounds:
+    # the latest start and the earliest end. When a dependent loop is
+    # selected, those bounds run across the subscriber loop and the
     # dependent loop together; each loop only contributes DTPs from before
     # its own first EB. A year-9999 value is open-ended and never overrides
     # a real bound. Start qualifiers are 291 (plan), 307 (eligibility),
     # 346 (plan begin), and 356 (eligibility begin). End qualifiers are
     # 347 (plan end), 357 (eligibility end), and 540 (policy expiration).
-    # RD8 on any of those is a start-end range. D8 on 307 sets both bounds
-    # to that day. D8 on another start qualifier is a start; D8 on an end
-    # qualifier is an end. Every other qualifier, including 472, is ignored.
-    # A present plan-date value that is not a real day or a year-9999
-    # placeholder is a malformed file. Segments after the first EB (2110)
-    # do not change plan dates or the group REF. The plan name is EB05
-    # only; EB04 is an insurance type code. The group number is REF*6P, or
-    # REF*1L when 6P is absent; 6P wins when both are present.
+    # RD8 on any of those is a start-end range. A range whose start is
+    # after its end is a malformed file, as are restrictive bounds whose
+    # start is after their end. D8 on 307 is the eligibility day. It is
+    # stored as `eligibility_date`, and it pins both restrictive bounds to
+    # that day when the day lies in the other plan bounds (a missing bound
+    # is open, so a lone D8 307 is both bounds). A day outside those bounds
+    # stays on `eligibility_date` and does not invert the window. Two
+    # different eligibility days are malformed: the bounds they would form
+    # start after they end. D8 on another start qualifier is a start; D8
+    # on an end qualifier is an end. Every other qualifier, including 472,
+    # is ignored. Each subscriber or selected dependent loop that stated
+    # plan dates other than D8 307 contributes one `EligibilityWindow`:
+    # that loop's earliest start and latest end, with a year-9999 side
+    # left nil. A present plan-date value that is not a real day or a
+    # year-9999 placeholder is a malformed file. Segments after the first
+    # EB (2110) do not change plan dates or the group REF. The plan name
+    # is EB05 on a coverage EB (EB01 1 or 6) only; EB04 is an insurance
+    # type code. The group number is REF*6P, or REF*1L when 6P is absent;
+    # 6P wins when both are present.
     #
     # A file that is not a 271 transaction raises `MalformedError` with a fixed
     # message. The message is a constant so a parse failure cannot echo a
@@ -147,7 +159,7 @@ module Corvid
       # Benefit, group, and coverage-date state for one HL 22 or HL 23 loop.
       # Mutable only while the transaction is being read.
       class PlanLoop
-        attr_reader :benefits, :coverage_start, :coverage_end
+        attr_reader :benefits, :coverage_start, :coverage_end, :eligibility_date
         attr_accessor :plan_name
 
         def initialize
@@ -157,6 +169,10 @@ module Corvid
           @group_1l = nil
           @coverage_start = nil
           @coverage_end = nil
+          @eligibility_date = nil
+          @stated_start = nil
+          @stated_end = nil
+          @stated_plan_dates = false
           @seen_eb = false
         end
 
@@ -203,6 +219,60 @@ module Corvid
           return if @coverage_end && @coverage_end <= date
 
           @coverage_end = date
+        end
+
+        # Earliest start the loop stated, excluding a D8 eligibility day.
+        # Nil is an open-ended placeholder and does not replace a real day.
+        def note_stated_start(date)
+          @stated_plan_dates = true
+          return if date.nil?
+          return if @stated_start && @stated_start <= date
+
+          @stated_start = date
+        end
+
+        # Latest end the loop stated, excluding a D8 eligibility day.
+        # Nil is an open-ended placeholder and does not replace a real day.
+        def note_stated_end(date)
+          @stated_plan_dates = true
+          return if date.nil?
+          return if @stated_end && @stated_end >= date
+
+          @stated_end = date
+        end
+
+        def note_plan_start(date)
+          note_start(date)
+          note_stated_start(date)
+        end
+
+        def note_plan_end(date)
+          note_end(date)
+          note_stated_end(date)
+        end
+
+        # An RD8 range is both a restrictive bound and a stated bound.
+        def note_range(start_on, end_on)
+          note_plan_start(start_on)
+          note_plan_end(end_on)
+        end
+
+        # A second, different D8 307 day in this loop. Nil does not conflict.
+        def conflicting_eligibility_date?(date)
+          !date.nil? && @eligibility_date && @eligibility_date != date
+        end
+
+        def note_eligibility_date(date)
+          return if date.nil?
+
+          @eligibility_date = date
+        end
+
+        # Nil when this loop stated no plan dates other than a D8 307 day.
+        def stated_window
+          return nil unless @stated_plan_dates
+
+          EligibilityWindow.new(start_date: @stated_start, end_date: @stated_end)
         end
       end
       private_constant :PlanLoop
@@ -307,6 +377,7 @@ module Corvid
         @payer_identifier = nil
         @subscriber_loops = []
         @dependent_loops = []
+        @information_source_count = 0
         @current_loop = nil
         @hl_level = nil
         @saw_st = false
@@ -367,13 +438,20 @@ module Corvid
       end
 
       # 20 and 21 are not plan loops. Each 22 or 23 starts a new loop so a
-      # later EB cannot see the previous loop's dates or benefits.
+      # later EB cannot see the previous loop's dates or benefits. More
+      # than one information source is ambiguous (see `ambiguous_loops?`).
       def loop_for_level(level)
         case level
         when SUBSCRIBER_LEVEL then open_loop(@subscriber_loops)
         when DEPENDENT_LEVEL then open_loop(@dependent_loops)
-        when INFORMATION_SOURCE_LEVEL, INFORMATION_RECEIVER_LEVEL then nil
+        when INFORMATION_SOURCE_LEVEL then count_information_source
+        when INFORMATION_RECEIVER_LEVEL then nil
         end
+      end
+
+      def count_information_source
+        @information_source_count += 1
+        nil
       end
 
       def open_loop(loops)
@@ -433,22 +511,34 @@ module Corvid
 
       def note_date_range(plan_loop, raw)
         start_on, end_on = plan_date_range(raw)
-        plan_loop.note_start(start_on)
-        plan_loop.note_end(end_on)
+        malformed! if dates_reversed?(start_on, end_on)
+
+        plan_loop.note_range(start_on, end_on)
       end
 
-      # D8 on 307 is the eligibility day, so it closes both sides. D8 on
-      # any other start qualifier is a start; D8 on an end qualifier is an end.
+      # D8 on 307 is the eligibility day. It is not a stated-window bound.
+      # Whether it also pins the restrictive window is decided once every
+      # plan date has been seen. D8 on any other start qualifier is a
+      # start; D8 on an end qualifier is an end.
       def note_single_date(plan_loop, qualifier, raw)
         date = plan_date(raw)
         if qualifier == ELIGIBILITY_DATE_QUALIFIER
-          plan_loop.note_start(date)
-          plan_loop.note_end(date)
+          note_eligibility_day(plan_loop, date)
         elsif END_DATE_QUALIFIERS.include?(qualifier)
-          plan_loop.note_end(date)
+          plan_loop.note_plan_end(date)
         else
-          plan_loop.note_start(date)
+          plan_loop.note_plan_start(date)
         end
+      end
+
+      def note_eligibility_day(plan_loop, date)
+        malformed! if plan_loop.conflicting_eligibility_date?(date)
+
+        plan_loop.note_eligibility_date(date)
+      end
+
+      def dates_reversed?(start_on, end_on)
+        start_on && end_on && start_on > end_on
       end
 
       def plan_date_range(raw)
@@ -505,13 +595,14 @@ module Corvid
         codes.empty? ? [ nil ] : codes
       end
 
-      # EB05 is the plan coverage description. EB04 is an insurance type
-      # code and is never a name. A later coverage EB (1 or 6) replaces a
-      # name taken from a copay or coinsurance line.
+      # The plan name is EB05 on a coverage EB (EB01 1 or 6). EB04 is an
+      # insurance type code. A copay, coinsurance, or other EB does not
+      # supply a name. A later coverage EB replaces an earlier name.
       def remember_plan_name(plan_loop, elements, code)
+        return unless coverage_status?(code)
+
         name = present(element(elements, 5))
         return if name.nil?
-        return if plan_loop.plan_name && !coverage_status?(code)
 
         plan_loop.plan_name = name
       end
@@ -543,6 +634,7 @@ module Corvid
 
       def finish
         malformed! unless @transaction_271 && @closed
+        refute_inverted_bounds!
 
         Result.new(
           plans: build_plans.freeze,
@@ -551,8 +643,26 @@ module Corvid
         )
       end
 
+      # A reversed plan window is malformed even when no benefit was read.
+      # Ambiguous loops are not one patient, so only each loop's own bounds
+      # are checked; the selected patient's combined bounds are checked
+      # when the loops are not ambiguous.
+      def refute_inverted_bounds!
+        loops = patient_loops
+        loops.each { |loop| malformed! if dates_reversed?(loop.coverage_start, loop.coverage_end) }
+        one_eligibility_date(loops)
+        return if ambiguous_loops?
+
+        selected = selected_loop
+        restrictive_pair(date_loops(selected)) if selected
+      end
+
+      def patient_loops
+        @subscriber_loops + @dependent_loops
+      end
+
       def build_plans
-        return [] if ambiguous_patient_loops?
+        return [] if ambiguous_loops?
 
         plan_loop = selected_loop
         return [] if plan_loop.nil? || plan_loop.benefits.empty?
@@ -560,9 +670,10 @@ module Corvid
         [ plan_from(plan_loop) ]
       end
 
-      # Two subscribers, or two dependents, are not one patient's answer.
-      def ambiguous_patient_loops?
-        @subscriber_loops.length > 1 || @dependent_loops.length > 1
+      # Two information sources, two subscribers, or two dependents are
+      # not one patient's answer. AAA segments are still reported.
+      def ambiguous_loops?
+        @subscriber_loops.length > 1 || @dependent_loops.length > 1 || @information_source_count > 1
       end
 
       # The dependent is the patient when a 23 loop is present. Otherwise
@@ -574,25 +685,72 @@ module Corvid
       end
 
       def plan_from(plan_loop)
-        start_on, end_on = restrictive_bounds(plan_loop)
+        loops = date_loops(plan_loop)
+        start_on, end_on, elig = coverage_bounds(loops)
         EligibilityPlan.new(
           payer_identifier: @payer_identifier,
           plan_name: plan_loop.plan_name,
           group_number: plan_loop.group_number,
           coverage_start: start_on,
           coverage_end: end_on,
-          benefits: plan_loop.benefits
+          benefits: plan_loop.benefits,
+          stated_windows: stated_windows_for(loops),
+          eligibility_date: elig
         )
       end
 
-      # Latest start and earliest end. A dependent answer also uses the
-      # subscriber loop's dates. Each loop has already kept only the DTPs
-      # from before its first EB. Nil bounds are open-ended and do not compete.
-      def restrictive_bounds(plan_loop)
-        loops = date_loops(plan_loop)
-        starts = loops.filter_map(&:coverage_start)
-        ends = loops.filter_map(&:coverage_end)
-        [ starts.max, ends.min ]
+      # Latest start and earliest end across the loops, then the eligibility
+      # day when pinning it does not put the start after the end.
+      def coverage_bounds(loops)
+        start_on, end_on = restrictive_pair(loops)
+        pin_eligibility_day(start_on, end_on, one_eligibility_date(loops))
+      end
+
+      def restrictive_pair(loops)
+        start_on = loops.filter_map(&:coverage_start).max
+        end_on = loops.filter_map(&:coverage_end).min
+        malformed! if dates_reversed?(start_on, end_on)
+
+        [ start_on, end_on ]
+      end
+
+      # Two different D8 307 days would pin the start to the later day and
+      # the end to the earlier day. That window is malformed.
+      def one_eligibility_date(loops)
+        days = loops.filter_map(&:eligibility_date).uniq
+        malformed! if days.size > 1
+
+        days.first
+      end
+
+      # A lone eligibility day, or one that falls inside the other bounds,
+      # pins both sides. A missing bound is open, so it contains the day.
+      # A day outside the other bounds would invert the window; the plan
+      # dates stay as they are and the day remains `eligibility_date`.
+      def pin_eligibility_day(start_on, end_on, elig)
+        return [ start_on, end_on, elig ] if elig.nil?
+
+        pinned_start = later_date(start_on, elig)
+        pinned_end = earlier_date(end_on, elig)
+        return [ start_on, end_on, elig ] if dates_reversed?(pinned_start, pinned_end)
+
+        [ pinned_start, pinned_end, elig ]
+      end
+
+      def later_date(bound, date)
+        return date if bound.nil? || date > bound
+
+        bound
+      end
+
+      def earlier_date(bound, date)
+        return date if bound.nil? || date < bound
+
+        bound
+      end
+
+      def stated_windows_for(loops)
+        loops.filter_map(&:stated_window)
       end
 
       def date_loops(plan_loop)

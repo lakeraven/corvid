@@ -9,14 +9,13 @@ module Corvid
     #
     # These are in-memory boundary values, like Claim and Remittance: no
     # ActiveRecord, no persistence. Unknown is never a no. An explicit
-    # inactive answer is `:inactive` when the plan window does not contain
-    # the service date. An error, a timeout, a payer mismatch, or any
-    # unmapped answer is `:undetermined` (42 CFR 136.61). A coverage benefit
-    # answers only for a service type the inquiry asked for. An active
-    # answer whose coverage window does not contain the service date is
-    # `:undetermined`. An inactive answer whose window does contain it is
-    # `:undetermined` too. A present inquiry payer has to match every
-    # contributing plan.
+    # inactive answer stays `:inactive` unless a stated window contains the
+    # service date or the eligibility date is a different day. An error, a
+    # timeout, a payer mismatch, or any unmapped answer is `:undetermined`
+    # (42 CFR 136.61). A coverage benefit answers only for a service type
+    # the inquiry asked for. An active answer whose most restrictive
+    # coverage window does not contain the service date is `:undetermined`.
+    # A present inquiry payer has to match every contributing plan.
     #
     # EB01 codes that are an explicit coverage answer. "1" is active coverage.
     # "6" is inactive. The other active and inactive variants (2–5, 7, 8) are
@@ -39,8 +38,10 @@ module Corvid
     # One eligibility question. Identifiers are opaque tokens (ADR 0003).
     # `member_identifier` may be nil when the caller does not have one; that
     # is an undetermined check, not an inactive one. `service_date` is nil
-    # or a Date, including a subclass of Date. Anything else raises
-    # ArgumentError with a fixed message.
+    # or a Date, including a subclass of Date. It is normalised with
+    # `to_date`: a Date stays as it is, and a DateTime becomes the plain
+    # Date for that day. Anything else raises ArgumentError with a fixed
+    # message.
     EligibilityInquiry = Data.define(
       :patient_identifier,
       :payer_identifier,
@@ -53,12 +54,11 @@ module Corvid
 
       def initialize(patient_identifier:, payer_identifier:, service_date:, provider_npi:,
                      member_identifier: nil, service_type_codes: DEFAULT_SERVICE_TYPE_CODES)
-        validate_service_date!(service_date)
         super(
           patient_identifier: patient_identifier,
           payer_identifier: payer_identifier,
           member_identifier: member_identifier,
-          service_date: service_date,
+          service_date: normalize_service_date(service_date),
           service_type_codes: Array(service_type_codes).dup.freeze,
           provider_npi: provider_npi
         )
@@ -67,10 +67,14 @@ module Corvid
 
       private
 
-      def validate_service_date!(service_date)
-        return if service_date.nil? || service_date.is_a?(Date)
+      # `Date#to_date` returns itself. `DateTime#to_date` returns the civil
+      # day as a plain Date. Nil is allowed. Anything that is not a Date
+      # is refused before `to_date` is called.
+      def normalize_service_date(service_date)
+        return nil if service_date.nil?
+        raise ArgumentError, SERVICE_DATE_ERROR unless service_date.is_a?(Date)
 
-        raise ArgumentError, SERVICE_DATE_ERROR
+        service_date.to_date
       end
     end
 
@@ -99,26 +103,53 @@ module Corvid
       end
     end
 
-    # Coverage for one plan on the 271. A year-9999 end date is open-ended and
-    # is stored as nil — payers use 9999-12-31 (and nearby days) as a
+    # The plan-date span one subscriber or dependent loop stated.
+    # `start_date` is the earliest start and `end_date` is the latest end
+    # among that loop's plan-date segments, other than a D8 eligibility
+    # day. Either may be nil: the side was omitted, or it was a year-9999
+    # placeholder. A nil side is open. This is wider than the most
+    # restrictive bounds on `EligibilityPlan`.
+    EligibilityWindow = Data.define(:start_date, :end_date) do
+      def initialize(start_date: nil, end_date: nil)
+        super
+        freeze
+      end
+    end
+
+    # Coverage for one plan on the 271. `coverage_start` and `coverage_end`
+    # are the most restrictive bounds (latest start, earliest end). They
+    # gate an `:active` answer. A year-9999 date is open-ended and is
+    # stored as nil — payers use 9999-12-31 (and nearby days) as a
     # placeholder, not as a real termination.
+    #
+    # `stated_windows` is one `EligibilityWindow` per subscriber or selected
+    # dependent loop that stated plan dates. The default is an empty frozen
+    # array. `eligibility_date` is the D8 307 day when the response stated
+    # one, otherwise nil. That day also pins `coverage_start` and
+    # `coverage_end` when it lies inside the other plan bounds. An inactive
+    # answer is `:undetermined` when a stated window contains the service
+    # date, or when `eligibility_date` is present and is not that date.
     EligibilityPlan = Data.define(
       :payer_identifier,
       :plan_name,
       :group_number,
       :coverage_start,
       :coverage_end,
-      :benefits
+      :benefits,
+      :stated_windows,
+      :eligibility_date
     ) do
       def initialize(payer_identifier:, plan_name: nil, group_number: nil, coverage_start: nil,
-                     coverage_end: nil, benefits: [])
+                     coverage_end: nil, benefits: [], stated_windows: [], eligibility_date: nil)
         super(
           payer_identifier: payer_identifier,
           plan_name: plan_name,
           group_number: group_number,
           coverage_start: coverage_start,
           coverage_end: coverage_end,
-          benefits: Array(benefits).dup.freeze
+          benefits: Array(benefits).dup.freeze,
+          stated_windows: Array(stated_windows).dup.freeze,
+          eligibility_date: eligibility_date
         )
         freeze
       end
@@ -189,10 +220,13 @@ module Corvid
       # inclusive. A nil bound is unknown — a year-9999 end is stored as nil
       # — and is not checked on that side. A nil `service_date` skips the check.
       #
-      # An otherwise `:inactive` answer is `:undetermined` when a contributing
-      # plan's window contains `service_date`. Known bounds are inclusive. A
-      # nil bound is unbounded on that side. A plan with no dates at all does
-      # not contradict `:inactive`. A nil `service_date` skips this check too.
+      # An otherwise `:inactive` answer is `:undetermined` when any stated
+      # window contains `service_date`. The window needs at least one bound.
+      # Bounds are inclusive, and a nil side is open. A window with no
+      # bounds does not contradict `:inactive`. The answer is also
+      # `:undetermined` when any plan's `eligibility_date` is present and
+      # differs from `service_date`. A nil `service_date` skips both checks.
+      # `coverage_start` and `coverage_end` do not decide an inactive answer.
       #
       # When `payer_identifier` is present, a contributing plan whose
       # `payer_identifier` is nil or different yields `:undetermined`. A nil
@@ -202,7 +236,7 @@ module Corvid
       # @param plans [Array<EligibilityPlan>]
       # @param errors [Array<EligibilityError>] AAA rejects; any one fails closed
       # @param service_type_codes [Array<String>] service types the inquiry asked
-      # @param service_date [Date, nil] day the coverage window is checked against
+      # @param service_date [Date, nil] day the coverage window, stated windows, and eligibility date are checked against
       # @param payer_identifier [String, nil] inquiry payer; must match contributing plans
       # @return [Symbol] `:active`, `:inactive`, or `:undetermined`
       def self.outcome_for(plans:, errors:, service_type_codes:, service_date:, payer_identifier: nil)
@@ -213,7 +247,7 @@ module Corvid
         active = coverage_code?(counted, ACTIVE_COVERAGE_CODE)
         inactive = coverage_code?(counted, INACTIVE_COVERAGE_CODE)
         return :undetermined if active && inactive
-        return inactive_outcome(plans, service_type_codes, service_date) if inactive
+        return inactive_outcome(plans, service_date) if inactive
         return :undetermined unless active
         return :undetermined if service_date_outside_window?(plans, service_type_codes, service_date)
 
@@ -289,44 +323,49 @@ module Corvid
       end
       private_class_method :plan_excludes_date?
 
-      def self.inactive_outcome(plans, service_type_codes, service_date)
-        return :undetermined if inactive_contradicted?(plans, service_type_codes, service_date)
+      def self.inactive_outcome(plans, service_date)
+        return :undetermined if inactive_contradicted?(plans, service_date)
 
         :inactive
       end
       private_class_method :inactive_outcome
 
-      # A dated window that contains the service date contradicts an
-      # inactive answer. No dates means there is nothing to contradict it.
-      def self.inactive_contradicted?(plans, service_type_codes, service_date)
+      # A stated window that contains the service date, or an eligibility
+      # day other than the service date, contradicts an inactive answer.
+      # No stated bounds and no eligibility day leave `:inactive` alone.
+      def self.inactive_contradicted?(plans, service_date)
         return false if service_date.nil?
 
-        inactive_plans(plans, service_type_codes).any? do |plan|
-          dated_window_contains?(plan, service_date)
-        end
+        Array(plans).any? { |plan| plan_contradicts_inactive?(plan, service_date) }
       end
       private_class_method :inactive_contradicted?
 
-      def self.inactive_plans(plans, service_type_codes)
-        Array(plans).select { |plan| inactive_coverage?(plan, service_type_codes) }
+      def self.plan_contradicts_inactive?(plan, service_date)
+        stated_window_contains?(plan, service_date) || eligibility_date_differs?(plan, service_date)
       end
-      private_class_method :inactive_plans
+      private_class_method :plan_contradicts_inactive?
 
-      def self.inactive_coverage?(plan, service_type_codes)
-        counted_coverage_benefits([ plan ], service_type_codes).any? do |benefit|
-          benefit.code.to_s == INACTIVE_COVERAGE_CODE
-        end
+      def self.stated_window_contains?(plan, service_date)
+        Array(plan.stated_windows).any? { |window| window_contains?(window, service_date) }
       end
-      private_class_method :inactive_coverage?
+      private_class_method :stated_window_contains?
 
-      def self.dated_window_contains?(plan, service_date)
-        start_on = plan.coverage_start
-        end_on = plan.coverage_end
+      # Inclusive. A nil side is open. Both nil means the loop stated no
+      # bound, and that does not contain the service date.
+      def self.window_contains?(window, service_date)
+        start_on = window.start_date
+        end_on = window.end_date
         return false if start_on.nil? && end_on.nil?
 
         (start_on.nil? || service_date >= start_on) && (end_on.nil? || service_date <= end_on)
       end
-      private_class_method :dated_window_contains?
+      private_class_method :window_contains?
+
+      def self.eligibility_date_differs?(plan, service_date)
+        date = plan.eligibility_date
+        !date.nil? && date != service_date
+      end
+      private_class_method :eligibility_date_differs?
 
       def self.payer_mismatch?(plans, service_type_codes, payer_identifier)
         return false if payer_identifier.nil? || payer_identifier.to_s.strip.empty?
