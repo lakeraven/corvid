@@ -8,9 +8,9 @@
 # The clearinghouse takes the claim, so `submit_claim` returns accepted unless
 # a front-door rule (such as a missing billing provider NPI) rejects it. That
 # front-door rejection is also the later acknowledgment. Otherwise the payer's
-# 277CA is what `fetch_acknowledgments` returns. A delayed_rejection with no
-# usable edit — none, an empty list, or a blank code or description — is
-# invalid and raises when that claim is submitted.
+# 277CA is what `fetch_acknowledgments` returns. Any claim listed here must
+# have at least one edit with a non-blank code and description, or submit
+# raises and records nothing. Rejection keys must be strings.
 default_outcome: accepted
 default_transaction_set: "277CA"
 

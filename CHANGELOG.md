@@ -31,8 +31,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   acknowledgment during `submit_claim` from a second read of the injected
   clock, and does not read the clock again on fetch. A canned
   `delayed_rejection` is accepted at the front door and rejected on fetch.
-  One without a usable edit raises at submit. `Acknowledgment` accepts
-  `raw_reference:` and defaults it to nil. (#739)
+  Any claim listed under rejections must have at least one edit with a
+  non-blank code and description, or submit raises and records nothing.
+  Rejection keys must be strings. `submitted` returns a frozen copy of the
+  log, and the later trace suffix comes from an internal counter.
+  `Acknowledgment` accepts `raw_reference:` and defaults it to nil. (#739)
 - ZIP-to-CBSA wage-area crosswalk (#371). `corvid_zip_cbsa_crosswalks`
   stores the CMS crosswalk by federal fiscal year (`zip` is five ASCII
   digits; `cbsa` is a five-digit CBSA or a two-digit rural-state code;

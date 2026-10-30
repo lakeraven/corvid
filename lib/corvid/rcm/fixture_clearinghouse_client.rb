@@ -26,8 +26,12 @@ module Corvid
     # clearinghouse took the claim — and is rejected later with the payer's
     # 277CA edits. A front-door rejection, such as a missing billing provider
     # NPI, is rejected immediately and the later acknowledgment repeats it. A
-    # delayed rejection is still subject to that front-door rule. A delayed
-    # rejection with no usable edit fails closed at submit.
+    # delayed rejection is still subject to that front-door rule. Any claim
+    # listed under rejections must yield at least one edit, each a hash with
+    # a non-blank string code and description; otherwise submit raises and
+    # records nothing. Rejection keys that are not strings are refused when
+    # the client is built. `submitted` returns a frozen copy of the log, and
+    # the later trace suffix comes from an internal counter.
     class FixtureClearinghouseClient < ClearinghouseClient
       FIXTURE_DIR = File.expand_path("fixtures/835", __dir__)
       ACKNOWLEDGMENT_TABLE = File.expand_path("data/clearinghouse_acknowledgments.yml", __dir__)
@@ -55,13 +59,20 @@ module Corvid
         level: "claim"
       )
 
-      # Fixed text. A corrupt delayed_rejection row must not echo a claim id
-      # or anything from the patient into the error.
+      # Fixed text. A corrupt rejection row must not echo a claim id or
+      # anything from the patient into the error. Delayed rows keep their
+      # own message.
       DELAYED_REJECTION_EDIT_MESSAGE =
         "delayed rejection requires one or more edits, each with a non-blank code and description"
+      REJECTION_EDIT_MESSAGE =
+        "rejection requires one or more edits, each with a non-blank code and description"
 
       # Fixed text. A clock reading that is not a Time must not be stored.
       CLOCK_MUST_RETURN_TIME_MESSAGE = "clock must return a Time"
+
+      # Fixed text. A non-string rejections key must not be echoed; YAML
+      # reads an unquoted number as an Integer.
+      REJECTIONS_KEYS_MUST_BE_STRINGS_MESSAGE = "rejections keys must be strings"
 
       def initialize(scenarios: SCENARIOS, fixture_dir: FIXTURE_DIR,
                      acknowledgment_table: ACKNOWLEDGMENT_TABLE, clock: -> { Time.now.utc })
@@ -69,25 +80,31 @@ module Corvid
         @fixture_dir = fixture_dir
         @clock = clock
         @table = YAML.safe_load_file(acknowledgment_table)
+        assert_rejection_keys_are_strings!
         @submitted = []
         @later_acknowledgments = []
+        @later_trace_count = 0
       end
 
-      # Claims `submit_claim` recorded, in order. Phase 0's stand-in for the
-      # submission event log (wave 2, with #507). A submit that raises records
-      # nothing.
-      attr_reader :submitted
+      # Claims `submit_claim` recorded, in order. A frozen copy of the
+      # internal log, so clearing the result does not clear the log. Phase
+      # 0's stand-in for the submission event log (wave 2, with #507). A
+      # submit that raises records nothing.
+      def submitted
+        @submitted.dup.freeze
+      end
 
       # Returns the immediate front-door acknowledgment and keeps the later
-      # one for `fetch_acknowledgments`. The delayed-row check, both
-      # acknowledgments, and both clock readings finish before `submitted` or
+      # one for `fetch_acknowledgments`. The listed-rejection check, both
+      # acknowledgments, and both clock readings finish before the log or
       # the later list changes. A submit that raises records nothing.
       def submit_claim(claim)
-        assert_delayed_rejection_has_usable_edit!(claim)
+        assert_listed_rejection_has_usable_edits!(claim)
         immediate = immediate_acknowledgment(claim)
         later = later_acknowledgment(claim, immediate)
         @submitted << claim
         @later_acknowledgments << later
+        @later_trace_count += 1
         immediate
       end
 
@@ -136,27 +153,58 @@ module Corvid
         rejections.dig(claim.identifier.to_s, "transaction_set") || default_transaction_set
       end
 
-      def assert_delayed_rejection_has_usable_edit!(claim)
-        return unless delayed_rejection?(claim)
-        return if delayed_edits_usable?(claim)
+      # One check for every claim listed under rejections. The row value does
+      # not matter: a null row, no edits, or an edit that is not a hash with
+      # a non-blank string code and description fails closed and records
+      # nothing. Delayed rows keep their own fixed message. Neither message
+      # names the claim.
+      def assert_listed_rejection_has_usable_edits!(claim)
+        return unless listed_rejection?(claim)
+        return if usable_edits?(raw_edits(claim))
 
-        raise ArgumentError, DELAYED_REJECTION_EDIT_MESSAGE
+        raise ArgumentError, rejection_edit_message(claim)
+      end
+
+      def rejection_edit_message(claim)
+        return DELAYED_REJECTION_EDIT_MESSAGE if delayed_rejection?(claim)
+
+        REJECTION_EDIT_MESSAGE
+      end
+
+      def listed_rejection?(claim)
+        rejections.key?(claim.identifier.to_s)
       end
 
       def delayed_rejection?(claim)
-        rejections.dig(claim.identifier.to_s, "delayed_rejection") == true
+        row = rejection_row(claim)
+        row.is_a?(Hash) && row["delayed_rejection"] == true
       end
 
-      # Every listed edit must be usable. A blank code or description is not
-      # a payer edit we can route, so the row fails closed instead of being
-      # dropped or half-applied.
-      def delayed_edits_usable?(claim)
-        edits = raw_edits(claim)
+      # At least one edit, and every edit usable. A blank code or description
+      # is not a payer edit we can route, so the row fails closed instead of
+      # being dropped or half-applied.
+      def usable_edits?(edits)
         !edits.empty? && edits.all? { |edit| usable_edit?(edit) }
       end
 
+      def rejection_row(claim)
+        rejections[claim.identifier.to_s] if listed_rejection?(claim)
+      end
+
       def raw_edits(claim)
-        Array(rejections.dig(claim.identifier.to_s, "edits"))
+        row = rejection_row(claim)
+        edits = row["edits"] if row.is_a?(Hash)
+        return edits if edits.is_a?(Array)
+
+        []
+      end
+
+      def assert_rejection_keys_are_strings!
+        table = rejections
+        return unless table.is_a?(Hash)
+        return if table.keys.all?(String)
+
+        raise ArgumentError, REJECTIONS_KEYS_MUST_BE_STRINGS_MESSAGE
       end
 
       def usable_edit?(edit)
@@ -275,13 +323,14 @@ module Corvid
         )
       end
 
-      # The later trace is this submission's place in the log. The
-      # acknowledgment is built before the claim is appended, so the suffix
-      # is one past the claims already recorded.
+      # The later trace suffix is an internal submission counter, not the
+      # length of the array `submitted` returns. The acknowledgment is built
+      # before the claim is recorded, so the suffix is one past the
+      # submissions already kept. Callers cannot reset the counter.
       def acknowledgment_trace_number(claim, later:)
         return "ACK-#{claim.identifier}" unless later
 
-        "ACK-#{claim.identifier}-LATER-#{@submitted.length + 1}"
+        "ACK-#{claim.identifier}-LATER-#{@later_trace_count + 1}"
       end
 
       # Only call site for the injected clock. Each reading must be a Time;
