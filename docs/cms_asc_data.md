@@ -4,9 +4,43 @@ The PRC overpayment analyzer routes outpatient (APC-mapped) claims to
 **ASC pricing** (lower CF than OPPS) when the obligation's vendor is
 on the CMS Ambulatory Surgical Center registry on the service date.
 
-This doc covers the ASC **facility registry** sourcing. The ASC APC
-weight + conversion factor data is a separate slice — Addendum AA
-from each year's OPPS Final Rule.
+This doc covers the ASC **facility registry** sourcing. The ASC
+HCPCS weight + conversion factor data is a separate slice — Addendum
+AA from each year's OPPS/ASC Final Rule.
+
+## Payment formula (#722)
+
+ASC screening rates use the calendar-year HCPCS payment weight and
+ASC conversion factor, and the fiscal-year N IPPS wage index for
+calendar year N. FY N starts 1 October of N−1. That is the wage index
+numbered the same as the calendar year, not the fiscal year the
+service date falls in. October–December of CY N still uses FY N.
+
+```
+payment_weight × ASC conversion factor × (labor_share × wage_index + (1 − labor_share))
+```
+
+The labor-related share is a sourced row in `corvid_cms_labor_shares`
+(`payment_system` `asc`), shipped in `db/data/cms_labor_shares.csv`.
+Operators load that file with `rake cms:labor_shares:import` before
+repricing. After upgrading, operators must run
+`rake cms:labor_shares:import` or OPPS/ASC prices fall to the stub.
+Demo seeds insert the CY 2026 OPPS share; `PrcImporter.reanalyze` does
+not load the file. Each row cites that calendar year's OPPS/ASC final
+rule. The ASC labor-related share in that file is 50% for CY 2008–CY
+2026. ASC CY 2007 has no row and is undetermined. A calendar year with
+no row is undetermined:
+`AscRateProvider.lookup_for` returns nil rather than pricing at a
+100% labor share. When the ASC rate and conversion factor are loaded
+and only the labor share is missing, the analyzer does not fall
+through to OPPS; it takes the stub path and the note names the
+missing ASC labor share. A missing ASC rate still falls through to
+OPPS. Money is exact `BigDecimal`, rounded to cents once (ADR 0004).
+When an IPPS wage-index row is used, the lookup records that row's
+fiscal year and the labor share. When no wage-index row is loaded and
+the index defaults to 1.0, `wage_index_fiscal_year` is nil and the
+analyzer note is
+`Wage index 1.0 (no FY N wage-index row), labor share X.`
 
 ## Source
 
@@ -99,8 +133,12 @@ conversion factors come from a separate source (CMS OPPS Final Rule
 Addendum AA per year). Until that loads:
 
 - `AscFacility.applies?` matches correctly.
-- `AscRateProvider.lookup_for` returns nil for every (year, APC).
-- `analyze_outpatient` falls through to OPPS pricing.
+- `AscRateProvider.lookup_for` returns nil when no Addendum AA rate
+  is loaded for that year and HCPCS.
+- `analyze_outpatient` falls through to OPPS pricing when the ASC
+  rate itself is missing. A loaded rate and conversion factor with
+  no ASC labor share does not. After upgrading, operators must run
+  `rake cms:labor_shares:import` or OPPS/ASC prices fall to the stub.
 
 So today, registering an ASC vendor doesn't yet change the rate
 they're priced against. Once Addendum AA data lands, ASC-routed claims

@@ -33,6 +33,9 @@ def clean_corvid_tables!
   Corvid::IppsHospitalRate.unscoped.delete_all
   Corvid::OppsApcWeight.unscoped.delete_all
   Corvid::OppsConversionFactor.unscoped.delete_all
+  if Corvid.const_defined?(:CmsLaborShare, false)
+    Corvid::CmsLaborShare.unscoped.delete_all
+  end
   Corvid::ZipLocality.unscoped.delete_all
   if Corvid.const_defined?(:ZipCbsaCrosswalk, false)
     Corvid::ZipCbsaCrosswalk.unscoped.delete_all

@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_10_28_000001) do
+ActiveRecord::Schema[8.1].define(version: 2026_10_29_000201) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
@@ -242,6 +242,19 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_28_000001) do
     t.datetime "created_at", null: false
     t.datetime "updated_at", null: false
     t.index ["year"], name: "index_corvid_cms_fee_schedule_releases_on_year", unique: true
+  end
+
+  create_table "corvid_cms_labor_shares", force: :cascade do |t|
+    t.string "payment_system", null: false
+    t.integer "calendar_year", null: false
+    t.decimal "labor_share", precision: 5, scale: 4, null: false
+    t.string "source", null: false
+    t.string "release_label"
+    t.datetime "created_at", null: false
+    t.datetime "updated_at", null: false
+    t.index ["payment_system", "calendar_year"], name: "idx_corvid_cms_labor_shares_system_year", unique: true
+    t.check_constraint "labor_share > 0::numeric AND labor_share < 1::numeric", name: "corvid_cms_labor_shares_labor_share_check"
+    t.check_constraint "payment_system::text = ANY (ARRAY['opps'::character varying, 'asc'::character varying]::text[])", name: "corvid_cms_labor_shares_payment_system_check"
   end
 
   create_table "corvid_committee_reviews", force: :cascade do |t|
