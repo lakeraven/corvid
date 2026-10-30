@@ -23,7 +23,9 @@ module Corvid
     # including after symlink resolution. Anything else — a blank identifier,
     # a token with no fixture, or a file `Edi271Reader` rejects as malformed
     # — is `:undetermined`. Unknown is never a no. `check_eligibility` always
-    # returns an `EligibilityResponse`. The reader itself still raises
+    # returns an `EligibilityResponse` for an `EligibilityInquiry`. Anything
+    # else raises ArgumentError with `ClearinghouseClient::INQUIRY_REQUIRED_MESSAGE`,
+    # which does not include the argument. The reader itself still raises
     # `Edi271Reader::MalformedError` with a fixed message and `cause: nil`,
     # so a member identifier or the file body cannot ride out on the
     # exception (ADR 0003); this client catches that and answers
@@ -105,14 +107,15 @@ module Corvid
 
       # One 271 per member identifier. Payer, service date, service type codes,
       # and provider NPI stay on the inquiry — they are what a live 270 would
-      # send — and are not a second lookup key. The service type codes and
-      # the service date are the outcome's question (see
-      # `EligibilityResponse.outcome_for`). `as_of` is the injected clock,
+      # send — and are not a second lookup key. The service type codes, the
+      # service date, and the payer identifier are the outcome's question
+      # (see `EligibilityResponse.outcome_for`). `as_of` is the injected clock,
       # not a date from the file. A missing fixture and a file the reader
       # rejects as malformed both answer `:undetermined` with no plans, no
       # errors, and no raw reference — nothing taken from the identifier or
-      # the file body.
+      # the file body. The argument has to be an `EligibilityInquiry`.
       def check_eligibility(inquiry)
+        require_eligibility_inquiry!(inquiry)
         as_of = @clock.call
         parsed = read_eligibility_fixture(inquiry.member_identifier)
         eligibility_response(parsed, inquiry, as_of)
@@ -194,7 +197,8 @@ module Corvid
             plans: parsed.plans,
             errors: parsed.errors,
             service_type_codes: inquiry.service_type_codes,
-            service_date: inquiry.service_date
+            service_date: inquiry.service_date,
+            payer_identifier: inquiry.payer_identifier
           ),
           plans: parsed.plans,
           errors: parsed.errors,

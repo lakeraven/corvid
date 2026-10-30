@@ -29,13 +29,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `FixtureClearinghouseClient` answers from synthetic X12 271 fixtures
   parsed by `Edi271Reader`. The outcome counts only coverage benefits
   (EB01 `1` or `6`) for the service types the inquiry asked; a benefit
-  with no service type counts only when `30` was asked. An otherwise
-  active answer is `:undetermined` when the service date is outside the
-  plan coverage window (unknown or open-ended bounds are not checked).
-  Only an explicit inactive benefit is `:inactive`. An AAA reject, an
-  unmapped reject, a missing fixture, a malformed fixture, or any other
-  non-answer is `:undetermined`. A coverage end in year 9999 is
-  open-ended (`nil`). Live 270 generation and clearinghouse transport
+  with no service type counts only when `30` was asked. Plan bounds are
+  the latest start and the earliest end across plan-date segments; a
+  year-9999 date stays open-ended and does not override a real bound.
+  An otherwise active answer is `:undetermined` when the service date
+  is outside that window (a nil bound is not checked). An otherwise
+  inactive answer is `:undetermined` when the window contains the
+  service date; a plan with no dates does not contradict inactive.
+  A present inquiry payer must match every contributing plan's payer,
+  or the outcome is `:undetermined`. An AAA reject, an unmapped reject,
+  a missing fixture, a malformed fixture, or any other non-answer is
+  `:undetermined`. Live 270 generation and clearinghouse transport
   are not included.
 - ZIP-to-CBSA wage-area crosswalk (#371). `corvid_zip_cbsa_crosswalks`
   stores the CMS crosswalk by federal fiscal year (`zip` is five ASCII

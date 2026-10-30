@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "bigdecimal"
+require "date"
 
 require_relative "eligibility"
 
@@ -19,23 +20,31 @@ module Corvid
     # reappear in a reference or an exception (ADR 0003).
     #
     # HL level codes are 20 information source, 21 receiver, 22 subscriber,
-    # and 23 dependent. Plan benefits, the group REF, and plan dates come
-    # from the subscriber loop, unless a dependent loop is present — then
-    # they come from the dependent loop only, and subscriber-loop EBs are
-    # ignored. The payer identifier still comes from the information-source
-    # NM1. More than one subscriber loop or more than one dependent loop in
+    # and 23 dependent. Plan benefits and the group REF come from the
+    # subscriber loop, unless a dependent loop is present — then they come
+    # from the dependent loop only, and subscriber-loop EBs are ignored.
+    # The payer identifier still comes from the information-source NM1.
+    # More than one subscriber loop or more than one dependent loop in
     # the transaction is ambiguous: the reader returns no plan, rather than
     # picking one and calling the patient active. AAA at any level is still
     # reported.
     #
-    # Plan coverage dates are DTP segments in that subscriber or dependent
-    # loop that occur before the first EB of the loop. Qualifiers 291, 346,
-    # and 356 set the start; 347 and 357 set the end. An RD8 range on 291,
-    # 346, or 356 sets both bounds. DTP*472 and any other qualifier do not
-    # set plan dates, in any format. A DTP after an EB (benefit level, such
-    # as 348/349) does not change plan dates. The plan name is EB05 only;
-    # EB04 is an insurance type code. The group number is REF*6P, or REF*1L
-    # when 6P is absent; 6P wins when both are present.
+    # Plan coverage dates are DTP segments before the first EB of a loop.
+    # The window is the latest start and the earliest end. When a dependent
+    # loop is selected, those bounds run across the subscriber loop and the
+    # dependent loop together; each loop only contributes DTPs from before
+    # its own first EB. A year-9999 value is open-ended and never overrides
+    # a real bound. Start qualifiers are 291 (plan), 307 (eligibility),
+    # 346 (plan begin), and 356 (eligibility begin). End qualifiers are
+    # 347 (plan end), 357 (eligibility end), and 540 (policy expiration).
+    # RD8 on any of those is a start-end range. D8 on 307 sets both bounds
+    # to that day. D8 on another start qualifier is a start; D8 on an end
+    # qualifier is an end. Every other qualifier, including 472, is ignored.
+    # A present plan-date value that is not a real day or a year-9999
+    # placeholder is a malformed file. Segments after the first EB (2110)
+    # do not change plan dates or the group REF. The plan name is EB05
+    # only; EB04 is an insurance type code. The group number is REF*6P, or
+    # REF*1L when 6P is absent; 6P wins when both are present.
     #
     # A file that is not a 271 transaction raises `MalformedError` with a fixed
     # message. The message is a constant so a parse failure cannot echo a
@@ -112,15 +121,18 @@ module Corvid
       UNMAPPED_REJECT_DESCRIPTION = "Unmapped eligibility reject reason"
       REJECTED_WITHOUT_REASON = "Eligibility request rejected"
 
-      # Plan-level DTP01 qualifiers only. 291 plan, 346 plan begin, and 356
-      # eligibility begin are starts; 347 plan end and 357 eligibility end
-      # are ends. 348/349 are benefit dates and are not plan bounds. An RD8
-      # range counts only on a start qualifier. D8 is one day. 472 (service)
-      # and every other qualifier are ignored, in any format.
-      START_DATE_QUALIFIERS = %w[291 346 356].freeze
-      END_DATE_QUALIFIERS = %w[347 357].freeze
+      # Plan-level DTP01 qualifiers. 348/349 are benefit dates and are not
+      # in this list. 472 (service) and every other qualifier are ignored.
+      # 307 is also a start qualifier; D8 on 307 alone sets both bounds.
+      START_DATE_QUALIFIERS = %w[291 307 346 356].freeze
+      END_DATE_QUALIFIERS = %w[347 357 540].freeze
+      ELIGIBILITY_DATE_QUALIFIER = "307"
+      PLAN_DATE_QUALIFIERS = (START_DATE_QUALIFIERS | END_DATE_QUALIFIERS).freeze
       DATE_FORMAT = "D8"
       DATE_RANGE_FORMAT = "RD8"
+      PLAN_DAY = /\A\d{8}\z/
+      PLAN_DAY_RANGE = /\A(\d{8})-(\d{8})\z/
+      OPEN_ENDED_YEAR = "9999"
 
       PAYER_ENTITY = "PR"
       PAYER_ID_QUALIFIER = "PI"
@@ -145,8 +157,6 @@ module Corvid
           @group_1l = nil
           @coverage_start = nil
           @coverage_end = nil
-          @coverage_start_seen = false
-          @coverage_end_seen = false
           @seen_eb = false
         end
 
@@ -177,18 +187,22 @@ module Corvid
           @group_6p || @group_1l
         end
 
+        # Latest real start. Nil is an open-ended placeholder and does not
+        # replace a date already recorded.
         def note_start(date)
-          return if @coverage_start_seen
+          return if date.nil?
+          return if @coverage_start && @coverage_start >= date
 
           @coverage_start = date
-          @coverage_start_seen = true
         end
 
+        # Earliest real end. Nil is an open-ended placeholder and does not
+        # replace a date already recorded.
         def note_end(date)
-          return if @coverage_end_seen
+          return if date.nil?
+          return if @coverage_end && @coverage_end <= date
 
           @coverage_end = date
-          @coverage_end_seen = true
         end
       end
       private_constant :PlanLoop
@@ -222,8 +236,11 @@ module Corvid
       private
 
       # A string already tagged UTF-8 is not transcoded: invalid bytes are a
-      # malformed file, not an ArgumentError from `encode`. Other encodings
-      # are converted, then `valid_encoding?` is checked on the result.
+      # malformed file, not an ArgumentError from `encode`. ASCII-8BIT (what
+      # `File.binread` returns) is reinterpreted as UTF-8, because `encode`
+      # would reject a non-ASCII byte that is already valid UTF-8. Any other
+      # encoding is converted. `valid_encoding?` then rejects bytes that are
+      # not UTF-8.
       def utf8(source)
         converted = to_utf8(source.to_s)
         malformed! unless converted.valid_encoding?
@@ -233,10 +250,16 @@ module Corvid
 
       def to_utf8(text)
         return text if text.encoding == Encoding::UTF_8
+        return reinterpret_as_utf8(text) if text.encoding == Encoding::ASCII_8BIT
 
         text.encode(Encoding::UTF_8)
       rescue EncodingError, ArgumentError
         malformed!
+      end
+
+      # Dup so `force_encoding` does not change the caller's string.
+      def reinterpret_as_utf8(text)
+        text.dup.force_encoding(Encoding::UTF_8)
       end
 
       def detect_delimiters(source)
@@ -374,8 +397,10 @@ module Corvid
         @payer_identifier ||= identifier
       end
 
+      # Group REF after the first EB is benefit level (2110) and does not
+      # change the plan.
       def consume_ref(elements)
-        return if @current_loop.nil?
+        return if @current_loop.nil? || @current_loop.seen_eb?
 
         qualifier = element(elements, 1)
         value = element(elements, 2)
@@ -385,7 +410,8 @@ module Corvid
       end
 
       # Only a DTP before the first EB of this subscriber or dependent loop
-      # can set plan bounds. Benefit-level dates (2110) follow an EB.
+      # can set plan bounds. Benefit-level dates (2110) follow an EB and
+      # are not validated.
       def consume_dtp(elements)
         plan_loop = @current_loop
         return if plan_loop.nil? || plan_loop.seen_eb?
@@ -397,30 +423,53 @@ module Corvid
       end
 
       def apply_plan_date(plan_loop, qualifier, format, raw)
-        if format == DATE_RANGE_FORMAT
-          apply_date_range(plan_loop, qualifier, raw)
-        elsif format == DATE_FORMAT
-          apply_single_date(plan_loop, qualifier, raw)
+        return unless PLAN_DATE_QUALIFIERS.include?(qualifier)
+
+        case format
+        when DATE_RANGE_FORMAT then note_date_range(plan_loop, raw)
+        when DATE_FORMAT then note_single_date(plan_loop, qualifier, raw)
         end
       end
 
-      def apply_date_range(plan_loop, qualifier, raw)
-        return unless START_DATE_QUALIFIERS.include?(qualifier)
-
-        start_raw, end_raw = raw.split("-", 2)
-        plan_loop.note_start(EligibilityPlan.coverage_date(start_raw))
-        return if end_raw.nil?
-
-        plan_loop.note_end(EligibilityPlan.coverage_date(end_raw))
+      def note_date_range(plan_loop, raw)
+        start_on, end_on = plan_date_range(raw)
+        plan_loop.note_start(start_on)
+        plan_loop.note_end(end_on)
       end
 
-      def apply_single_date(plan_loop, qualifier, raw)
-        date = EligibilityPlan.coverage_date(raw)
-        if END_DATE_QUALIFIERS.include?(qualifier)
+      # D8 on 307 is the eligibility day, so it closes both sides. D8 on
+      # any other start qualifier is a start; D8 on an end qualifier is an end.
+      def note_single_date(plan_loop, qualifier, raw)
+        date = plan_date(raw)
+        if qualifier == ELIGIBILITY_DATE_QUALIFIER
+          plan_loop.note_start(date)
           plan_loop.note_end(date)
-        elsif START_DATE_QUALIFIERS.include?(qualifier)
+        elsif END_DATE_QUALIFIERS.include?(qualifier)
+          plan_loop.note_end(date)
+        else
           plan_loop.note_start(date)
         end
+      end
+
+      def plan_date_range(raw)
+        halves = PLAN_DAY_RANGE.match(raw.to_s.strip)
+        malformed! if halves.nil?
+
+        [ plan_date(halves[1]), plan_date(halves[2]) ]
+      end
+
+      # CCYYMMDD. Year 9999 is an open-ended placeholder (nil) and is not
+      # run through the calendar. Any other present value that is not a
+      # real day is a malformed 271. `EligibilityPlan.coverage_date` stays
+      # nil for those values; this parse is what tells them apart.
+      def plan_date(raw)
+        text = raw.to_s.strip
+        malformed! unless text.match?(PLAN_DAY)
+        return nil if text.start_with?(OPEN_ENDED_YEAR)
+
+        Date.strptime(text, "%Y%m%d")
+      rescue Date::Error
+        malformed!
       end
 
       # EB03 repeats with the ISA repetition separator. One benefit per
@@ -525,14 +574,32 @@ module Corvid
       end
 
       def plan_from(plan_loop)
+        start_on, end_on = restrictive_bounds(plan_loop)
         EligibilityPlan.new(
           payer_identifier: @payer_identifier,
           plan_name: plan_loop.plan_name,
           group_number: plan_loop.group_number,
-          coverage_start: plan_loop.coverage_start,
-          coverage_end: plan_loop.coverage_end,
+          coverage_start: start_on,
+          coverage_end: end_on,
           benefits: plan_loop.benefits
         )
+      end
+
+      # Latest start and earliest end. A dependent answer also uses the
+      # subscriber loop's dates. Each loop has already kept only the DTPs
+      # from before its first EB. Nil bounds are open-ended and do not compete.
+      def restrictive_bounds(plan_loop)
+        loops = date_loops(plan_loop)
+        starts = loops.filter_map(&:coverage_start)
+        ends = loops.filter_map(&:coverage_end)
+        [ starts.max, ends.min ]
+      end
+
+      def date_loops(plan_loop)
+        loops = []
+        loops << @subscriber_loops.first if @dependent_loops.any?
+        loops << plan_loop
+        loops.compact.uniq
       end
 
       # ST02 is the transaction-set control number. It is not the member

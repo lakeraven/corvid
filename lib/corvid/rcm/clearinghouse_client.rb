@@ -24,6 +24,9 @@ module Corvid
     class ClearinghouseClient
       class TransportError < StandardError; end
 
+      # Fixed so a rejected argument cannot carry a patient or member token.
+      INQUIRY_REQUIRED_MESSAGE = "expected an eligibility inquiry"
+
       # Submit one professional claim (837P).
       #
       # @param claim [Corvid::Rcm::Claim]
@@ -57,12 +60,24 @@ module Corvid
       # `EligibilityResponse`: a 271 the reader cannot parse is an
       # undetermined answer, not an exception that carries the inquiry.
       # Whatever this raises must not name the patient or the member — the
-      # inquiry is not interpolated into the message.
+      # inquiry is not interpolated into the message. The argument has to be
+      # an `EligibilityInquiry`. Anything else raises ArgumentError with
+      # {INQUIRY_REQUIRED_MESSAGE}.
       #
       # @param inquiry [Corvid::Rcm::EligibilityInquiry]
       # @return [Corvid::Rcm::EligibilityResponse]
+      # @raise [ArgumentError] when `inquiry` is not an {EligibilityInquiry}
       def check_eligibility(inquiry)
+        require_eligibility_inquiry!(inquiry)
         raise NotImplementedError, "#{self.class}#check_eligibility not implemented"
+      end
+
+      private
+
+      def require_eligibility_inquiry!(inquiry)
+        return if inquiry.is_a?(EligibilityInquiry)
+
+        raise ArgumentError, INQUIRY_REQUIRED_MESSAGE
       end
     end
   end

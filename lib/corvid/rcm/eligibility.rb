@@ -8,11 +8,15 @@ module Corvid
     # Real-time eligibility shapes for the clearinghouse port (X12 271).
     #
     # These are in-memory boundary values, like Claim and Remittance: no
-    # ActiveRecord, no persistence. Unknown is never a no. Only an explicit
-    # inactive answer is `:inactive`; an error, a timeout, or any unmapped
-    # answer is `:undetermined` (42 CFR 136.61). A coverage benefit answers
-    # only for a service type the inquiry asked for. An active answer whose
-    # coverage window does not contain the service date is `:undetermined`.
+    # ActiveRecord, no persistence. Unknown is never a no. An explicit
+    # inactive answer is `:inactive` when the plan window does not contain
+    # the service date. An error, a timeout, a payer mismatch, or any
+    # unmapped answer is `:undetermined` (42 CFR 136.61). A coverage benefit
+    # answers only for a service type the inquiry asked for. An active
+    # answer whose coverage window does not contain the service date is
+    # `:undetermined`. An inactive answer whose window does contain it is
+    # `:undetermined` too. A present inquiry payer has to match every
+    # contributing plan.
     #
     # EB01 codes that are an explicit coverage answer. "1" is active coverage.
     # "6" is inactive. The other active and inactive variants (2–5, 7, 8) are
@@ -34,7 +38,9 @@ module Corvid
 
     # One eligibility question. Identifiers are opaque tokens (ADR 0003).
     # `member_identifier` may be nil when the caller does not have one; that
-    # is an undetermined check, not an inactive one.
+    # is an undetermined check, not an inactive one. `service_date` is nil
+    # or a Date, including a subclass of Date. Anything else raises
+    # ArgumentError with a fixed message.
     EligibilityInquiry = Data.define(
       :patient_identifier,
       :payer_identifier,
@@ -43,8 +49,11 @@ module Corvid
       :service_type_codes,
       :provider_npi
     ) do
+      SERVICE_DATE_ERROR = "service_date must be a Date or nil"
+
       def initialize(patient_identifier:, payer_identifier:, service_date:, provider_npi:,
                      member_identifier: nil, service_type_codes: DEFAULT_SERVICE_TYPE_CODES)
+        validate_service_date!(service_date)
         super(
           patient_identifier: patient_identifier,
           payer_identifier: payer_identifier,
@@ -54,6 +63,14 @@ module Corvid
           provider_npi: provider_npi
         )
         freeze
+      end
+
+      private
+
+      def validate_service_date!(service_date)
+        return if service_date.nil? || service_date.is_a?(Date)
+
+        raise ArgumentError, SERVICE_DATE_ERROR
       end
     end
 
@@ -107,8 +124,9 @@ module Corvid
       end
 
       # CCYYMMDD or CCYY-MM-DD. Blank, a year-9999 placeholder, and an
-      # impossible calendar day are nil. Nothing here raises: a bad date on a
-      # 271 is an unknown bound, not a crashed check.
+      # impossible calendar day are nil. Nothing here raises. The 271 reader
+      # does not use this for plan dates: a year-9999 placeholder is
+      # open-ended, and a present unreadable value is a malformed file.
       def self.coverage_date(raw)
         digits = coverage_digits(raw.to_s.strip)
         return nil if digits.nil? || digits.start_with?("9999")
@@ -169,22 +187,33 @@ module Corvid
       # falls outside a contributing plan's coverage window: `coverage_start`
       # after the service date, or `coverage_end` before it. The window is
       # inclusive. A nil bound is unknown — a year-9999 end is stored as nil
-      # — and is not checked. A nil `service_date` skips the check. An
-      # explicit `:inactive` is not revised because of dates.
+      # — and is not checked on that side. A nil `service_date` skips the check.
+      #
+      # An otherwise `:inactive` answer is `:undetermined` when a contributing
+      # plan's window contains `service_date`. Known bounds are inclusive. A
+      # nil bound is unbounded on that side. A plan with no dates at all does
+      # not contradict `:inactive`. A nil `service_date` skips this check too.
+      #
+      # When `payer_identifier` is present, a contributing plan whose
+      # `payer_identifier` is nil or different yields `:undetermined`. A nil
+      # or blank inquiry payer skips that check. Contributing plans are those
+      # with a counted coverage benefit.
       #
       # @param plans [Array<EligibilityPlan>]
       # @param errors [Array<EligibilityError>] AAA rejects; any one fails closed
       # @param service_type_codes [Array<String>] service types the inquiry asked
       # @param service_date [Date, nil] day the coverage window is checked against
+      # @param payer_identifier [String, nil] inquiry payer; must match contributing plans
       # @return [Symbol] `:active`, `:inactive`, or `:undetermined`
-      def self.outcome_for(plans:, errors:, service_type_codes:, service_date:)
+      def self.outcome_for(plans:, errors:, service_type_codes:, service_date:, payer_identifier: nil)
         return :undetermined if Array(errors).any?
+        return :undetermined if payer_mismatch?(plans, service_type_codes, payer_identifier)
 
         counted = counted_coverage_benefits(plans, service_type_codes)
         active = coverage_code?(counted, ACTIVE_COVERAGE_CODE)
         inactive = coverage_code?(counted, INACTIVE_COVERAGE_CODE)
         return :undetermined if active && inactive
-        return :inactive if inactive
+        return inactive_outcome(plans, service_type_codes, service_date) if inactive
         return :undetermined unless active
         return :undetermined if service_date_outside_window?(plans, service_type_codes, service_date)
 
@@ -259,6 +288,64 @@ module Corvid
         (start_on && service_date < start_on) || (end_on && service_date > end_on)
       end
       private_class_method :plan_excludes_date?
+
+      def self.inactive_outcome(plans, service_type_codes, service_date)
+        return :undetermined if inactive_contradicted?(plans, service_type_codes, service_date)
+
+        :inactive
+      end
+      private_class_method :inactive_outcome
+
+      # A dated window that contains the service date contradicts an
+      # inactive answer. No dates means there is nothing to contradict it.
+      def self.inactive_contradicted?(plans, service_type_codes, service_date)
+        return false if service_date.nil?
+
+        inactive_plans(plans, service_type_codes).any? do |plan|
+          dated_window_contains?(plan, service_date)
+        end
+      end
+      private_class_method :inactive_contradicted?
+
+      def self.inactive_plans(plans, service_type_codes)
+        Array(plans).select { |plan| inactive_coverage?(plan, service_type_codes) }
+      end
+      private_class_method :inactive_plans
+
+      def self.inactive_coverage?(plan, service_type_codes)
+        counted_coverage_benefits([ plan ], service_type_codes).any? do |benefit|
+          benefit.code.to_s == INACTIVE_COVERAGE_CODE
+        end
+      end
+      private_class_method :inactive_coverage?
+
+      def self.dated_window_contains?(plan, service_date)
+        start_on = plan.coverage_start
+        end_on = plan.coverage_end
+        return false if start_on.nil? && end_on.nil?
+
+        (start_on.nil? || service_date >= start_on) && (end_on.nil? || service_date <= end_on)
+      end
+      private_class_method :dated_window_contains?
+
+      def self.payer_mismatch?(plans, service_type_codes, payer_identifier)
+        return false if payer_identifier.nil? || payer_identifier.to_s.strip.empty?
+
+        coverage_plans(plans, service_type_codes).any? do |plan|
+          plan.payer_identifier != payer_identifier
+        end
+      end
+      private_class_method :payer_mismatch?
+
+      def self.coverage_plans(plans, service_type_codes)
+        Array(plans).select { |plan| coverage_plan?(plan, service_type_codes) }
+      end
+      private_class_method :coverage_plans
+
+      def self.coverage_plan?(plan, service_type_codes)
+        counted_coverage_benefits([ plan ], service_type_codes).any?
+      end
+      private_class_method :coverage_plan?
     end
   end
 end
