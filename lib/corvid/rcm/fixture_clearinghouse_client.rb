@@ -12,6 +12,9 @@ module Corvid
     # same inputs always produce the same outputs, so the posting and routing
     # logic can be tested against real X12 syntax without a payer connection.
     #
+    # Validation and submission share one edit list (`rejection_edits`).
+    # Validating does not record a submission; only `submit_claim` does.
+    #
     # The 835 fixtures are parsed, not hand-built as hashes: if the reader
     # mis-parses a segment the tests fail, which is the point.
     class FixtureClearinghouseClient < ClearinghouseClient
@@ -53,6 +56,21 @@ module Corvid
       # Every claim handed to `submit_claim`, in order. Phase 0's stand-in for
       # the submission event log (wave 2, with #507).
       attr_reader :submitted
+
+      # Front-end edits for this claim, from the same list `submit_claim`
+      # will apply. Does not append to `submitted`. `raw_reference` stays
+      # nil: this client has no transport handle to return.
+      def validate_claim(claim)
+        raise ArgumentError, "validate_claim expects a Claim" unless claim.is_a?(Claim)
+
+        edits = rejection_edits(claim)
+        ClaimValidation.new(
+          claim_identifier: claim.identifier,
+          valid: edits.empty?,
+          edits: edits,
+          raw_reference: nil
+        )
+      end
 
       def submit_claim(claim)
         @submitted << claim
@@ -102,6 +120,8 @@ module Corvid
         rejections.dig(claim.identifier.to_s, "transaction_set") || default_transaction_set
       end
 
+      # One edit list for `validate_claim` and `submit_claim`, so the two
+      # cannot disagree about the same claim.
       def rejection_edits(claim)
         canned = Array(rejections.dig(claim.identifier.to_s, "edits")).map do |edit|
           AcknowledgmentEdit.new(

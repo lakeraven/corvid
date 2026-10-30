@@ -22,6 +22,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   instead of `denial_reason_token`.
 
 ### Added
+- `ClearinghouseClient#validate_claim` returns a `Corvid::Rcm::ClaimValidation`
+  before submission. A failure is a front-end rejection, never a denial:
+  `#to_acknowledgment` builds a rejected `Acknowledgment` with transaction
+  set `validation`, which routes like a rejected 277CA. The fixture client
+  reuses the submission rejection edits and does not record the claim in
+  `submitted`. Corvid's scrub runs first; this check runs last. (#738)
 - ZIP-to-CBSA wage-area crosswalk (#371). `corvid_zip_cbsa_crosswalks`
   stores the CMS crosswalk by federal fiscal year (`zip` is five ASCII
   digits; `cbsa` is a five-digit CBSA or a two-digit rural-state code;
