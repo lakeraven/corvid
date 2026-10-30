@@ -33,11 +33,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   billed equals line paid plus that line's adjustments), the lines' paid
   amounts must sum to the claim paid amount, and the lines' billed
   amounts must sum to the claim billed amount minus claim-level
-  adjustments. A reversal (CLP02 = 22) posts the reported amounts,
-  already negative on a takeback, as `:reversal` entries. It must report
-  billed and paid amounts that are zero or negative and must balance at
-  claim and line level like any other claim. A claim that fails those
-  rules is listed on `#unbalanced` and contributes no entries.
+  adjustments.   A reversal (CLP02 = 22) posts the reported amounts,
+  already negative on a takeback, as `:reversal` entries. Billed and paid
+  must be zero or negative on a reversal, and zero or positive on any
+  other claim, both on the claim and on every service line. Adjustment
+  amounts may be negative. The claim must also balance at claim and line
+  level. A claim that fails those rules is listed on `#unbalanced` and
+  contributes no entries.
 - ZIP-to-CBSA wage-area crosswalk (#371). `corvid_zip_cbsa_crosswalks`
   stores the CMS crosswalk by federal fiscal year (`zip` is five ASCII
   digits; `cbsa` is a five-digit CBSA or a two-digit rural-state code;

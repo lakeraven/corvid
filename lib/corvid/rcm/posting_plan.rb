@@ -28,8 +28,8 @@ module Corvid
     # gap (billed minus paid minus adjustments). A row is also returned when
     # that gap is zero but a service line does not balance, the lines' billed
     # amounts do not reconcile to the claim, the lines' paid amounts do not
-    # sum to the claim payment, or a reversal reports a positive billed or
-    # paid amount.
+    # sum to the claim payment, or billed and paid signs are wrong on the
+    # claim or on any service line.
     UnbalancedClaim = Data.define(
       :claim_identifier,
       :payer_control_number,
@@ -43,11 +43,13 @@ module Corvid
     # equal that line's paid amount plus its own adjustments, those paid
     # amounts must sum to the claim paid amount, and the lines' billed
     # amounts must sum to the claim billed amount minus claim-level
-    # adjustments. A reversal (CLP02 = 22) must report billed and paid
-    # amounts that are each less than or equal to zero, and must meet the
-    # same claim and line balance rules. Otherwise the claim is returned on
-    # #unbalanced and contributes nothing to #entries. Other claims in the
-    # same remittance still post.
+    # adjustments. Signs hold on the claim and on every service line: a
+    # reversal (CLP02 = 22) must report billed and paid amounts that are
+    # each less than or equal to zero, and any other claim must report
+    # billed and paid amounts that are each greater than or equal to zero.
+    # Adjustment amounts may be negative. Otherwise the claim is returned
+    # on #unbalanced and contributes nothing to #entries. Other claims in
+    # the same remittance still post.
     #
     # Reversal entries keep the amounts the remittance reported. On a
     # takeback those amounts are already negative; they are not negated
@@ -90,7 +92,7 @@ module Corvid
       end
 
       def self.postable?(claim)
-        claim.balanced? && service_lines_postable?(claim) && reversal_signs_ok?(claim)
+        claim.balanced? && service_lines_postable?(claim) && amount_signs_ok?(claim)
       end
 
       # No service lines: the claim equation is enough. With lines, each line
@@ -123,12 +125,16 @@ module Corvid
         Array(adjustments).sum(BigDecimal(0), &:amount)
       end
 
-      # A reversal keeps the reported signs. Billed and paid must each be
-      # zero or negative; a positive amount is not a takeback.
-      def self.reversal_signs_ok?(claim)
-        return true unless claim.reversal?
-
-        claim.billed_amount <= 0 && claim.paid_amount <= 0
+      # Billed and paid signs hold on the claim and every service line.
+      # A reversal reports each as zero or negative; any other claim reports
+      # each as zero or positive. Adjustment signs are not restricted.
+      def self.amount_signs_ok?(claim)
+        rows = [ claim, *Array(claim.services) ]
+        if claim.reversal?
+          rows.all? { |row| row.billed_amount <= 0 && row.paid_amount <= 0 }
+        else
+          rows.all? { |row| row.billed_amount >= 0 && row.paid_amount >= 0 }
+        end
       end
 
       def self.unbalanced_claim(claim)
@@ -199,7 +205,7 @@ module Corvid
       end
 
       private_class_method :collect, :postable?, :service_lines_postable?, :service_payments_match?,
-                           :line_balanced?, :line_billed_matches_claim?, :adjustment_sum, :reversal_signs_ok?,
+                           :line_balanced?, :line_billed_matches_claim?, :adjustment_sum, :amount_signs_ok?,
                            :unbalanced_claim, :rows_for, :append_claim_payment, :service_rows,
                            :adjustment_rows, :payment_row, :adjustment_row, :kind_for, :build_entry
     end
