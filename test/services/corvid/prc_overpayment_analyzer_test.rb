@@ -113,6 +113,10 @@ class Corvid::PrcOverpaymentAnalyzerTest < ActiveSupport::TestCase
       conversion_factor: 70.0, wage_index: 1.0
     )
     seed_opps_labor_share(calendar_year: 2009)
+    Corvid::IppsHospitalRate.create!(
+      fiscal_year: 2009, locality: "NATIONAL",
+      base_rate: 6_000.0, wage_index: 1.0
+    )
 
     summary = analyze_single_obligation(procedure: "OUTPATIENT_TEST", paid: 5_000)
     result = summary.results.first
@@ -198,6 +202,10 @@ class Corvid::PrcOverpaymentAnalyzerTest < ActiveSupport::TestCase
       conversion_factor: 42.0, wage_index: 1.0, release_label: "cms_asc_2009"
     )
     seed_asc_labor_share(calendar_year: 2009)
+    Corvid::IppsHospitalRate.create!(
+      fiscal_year: 2009, locality: "NATIONAL",
+      base_rate: 6_000.0, wage_index: 1.0
+    )
     Corvid::AscFacility.create!(
       ccn: "ASC-VENDOR-1", effective_date: Date.new(2009, 1, 1)
     )
