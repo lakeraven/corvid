@@ -4,8 +4,8 @@ require "bigdecimal"
 require "minitest/autorun"
 require "corvid/rcm"
 
-# Failing spec for issue #750: match bank deposits to 835 remittances by trace
-# and amount. Implementation lives in lib/corvid/rcm/deposit*.rb (not yet present).
+# Spec for issue #750: match bank deposits to 835 remittances by trace and amount.
+# Implementation lives in lib/corvid/rcm/deposit.rb and deposit_matcher.rb.
 class Corvid::Rcm::DepositMatcherTest < Minitest::Test
   FIXTURE_CLIENT = Corvid::Rcm::FixtureClearinghouseClient.new
 
@@ -548,6 +548,271 @@ class Corvid::Rcm::DepositMatcherTest < Minitest::Test
   end
 
   # -- conservation ----------------------------------------------------------
+
+  # -- fail-open regressions (issue #750) ------------------------------------
+
+  def test_negative_recoupment_remittance_matches_negative_deposit
+    remittance = build_remittance(
+      remittance_identifier: "TRC-NEG",
+      payment_amount: BigDecimal("-50.00"),
+      payment_method: "ACH"
+    )
+    deposit = build_deposit(
+      deposit_identifier: "DEP-NEG",
+      trace_number: "TRC-NEG",
+      amount: BigDecimal("-50.00")
+    )
+
+    result = match(remittances: [ remittance ], deposits: [ deposit ])
+
+    assert_equal 1, result.matched.length
+    pair = result.matched.first
+    assert_kind_of Corvid::Rcm::DepositMatch, pair
+    assert_same remittance, pair.remittance
+    assert_same deposit, pair.deposit
+    assert_empty result.unmatched_remittances
+    assert_empty result.unmatched_deposits
+    assert_empty result.amount_mismatches
+  end
+
+  def test_negative_remittance_without_deposit_is_unmatched_not_excluded
+    remittance = build_remittance(
+      remittance_identifier: "TRC-NEG-ORPH",
+      payment_amount: BigDecimal("-50.00"),
+      payment_method: "ACH"
+    )
+
+    result = match(remittances: [ remittance ], deposits: [])
+
+    assert_empty result.matched
+    assert_equal [ remittance ], result.unmatched_remittances
+    assert_empty result.unmatched_deposits
+    assert_empty result.amount_mismatches
+  end
+
+  def test_negative_remittance_against_positive_deposit_is_a_mismatch_with_signed_difference
+    remittance = build_remittance(
+      remittance_identifier: "TRC-NEG-POS",
+      payment_amount: BigDecimal("-50.00"),
+      payment_method: "ACH"
+    )
+    deposit = build_deposit(
+      deposit_identifier: "DEP-NEG-POS",
+      trace_number: "TRC-NEG-POS",
+      amount: BigDecimal("50.00")
+    )
+
+    result = match(remittances: [ remittance ], deposits: [ deposit ])
+
+    assert_empty result.matched
+    assert_empty result.unmatched_remittances
+    assert_empty result.unmatched_deposits
+    assert_equal 1, result.amount_mismatches.length
+    mismatch = result.amount_mismatches.first
+    assert_same remittance, mismatch.remittance
+    assert_same deposit, mismatch.deposit
+    assert_equal BigDecimal("100.00"), mismatch.difference
+  end
+
+  def test_negative_deposit_without_remittance_is_unmatched
+    deposit = build_deposit(
+      deposit_identifier: "DEP-NEG-ORPH",
+      trace_number: "TRC-NEG-D-ORPH",
+      amount: BigDecimal("-25.00")
+    )
+
+    result = match(remittances: [], deposits: [ deposit ])
+
+    assert_empty result.matched
+    assert_empty result.unmatched_remittances
+    assert_equal [ deposit ], result.unmatched_deposits
+    assert_empty result.amount_mismatches
+  end
+
+  def test_nil_payment_method_is_a_payment_not_excluded
+    paying = Corvid::Rcm::Remittance.new(
+      remittance_identifier: "TRC-NILM",
+      payment_amount: BigDecimal("5.00"),
+      claims: []
+    )
+    deposit = build_deposit(
+      deposit_identifier: "DEP-NILM",
+      trace_number: "TRC-NILM",
+      amount: BigDecimal("5.00")
+    )
+
+    matched_result = match(remittances: [ paying ], deposits: [ deposit ])
+
+    assert_equal 1, matched_result.matched.length
+    assert_same paying, matched_result.matched.first.remittance
+    assert_same deposit, matched_result.matched.first.deposit
+    assert_empty matched_result.unmatched_remittances
+    assert_empty matched_result.unmatched_deposits
+    assert_empty matched_result.amount_mismatches
+
+    orphan = Corvid::Rcm::Remittance.new(
+      remittance_identifier: "TRC-NILM-ORPH",
+      payment_amount: BigDecimal("3.00"),
+      claims: []
+    )
+    orphan_result = match(remittances: [ orphan ], deposits: [])
+
+    assert_empty orphan_result.matched
+    assert_equal [ orphan ], orphan_result.unmatched_remittances
+    assert_empty orphan_result.unmatched_deposits
+    assert_empty orphan_result.amount_mismatches
+  end
+
+  def test_same_deposit_object_twice_is_a_duplicate_trace
+    remittance = build_remittance(
+      remittance_identifier: "TRC-TWICE",
+      payment_amount: BigDecimal("5.00")
+    )
+    deposit = build_deposit(
+      deposit_identifier: "DEP-TWICE-SAME",
+      trace_number: "TRC-TWICE",
+      amount: BigDecimal("5.00")
+    )
+
+    same_object_result = match(remittances: [ remittance ], deposits: [ deposit, deposit ])
+
+    assert_empty same_object_result.matched
+    assert_equal [ remittance ], same_object_result.unmatched_remittances
+    assert_equal 2, same_object_result.unmatched_deposits.length
+    assert_same deposit, same_object_result.unmatched_deposits[0]
+    assert_same deposit, same_object_result.unmatched_deposits[1]
+    assert_empty same_object_result.amount_mismatches
+
+    d1 = build_deposit(
+      deposit_identifier: "DEP-TWICE-A",
+      trace_number: "TRC-TWICE-V",
+      amount: BigDecimal("5.00")
+    )
+    d2 = build_deposit(
+      deposit_identifier: "DEP-TWICE-B",
+      trace_number: "TRC-TWICE-V",
+      amount: BigDecimal("5.00")
+    )
+    remittance_v = build_remittance(
+      remittance_identifier: "TRC-TWICE-V",
+      payment_amount: BigDecimal("5.00")
+    )
+
+    distinct_result = match(remittances: [ remittance_v ], deposits: [ d1, d2 ])
+
+    assert_empty distinct_result.matched
+    assert_equal [ remittance_v ], distinct_result.unmatched_remittances
+    assert_equal 2, distinct_result.unmatched_deposits.length
+    assert_same d1, distinct_result.unmatched_deposits[0]
+    assert_same d2, distinct_result.unmatched_deposits[1]
+    assert_empty distinct_result.amount_mismatches
+  end
+
+  def test_sub_cent_amount_difference_is_a_mismatch
+    remittance = build_remittance(
+      remittance_identifier: "TRC-SUBCENT",
+      payment_amount: BigDecimal("100.00"),
+      payment_method: "ACH"
+    )
+    deposit = build_deposit(
+      deposit_identifier: "DEP-SUBCENT",
+      trace_number: "TRC-SUBCENT",
+      amount: BigDecimal("100.004")
+    )
+
+    result = match(remittances: [ remittance ], deposits: [ deposit ])
+
+    assert_empty result.matched
+    assert_empty result.unmatched_remittances
+    assert_empty result.unmatched_deposits
+    assert_equal 1, result.amount_mismatches.length
+    assert_equal BigDecimal("0.004"), result.amount_mismatches.first.difference
+  end
+
+  def test_amounts_beyond_float_precision_compare_exactly
+    remittance = build_remittance(
+      remittance_identifier: "TRC-BIGDEC",
+      payment_amount: BigDecimal("12345678901234567.02"),
+      payment_method: "ACH"
+    )
+    deposit = build_deposit(
+      deposit_identifier: "DEP-BIGDEC",
+      trace_number: "TRC-BIGDEC",
+      amount: BigDecimal("12345678901234567.01")
+    )
+
+    result = match(remittances: [ remittance ], deposits: [ deposit ])
+
+    assert_empty result.matched
+    assert_empty result.unmatched_remittances
+    assert_empty result.unmatched_deposits
+    assert_equal 1, result.amount_mismatches.length
+    assert_equal BigDecimal("-0.01"), result.amount_mismatches.first.difference
+  end
+
+  def test_non_finite_amounts_are_refused
+    assert_argument_error do
+      build_deposit(
+        deposit_identifier: "DEP-INF",
+        trace_number: "TRC-NF",
+        amount: BigDecimal("Infinity")
+      )
+    end
+    assert_argument_error do
+      build_deposit(
+        deposit_identifier: "DEP-NINF",
+        trace_number: "TRC-NF",
+        amount: BigDecimal("-Infinity")
+      )
+    end
+    assert_argument_error do
+      build_deposit(
+        deposit_identifier: "DEP-NAN",
+        trace_number: "TRC-NF",
+        amount: BigDecimal("NaN")
+      )
+    end
+
+    deposit = build_deposit(
+      deposit_identifier: "DEP-OK-NF",
+      trace_number: "TRC-NF-MATCH",
+      amount: BigDecimal("1.00")
+    )
+    assert_argument_error do
+      match(
+        remittances: [
+          build_remittance(
+            remittance_identifier: "TRC-NF-MATCH",
+            payment_amount: BigDecimal("Infinity"),
+            payment_method: "ACH"
+          )
+        ],
+        deposits: [ deposit ]
+      )
+    end
+    assert_argument_error do
+      match(
+        remittances: [
+          build_remittance(
+            remittance_identifier: "TRC-NF-MATCH-2",
+            payment_amount: BigDecimal("NaN"),
+            payment_method: "ACH"
+          )
+        ],
+        deposits: [ deposit ]
+      )
+    end
+  end
+
+  def test_non_payment_remittance_with_missing_amount_still_raises
+    remittance = build_remittance(
+      remittance_identifier: "TRC-NON-NIL",
+      payment_amount: nil,
+      payment_method: "NON"
+    )
+
+    assert_argument_error { match(remittances: [ remittance ], deposits: []) }
+  end
 
   def test_conservation_mixed_scenario_partitions_every_non_excluded_item
     excluded = fixture_remittance("denial_missing_information_co16")
