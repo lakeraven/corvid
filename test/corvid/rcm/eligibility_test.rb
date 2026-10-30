@@ -94,7 +94,7 @@ class Corvid::Rcm::EligibilityTest < Minitest::Test
     assert_equal "30", plan.benefits.first.service_type_code
     assert_equal "1", plan.benefits.first.code
     assert_equal "IND", plan.benefits.first.coverage_level
-    assert_in_delta 25.00, plan.benefits.first.amount, 0.001
+    assert_equal BigDecimal("25.00"), plan.benefits.first.amount
     assert_nil plan.benefits.first.percent
     assert plan.benefits.first.in_network
   end
@@ -151,9 +151,11 @@ class Corvid::Rcm::EligibilityTest < Minitest::Test
       )
       bad = inquiry(member_identifier: MEMBER_MALFORMED_FIXTURE)
 
-      error = assert_raises(StandardError) { client.check_eligibility(bad) }
+      response = client.check_eligibility(bad)
 
-      refute_includes error.message, MEMBER_MALFORMED_FIXTURE
+      assert_equal :undetermined, response.outcome
+      assert_nil response.raw_reference
+      refute_includes response.inspect, MEMBER_MALFORMED_FIXTURE
     end
   end
 

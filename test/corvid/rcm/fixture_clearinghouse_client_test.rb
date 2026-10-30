@@ -4,8 +4,11 @@ require "minitest/autorun"
 require "corvid"
 require "corvid/rcm"
 require_relative "claim_factory"
+require_relative "edi_271_test_helper"
 
 class Corvid::Rcm::FixtureClearinghouseClientTest < Minitest::Test
+  include Corvid::Rcm::Edi271TestHelper
+
   Factory = Corvid::Rcm::ClaimFactory
   FIXED_CLOCK = -> { Time.utc(2026, 9, 1, 12, 0, 0) }
 
@@ -240,6 +243,14 @@ class Corvid::Rcm::FixtureClearinghouseClientTest < Minitest::Test
 
     assert_equal :undetermined, response.outcome
     refute_equal :inactive, response.outcome
+
+    error_99 = response.errors.find { |entry| entry.code == "99" }
+    refute_nil error_99, "expected AAA reject code 99 on the response"
+    assert error_99.description.to_s.strip != "", "expected a non-empty description for code 99"
+
+    error_72 = response.errors.find { |entry| entry.code == "72" }
+    aaa72_description = error_72&.description || Corvid::Rcm::Edi271Reader::AAA_REJECT_REASONS.fetch("72")
+    refute_equal aaa72_description, error_99.description
   end
 
   def test_unknown_member_identifier_returns_undetermined_without_raising
@@ -288,5 +299,300 @@ class Corvid::Rcm::FixtureClearinghouseClientTest < Minitest::Test
 
     assert_equal :undetermined, @client.check_eligibility(eligibility_inquiry(member_identifier: nil)).outcome
     assert_equal :inactive, check(MEMBER_INACTIVE).outcome
+  end
+
+  # -- service-type-scoped outcomes (271 tmp fixtures) -----------------------
+
+  def test_pharmacy_inactive_only_is_undetermined_when_plan_coverage_was_asked
+    with_member_fixture("MBR-SYNTH-PHARM-INACTIVE", [ "EB*6*IND*88" ]) do |member|
+      response = check_in_dir(@fixture_dir, member)
+
+      assert_equal :undetermined, response.outcome
+      refute_equal :inactive, response.outcome
+    end
+  end
+
+  def test_pharmacy_active_only_is_undetermined_when_plan_coverage_was_asked
+    with_member_fixture("MBR-SYNTH-PHARM-ACTIVE", [ "EB*1*IND*88" ]) do |member|
+      response = check_in_dir(@fixture_dir, member)
+
+      assert_equal :undetermined, response.outcome
+      refute_equal :active, response.outcome
+    end
+  end
+
+  def test_plan_active_eb_for_service_type_30_returns_active
+    with_member_fixture("MBR-SYNTH-PLAN-ACTIVE", [ "EB*1*IND*30" ]) do |member|
+      assert_equal :active, check_in_dir(@fixture_dir, member).outcome
+    end
+  end
+
+  def test_plan_active_eb_with_composite_service_types_including_30_returns_active
+    with_member_fixture("MBR-SYNTH-PLAN-COMPOSITE", [ "EB*1*IND*30^88" ]) do |member|
+      assert_equal :active, check_in_dir(@fixture_dir, member).outcome
+    end
+  end
+
+  def test_blank_eb03_counts_for_plan_coverage_when_30_was_asked
+    with_member_fixture("MBR-SYNTH-BLANK-EB03", [ "EB*1*IND" ]) do |member|
+      assert_equal :active, check_in_dir(@fixture_dir, member, service_type_codes: %w[30]).outcome
+    end
+  end
+
+  def test_blank_eb03_is_undetermined_when_only_pharmacy_was_asked
+    with_member_fixture("MBR-SYNTH-BLANK-EB03-PHARM", [ "EB*1*IND" ]) do |member|
+      assert_equal :undetermined, check_in_dir(@fixture_dir, member, service_type_codes: %w[88]).outcome
+    end
+  end
+
+  def test_conflicting_active_and_inactive_across_asked_service_types_is_undetermined
+    with_member_fixture(
+      "MBR-SYNTH-CONFLICT-MULTI-ASK",
+      [ "EB*1*IND*30", "EB*6*IND*88" ]
+    ) do |member|
+      response = check_in_dir(@fixture_dir, member, service_type_codes: %w[30 88])
+
+      assert_equal :undetermined, response.outcome
+    end
+  end
+
+  def test_inactive_pharmacy_with_unrelated_plan_active_returns_inactive_when_pharmacy_was_asked
+    with_member_fixture(
+      "MBR-SYNTH-PHARM-INACTIVE-PLAN-ACTIVE",
+      [ "EB*1*IND*30", "EB*6*IND*88" ]
+    ) do |member|
+      assert_equal :inactive, check_in_dir(@fixture_dir, member, service_type_codes: %w[88]).outcome
+    end
+  end
+
+  # -- fail-closed (each scenario stands alone) ------------------------------
+
+  def test_active_plan_with_aaa_72_is_undetermined_and_surfaces_error_72
+    with_member_fixture("MBR-SYNTH-AAA72-MIXED", [ "EB*1*IND*30", "AAA*N**72*C" ]) do |member|
+      response = check_in_dir(@fixture_dir, member)
+
+      assert_equal :undetermined, response.outcome
+      refute_nil response.errors.find { |entry| entry.code == "72" }
+    end
+  end
+
+  def test_active_and_inactive_plan_coverage_together_is_undetermined
+    with_member_fixture("MBR-SYNTH-PLAN-BOTH", [ "EB*1*IND*30", "EB*6*IND*30" ]) do |member|
+      assert_equal :undetermined, check_in_dir(@fixture_dir, member).outcome
+    end
+  end
+
+  def test_inactive_variant_eb08_for_plan_coverage_is_undetermined
+    with_member_fixture("MBR-SYNTH-EB08", [ "EB*8*IND*30" ]) do |member|
+      assert_equal :undetermined, check_in_dir(@fixture_dir, member).outcome
+    end
+  end
+
+  def test_copay_eb_alone_does_not_answer_coverage
+    with_member_fixture("MBR-SYNTH-COPAY-ONLY", [ "EB*B*IND*30***27*25*****Y" ]) do |member|
+      assert_equal :undetermined, check_in_dir(@fixture_dir, member).outcome
+    end
+  end
+
+  def test_well_formed_271_without_eb_or_aaa_is_undetermined
+    with_member_fixture("MBR-SYNTH-NO-EB", [ "REF*6P*GRP-SYNTH-NO-EB" ]) do |member|
+      assert_equal :undetermined, check_in_dir(@fixture_dir, member).outcome
+    end
+  end
+
+  # -- service date vs coverage window ---------------------------------------
+
+  def test_service_date_after_coverage_end_is_undetermined
+    body = [ "DTP*346*D8*20250101", "DTP*347*D8*20250630", "EB*1*IND*30" ]
+    with_member_fixture("MBR-SYNTH-DATE-AFTER-END", body) do |member|
+      response = check_in_dir(
+        @fixture_dir,
+        member,
+        service_date: Date.new(2026, 3, 1)
+      )
+
+      assert_equal :undetermined, response.outcome
+    end
+  end
+
+  def test_service_date_inside_coverage_window_returns_active
+    body = [ "DTP*346*D8*20250101", "DTP*347*D8*20250630", "EB*1*IND*30" ]
+    with_member_fixture("MBR-SYNTH-DATE-INSIDE", body) do |member|
+      response = check_in_dir(
+        @fixture_dir,
+        member,
+        service_date: Date.new(2025, 3, 1)
+      )
+
+      assert_equal :active, response.outcome
+    end
+  end
+
+  def test_service_date_before_coverage_start_is_undetermined
+    body = [ "DTP*346*D8*20250101", "DTP*347*D8*20250630", "EB*1*IND*30" ]
+    with_member_fixture("MBR-SYNTH-DATE-BEFORE-START", body) do |member|
+      response = check_in_dir(
+        @fixture_dir,
+        member,
+        service_date: Date.new(2024, 12, 31)
+      )
+
+      assert_equal :undetermined, response.outcome
+    end
+  end
+
+  def test_open_ended_coverage_end_with_service_date_after_start_returns_active
+    body = [ "DTP*346*D8*20250101", "DTP*357*D8*99991231", "EB*1*IND*30" ]
+    with_member_fixture("MBR-SYNTH-OPEN-END", body) do |member|
+      response = check_in_dir(
+        @fixture_dir,
+        member,
+        service_date: Date.new(2026, 3, 1)
+      )
+
+      assert_equal :active, response.outcome
+    end
+  end
+
+  def test_missing_plan_dates_skip_service_date_window_check
+    with_member_fixture("MBR-SYNTH-NO-DATES", [ "EB*1*IND*30" ]) do |member|
+      response = check_in_dir(
+        @fixture_dir,
+        member,
+        service_date: Date.new(1999, 1, 1)
+      )
+
+      assert_equal :active, response.outcome
+    end
+  end
+
+  # -- dependent loop outcomes ------------------------------------------------
+
+  def test_dependent_loop_without_coverage_eb_is_undetermined_even_if_subscriber_is_active
+    body = [
+      "EB*1*IND*30",
+      "HL*4*3*23*0",
+      "NM1*03*1******MI*MBR-SYNTH-DEP-CHILD"
+    ]
+    with_member_fixture(
+      "MBR-SYNTH-DEP-UNDETERMINED",
+      body,
+      subscriber_hl_has_child: true
+    ) do |member|
+      assert_equal :undetermined, check_in_dir(@fixture_dir, member).outcome
+    end
+  end
+
+  def test_dependent_loop_active_plan_coverage_returns_active
+    body = [
+      "HL*4*3*23*0",
+      "NM1*03*1******MI*MBR-SYNTH-DEP-ACTIVE",
+      "EB*1*IND*30"
+    ]
+    with_member_fixture(
+      "MBR-SYNTH-DEP-ACTIVE",
+      body,
+      subscriber_hl_has_child: true
+    ) do |member|
+      assert_equal :active, check_in_dir(@fixture_dir, member).outcome
+    end
+  end
+
+  def test_more_than_one_subscriber_hl_loop_in_one_transaction_is_undetermined
+    content = build_271_transaction(
+      member_token: "MBR-SYNTH-TWO-SUBS-A",
+      segments_after_subscriber: [
+        "EB*1*IND*30",
+        "HL*4*2*22*0",
+        "NM1*IL*1******MI*MBR-SYNTH-TWO-SUBS-B",
+        "EB*1*IND*30"
+      ],
+      st_control: "9401"
+    )
+    with_written_fixture("MBR-SYNTH-TWO-SUBS-A", content) do |member|
+      assert_equal :undetermined, check_in_dir(@fixture_dir, member).outcome
+    end
+  end
+
+  def test_more_than_one_dependent_hl_loop_in_one_transaction_is_undetermined
+    content = build_271(
+      member_token: "MBR-SYNTH-TWO-DEPS-PARENT",
+      subscriber_hl_has_child: true,
+      body_after_subscriber: [
+        "HL*4*3*23*1",
+        "NM1*03*1******MI*MBR-SYNTH-TWO-DEPS-ONE",
+        "EB*1*IND*30",
+        "HL*5*4*23*0",
+        "NM1*03*1******MI*MBR-SYNTH-TWO-DEPS-TWO",
+        "EB*1*IND*30"
+      ],
+      st_control: "9402"
+    )
+    with_written_fixture("MBR-SYNTH-TWO-DEPS-PARENT", content) do |member|
+      assert_equal :undetermined, check_in_dir(@fixture_dir, member).outcome
+    end
+  end
+
+  # -- member identifier robustness (default fixture dir) --------------------
+
+  def test_member_identifier_with_path_traversal_is_undetermined
+    assert_equal :undetermined, check("../271/#{MEMBER_INACTIVE}").outcome
+  end
+
+  def test_member_identifier_with_embedded_path_traversal_is_undetermined
+    assert_equal :undetermined, check("#{MEMBER_INACTIVE}/../#{MEMBER_INACTIVE}").outcome
+  end
+
+  def test_member_identifier_with_leading_space_is_undetermined
+    assert_equal :undetermined, check(" #{MEMBER_INACTIVE}").outcome
+  end
+
+  def test_member_identifier_with_trailing_newline_is_undetermined
+    assert_equal :undetermined, check("#{MEMBER_INACTIVE}\n").outcome
+  end
+
+  def test_member_identifier_with_a_dot_is_undetermined
+    assert_equal :undetermined, check("MBR.INACTIVE").outcome
+  end
+
+  def test_symlink_to_a_fixture_outside_the_eligibility_directory_is_undetermined
+    Dir.mktmpdir do |dir|
+      target = File.expand_path(
+        "../../../lib/corvid/rcm/fixtures/271/#{MEMBER_ACTIVE_COMMERCIAL}.271",
+        __dir__
+      )
+      link = File.join(dir, "#{MEMBER_ACTIVE_COMMERCIAL}.271")
+      File.symlink(target, link)
+
+      client = fixture_client(dir)
+      response = client.check_eligibility(build_eligibility_inquiry(MEMBER_ACTIVE_COMMERCIAL))
+
+      assert_equal :undetermined, response.outcome
+    end
+  end
+
+  def test_check_eligibility_always_returns_an_eligibility_response
+    response = check(MEMBER_ACTIVE_COMMERCIAL)
+
+    assert_kind_of Corvid::Rcm::EligibilityResponse, response
+  end
+
+  private
+
+  def with_member_fixture(member_token, body_segments, subscriber_hl_has_child: false, &block)
+    content = build_271(
+      member_token: member_token,
+      body_after_subscriber: body_segments,
+      subscriber_hl_has_child: subscriber_hl_has_child
+    )
+    with_written_fixture(member_token, content, &block)
+  end
+
+  def with_written_fixture(member_token, content)
+    Dir.mktmpdir do |dir|
+      @fixture_dir = dir
+      write_fixture(dir, member_token, content)
+      yield member_token
+    end
   end
 end

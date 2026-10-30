@@ -1,0 +1,143 @@
+# frozen_string_literal: true
+
+# Builds synthetic X12 271 strings for eligibility tests. SE01 counts ST through
+# SE inclusive.
+module Corvid::Rcm::Edi271TestHelper
+  module_function
+
+  FIXED_CLOCK = -> { Time.utc(2026, 9, 1, 12, 0, 0) }
+
+  DEFAULT_ISA = File.read(
+    File.expand_path("../../../lib/corvid/rcm/fixtures/271/MBR-ACTIVE-COMMERCIAL.271", __dir__)
+  )[0, 106].freeze
+
+  PIPE_ISA = "ISA|00|          |00|          |ZZ|EXAMPLECLRHOUSE|ZZ|EXAMPLECLINIC  |260901|1200|+|00501|000000101|0|T|:\n".freeze
+
+  def delimiters(profile)
+    case profile
+    when :pipes
+      { segment: "\n", element: "|", repetition: "+", component: ":", isa: PIPE_ISA }
+    else
+      { segment: "~", element: "*", repetition: "^", component: ">", isa: DEFAULT_ISA }
+    end
+  end
+
+  def join_segments(segments, profile: :default)
+    d = delimiters(profile)
+    segments.map { |segment| "#{segment}#{d.fetch(:segment)}" }.join
+  end
+
+  def build_271(member_token:, body_after_subscriber: [], st_control: "9001", profile: :default,
+                subscriber_hl_has_child: false)
+    d = delimiters(profile)
+    rep = d.fetch(:repetition)
+    el = d.fetch(:element)
+
+    subscriber_trailer = subscriber_hl_has_child ? "1" : "0"
+    txn = [
+      join_fields(%w[ST 271], st_control, "005010X279A1", profile: profile),
+      join_fields(%w[BHT 0022 11], st_control, "20260901", "1200", profile: profile),
+      join_fields(%w[HL 1], "", "20", "1", profile: profile),
+      join_fields(
+        [ "NM1", "PR", "2", "EXAMPLE COMMERCIAL PAYER", "", "", "", "", "PI", "EXPAYER01" ],
+        profile: profile
+      ),
+      join_fields(%w[HL 2 1 21 1], profile: profile),
+      join_fields(
+        [ "NM1", "1P", "2", "EXAMPLE BEHAVIORAL HEALTH CLINIC", "", "", "", "", "XX", "1999999992" ],
+        profile: profile
+      ),
+      join_fields([ "HL", "3", "2", "22", subscriber_trailer ], profile: profile),
+      join_fields([ "NM1", "IL", "1", "", "", "", "", "", "", "MI", member_token ], profile: profile),
+      *body_after_subscriber.map { |segment| translate_segment(segment, profile: profile, rep: rep, el: el) }
+    ]
+
+    se_count = txn.length + 1
+    txn << join_fields([ "SE", se_count.to_s, st_control ], profile: profile)
+
+    envelope = [
+      d.fetch(:isa).chomp(d.fetch(:segment)),
+      join_fields(
+        %w[GS HB EXAMPLECLRHOUSE EXAMPLECLINIC 20260901 1200 101 X 005010X279A1],
+        profile: profile
+      ),
+      *txn,
+      join_fields(%w[GE 1 101], profile: profile),
+      join_fields(%w[IEA 1 000000101], profile: profile)
+    ]
+
+    join_segments(envelope, profile: profile)
+  end
+
+  def build_271_transaction(member_token:, segments_after_subscriber:, st_control: "9002", profile: :default)
+    d = delimiters(profile)
+    txn_head = [
+      join_fields(%w[ST 271], st_control, "005010X279A1", profile: profile),
+      join_fields(%w[BHT 0022 11], st_control, "20260901", "1200", profile: profile),
+      join_fields(%w[HL 1], "", "20", "1", profile: profile),
+      join_fields(
+        [ "NM1", "PR", "2", "EXAMPLE COMMERCIAL PAYER", "", "", "", "", "PI", "EXPAYER01" ],
+        profile: profile
+      ),
+      join_fields(%w[HL 2 1 21 1], profile: profile),
+      join_fields(
+        [ "NM1", "1P", "2", "EXAMPLE BEHAVIORAL HEALTH CLINIC", "", "", "", "", "XX", "1999999992" ],
+        profile: profile
+      ),
+      join_fields(%w[HL 3 2 22 0], profile: profile),
+      join_fields([ "NM1", "IL", "1", "", "", "", "", "", "", "MI", member_token ], profile: profile),
+      *segments_after_subscriber.map { |segment| translate_segment(segment, profile: profile) }
+    ]
+    se_count = txn_head.length + 1
+    txn = txn_head + [ join_fields([ "SE", se_count.to_s, st_control ], profile: profile) ]
+    envelope = [
+      d.fetch(:isa).chomp(d.fetch(:segment)),
+      join_fields(
+        %w[GS HB EXAMPLECLRHOUSE EXAMPLECLINIC 20260901 1200 101 X 005010X279A1],
+        profile: profile
+      ),
+      *txn,
+      join_fields(%w[GE 1 101], profile: profile),
+      join_fields(%w[IEA 1 000000101], profile: profile)
+    ]
+    join_segments(envelope, profile: profile)
+  end
+
+  def join_fields(fields, *rest, profile: :default)
+    separator = delimiters(profile).fetch(:element)
+    [ *fields, *rest ].map(&:to_s).join(separator)
+  end
+
+  def translate_segment(segment, profile: :default, rep: nil, el: nil)
+    return segment if profile == :default
+
+    rep ||= delimiters(profile).fetch(:repetition)
+    el ||= delimiters(profile).fetch(:element)
+    segment.split("*", -1).join(el).gsub("^", rep)
+  end
+
+  def write_fixture(dir, member_token, content)
+    File.write(File.join(dir, "#{member_token}.271"), content)
+  end
+
+  def fixture_client(dir, clock: FIXED_CLOCK)
+    Corvid::Rcm::FixtureClearinghouseClient.new(clock: clock, eligibility_fixture_dir: dir)
+  end
+
+  def build_eligibility_inquiry(member_token, service_date: Corvid::Rcm::ClaimFactory::SERVICE_DATE,
+                                service_type_codes: %w[30])
+    Corvid::Rcm::EligibilityInquiry.new(
+      patient_identifier: "pt_elig_0001",
+      payer_identifier: "EXPAYER01",
+      member_identifier: member_token,
+      service_date: service_date,
+      provider_npi: Corvid::Rcm::ClaimFactory::BILLING_NPI,
+      service_type_codes: service_type_codes
+    )
+  end
+
+  def check_in_dir(dir, member_token, **inquiry_overrides)
+    client = fixture_client(dir)
+    client.check_eligibility(build_eligibility_inquiry(member_token, **inquiry_overrides))
+  end
+end
