@@ -2,6 +2,7 @@
 
 require_relative "acknowledgment"
 require_relative "remittance"
+require_relative "payer_directory"
 
 module Corvid
   module Rcm
@@ -16,8 +17,9 @@ module Corvid
     #
     # Implementations must be substitutable: `submit_claim` always answers with
     # an `Acknowledgment` (accepted or rejected — never a denial, which can
-    # only come back on an 835), and `fetch_remittances` always answers with
-    # `Remittance` values.
+    # only come back on an 835), `fetch_remittances` always answers with
+    # `Remittance` values, and `search_payers` always answers with
+    # `PayerDirectoryEntry` values.
     class ClearinghouseClient
       class TransportError < StandardError; end
 
@@ -44,6 +46,22 @@ module Corvid
       # @return [Array<Corvid::Rcm::Remittance>]
       def fetch_remittances(date_range: nil)
         raise NotImplementedError, "#{self.class}#fetch_remittances not implemented"
+      end
+
+      # Search the payer directory.
+      #
+      # Returns payers whose name contains the stripped, case-insensitive
+      # query, or whose payer identifier or an alias exactly matches it.
+      # Identifiers and aliases are never matched by substring. Exact
+      # identifier and alias matches come first, then name-substring
+      # matches, each in directory order, with no duplicates. Blank,
+      # whitespace-only, and nil queries return nothing.
+      #
+      # @param query [String, nil] a name fragment, or an exact payer
+      #   identifier or alias
+      # @return [Array<Corvid::Rcm::PayerDirectoryEntry>]
+      def search_payers(query)
+        raise NotImplementedError, "#{self.class}#search_payers not implemented"
       end
     end
   end

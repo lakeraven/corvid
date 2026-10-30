@@ -1,0 +1,142 @@
+# Synthetic payer directory for the fixture clearinghouse client.
+# These payers are invented: not real organizations, and not real payer IDs.
+payers:
+  # Every transaction is supported, and none of them require enrollment.
+  - payer_identifier: EXCOMM01
+    aliases:
+      - EXCOMM-ALT
+    name: EXAMPLE COMMERCIAL PAYER
+    as_of: 2026-01-01
+    transactions:
+      professional_claim:
+        supported: true
+        enrollment_required: false
+      institutional_claim:
+        supported: true
+        enrollment_required: false
+      dental_claim:
+        supported: true
+        enrollment_required: false
+      remittance:
+        supported: true
+        enrollment_required: false
+      eligibility:
+        supported: true
+        enrollment_required: false
+      claim_status:
+        supported: true
+        enrollment_required: false
+      coverage_discovery:
+        supported: true
+        enrollment_required: false
+      coordination_of_benefits:
+        supported: true
+        enrollment_required: false
+      paper_claim:
+        supported: true
+        enrollment_required: false
+
+  # Professional claims and eligibility. Remittance requires enrollment.
+  # Dental is not supported.
+  - payer_identifier: EXMCD01
+    aliases:
+      - EXMCD-ALT
+    name: EXAMPLE STATE MEDICAID
+    as_of: 2026-01-01
+    transactions:
+      professional_claim:
+        supported: true
+        enrollment_required: false
+      institutional_claim:
+        supported: false
+        enrollment_required: false
+      dental_claim:
+        supported: false
+        enrollment_required: false
+      remittance:
+        supported: true
+        enrollment_required: true
+      eligibility:
+        supported: true
+        enrollment_required: false
+      claim_status:
+        supported: false
+        enrollment_required: false
+      coverage_discovery:
+        supported: false
+        enrollment_required: false
+      coordination_of_benefits:
+        supported: false
+        enrollment_required: false
+      paper_claim:
+        supported: false
+        enrollment_required: false
+
+  # Paper claims only. No electronic claim type is supported.
+  - payer_identifier: EXPAPER01
+    aliases: []
+    name: EXAMPLE PAPER ONLY PAYER
+    as_of: 2026-01-01
+    transactions:
+      professional_claim:
+        supported: false
+        enrollment_required: false
+      institutional_claim:
+        supported: false
+        enrollment_required: false
+      dental_claim:
+        supported: false
+        enrollment_required: false
+      remittance:
+        supported: false
+        enrollment_required: false
+      eligibility:
+        supported: false
+        enrollment_required: false
+      claim_status:
+        supported: false
+        enrollment_required: false
+      coverage_discovery:
+        supported: false
+        enrollment_required: false
+      coordination_of_benefits:
+        supported: false
+        enrollment_required: false
+      paper_claim:
+        supported: true
+        enrollment_required: false
+
+  # Support is unknown for every transaction, so enrollment is required
+  # and nothing is reported as supported.
+  - payer_identifier: EXUNKN01
+    aliases: []
+    name: EXAMPLE UNKNOWN SUPPORT PAYER
+    as_of: 2026-01-01
+    transactions:
+      professional_claim:
+        supported: null
+        enrollment_required: null
+      institutional_claim:
+        supported: null
+        enrollment_required: null
+      dental_claim:
+        supported: null
+        enrollment_required: null
+      remittance:
+        supported: null
+        enrollment_required: null
+      eligibility:
+        supported: null
+        enrollment_required: null
+      claim_status:
+        supported: null
+        enrollment_required: null
+      coverage_discovery:
+        supported: null
+        enrollment_required: null
+      coordination_of_benefits:
+        supported: null
+        enrollment_required: null
+      paper_claim:
+        supported: null
+        enrollment_required: null
