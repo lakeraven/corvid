@@ -24,6 +24,7 @@ class Corvid::Rcm::FixtureClearinghouseClientTest < Minitest::Test
 
     assert_raises(NotImplementedError) { bare.submit_claim(Factory.claim) }
     assert_raises(NotImplementedError) { bare.fetch_remittances }
+    assert_raises(NotImplementedError) { bare.validate_claim(Factory.claim) }
   end
 
   # -- submission ------------------------------------------------------------
@@ -100,6 +101,112 @@ class Corvid::Rcm::FixtureClearinghouseClientTest < Minitest::Test
     end
   end
 
+  # -- validation (pre-submission; never records submitted) ------------------
+
+  def test_a_clean_claim_validates_without_edits
+    result = @client.validate_claim(Factory.claim)
+
+    assert result.valid?
+    assert_empty result.edits
+    assert_equal "CLM-2001", result.claim_identifier
+    assert_nil result.raw_reference
+    assert_empty @client.submitted
+  end
+
+  def test_a_claim_with_no_billing_provider_npi_fails_validation_with_the_missing_npi_edit
+    missing = Corvid::Rcm::FixtureClearinghouseClient::MISSING_BILLING_NPI_EDIT
+
+    [ nil, "  " ].each do |bad_npi|
+      result = @client.validate_claim(Factory.claim(billing_provider_npi: bad_npi))
+
+      refute result.valid?
+      assert_equal [ missing ], result.edits
+      assert_empty @client.submitted
+    end
+  end
+
+  def test_canned_rejection_claims_fail_validation_with_the_table_edits
+    expectations = {
+      "CLM-RJ-0001" => [
+        edit("A7:562",
+             "Entity's National Provider Identifier (NPI) — the billing provider NPI is not on file with this payer.",
+             "NM1*85 billing provider", "claim")
+      ],
+      "CLM-RJ-0002" => [
+        edit("IK403:I12",
+             "Implementation pattern match failure — the subscriber member identifier is not in a format this payer accepts.",
+             "NM1*IL*09 subscriber member id", "segment")
+      ],
+      "CLM-RJ-0003" => [
+        edit("A3:21",
+             "Missing or invalid information — the diagnosis code pointed to by the service line is not a billable code.",
+             "HI*ABK diagnosis", "claim"),
+        edit("A3:249",
+             "Missing or invalid information — the place of service code conflicts with the submitted modifier.",
+             "SV105 place of service", "line")
+      ]
+    }
+
+    expectations.each do |claim_id, expected_edits|
+      result = @client.validate_claim(Factory.claim(identifier: claim_id))
+
+      refute result.valid?
+      assert_equal expected_edits, result.edits
+      assert_equal claim_id, result.claim_identifier
+      assert_nil result.raw_reference
+    end
+  end
+
+  def test_validation_edits_match_submit_rejection_edits_for_the_same_claim
+    claim = Factory.claim(identifier: "CLM-RJ-0003")
+    submit_client = Corvid::Rcm::FixtureClearinghouseClient.new(clock: FIXED_CLOCK)
+
+    submit_ack = submit_client.submit_claim(claim)
+    validation = @client.validate_claim(claim)
+
+    assert submit_ack.rejected?
+    refute validation.valid?
+    assert_equal submit_ack.edits, validation.edits
+    refute_empty submit_client.submitted
+    assert_empty @client.submitted
+  end
+
+  def test_validating_never_appends_to_submitted_even_when_called_repeatedly
+    claim = Factory.claim
+    bad = Factory.claim(billing_provider_npi: nil)
+
+    3.times { @client.validate_claim(claim) }
+    2.times { @client.validate_claim(bad) }
+
+    assert_empty @client.submitted
+  end
+
+  def test_validate_then_submit_records_the_claim_once
+    claim = Factory.claim
+
+    @client.validate_claim(claim)
+    @client.validate_claim(claim)
+    @client.submit_claim(claim)
+
+    assert_equal [ claim ], @client.submitted
+  end
+
+  def test_validate_claim_rejects_nil_and_non_claim_arguments
+    assert_raises(ArgumentError) { @client.validate_claim(nil) }
+    assert_raises(ArgumentError) { @client.validate_claim("not a claim") }
+  end
+
+  def test_a_failed_validation_routes_like_a_rejected_277ca_not_a_denial
+    validation = @client.validate_claim(Factory.claim(billing_provider_npi: nil))
+    ack = validation.to_acknowledgment
+
+    assert ack.rejected?
+    assert_equal "validation", ack.transaction_set
+    assert_equal :fix_and_resubmit, ack.disposition
+    assert_equal :claim_rework, ack.work_queue
+    refute_respond_to ack, :denied?
+  end
+
   # -- remittances -----------------------------------------------------------
 
   def test_it_returns_every_scenario_in_a_stable_order
@@ -158,5 +265,16 @@ class Corvid::Rcm::FixtureClearinghouseClientTest < Minitest::Test
 
     rejection = @client.submit_claim(Factory.claim(identifier: "CLM-RJ-0001"))
     refute_respond_to rejection, :adjudicated?
+  end
+
+  private
+
+  def edit(code, description, element, level)
+    Corvid::Rcm::AcknowledgmentEdit.new(
+      code: code,
+      description: description,
+      element: element,
+      level: level
+    )
   end
 end
