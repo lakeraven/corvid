@@ -28,7 +28,8 @@ module Corvid::Rcm::Edi271TestHelper
   end
 
   def build_271(member_token:, body_after_subscriber: [], st_control: "9001", profile: :default,
-                subscriber_hl_has_child: false)
+                subscriber_hl_has_child: false, payer_identifier: "EXPAYER01",
+                payer_name: "EXAMPLE COMMERCIAL PAYER", include_trailer: true)
     d = delimiters(profile)
     rep = d.fetch(:repetition)
     el = d.fetch(:element)
@@ -39,7 +40,7 @@ module Corvid::Rcm::Edi271TestHelper
       join_fields(%w[BHT 0022 11], st_control, "20260901", "1200", profile: profile),
       join_fields(%w[HL 1], "", "20", "1", profile: profile),
       join_fields(
-        [ "NM1", "PR", "2", "EXAMPLE COMMERCIAL PAYER", "", "", "", "", "PI", "EXPAYER01" ],
+        [ "NM1", "PR", "2", payer_name, "", "", "", "", "PI", payer_identifier ],
         profile: profile
       ),
       join_fields(%w[HL 2 1 21 1], profile: profile),
@@ -52,8 +53,10 @@ module Corvid::Rcm::Edi271TestHelper
       *body_after_subscriber.map { |segment| translate_segment(segment, profile: profile, rep: rep, el: el) }
     ]
 
-    se_count = txn.length + 1
-    txn << join_fields([ "SE", se_count.to_s, st_control ], profile: profile)
+    if include_trailer
+      se_count = txn.length + 1
+      txn << join_fields([ "SE", se_count.to_s, st_control ], profile: profile)
+    end
 
     envelope = [
       d.fetch(:isa).chomp(d.fetch(:segment)),
@@ -67,6 +70,47 @@ module Corvid::Rcm::Edi271TestHelper
     ]
 
     join_segments(envelope, profile: profile)
+  end
+
+  def build_271_with_second_transaction(member_token:, first_body:, second_body:, st_control: "9001")
+    d = delimiters(:default)
+    first_txn = transaction_segments(
+      member_token: member_token,
+      body_after_subscriber: first_body,
+      st_control: "#{st_control}A"
+    )
+    second_txn = transaction_segments(
+      member_token: member_token,
+      body_after_subscriber: second_body,
+      st_control: "#{st_control}B"
+    )
+    envelope = [
+      d.fetch(:isa).chomp(d.fetch(:segment)),
+      join_fields(%w[GS HB EXAMPLECLRHOUSE EXAMPLECLINIC 20260901 1200 101 X 005010X279A1]),
+      *first_txn,
+      *second_txn,
+      join_fields(%w[GE 1 101]),
+      join_fields(%w[IEA 1 000000101])
+    ]
+    join_segments(envelope)
+  end
+
+  def transaction_segments(member_token:, body_after_subscriber:, st_control:, payer_identifier: "EXPAYER01")
+    rep = delimiters(:default).fetch(:repetition)
+    el = delimiters(:default).fetch(:element)
+    txn = [
+      join_fields(%w[ST 271], st_control, "005010X279A1"),
+      join_fields(%w[BHT 0022 11], st_control, "20260901", "1200"),
+      join_fields(%w[HL 1], "", "20", "1"),
+      join_fields([ "NM1", "PR", "2", "EXAMPLE COMMERCIAL PAYER", "", "", "", "", "PI", payer_identifier ]),
+      join_fields(%w[HL 2 1 21 1]),
+      join_fields([ "NM1", "1P", "2", "EXAMPLE BEHAVIORAL HEALTH CLINIC", "", "", "", "", "XX", "1999999992" ]),
+      join_fields(%w[HL 3 2 22 0]),
+      join_fields([ "NM1", "IL", "1", "", "", "", "", "", "", "MI", member_token ]),
+      *body_after_subscriber.map { |segment| translate_segment(segment, profile: :default, rep: rep, el: el) }
+    ]
+    se_count = txn.length + 1
+    txn + [ join_fields([ "SE", se_count.to_s, st_control ]) ]
   end
 
   def build_271_transaction(member_token:, segments_after_subscriber:, st_control: "9002", profile: :default)
@@ -125,15 +169,19 @@ module Corvid::Rcm::Edi271TestHelper
   end
 
   def build_eligibility_inquiry(member_token, service_date: Corvid::Rcm::ClaimFactory::SERVICE_DATE,
-                                service_type_codes: %w[30])
+                                service_type_codes: %w[30], payer_identifier: "EXPAYER01")
     Corvid::Rcm::EligibilityInquiry.new(
       patient_identifier: "pt_elig_0001",
-      payer_identifier: "EXPAYER01",
+      payer_identifier: payer_identifier,
       member_identifier: member_token,
       service_date: service_date,
       provider_npi: Corvid::Rcm::ClaimFactory::BILLING_NPI,
       service_type_codes: service_type_codes
     )
+  end
+
+  def medicaid_inquiry_overrides
+    { payer_identifier: "EXMEDICAID" }
   end
 
   def check_in_dir(dir, member_token, **inquiry_overrides)

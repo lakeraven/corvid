@@ -124,6 +124,187 @@ class Corvid::Rcm::EligibilityTest < Minitest::Test
     assert_equal Date.new(2026, 8, 15), Corvid::Rcm::EligibilityPlan.coverage_date("20260815")
   end
 
+  def test_coverage_date_parses_an_iso_dashed_day
+    assert_equal Date.new(2026, 8, 15), Corvid::Rcm::EligibilityPlan.coverage_date("2026-08-15")
+  end
+
+  def test_coverage_date_year_9998_is_a_real_date_not_a_placeholder
+    assert_equal Date.new(9998, 12, 31), Corvid::Rcm::EligibilityPlan.coverage_date("99981231")
+  end
+
+  # -- inquiry validation (#736 review-2) ------------------------------------
+
+  def test_eligibility_inquiry_rejects_a_string_service_date
+    assert_raises(ArgumentError) do
+      inquiry(service_date: "2027-06-01")
+    end
+  end
+
+  def test_eligibility_inquiry_rejects_a_time_service_date
+    assert_raises(ArgumentError) do
+      inquiry(service_date: Time.utc(2027, 6, 1))
+    end
+  end
+
+  def test_eligibility_inquiry_allows_nil_service_date
+    assert_nil inquiry(service_date: nil).service_date
+  end
+
+  def test_fixture_client_check_eligibility_rejects_nil_inquiry
+    client = Corvid::Rcm::FixtureClearinghouseClient.new(clock: FIXED_CLOCK)
+
+    error = assert_raises(ArgumentError) { client.check_eligibility(nil) }
+
+    refute_match(/patient/i, error.message)
+    refute_match(/member/i, error.message)
+    refute_match(/identifier/i, error.message)
+  end
+
+  def test_fixture_client_check_eligibility_rejects_a_non_inquiry
+    client = Corvid::Rcm::FixtureClearinghouseClient.new(clock: FIXED_CLOCK)
+
+    error = assert_raises(ArgumentError) { client.check_eligibility("not-an-inquiry") }
+
+    refute_match(/patient/i, error.message)
+    refute_match(/member/i, error.message)
+    refute_match(/identifier/i, error.message)
+  end
+
+  # -- immutability (#736 review-2) ------------------------------------------
+
+  def test_eligibility_inquiry_service_type_codes_are_frozen_and_decoupled_from_caller_array
+    codes = %w[30 98]
+    inquiry = self.inquiry(service_type_codes: codes)
+
+    assert inquiry.service_type_codes.frozen?
+    codes << "47"
+    assert_equal %w[30 98], inquiry.service_type_codes
+  end
+
+  def test_eligibility_plan_benefits_are_frozen_and_decoupled_from_caller_array
+    benefit = Corvid::Rcm::EligibilityBenefit.new(service_type_code: "30", code: "1")
+    benefits = [ benefit ]
+    plan = Corvid::Rcm::EligibilityPlan.new(payer_identifier: "EXPAYER01", benefits: benefits)
+
+    assert plan.benefits.frozen?
+    benefits.clear
+    assert_equal 1, plan.benefits.length
+  end
+
+  def test_eligibility_response_plans_and_errors_are_frozen_and_decoupled_from_caller_arrays
+    plan = Corvid::Rcm::EligibilityPlan.new(payer_identifier: "EXPAYER01")
+    error = Corvid::Rcm::EligibilityError.new(code: "72", description: "x")
+    plans = [ plan ]
+    errors = [ error ]
+    response = Corvid::Rcm::EligibilityResponse.new(
+      outcome: :undetermined,
+      plans: plans,
+      errors: errors,
+      as_of: FIXED_CLOCK.call
+    )
+
+    assert response.plans.frozen?
+    assert response.errors.frozen?
+    plans.clear
+    errors.clear
+    assert_equal 1, response.plans.length
+    assert_equal 1, response.errors.length
+  end
+
+  # -- outcome_for (#736 review-2) -------------------------------------------
+
+  def test_outcome_for_inclusive_coverage_window_boundaries
+    plan = Corvid::Rcm::EligibilityPlan.new(
+      payer_identifier: "EXPAYER01",
+      coverage_start: Date.new(2026, 1, 1),
+      coverage_end: Date.new(2026, 6, 30),
+      benefits: [
+        Corvid::Rcm::EligibilityBenefit.new(service_type_code: "30", code: "1")
+      ]
+    )
+    base = { plans: [ plan ], errors: [], service_type_codes: %w[30] }
+
+    assert_equal :active, Corvid::Rcm::EligibilityResponse.outcome_for(**base, service_date: Date.new(2026, 1, 1))
+    assert_equal :active, Corvid::Rcm::EligibilityResponse.outcome_for(**base, service_date: Date.new(2026, 6, 30))
+    assert_equal :undetermined,
+                 Corvid::Rcm::EligibilityResponse.outcome_for(**base, service_date: Date.new(2025, 12, 31))
+    assert_equal :undetermined,
+                 Corvid::Rcm::EligibilityResponse.outcome_for(**base, service_date: Date.new(2026, 7, 1))
+  end
+
+  def test_outcome_for_inactive_inside_plan_window_is_undetermined
+    plan = Corvid::Rcm::EligibilityPlan.new(
+      payer_identifier: "EXPAYER01",
+      coverage_start: Date.new(2025, 1, 1),
+      coverage_end: Date.new(2026, 7, 31),
+      benefits: [
+        Corvid::Rcm::EligibilityBenefit.new(service_type_code: "30", code: "6")
+      ]
+    )
+
+    assert_equal :undetermined,
+                 Corvid::Rcm::EligibilityResponse.outcome_for(
+                   plans: [ plan ],
+                   errors: [],
+                   service_type_codes: %w[30],
+                   service_date: Date.new(2026, 6, 1)
+                 )
+  end
+
+  def test_outcome_for_inactive_outside_plan_window_stays_inactive
+    plan = Corvid::Rcm::EligibilityPlan.new(
+      payer_identifier: "EXPAYER01",
+      coverage_start: Date.new(2025, 1, 1),
+      coverage_end: Date.new(2026, 7, 31),
+      benefits: [
+        Corvid::Rcm::EligibilityBenefit.new(service_type_code: "30", code: "6")
+      ]
+    )
+
+    assert_equal :inactive,
+                 Corvid::Rcm::EligibilityResponse.outcome_for(
+                   plans: [ plan ],
+                   errors: [],
+                   service_type_codes: %w[30],
+                   service_date: Date.new(2026, 8, 15)
+                 )
+  end
+
+  def test_outcome_for_inactive_without_plan_dates_stays_inactive
+    plan = Corvid::Rcm::EligibilityPlan.new(
+      payer_identifier: "EXPAYER01",
+      benefits: [
+        Corvid::Rcm::EligibilityBenefit.new(service_type_code: "30", code: "6")
+      ]
+    )
+
+    assert_equal :inactive,
+                 Corvid::Rcm::EligibilityResponse.outcome_for(
+                   plans: [ plan ],
+                   errors: [],
+                   service_type_codes: %w[30],
+                   service_date: Factory::SERVICE_DATE
+                 )
+  end
+
+  def test_outcome_for_nil_service_date_skips_coverage_window_check
+    plan = Corvid::Rcm::EligibilityPlan.new(
+      payer_identifier: "EXPAYER01",
+      coverage_end: Date.new(2020, 1, 1),
+      benefits: [
+        Corvid::Rcm::EligibilityBenefit.new(service_type_code: "30", code: "1")
+      ]
+    )
+
+    assert_equal :active,
+                 Corvid::Rcm::EligibilityResponse.outcome_for(
+                   plans: [ plan ],
+                   errors: [],
+                   service_type_codes: %w[30],
+                   service_date: nil
+                 )
+  end
+
   # -- base clearinghouse client ---------------------------------------------
 
   def test_the_base_clearinghouse_client_refuses_check_eligibility

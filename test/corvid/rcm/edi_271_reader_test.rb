@@ -208,6 +208,294 @@ class Corvid::Rcm::Edi271ReaderTest < Minitest::Test
     assert_nil plan.coverage_end
   end
 
+  def test_benefit_level_dtp_346_after_eb_does_not_set_coverage_start
+    plan = plan_for(build_271(
+      member_token: MEMBER,
+      body_after_subscriber: [
+        "EB*1*IND*30",
+        "DTP*346*D8*20260101"
+      ]
+    ))
+
+    assert_nil plan.coverage_start
+  end
+
+  def test_ref_6p_after_eb_does_not_set_group_number
+    plan = plan_for(build_271(
+      member_token: MEMBER,
+      body_after_subscriber: [
+        "EB*1*IND*30",
+        "REF*6P*GRP-AFTER-EB"
+      ]
+    ))
+
+    assert_nil plan.group_number
+  end
+
+  # -- #736 review-2: most restrictive plan bounds (reader) ------------------
+
+  def test_coverage_end_is_earliest_end_ignoring_year_9999_placeholder
+    plan = plan_for(build_271(
+      member_token: MEMBER,
+      body_after_subscriber: [
+        "DTP*347*D8*99991231",
+        "DTP*357*D8*20260731",
+        "EB*1*IND*30"
+      ]
+    ))
+
+    assert_equal Date.new(2026, 7, 31), plan.coverage_end
+  end
+
+  def test_rd8_291_range_end_placeholder_does_not_block_a_later_explicit_end
+    plan = plan_for(build_271(
+      member_token: MEMBER,
+      body_after_subscriber: [
+        "DTP*291*RD8*20260101-99991231",
+        "DTP*357*D8*20260731",
+        "EB*1*IND*30"
+      ]
+    ))
+
+    assert_equal Date.new(2026, 7, 31), plan.coverage_end
+  end
+
+  def test_coverage_start_is_latest_start_across_plan_date_dtps
+    plan = plan_for(build_271(
+      member_token: MEMBER,
+      body_after_subscriber: [
+        "DTP*346*D8*20200101",
+        "DTP*356*D8*20261001",
+        "EB*1*IND*30"
+      ]
+    ))
+
+    assert_equal Date.new(2026, 10, 1), plan.coverage_start
+  end
+
+  def test_dependent_loop_merges_subscriber_and_dependent_plan_dates_before_first_eb
+    plan = plan_for(build_271(
+      member_token: MEMBER,
+      subscriber_hl_has_child: true,
+      body_after_subscriber: [
+        "DTP*346*D8*20250101",
+        "DTP*347*D8*20251231",
+        "HL*4*3*23*0",
+        "NM1*03*1******MI*MBR-SYNTH-DEP-DATES",
+        "EB*1*IND*30"
+      ]
+    ))
+
+    assert_equal Date.new(2025, 1, 1), plan.coverage_start
+    assert_equal Date.new(2025, 12, 31), plan.coverage_end
+  end
+
+  # -- #736 review-2: plan-date qualifiers -----------------------------------
+
+  def test_dtp_307_rd8_sets_plan_window_bounds
+    plan = plan_for(build_271(
+      member_token: MEMBER,
+      body_after_subscriber: [
+        "DTP*307*RD8*20250101-20260731",
+        "EB*1*IND*30"
+      ]
+    ))
+
+    assert_equal Date.new(2025, 1, 1), plan.coverage_start
+    assert_equal Date.new(2026, 7, 31), plan.coverage_end
+  end
+
+  def test_dtp_307_d8_sets_both_bounds_to_eligibility_day
+    plan = plan_for(build_271(
+      member_token: MEMBER,
+      body_after_subscriber: [
+        "DTP*307*D8*20260731",
+        "EB*1*IND*30"
+      ]
+    ))
+
+    assert_equal Date.new(2026, 7, 31), plan.coverage_start
+    assert_equal Date.new(2026, 7, 31), plan.coverage_end
+  end
+
+  def test_dtp_540_d8_sets_coverage_end
+    plan = plan_for(build_271(
+      member_token: MEMBER,
+      body_after_subscriber: [
+        "DTP*540*D8*20260731",
+        "EB*1*IND*30"
+      ]
+    ))
+
+    assert_nil plan.coverage_start
+    assert_equal Date.new(2026, 7, 31), plan.coverage_end
+  end
+
+  def test_dtp_347_rd8_range_sets_start_and_end
+    plan = plan_for(build_271(
+      member_token: MEMBER,
+      body_after_subscriber: [
+        "DTP*347*RD8*20250101-20250630",
+        "EB*1*IND*30"
+      ]
+    ))
+
+    assert_equal Date.new(2025, 1, 1), plan.coverage_start
+    assert_equal Date.new(2025, 6, 30), plan.coverage_end
+  end
+
+  # -- #736 review-2: unreadable plan dates raise MalformedError ------------
+
+  def test_impossible_calendar_day_on_plan_dtp_raises_malformed_error
+    content = build_271(
+      member_token: MEMBER,
+      body_after_subscriber: [ "DTP*357*D8*20260231", "EB*1*IND*30" ]
+    )
+
+    error = assert_raises(Reader::MalformedError) { parse(content) }
+
+    assert_equal Reader::MALFORMED_MESSAGE, error.message
+  end
+
+  def test_short_plan_date_raises_malformed_error
+    content = build_271(
+      member_token: MEMBER,
+      body_after_subscriber: [ "DTP*357*D8*2026073", "EB*1*IND*30" ]
+    )
+
+    assert_raises(Reader::MalformedError) { parse(content) }
+  end
+
+  def test_malformed_rd8_half_raises_malformed_error
+    content = build_271(
+      member_token: MEMBER,
+      body_after_subscriber: [ "DTP*346*RD8*20260101-20260231", "EB*1*IND*30" ]
+    )
+
+    assert_raises(Reader::MalformedError) { parse(content) }
+  end
+
+  def test_year_9999_placeholder_on_plan_dtp_is_not_unreadable
+    plan = plan_for(build_271(
+      member_token: MEMBER,
+      body_after_subscriber: [ "DTP*357*D8*99991231", "EB*1*IND*30" ]
+    ))
+
+    assert_nil plan.coverage_end
+  end
+
+  # -- #736 review-2: encoding -----------------------------------------------
+
+  def test_valid_utf8_in_ignored_subscriber_name_parses_active_coverage
+    content = build_271(
+      member_token: MEMBER,
+      body_after_subscriber: [ "EB*1*IND*30" ]
+    )
+    content.sub!(
+      "NM1*IL*1******MI*#{MEMBER}",
+      "NM1*IL*1*TEST\u00C9******MI*#{MEMBER}"
+    )
+
+    result = parse(content)
+
+    assert_equal 1, result.plans.length
+    assert_equal "1", result.plans.first.benefits.first.code
+  end
+
+  # -- #736 review-2: mutation pins (reader) --------------------------------
+
+  def test_truncated_271_missing_se_raises_malformed_error
+    content = build_271(member_token: MEMBER, body_after_subscriber: [ "EB*1*IND*30" ], include_trailer: false)
+
+    assert_raises(Reader::MalformedError) { parse(content) }
+  end
+
+  def test_wrong_se02_control_number_raises_malformed_error
+    content = build_271(member_token: MEMBER, body_after_subscriber: [ "EB*1*IND*30" ], st_control: "9001")
+    content.sub!(/SE\*\d+\*9001/, "SE*12*WRONG")
+
+    assert_raises(Reader::MalformedError) { parse(content) }
+  end
+
+  def test_two_st_transactions_in_one_interchange_raises_malformed_error
+    content = build_271_with_second_transaction(
+      member_token: MEMBER,
+      first_body: [ "EB*1*IND*30" ],
+      second_body: [ "EB*1*IND*30" ]
+    )
+
+    assert_raises(Reader::MalformedError) { parse(content) }
+  end
+
+  def test_aaa_n_without_reject_code_surfaces_error_and_blocks_clean_parse
+    result = parse(build_271(
+      member_token: MEMBER,
+      body_after_subscriber: [ "AAA*N", "EB*1*IND*30" ]
+    ))
+
+    refute_empty result.errors
+    assert result.errors.any? { |entry| entry.code == "N" }
+  end
+
+  def test_aaa_y_with_reject_code_42_surfaces_error_code_42
+    result = parse(build_271(
+      member_token: MEMBER,
+      body_after_subscriber: [ "AAA*Y**42*C", "EB*1*IND*30" ]
+    ))
+
+    error = result.errors.find { |entry| entry.code == "42" }
+    refute_nil error
+  end
+
+  def test_eb12_n_maps_in_network_false
+    benefit = benefit_for(build_271(
+      member_token: MEMBER,
+      body_after_subscriber: [ "EB*1*IND*30*********N" ]
+    ))
+
+    assert_equal false, benefit.in_network
+  end
+
+  def test_eb12_w_and_u_map_in_network_to_nil
+    w = benefit_for(build_271(member_token: MEMBER, body_after_subscriber: [ "EB*1*IND*30*********W" ]))
+    u = benefit_for(build_271(member_token: MEMBER, body_after_subscriber: [ "EB*1*IND*30*********U" ]))
+
+    assert_nil w.in_network
+    assert_nil u.in_network
+  end
+
+  def test_copay_eb_does_not_replace_plan_name_from_coverage_eb
+    plan = plan_for(build_271(
+      member_token: MEMBER,
+      body_after_subscriber: [
+        "EB*1*IND*30*MC*COVERAGE PLAN",
+        "EB*B*IND*30***27*25*****Y"
+      ]
+    ))
+
+    assert_equal "COVERAGE PLAN", plan.plan_name
+  end
+
+  def test_subscriber_loop_pr_nm1_does_not_replace_information_source_payer
+    plan = plan_for(build_271(
+      member_token: MEMBER,
+      body_after_subscriber: [
+        "NM1*PR*2*OTHER PAYER*****PI*OTHERPAYER",
+        "EB*1*IND*30"
+      ]
+    ))
+
+    assert_equal "EXPAYER01", plan.payer_identifier
+  end
+
+  def test_unmapped_aaa_code_99_uses_unmapped_reject_description
+    result = parse(build_271(member_token: MEMBER, body_after_subscriber: [ "AAA*N**99*C" ]))
+
+    error = result.errors.find { |entry| entry.code == "99" }
+    refute_nil error
+    assert_equal Reader::UNMAPPED_REJECT_DESCRIPTION, error.description
+  end
+
   # -- E: dependent loop structure (reader) ----------------------------------
 
   def test_multiple_subscriber_hl_loops_do_not_yield_a_clean_single_active_plan
