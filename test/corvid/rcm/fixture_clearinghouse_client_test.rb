@@ -738,6 +738,50 @@ class Corvid::Rcm::FixtureClearinghouseClientTest < Minitest::Test
     end
   end
 
+  # -- #736: active answer vs D8 307 eligibility_date (payer answered another day)
+
+  JUNE_FIRST_2026 = Date.new(2026, 6, 1)
+
+  def test_active_undetermined_when_eligibility_date_differs_inside_stated_coverage_window
+    body = [
+      "DTP*346*D8*20260101",
+      "DTP*347*D8*20261231",
+      "DTP*307*D8*20270115",
+      "EB*1*IND*30"
+    ]
+    with_member_fixture("MBR-SYNTH-307-ACTIVE-ELIG-A", body) do |member|
+      assert_equal :undetermined,
+                   check_in_dir(@fixture_dir, member, service_date: JUNE_FIRST_2026).outcome
+    end
+  end
+
+  def test_active_when_d8_307_eligibility_date_matches_service_date
+    body = [ "DTP*307*D8*20260601", "EB*1*IND*30" ]
+    with_member_fixture("MBR-SYNTH-307-ACTIVE-ELIG-B", body) do |member|
+      assert_equal :active,
+                   check_in_dir(@fixture_dir, member, service_date: JUNE_FIRST_2026).outcome
+    end
+  end
+
+  def test_active_undetermined_when_eligibility_date_differs_with_only_coverage_start
+    body = [
+      "DTP*346*D8*20260101",
+      "DTP*307*D8*20260301",
+      "EB*1*IND*30"
+    ]
+    with_member_fixture("MBR-SYNTH-307-ACTIVE-ELIG-C", body) do |member|
+      assert_equal :undetermined,
+                   check_in_dir(@fixture_dir, member, service_date: JUNE_FIRST_2026).outcome
+    end
+  end
+
+  def test_active_with_eligibility_date_when_service_date_nil_skips_date_checks
+    body = [ "DTP*307*D8*20260601", "EB*1*IND*30" ]
+    with_member_fixture("MBR-SYNTH-307-ACTIVE-ELIG-D", body) do |member|
+      assert_equal :active, check_in_dir(@fixture_dir, member, service_date: nil).outcome
+    end
+  end
+
   def test_datetime_service_date_coerces_and_matches_date_inactive_outcome
     body = [ "DTP*356*D8*20250101", "DTP*357*D8*20260731", "EB*6*IND*30" ]
     with_member_fixture("MBR-SYNTH-DATETIME-INACT", body) do |member|
