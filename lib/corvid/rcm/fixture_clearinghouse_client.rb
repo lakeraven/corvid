@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require "bigdecimal"
+require "date"
 require "yaml"
 
 require_relative "clearinghouse_client"
@@ -7,16 +9,26 @@ require_relative "edi_835_reader"
 
 module Corvid
   module Rcm
-    # A `ClearinghouseClient` backed by synthetic 835 files and a canned
-    # acknowledgment table. No network, no credentials, no clock skew — the
-    # same inputs always produce the same outputs, so the posting and routing
-    # logic can be tested against real X12 syntax without a payer connection.
+    # A `ClearinghouseClient` backed by synthetic 835 files, a canned
+    # acknowledgment table, and canned 277 claim-status answers. No network,
+    # no credentials, no clock skew — the same inputs always produce the same
+    # outputs, so posting, routing, and status checks can be exercised against
+    # real X12 shapes without a payer connection.
     #
     # The 835 fixtures are parsed, not hand-built as hashes: if the reader
     # mis-parses a segment the tests fail, which is the point.
     class FixtureClearinghouseClient < ClearinghouseClient
       FIXTURE_DIR = File.expand_path("fixtures/835", __dir__)
       ACKNOWLEDGMENT_TABLE = File.expand_path("data/clearinghouse_acknowledgments.yml", __dir__)
+      CLAIM_STATUS_TABLE = File.expand_path("data/clearinghouse_claim_statuses.yml", __dir__)
+
+      # Decimal strings with two fractional digits. A YAML float would already
+      # have been rounded before we ever saw it, so anything else is refused.
+      DECIMAL_AMOUNT = /\A(?:0|[1-9]\d*)\.\d{2}\z/
+      ISO_DATE = /\A\d{4}-\d{2}-\d{2}\z/
+      CANNED_STATUS_FIELDS = %w[
+        payer_control_number category category_code status_code paid_amount paid_date
+      ].freeze
 
       # Scenarios in a stable order — the order `fetch_remittances` returns.
       SCENARIOS = %w[
@@ -42,11 +54,13 @@ module Corvid
       )
 
       def initialize(scenarios: SCENARIOS, fixture_dir: FIXTURE_DIR,
-                     acknowledgment_table: ACKNOWLEDGMENT_TABLE, clock: -> { Time.now.utc })
+                     acknowledgment_table: ACKNOWLEDGMENT_TABLE,
+                     claim_statuses: CLAIM_STATUS_TABLE, clock: -> { Time.now.utc })
         @scenarios = Array(scenarios)
         @fixture_dir = fixture_dir
         @clock = clock
         @table = YAML.safe_load_file(acknowledgment_table)
+        @claim_statuses = load_claim_statuses(claim_statuses)
         @submitted = []
       end
 
@@ -70,6 +84,17 @@ module Corvid
         @scenarios.map { |scenario| remittance(scenario) }.select do |rem|
           date_range.nil? || rem.payment_date.nil? || date_range.cover?(rem.payment_date)
         end
+      end
+
+      # A canned 277 when the identifier is on file. Unknown identifiers are
+      # :not_found — there is no STC category code, because the claim is not
+      # on file. `as_of` is the injected clock. `raw_reference` is always nil.
+      def check_claim_status(claim_identifier)
+        reject_bad_identifier!(claim_identifier)
+        canned = @claim_statuses[claim_identifier]
+        return not_found_status(claim_identifier) if canned.nil?
+
+        canned.with(as_of: @clock.call, raw_reference: nil)
       end
 
       # One scenario by name, e.g. `client.remittance("denial_duplicate_co18")`.
@@ -125,6 +150,90 @@ module Corvid
           received_at: @clock.call,
           edits: edits
         )
+      end
+
+      def reject_bad_identifier!(claim_identifier)
+        return if claim_identifier.is_a?(String) && !claim_identifier.strip.empty?
+
+        raise ArgumentError, ClaimStatus::INVALID_CLAIM_IDENTIFIER
+      end
+
+      def not_found_status(claim_identifier)
+        ClaimStatus.new(
+          claim_identifier: claim_identifier,
+          category: :not_found,
+          category_code: nil,
+          as_of: @clock.call,
+          raw_reference: nil
+        )
+      end
+
+      # Building each row runs ClaimStatus's checks, so a category that does
+      # not agree with its category code fails here, when the table is loaded.
+      def load_claim_statuses(path)
+        table = YAML.safe_load_file(path, freeze: true)
+        raise ArgumentError, "claim status table must be a mapping" unless table.is_a?(Hash)
+
+        table.to_h { |identifier, row| [ identifier, build_canned_status(identifier, row) ] }.freeze
+      end
+
+      def build_canned_status(identifier, row)
+        raise ArgumentError, "canned claim status row must be a mapping" unless row.is_a?(Hash)
+
+        unknown = row.keys - CANNED_STATUS_FIELDS
+        raise ArgumentError, "canned claim status row has an unknown field" unless unknown.empty?
+
+        ClaimStatus.new(
+          claim_identifier: identifier,
+          payer_control_number: optional_control_number(row["payer_control_number"]),
+          category: category_symbol(row["category"]),
+          category_code: required_category_code(row["category_code"]),
+          status_code: required_status_code(row["status_code"]),
+          paid_amount: parse_paid_amount(row["paid_amount"]),
+          paid_date: parse_paid_date(row["paid_date"]),
+          raw_reference: nil
+        )
+      end
+
+      def category_symbol(name)
+        found = ClaimStatus::CATEGORIES.find { |category| category.to_s == name }
+        raise ArgumentError, ClaimStatus::UNKNOWN_CATEGORY if found.nil?
+
+        found
+      end
+
+      def required_category_code(value)
+        raise ArgumentError, "category_code must be a String" unless value.is_a?(String)
+
+        value
+      end
+
+      def required_status_code(value)
+        return value if value.is_a?(String) && !value.strip.empty?
+
+        raise ArgumentError, "status_code must be a non-blank String"
+      end
+
+      def optional_control_number(value)
+        return nil if value.nil?
+        raise ArgumentError, "payer_control_number must be a String" unless value.is_a?(String)
+        raise ArgumentError, "payer_control_number must be a non-blank String" if value.strip.empty?
+
+        value
+      end
+
+      def parse_paid_amount(value)
+        return nil if value.nil?
+        raise ArgumentError, "paid_amount must be a decimal string" unless value.is_a?(String) && DECIMAL_AMOUNT.match?(value)
+
+        BigDecimal(value)
+      end
+
+      def parse_paid_date(value)
+        return nil if value.nil?
+        raise ArgumentError, "paid_date must be an ISO-8601 date" unless value.is_a?(String) && ISO_DATE.match?(value)
+
+        Date.strptime(value, "%Y-%m-%d")
       end
     end
   end

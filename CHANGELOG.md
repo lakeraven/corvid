@@ -22,6 +22,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   instead of `denial_reason_token`.
 
 ### Added
+- `Corvid::Rcm::ClaimStatus` is the typed answer to a 276/277 claim-status
+  inquiry. Category codes are data in
+  `lib/corvid/rcm/data/claim_status_categories.yml`. Only F1 is paid and only
+  F2 is an adjudicated denial. A3, A6, A7, and A8 stay front-end rejections.
+  F0, F3, F3F, F3N, F4, and the E-codes are undetermined, so a human decides.
+  A code that is not in the table is undetermined, never paid or denied.
+  `ClearinghouseClient#check_claim_status` returns one, and
+  `FixtureClearinghouseClient` serves canned synthetic answers. (#740)
 - ZIP-to-CBSA wage-area crosswalk (#371). `corvid_zip_cbsa_crosswalks`
   stores the CMS crosswalk by federal fiscal year (`zip` is five ASCII
   digits; `cbsa` is a five-digit CBSA or a two-digit rural-state code;
