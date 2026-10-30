@@ -970,7 +970,7 @@ class Corvid::Rcm::ChargeBuilderTest < Minitest::Test
         "actor" => {
           "type" => "Practitioner",
           "reference" => "Organization/o1",
-          "identifier" => [ { "system" => NPI, "value" => Factory::RENDERING_NPI } ]
+          "identifier" => [ { "system" => Factory::NPI, "value" => Factory::RENDERING_NPI } ]
         }
       } ],
       reason_condition_ids: [ "c1" ]
