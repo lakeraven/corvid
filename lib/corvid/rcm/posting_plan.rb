@@ -28,8 +28,9 @@ module Corvid
     # gap (billed minus paid minus adjustments). A row is also returned when
     # that gap is zero but a service line does not balance, the lines' billed
     # amounts do not reconcile to the claim, the lines' paid amounts do not
-    # sum to the claim payment, or billed and paid signs are wrong on the
-    # claim or on any service line.
+    # sum to the claim payment, billed and paid signs are wrong on the claim
+    # or on any service line, or a denied claim (CLP02 = 4) reports a
+    # positive paid amount on the claim or any service line.
     UnbalancedClaim = Data.define(
       :claim_identifier,
       :payer_control_number,
@@ -47,9 +48,12 @@ module Corvid
     # reversal (CLP02 = 22) must report billed and paid amounts that are
     # each less than or equal to zero, and any other claim must report
     # billed and paid amounts that are each greater than or equal to zero.
-    # Adjustment amounts may be negative. Otherwise the claim is returned
-    # on #unbalanced and contributes nothing to #entries. Other claims in
-    # the same remittance still post.
+    # Adjustment amounts may be negative. A denied claim (CLP02 = 4) that
+    # reports a positive paid amount on the claim or any service line is
+    # contradictory and is not posted; a denied claim with zero paid posts
+    # its adjustments. Otherwise the claim is returned on #unbalanced and
+    # contributes nothing to #entries. Other claims in the same remittance
+    # still post.
     #
     # Reversal entries keep the amounts the remittance reported. On a
     # takeback those amounts are already negative; they are not negated
@@ -92,7 +96,8 @@ module Corvid
       end
 
       def self.postable?(claim)
-        claim.balanced? && service_lines_postable?(claim) && amount_signs_ok?(claim)
+        claim.balanced? && service_lines_postable?(claim) && amount_signs_ok?(claim) &&
+          denied_paid_ok?(claim)
       end
 
       # No service lines: the claim equation is enough. With lines, each line
@@ -135,6 +140,14 @@ module Corvid
         else
           rows.all? { |row| row.billed_amount >= 0 && row.paid_amount >= 0 }
         end
+      end
+
+      # A denial (CLP02 = 4) that reports a positive paid amount on the claim
+      # or any service line contradicts the status. Zero paid still posts.
+      def self.denied_paid_ok?(claim)
+        return true unless claim.status_code.to_s == CLAIM_STATUS_DENIED
+
+        [ claim, *Array(claim.services) ].none? { |row| row.paid_amount.positive? }
       end
 
       def self.unbalanced_claim(claim)
@@ -206,8 +219,9 @@ module Corvid
 
       private_class_method :collect, :postable?, :service_lines_postable?, :service_payments_match?,
                            :line_balanced?, :line_billed_matches_claim?, :adjustment_sum, :amount_signs_ok?,
-                           :unbalanced_claim, :rows_for, :append_claim_payment, :service_rows,
-                           :adjustment_rows, :payment_row, :adjustment_row, :kind_for, :build_entry
+                           :denied_paid_ok?, :unbalanced_claim, :rows_for, :append_claim_payment,
+                           :service_rows, :adjustment_rows, :payment_row, :adjustment_row, :kind_for,
+                           :build_entry
     end
   end
 end
