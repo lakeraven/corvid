@@ -253,6 +253,257 @@ class Corvid::Rcm::PayerDirectoryTest < Minitest::Test
     error
   end
 
+  def assert_new_refuses_invalid_entry_with_nil_cause(entries, forbidden_in_message: [])
+    error = assert_raises(ArgumentError) { directory_class.new(entries) }
+
+    assert_equal invalid_entry_message, error.message
+    forbidden_in_message.each { |fragment| refute_includes error.message, fragment }
+    assert_nil error.cause
+    error
+  end
+
+  def directory_entry(payer_identifier:, name:, aliases: [], transactions: {}, as_of: Date.new(2026, 1, 1))
+    Corvid::Rcm::PayerDirectoryEntry.new(
+      payer_identifier: payer_identifier,
+      aliases: aliases,
+      name: name,
+      transactions: transactions,
+      as_of: as_of
+    )
+  end
+
+  def test_load_refuses_yaml_merge_key_inside_a_transaction_with_nil_cause
+    Dir.mktmpdir do |dir|
+      path = File.join(dir, "payer_directory.yml")
+      tx = transactions_yaml.sub(
+        "      dental_claim:\n        supported: false\n        enrollment_required: false\n",
+        [
+          "      dental_claim:",
+          "        supported: null",
+          "        enrollment_required: null",
+          "        <<: {supported: true, enrollment_required: false}"
+        ].join("\n") + "\n"
+      )
+      write_directory_with_transactions(
+        path,
+        payer_identifier: "MERGEIN01",
+        name: "EXAMPLE MERGE INSIDE TRANSACTION PAYER",
+        transactions_text: tx
+      )
+
+      assert_load_refuses_invalid_entry_with_nil_cause(path, forbidden_in_message: [ "MERGEIN01" ])
+    end
+  end
+
+  def test_load_refuses_yaml_merge_key_as_the_only_transaction_mapping_with_nil_cause
+    Dir.mktmpdir do |dir|
+      path = File.join(dir, "payer_directory.yml")
+      tx = transactions_yaml.sub(
+        "      dental_claim:\n        supported: false\n        enrollment_required: false\n",
+        "      dental_claim: {<<: {supported: true}}\n"
+      )
+      write_directory_with_transactions(
+        path,
+        payer_identifier: "MERGEONLY01",
+        name: "EXAMPLE MERGE ONLY TRANSACTION PAYER",
+        transactions_text: tx
+      )
+
+      assert_load_refuses_invalid_entry_with_nil_cause(path, forbidden_in_message: [ "MERGEONLY01" ])
+    end
+  end
+
+  def test_load_refuses_yaml_merge_key_at_the_row_level_with_nil_cause
+    Dir.mktmpdir do |dir|
+      path = File.join(dir, "payer_directory.yml")
+      tx = transactions_yaml
+      File.write(
+        path,
+        [
+          "payers:",
+          "  - payer_identifier: MERGEROW01",
+          "    aliases: []",
+          "    name: EXAMPLE ROW LEVEL MERGE PAYER",
+          "    as_of: 2026-01-01",
+          "    <<: {transactions: {professional_claim: {supported: true, enrollment_required: false}}}",
+          "    transactions:",
+          tx
+        ].join("\n") + "\n"
+      )
+
+      assert_load_refuses_invalid_entry_with_nil_cause(path, forbidden_in_message: [ "MERGEROW01" ])
+    end
+  end
+
+  def test_load_refuses_multiple_yaml_documents_with_nil_cause
+    Dir.mktmpdir do |dir|
+      path = File.join(dir, "payer_directory.yml")
+      File.write(
+        path,
+        [
+          "payers:",
+          payer_row(payer_identifier: "MULTIDOC01", name: "EXAMPLE FIRST DOCUMENT PAYER"),
+          "---",
+          "payers:",
+          "  - payer_identifier: MULTIDOC02",
+          "    aliases: []",
+          "    name: EXAMPLE SECOND DOCUMENT PAYER",
+          "    as_of: 2026-01-01",
+          "    transactions:",
+          transactions_yaml
+        ].join("\n") + "\n"
+      )
+
+      assert_load_refuses_invalid_entry_with_nil_cause(
+        path,
+        forbidden_in_message: %w[MULTIDOC01 MULTIDOC02]
+      )
+    end
+  end
+
+  YAML_BOOLEAN_SYNONYMS = %w[yes no on off y n True TRUE].freeze
+
+  def test_load_refuses_yaml_boolean_synonyms_for_supported_and_enrollment_required_with_nil_cause
+    YAML_BOOLEAN_SYNONYMS.each do |synonym|
+      Dir.mktmpdir do |dir|
+        path = File.join(dir, "payer_directory.yml")
+        tx = transactions_yaml.sub(
+          "      professional_claim:\n        supported: false\n        enrollment_required: false",
+          [
+            "      professional_claim:",
+            "        supported: #{synonym}",
+            "        enrollment_required: false"
+          ].join("\n")
+        )
+        write_directory_with_transactions(
+          path,
+          payer_identifier: "Boolsyn#{synonym.downcase.gsub(/[^a-z0-9]/, "")[0, 8]}",
+          name: "EXAMPLE BOOLEAN SYNONYM PAYER",
+          transactions_text: tx
+        )
+
+        assert_load_refuses_invalid_entry_with_nil_cause(path)
+      end
+
+      Dir.mktmpdir do |dir|
+        path = File.join(dir, "payer_directory.yml")
+        tx = transactions_yaml.sub(
+          "      professional_claim:\n        supported: false\n        enrollment_required: false",
+          [
+            "      professional_claim:",
+            "        supported: false",
+            "        enrollment_required: #{synonym}"
+          ].join("\n")
+        )
+        write_directory_with_transactions(
+          path,
+          payer_identifier: "Enrsyn#{synonym.downcase.gsub(/[^a-z0-9]/, "")[0, 8]}",
+          name: "EXAMPLE ENROLLMENT SYNONYM PAYER",
+          transactions_text: tx
+        )
+
+        assert_load_refuses_invalid_entry_with_nil_cause(path)
+      end
+    end
+  end
+
+  def test_load_accepts_literal_true_false_null_tilde_and_empty_transaction_scalars
+    Dir.mktmpdir do |dir|
+      path = File.join(dir, "payer_directory.yml")
+      tx = [
+        "      professional_claim:",
+        "        supported: true",
+        "        enrollment_required: false",
+        "      institutional_claim:",
+        "        supported: false",
+        "        enrollment_required: true",
+        "      dental_claim:",
+        "        supported: null",
+        "        enrollment_required: ~",
+        "      remittance:",
+        "        supported: ~",
+        "        enrollment_required:",
+        "      eligibility:",
+        "        supported: false",
+        "        enrollment_required: null",
+        "      claim_status:",
+        "        supported: true",
+        "        enrollment_required: false",
+        "      coverage_discovery:",
+        "        supported: false",
+        "        enrollment_required: false",
+        "      coordination_of_benefits:",
+        "        supported: false",
+        "        enrollment_required: false",
+        "      paper_claim:",
+        "        supported: false",
+        "        enrollment_required: false"
+      ].join("\n")
+      write_directory_with_transactions(
+        path,
+        payer_identifier: "LITERAL01",
+        name: "EXAMPLE LITERAL BOOLEAN SCALARS PAYER",
+        transactions_text: tx
+      )
+
+      directory = load_directory_at(path)
+      entry = directory.search("literal01").first
+
+      assert entry.supports?(:professional_claim)
+      refute entry.enrollment_required?(:professional_claim)
+      refute entry.supports?(:dental_claim)
+      assert entry.enrollment_required?(:dental_claim)
+    end
+  end
+
+  def test_load_allows_a_row_that_omits_a_transaction_entirely
+    Dir.mktmpdir do |dir|
+      path = File.join(dir, "payer_directory.yml")
+      tx = [
+        "      professional_claim:",
+        "        supported: true",
+        "        enrollment_required: false"
+      ].join("\n")
+      write_directory_with_transactions(
+        path,
+        payer_identifier: "OMITTX01",
+        name: "EXAMPLE OMITTED TRANSACTION PAYER",
+        transactions_text: tx
+      )
+
+      directory = load_directory_at(path)
+      entry = directory.search("omittx01").first
+
+      refute entry.supports?(:dental_claim)
+      assert entry.enrollment_required?(:dental_claim)
+    end
+  end
+
+  def test_new_refuses_two_entries_sharing_a_payer_identifier_with_nil_cause
+    first = directory_entry(payer_identifier: "NEWDUP01", name: "EXAMPLE FIRST NEW DUP PAYER")
+    second = directory_entry(payer_identifier: "NEWDUP01", name: "EXAMPLE SECOND NEW DUP PAYER")
+
+    assert_new_refuses_invalid_entry_with_nil_cause([ first, second ], forbidden_in_message: [ "NEWDUP01" ])
+  end
+
+  def test_new_refuses_two_entries_sharing_an_alias_with_nil_cause
+    first = directory_entry(
+      payer_identifier: "NEWA1",
+      name: "EXAMPLE NEW ALIAS COLLISION A",
+      aliases: [ "SHAREDNEW" ]
+    )
+    second = directory_entry(
+      payer_identifier: "NEWB1",
+      name: "EXAMPLE NEW ALIAS COLLISION B",
+      aliases: [ "SHAREDNEW" ]
+    )
+
+    assert_new_refuses_invalid_entry_with_nil_cause(
+      [ first, second ],
+      forbidden_in_message: %w[NEWA1 NEWB1 SHAREDNEW]
+    )
+  end
+
   def test_load_refuses_ambiguous_alias_and_identifier_collision_without_naming_either_identifier
     Dir.mktmpdir do |dir|
       path = File.join(dir, "payer_directory.yml")
