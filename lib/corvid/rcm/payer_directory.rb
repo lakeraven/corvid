@@ -134,18 +134,30 @@ module Corvid
     # Loading refuses an ambiguous directory: two rows sharing a payer
     # identifier, or an identifier or alias of one row equal (case-insensitive,
     # stripped) to an identifier or alias of another row. An alias equal to
-    # its own row's identifier is allowed. A duplicate mapping key anywhere
-    # in the YAML document is refused. An ambiguous directory, a malformed
-    # entry, a duplicate mapping key, a YAML syntax error, or a missing or
-    # unreadable file raises `ArgumentError` with a fixed message that
-    # includes no path, identifier, or file content. A duplicate mapping key,
-    # a YAML load error, or a missing or unreadable file is raised with a
-    # nil cause.
+    # its own row's identifier is allowed. `#initialize` runs that same check,
+    # so `new` refuses two entries that share an identifier or alias. A
+    # duplicate mapping key anywhere in the document is refused, and so is a
+    # merge key (`<<`) anywhere in the node tree. The loader uses
+    # `Psych.parse_stream` and refuses a stream that is not exactly one
+    # document. `supported` and `enrollment_required` must be plain scalars
+    # whose text is exactly `true`, `false`, `null`, `~`, or empty; YAML 1.1
+    # synonyms (`yes`, `no`, `on`, `off`, `y`, `n`) and other casings are
+    # refused on the node tree before conversion. An ambiguous directory, a
+    # malformed entry, a duplicate mapping key, a merge key, an extra
+    # document, a non-literal support or enrollment value, a YAML syntax
+    # error, or a missing or unreadable file raises `ArgumentError` with a
+    # fixed message that includes no path, identifier, or file content. A
+    # duplicate mapping key, a merge key, an extra document, a non-literal
+    # support or enrollment value, an ambiguous directory, a YAML load error,
+    # or a missing or unreadable file is raised with a nil cause.
     class PayerDirectory
       DEFAULT_PATH = File.expand_path("data/payer_directory.yml", __dir__)
       INVALID_ENTRY = "invalid payer directory entry"
       ENTRY_KEYS = %w[payer_identifier aliases name transactions as_of].freeze
       TRANSACTION_FIELDS = %w[supported enrollment_required].freeze
+      # Plain-scalar text accepted for `supported` and `enrollment_required`
+      # before Psych converts the node. Empty is a null scalar.
+      ACCEPTED_FLAG_TEXTS = [ "true", "false", "null", "~", "" ].freeze
 
       class << self
         def load(path = DEFAULT_PATH)
@@ -159,41 +171,73 @@ module Corvid
         end
 
         # Psych quotes the path and can quote the line. The operating system
-        # quotes the path for a missing or unreadable file. Duplicate mapping
-        # keys are refused from the parsed node tree before the document is
-        # converted to Ruby. The fixed message replaces the original, and a
+        # quotes the path for a missing or unreadable file. The parsed stream
+        # must contain exactly one document. Duplicate mapping keys, merge
+        # keys, and non-literal `supported` or `enrollment_required` scalars
+        # are refused from the node tree before the document is converted to
+        # Ruby, so a merge cannot insert a value and Psych cannot coerce a
+        # YAML 1.1 boolean. The fixed message replaces the original, and a
         # nil cause drops it so it cannot leak.
         def load_document(path)
           contents = File.open(path, "r:bom|utf-8", &:read)
-          reject_duplicate_mapping_keys!(Psych.parse(contents))
+          reject_disallowed_nodes!(single_document_stream!(contents))
           YAML.safe_load(contents, permitted_classes: [ Date ], aliases: false)
         rescue Psych::Exception, SystemCallError
           raise ArgumentError, INVALID_ENTRY, cause: nil
         end
 
-        # Psych keeps the last duplicate key when it builds a Hash. Compare
-        # scalar key values on each mapping so a repeated transaction, row
-        # field, or transaction field is refused before that conversion.
-        def reject_duplicate_mapping_keys!(node)
-          return unless node.is_a?(Psych::Nodes::Node)
+        def single_document_stream!(contents)
+          stream = Psych.parse_stream(contents)
+          raise ArgumentError, INVALID_ENTRY, cause: nil unless single_document?(stream)
 
-          raise ArgumentError, INVALID_ENTRY, cause: nil if duplicate_scalar_keys?(node)
-          return if node.children.nil?
-
-          node.children.each { |child| reject_duplicate_mapping_keys!(child) }
+          stream
         end
 
-        def duplicate_scalar_keys?(node)
+        def single_document?(stream)
+          stream.is_a?(Psych::Nodes::Stream) && stream.children.length == 1
+        end
+
+        # Psych keeps the last duplicate key when it builds a Hash, and a
+        # merge key folds another mapping into it. Walk scalar keys before
+        # that conversion. Refuse `<<` wherever it is a mapping key. Refuse
+        # `supported` and `enrollment_required` unless the value is a plain
+        # scalar whose text is `true`, `false`, `null`, `~`, or empty.
+        def reject_disallowed_nodes!(node)
+          return unless node.is_a?(Psych::Nodes::Node)
+
+          raise ArgumentError, INVALID_ENTRY, cause: nil if disallowed_mapping?(node)
+          return if node.children.nil?
+
+          node.children.each { |child| reject_disallowed_nodes!(child) }
+        end
+
+        def disallowed_mapping?(node)
           return false unless node.is_a?(Psych::Nodes::Mapping)
 
           seen = {}
-          node.children.each_slice(2) do |key, _value|
+          node.children.each_slice(2) do |key, value|
             next unless key.is_a?(Psych::Nodes::Scalar)
-            return true if seen[key.value]
+            return true if disallowed_scalar_entry?(key, value, seen)
 
             seen[key.value] = true
           end
           false
+        end
+
+        def disallowed_scalar_entry?(key, value, seen)
+          merge_key?(key) || seen[key.value] || disallowed_flag_value?(key, value)
+        end
+
+        def merge_key?(key)
+          key.value == "<<"
+        end
+
+        def disallowed_flag_value?(key, value)
+          TRANSACTION_FIELDS.include?(key.value) && !accepted_flag_scalar?(value)
+        end
+
+        def accepted_flag_scalar?(value)
+          value.is_a?(Psych::Nodes::Scalar) && value.plain && ACCEPTED_FLAG_TEXTS.include?(value.value)
         end
 
         def entries_from(document)
@@ -202,26 +246,7 @@ module Corvid
           rows = document["payers"]
           raise ArgumentError, INVALID_ENTRY unless rows.is_a?(Array)
 
-          reject_ambiguous!(rows.map { |row| build_entry(row) })
-        end
-
-        def reject_ambiguous!(entries)
-          accepted = []
-          entries.each do |entry|
-            raise ArgumentError, INVALID_ENTRY if ambiguous_entry?(entry, accepted)
-
-            accepted << entry
-          end
-          entries
-        end
-
-        # Cross-row only. `matches?` is exact, case-insensitive, and stripped.
-        # The row is not compared with itself, so an alias equal to its own
-        # identifier is allowed.
-        def ambiguous_entry?(entry, accepted)
-          [ entry.payer_identifier, *entry.aliases ].any? do |identifier|
-            accepted.any? { |prior| prior.matches?(identifier) }
-          end
+          rows.map { |row| build_entry(row) }
         end
 
         def build_entry(row)
@@ -309,8 +334,9 @@ module Corvid
         end
       end
 
+      # Same ambiguity rule as a directory loaded from YAML.
       def initialize(entries)
-        @entries = entries.freeze
+        @entries = reject_ambiguous!(entries).freeze
       end
 
       # Blank, whitespace-only, and nil queries return nothing. A payer is
@@ -328,6 +354,25 @@ module Corvid
       end
 
       private
+
+      def reject_ambiguous!(entries)
+        accepted = []
+        entries.each do |entry|
+          raise ArgumentError, INVALID_ENTRY, cause: nil if ambiguous_entry?(entry, accepted)
+
+          accepted << entry
+        end
+        entries
+      end
+
+      # Cross-row only. `matches?` is exact, case-insensitive, and stripped.
+      # The row is not compared with itself, so an alias equal to its own
+      # identifier is allowed.
+      def ambiguous_entry?(entry, accepted)
+        [ entry.payer_identifier, *entry.aliases ].any? do |identifier|
+          accepted.any? { |prior| prior.matches?(identifier) }
+        end
+      end
 
       def name_contains?(entry, needle)
         entry.name.to_s.downcase.include?(needle)
