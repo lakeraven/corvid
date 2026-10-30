@@ -13,10 +13,15 @@ module Corvid::Rcm::Edi271TestHelper
 
   PIPE_ISA = "ISA|00|          |00|          |ZZ|EXAMPLECLRHOUSE|ZZ|EXAMPLECLINIC  |260901|1200|+|00501|000000101|0|T|:\n".freeze
 
+  # ISA repetition separator "|" (element still "*"); EB03 repeats with "|".
+  REP_PIPE_ISA = DEFAULT_ISA.sub("*^*", "*|*").freeze
+
   def delimiters(profile)
     case profile
     when :pipes
       { segment: "\n", element: "|", repetition: "+", component: ":", isa: PIPE_ISA }
+    when :rep_pipe
+      { segment: "~", element: "*", repetition: "|", component: ">", isa: REP_PIPE_ISA }
     else
       { segment: "~", element: "*", repetition: "^", component: ">", isa: DEFAULT_ISA }
     end
@@ -29,7 +34,8 @@ module Corvid::Rcm::Edi271TestHelper
 
   def build_271(member_token:, body_after_subscriber: [], st_control: "9001", profile: :default,
                 subscriber_hl_has_child: false, payer_identifier: "EXPAYER01",
-                payer_name: "EXAMPLE COMMERCIAL PAYER", include_trailer: true)
+                payer_name: "EXAMPLE COMMERCIAL PAYER", include_trailer: true,
+                payer_id_qualifier: "PI", isa_override: nil)
     d = delimiters(profile)
     rep = d.fetch(:repetition)
     el = d.fetch(:element)
@@ -40,7 +46,7 @@ module Corvid::Rcm::Edi271TestHelper
       join_fields(%w[BHT 0022 11], st_control, "20260901", "1200", profile: profile),
       join_fields(%w[HL 1], "", "20", "1", profile: profile),
       join_fields(
-        [ "NM1", "PR", "2", payer_name, "", "", "", "", "PI", payer_identifier ],
+        [ "NM1", "PR", "2", payer_name, "", "", "", "", payer_id_qualifier, payer_identifier ],
         profile: profile
       ),
       join_fields(%w[HL 2 1 21 1], profile: profile),
@@ -58,8 +64,9 @@ module Corvid::Rcm::Edi271TestHelper
       txn << join_fields([ "SE", se_count.to_s, st_control ], profile: profile)
     end
 
+    isa_segment = isa_override || d.fetch(:isa)
     envelope = [
-      d.fetch(:isa).chomp(d.fetch(:segment)),
+      isa_segment.chomp(d.fetch(:segment)),
       join_fields(
         %w[GS HB EXAMPLECLRHOUSE EXAMPLECLINIC 20260901 1200 101 X 005010X279A1],
         profile: profile
@@ -70,6 +77,45 @@ module Corvid::Rcm::Edi271TestHelper
     ]
 
     join_segments(envelope, profile: profile)
+  end
+
+  # Two HL level-20 (information source) loops — ambiguous payer/plan context (#736 review-3).
+  def build_271_two_information_sources(member_token:, body_after_subscriber:, st_control: "9501",
+                                        first_payer: "EXPAYER01", second_payer: "OTHERPAYER")
+    d = delimiters(:default)
+    txn = [
+      join_fields(%w[ST 271], st_control, "005010X279A1"),
+      join_fields(%w[BHT 0022 11], st_control, "20260901", "1200"),
+      join_fields(%w[HL 1], "", "20", "0"),
+      join_fields([ "NM1", "PR", "2", "EXAMPLE PAYER A", "", "", "", "", "PI", first_payer ]),
+      join_fields(%w[HL 2], "", "20", "1"),
+      join_fields([ "NM1", "PR", "2", "EXAMPLE PAYER B", "", "", "", "", "PI", second_payer ]),
+      join_fields(%w[HL 3 2 21 1]),
+      join_fields([ "NM1", "1P", "2", "EXAMPLE BEHAVIORAL HEALTH CLINIC", "", "", "", "", "XX", "1999999992" ]),
+      join_fields(%w[HL 4 3 22 0]),
+      join_fields([ "NM1", "IL", "1", "", "", "", "", "", "", "MI", member_token ]),
+      *body_after_subscriber
+    ]
+    se_count = txn.length + 1
+    txn << join_fields([ "SE", se_count.to_s, st_control ])
+    envelope = [
+      d.fetch(:isa).chomp(d.fetch(:segment)),
+      join_fields(%w[GS HB EXAMPLECLRHOUSE EXAMPLECLINIC 20260901 1200 101 X 005010X279A1]),
+      *txn,
+      join_fields(%w[GE 1 101]),
+      join_fields(%w[IEA 1 000000101])
+    ]
+    join_segments(envelope)
+  end
+
+  # ISA element and repetition separators both "|" — malformed interchange (#736 review-3).
+  def build_271_duplicate_isa_separators(member_token:, body_after_subscriber: [ "EB*1*IND*30" ])
+    bad_isa = DEFAULT_ISA.sub("*^*", "*|*").sub("*T*>~", "*T*|~")
+    build_271(
+      member_token: member_token,
+      body_after_subscriber: body_after_subscriber,
+      isa_override: bad_isa
+    )
   end
 
   def build_271_with_second_transaction(member_token:, first_body:, second_body:, st_control: "9001")

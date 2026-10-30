@@ -686,6 +686,159 @@ class Corvid::Rcm::FixtureClearinghouseClientTest < Minitest::Test
     end
   end
 
+  # -- #736 review-3: stated_windows / eligibility_date (client) ------------
+
+  def test_inactive_with_wide_stated_window_and_restrictive_bounds_is_undetermined
+    body = [
+      "DTP*356*D8*20250101",
+      "DTP*357*D8*20261231",
+      "DTP*346*D8*20260701",
+      "EB*6*IND*30"
+    ]
+    with_member_fixture("MBR-SYNTH-STATED-WIDE", body) do |member|
+      assert_equal :undetermined,
+                   check_in_dir(@fixture_dir, member, service_date: Date.new(2026, 6, 1)).outcome
+    end
+  end
+
+  def test_inactive_subscriber_stated_start_and_dependent_window_is_undetermined
+    body = [
+      "DTP*346*D8*20260801",
+      "HL*4*3*23*0",
+      "NM1*03*1******MI*MBR-SYNTH-DEP-INACT-WIN",
+      "DTP*356*D8*20250101",
+      "DTP*357*D8*20261231",
+      "EB*6*IND*30"
+    ]
+    with_member_fixture("MBR-SYNTH-DEP-INACT-WIN", body, subscriber_hl_has_child: true) do |member|
+      assert_equal :undetermined,
+                   check_in_dir(@fixture_dir, member, service_date: Date.new(2026, 6, 1)).outcome
+    end
+  end
+
+  def test_inactive_inclusive_stated_window_boundaries_are_undetermined
+    body = [ "DTP*356*D8*20250101", "DTP*357*D8*20260731", "EB*6*IND*30" ]
+    with_member_fixture("MBR-SYNTH-INACT-BOUNDS", body) do |member|
+      assert_equal :undetermined,
+                   check_in_dir(@fixture_dir, member, service_date: Date.new(2025, 1, 1)).outcome
+      assert_equal :undetermined,
+                   check_in_dir(@fixture_dir, member, service_date: Date.new(2026, 7, 31)).outcome
+      assert_equal :inactive,
+                   check_in_dir(@fixture_dir, member, service_date: Date.new(2026, 8, 1)).outcome
+    end
+  end
+
+  def test_inactive_with_eligibility_date_only_on_matching_service_date_stays_inactive
+    body = [ "DTP*307*D8*20260901", "EB*6*IND*30" ]
+    with_member_fixture("MBR-SYNTH-307-INACT", body) do |member|
+      assert_equal :inactive,
+                   check_in_dir(@fixture_dir, member, service_date: Date.new(2026, 9, 1)).outcome
+      assert_equal :undetermined,
+                   check_in_dir(@fixture_dir, member, service_date: Date.new(2026, 9, 2)).outcome
+    end
+  end
+
+  def test_datetime_service_date_coerces_and_matches_date_inactive_outcome
+    body = [ "DTP*356*D8*20250101", "DTP*357*D8*20260731", "EB*6*IND*30" ]
+    with_member_fixture("MBR-SYNTH-DATETIME-INACT", body) do |member|
+      response = check_in_dir(
+        @fixture_dir,
+        member,
+        service_date: DateTime.new(2026, 7, 31, 12, 0, 0)
+      )
+
+      assert_equal :undetermined, response.outcome
+    end
+  end
+
+  def test_two_information_source_loops_answer_undetermined
+    content = build_271_two_information_sources(
+      member_token: "MBR-SYNTH-TWO-IS",
+      body_after_subscriber: [ "EB*1*IND*30" ]
+    )
+    with_written_fixture("MBR-SYNTH-TWO-IS", content) do |member|
+      assert_equal :undetermined, check_in_dir(@fixture_dir, member).outcome
+    end
+  end
+
+  def test_reversed_rd8_plan_date_fixture_answers_undetermined
+    body = [ "DTP*291*RD8*20260731-20260101", "EB*6*IND*30" ]
+    with_member_fixture("MBR-SYNTH-BAD-RD8", body) do |member|
+      assert_equal :undetermined, check_in_dir(@fixture_dir, member).outcome
+    end
+  end
+
+  def test_impossible_restrictive_bounds_with_active_eb_answers_undetermined
+    body = [
+      "DTP*346*D8*20260801",
+      "DTP*347*D8*20260131",
+      "EB*1*IND*30"
+    ]
+    with_member_fixture("MBR-SYNTH-BAD-BOUNDS-ACTIVE", body) do |member|
+      assert_equal :undetermined, check_in_dir(@fixture_dir, member).outcome
+    end
+  end
+
+  def test_impossible_restrictive_bounds_with_inactive_eb_answers_undetermined
+    body = [
+      "DTP*346*D8*20260801",
+      "DTP*347*D8*20260131",
+      "EB*6*IND*30"
+    ]
+    with_member_fixture("MBR-SYNTH-BAD-BOUNDS-INACT", body) do |member|
+      assert_equal :undetermined, check_in_dir(@fixture_dir, member).outcome
+    end
+  end
+
+  def test_two_end_dtps_earliest_end_with_service_after_end_is_undetermined
+    body = [
+      "DTP*347*D8*20260630",
+      "DTP*357*D8*20260731",
+      "EB*1*IND*30"
+    ]
+    with_member_fixture("MBR-SYNTH-TWO-ENDS", body) do |member|
+      assert_equal :undetermined,
+                   check_in_dir(@fixture_dir, member, service_date: Date.new(2026, 7, 15)).outcome
+    end
+  end
+
+  def test_two_starts_across_loops_with_service_before_restrictive_start_is_undetermined
+    body = [
+      "DTP*346*D8*20260301",
+      "HL*4*3*23*0",
+      "NM1*03*1******MI*MBR-SYNTH-DEP-TWO-STARTS",
+      "DTP*346*D8*20260101",
+      "EB*1*IND*30"
+    ]
+    with_member_fixture("MBR-SYNTH-TWO-STARTS", body, subscriber_hl_has_child: true) do |member|
+      assert_equal :undetermined,
+                   check_in_dir(@fixture_dir, member, service_date: Date.new(2026, 2, 1)).outcome
+    end
+  end
+
+  def test_information_source_payer_without_pi_answers_undetermined_when_inquiry_names_payer
+    content = build_271(
+      member_token: "MBR-SYNTH-NO-PI-PAYER",
+      payer_id_qualifier: "XV",
+      body_after_subscriber: [ "EB*1*IND*30" ]
+    )
+    with_written_fixture("MBR-SYNTH-NO-PI-PAYER", content) do |member|
+      assert_equal :undetermined, check_in_dir(@fixture_dir, member).outcome
+    end
+  end
+
+  def test_copay_eb05_does_not_become_plan_name_when_coverage_eb_has_no_eb05
+    with_member_fixture(
+      "MBR-SYNTH-COPAY-NAME",
+      [ "EB*B*IND*30**COPAY NOTE", "EB*1*IND*30" ]
+    ) do |member|
+      response = check_in_dir(@fixture_dir, member)
+
+      assert_equal :active, response.outcome
+      assert_nil response.plans.first.plan_name
+    end
+  end
+
   def test_service_date_on_coverage_start_or_end_boundary_is_active
     body = [ "DTP*346*D8*20250101", "DTP*347*D8*20250630", "EB*1*IND*30" ]
     with_member_fixture("MBR-SYNTH-BOUNDARY-ACTIVE", body) do |member|

@@ -146,6 +146,27 @@ class Corvid::Rcm::EligibilityTest < Minitest::Test
     end
   end
 
+  def test_eligibility_inquiry_coerces_datetime_service_date_to_date
+    inquiry = Corvid::Rcm::EligibilityInquiry.new(
+      patient_identifier: "pt_elig_0001",
+      payer_identifier: "EXPAYER01",
+      member_identifier: "MBR-SYNTH-DT",
+      service_date: DateTime.new(2026, 7, 31, 12, 0, 0),
+      provider_npi: Factory::BILLING_NPI
+    )
+
+    assert_equal Date, inquiry.service_date.class
+    assert_equal Date.new(2026, 7, 31), inquiry.service_date
+  end
+
+  def test_eligibility_plan_defaults_stated_windows_and_eligibility_date
+    plan = Corvid::Rcm::EligibilityPlan.new(payer_identifier: "EXPAYER01")
+
+    assert_equal [], plan.stated_windows
+    assert_nil plan.eligibility_date
+    assert plan.stated_windows.frozen?
+  end
+
   def test_eligibility_inquiry_allows_nil_service_date
     assert_nil inquiry(service_date: nil).service_date
   end
@@ -233,10 +254,15 @@ class Corvid::Rcm::EligibilityTest < Minitest::Test
   end
 
   def test_outcome_for_inactive_inside_plan_window_is_undetermined
+    window = Corvid::Rcm::EligibilityWindow.new(
+      start_date: Date.new(2025, 1, 1),
+      end_date: Date.new(2026, 7, 31)
+    )
     plan = Corvid::Rcm::EligibilityPlan.new(
       payer_identifier: "EXPAYER01",
       coverage_start: Date.new(2025, 1, 1),
       coverage_end: Date.new(2026, 7, 31),
+      stated_windows: [ window ],
       benefits: [
         Corvid::Rcm::EligibilityBenefit.new(service_type_code: "30", code: "6")
       ]
@@ -284,6 +310,112 @@ class Corvid::Rcm::EligibilityTest < Minitest::Test
                    errors: [],
                    service_type_codes: %w[30],
                    service_date: Factory::SERVICE_DATE
+                 )
+  end
+
+  # -- #736 review-3: stated_windows and eligibility_date vs inactive --------
+
+  def test_outcome_for_inactive_undetermined_when_stated_window_contains_service_date
+    wide = Corvid::Rcm::EligibilityWindow.new(
+      start_date: Date.new(2025, 1, 1),
+      end_date: Date.new(2026, 12, 31)
+    )
+    plan = Corvid::Rcm::EligibilityPlan.new(
+      payer_identifier: "EXPAYER01",
+      coverage_start: Date.new(2026, 7, 1),
+      coverage_end: Date.new(2026, 12, 31),
+      stated_windows: [ wide ],
+      benefits: [ Corvid::Rcm::EligibilityBenefit.new(service_type_code: "30", code: "6") ]
+    )
+
+    assert_equal :undetermined,
+                 Corvid::Rcm::EligibilityResponse.outcome_for(
+                   plans: [ plan ],
+                   errors: [],
+                   service_type_codes: %w[30],
+                   service_date: Date.new(2026, 6, 1)
+                 )
+  end
+
+  def test_outcome_for_inactive_undetermined_on_inclusive_stated_window_boundaries
+    window = Corvid::Rcm::EligibilityWindow.new(
+      start_date: Date.new(2025, 1, 1),
+      end_date: Date.new(2026, 7, 31)
+    )
+    plan = Corvid::Rcm::EligibilityPlan.new(
+      payer_identifier: "EXPAYER01",
+      coverage_start: Date.new(2025, 1, 1),
+      coverage_end: Date.new(2026, 7, 31),
+      stated_windows: [ window ],
+      benefits: [ Corvid::Rcm::EligibilityBenefit.new(service_type_code: "30", code: "6") ]
+    )
+    base = { plans: [ plan ], errors: [], service_type_codes: %w[30] }
+
+    assert_equal :undetermined, Corvid::Rcm::EligibilityResponse.outcome_for(**base, service_date: Date.new(2025, 1, 1))
+    assert_equal :undetermined, Corvid::Rcm::EligibilityResponse.outcome_for(**base, service_date: Date.new(2026, 7, 31))
+    assert_equal :inactive, Corvid::Rcm::EligibilityResponse.outcome_for(**base, service_date: Date.new(2026, 8, 1))
+  end
+
+  def test_outcome_for_inactive_undetermined_when_eligibility_date_differs_from_service_date
+    plan = Corvid::Rcm::EligibilityPlan.new(
+      payer_identifier: "EXPAYER01",
+      coverage_start: Date.new(2026, 9, 1),
+      coverage_end: Date.new(2026, 9, 1),
+      eligibility_date: Date.new(2026, 9, 1),
+      benefits: [ Corvid::Rcm::EligibilityBenefit.new(service_type_code: "30", code: "6") ]
+    )
+
+    assert_equal :inactive,
+                 Corvid::Rcm::EligibilityResponse.outcome_for(
+                   plans: [ plan ],
+                   errors: [],
+                   service_type_codes: %w[30],
+                   service_date: Date.new(2026, 9, 1)
+                 )
+    assert_equal :undetermined,
+                 Corvid::Rcm::EligibilityResponse.outcome_for(
+                   plans: [ plan ],
+                   errors: [],
+                   service_type_codes: %w[30],
+                   service_date: Date.new(2026, 9, 2)
+                 )
+  end
+
+  def test_outcome_for_inactive_skips_stated_window_and_eligibility_date_when_service_date_nil
+    window = Corvid::Rcm::EligibilityWindow.new(
+      start_date: Date.new(2025, 1, 1),
+      end_date: Date.new(2026, 12, 31)
+    )
+    plan = Corvid::Rcm::EligibilityPlan.new(
+      payer_identifier: "EXPAYER01",
+      stated_windows: [ window ],
+      eligibility_date: Date.new(2026, 9, 1),
+      benefits: [ Corvid::Rcm::EligibilityBenefit.new(service_type_code: "30", code: "6") ]
+    )
+
+    assert_equal :inactive,
+                 Corvid::Rcm::EligibilityResponse.outcome_for(
+                   plans: [ plan ],
+                   errors: [],
+                   service_type_codes: %w[30],
+                   service_date: nil
+                 )
+  end
+
+  def test_outcome_for_inactive_ignores_stated_window_with_no_bounds
+    empty_window = Corvid::Rcm::EligibilityWindow.new(start_date: nil, end_date: nil)
+    plan = Corvid::Rcm::EligibilityPlan.new(
+      payer_identifier: "EXPAYER01",
+      stated_windows: [ empty_window ],
+      benefits: [ Corvid::Rcm::EligibilityBenefit.new(service_type_code: "30", code: "6") ]
+    )
+
+    assert_equal :inactive,
+                 Corvid::Rcm::EligibilityResponse.outcome_for(
+                   plans: [ plan ],
+                   errors: [],
+                   service_type_codes: %w[30],
+                   service_date: Date.new(2026, 6, 1)
                  )
   end
 
