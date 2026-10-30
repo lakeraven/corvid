@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "minitest/autorun"
+require "tempfile"
 require "corvid"
 require "corvid/rcm"
 require_relative "claim_factory"
@@ -194,6 +195,34 @@ class Corvid::Rcm::FixtureClearinghouseClientTest < Minitest::Test
   def test_validate_claim_rejects_nil_and_non_claim_arguments
     assert_raises(ArgumentError) { @client.validate_claim(nil) }
     assert_raises(ArgumentError) { @client.validate_claim("not a claim") }
+  end
+
+  def test_validate_claim_fails_closed_when_canned_edit_source_is_broken
+    table = Tempfile.new([ "broken_ack_table", ".yml" ])
+    table.write(<<~YAML)
+      default_transaction_set: "277CA"
+      rejections:
+        CLM-RJ-0001:
+          transaction_set: "277CA"
+          edits:
+            - code: "A7:562"
+              element: "NM1*85 billing provider"
+              level: claim
+    YAML
+    table.close
+
+    client = Corvid::Rcm::FixtureClearinghouseClient.new(
+      acknowledgment_table: table.path,
+      clock: FIXED_CLOCK
+    )
+    claim = Factory.claim(identifier: "CLM-RJ-0001")
+
+    error = assert_raises(StandardError) { client.validate_claim(claim) }
+
+    refute_instance_of Corvid::Rcm::ClaimValidation, error
+    assert_empty client.submitted
+  ensure
+    table&.unlink
   end
 
   def test_a_failed_validation_routes_like_a_rejected_277ca_not_a_denial

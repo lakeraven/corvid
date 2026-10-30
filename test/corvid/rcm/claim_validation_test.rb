@@ -43,6 +43,55 @@ class Corvid::Rcm::ClaimValidationTest < Minitest::Test
     assert_nil validation.raw_reference
   end
 
+  def test_raw_reference_round_trips_for_passing_and_failing_validations
+    edit = sample_edit
+
+    failing = Validation.new(
+      claim_identifier: "CLM-1",
+      valid: false,
+      edits: [ edit ],
+      raw_reference: "txn-12345"
+    )
+    passing = Validation.new(claim_identifier: "CLM-1", valid: true, edits: [], raw_reference: "txn-12345")
+
+    assert_equal "txn-12345", failing.raw_reference
+    assert_equal "txn-12345", passing.raw_reference
+  end
+
+  def test_claim_identifier_must_be_non_blank
+    pin = "CLM-PIN-738"
+
+    [ nil, "", "  " ].each do |bad_identifier|
+      error = assert_raises(ArgumentError) do
+        Validation.new(claim_identifier: bad_identifier, valid: true, edits: [])
+      end
+
+      refute_includes error.message, pin
+      refute_includes error.message, bad_identifier if bad_identifier.is_a?(String) && !bad_identifier.strip.empty?
+    end
+  end
+
+  def test_a_failing_validation_rejects_edits_with_blank_code_or_description
+    pin = "CLM-PIN-738"
+    secret_code = "SYN-EDIT-CODE"
+    secret_description = "Synthetic edit description for validation tests."
+
+    bad_edits = [
+      Edit.new(code: nil, description: secret_description, level: "claim"),
+      Edit.new(code: secret_code, description: "", level: "claim")
+    ]
+
+    bad_edits.each do |bad_edit|
+      error = assert_raises(ArgumentError) do
+        Validation.new(claim_identifier: pin, valid: false, edits: [ bad_edit ])
+      end
+
+      refute_includes error.message, pin
+      refute_includes error.message, secret_code
+      refute_includes error.message, secret_description
+    end
+  end
+
   def test_edits_is_a_frozen_copy_of_the_caller_array
     edit = sample_edit
     caller_edits = [ edit ]
