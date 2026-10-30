@@ -21,6 +21,8 @@ class Corvid::Rcm::ClaimTest < Minitest::Test
       claim = Corvid::Rcm::Claim.new(identifier: "CLM-X", patient_identifier: "pt_x")
       abort("scrub produced nothing") if Corvid::Rcm::Scrubber.new.scrub(claim).findings.empty?
       abort("no fixtures") if Corvid::Rcm::FixtureClearinghouseClient.new.fetch_remittances.empty?
+      Corvid::Rcm::EligibilityInquiry
+      Corvid::Rcm::EligibilityResponse
     RUBY
 
     assert system(RbConfig.ruby, "-I", lib, "-e", script),
