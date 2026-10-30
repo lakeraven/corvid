@@ -24,6 +24,7 @@ class Corvid::Rcm::FixtureClearinghouseClientTest < Minitest::Test
 
     assert_raises(NotImplementedError) { bare.submit_claim(Factory.claim) }
     assert_raises(NotImplementedError) { bare.fetch_remittances }
+    assert_raises(NotImplementedError) { bare.check_eligibility(eligibility_inquiry) }
   end
 
   # -- submission ------------------------------------------------------------
@@ -158,5 +159,134 @@ class Corvid::Rcm::FixtureClearinghouseClientTest < Minitest::Test
 
     rejection = @client.submit_claim(Factory.claim(identifier: "CLM-RJ-0001"))
     refute_respond_to rejection, :adjudicated?
+  end
+
+  # -- eligibility (271 fixtures keyed by member identifier, #736) -----------
+
+  MEMBER_ACTIVE_COMMERCIAL = "MBR-ACTIVE-COMMERCIAL"
+  MEMBER_INACTIVE = "MBR-INACTIVE"
+  MEMBER_MEDICAID_OPEN = "MBR-MEDICAID-OPEN"
+  MEMBER_AAA72 = "MBR-AAA72"
+  MEMBER_AAA42 = "MBR-AAA42"
+  MEMBER_AAA_UNMAPPED = "MBR-AAA-UNMAPPED"
+  MEMBER_UNKNOWN = "MBR-NOT-IN-FIXTURE-TABLE"
+
+  def eligibility_inquiry(**overrides)
+    Corvid::Rcm::EligibilityInquiry.new(**{
+      patient_identifier: "pt_elig_0001",
+      payer_identifier: "EXPAYER01",
+      member_identifier: MEMBER_ACTIVE_COMMERCIAL,
+      service_date: Factory::SERVICE_DATE,
+      provider_npi: Factory::BILLING_NPI
+    }.merge(overrides))
+  end
+
+  def check(member_identifier, **overrides)
+    @client.check_eligibility(eligibility_inquiry(member_identifier: member_identifier, **overrides))
+  end
+
+  def test_active_commercial_member_returns_active_with_plan_and_benefit_detail
+    response = check(MEMBER_ACTIVE_COMMERCIAL)
+
+    assert_equal :active, response.outcome
+    assert_equal FIXED_CLOCK.call, response.as_of
+
+    plan = response.plans.first
+    refute_nil plan
+    assert plan.payer_identifier.to_s.strip != "", "expected a payer_identifier on the plan"
+    assert plan.plan_name.to_s.strip != "", "expected a plan_name on the plan"
+    assert plan.group_number.to_s.strip != "", "expected a group_number on the plan"
+    assert_kind_of Date, plan.coverage_start
+    assert_kind_of Date, plan.coverage_end
+    refute_equal Date.new(9999, 12, 31), plan.coverage_end
+
+    benefit = plan.benefits.find { |b| b.service_type_code == "30" }
+    refute_nil benefit, "expected at least one benefit for service type 30"
+  end
+
+  def test_inactive_member_returns_inactive_outcome
+    assert_equal :inactive, check(MEMBER_INACTIVE).outcome
+  end
+
+  def test_medicaid_open_end_coverage_returns_active_with_nil_coverage_end
+    response = check(MEMBER_MEDICAID_OPEN)
+    plan = response.plans.first
+
+    assert_equal :active, response.outcome
+    refute_nil plan
+    assert_kind_of Date, plan.coverage_start
+    assert_nil plan.coverage_end
+  end
+
+  def test_aaa_72_invalid_member_returns_undetermined_with_error_code_72
+    response = check(MEMBER_AAA72)
+
+    assert_equal :undetermined, response.outcome
+    error = response.errors.find { |e| e.code == "72" }
+    refute_nil error
+    assert error.description.to_s.strip != "", "expected a description for AAA 72"
+  end
+
+  def test_aaa_42_payer_unavailable_returns_undetermined_with_error_code_42
+    response = check(MEMBER_AAA42)
+
+    assert_equal :undetermined, response.outcome
+    error = response.errors.find { |e| e.code == "42" }
+    refute_nil error
+  end
+
+  def test_unmapped_aaa_code_returns_undetermined_not_inactive
+    response = check(MEMBER_AAA_UNMAPPED)
+
+    assert_equal :undetermined, response.outcome
+    refute_equal :inactive, response.outcome
+  end
+
+  def test_unknown_member_identifier_returns_undetermined_without_raising
+    response = check(MEMBER_UNKNOWN)
+
+    assert_equal :undetermined, response.outcome
+  end
+
+  def test_nil_member_identifier_returns_undetermined
+    response = @client.check_eligibility(eligibility_inquiry(member_identifier: nil))
+
+    assert_equal :undetermined, response.outcome
+  end
+
+  def test_eligibility_as_of_comes_from_the_injected_clock
+    clock = -> { Time.utc(2025, 3, 15, 8, 30, 0) }
+    client = Corvid::Rcm::FixtureClearinghouseClient.new(clock: clock)
+    response = client.check_eligibility(eligibility_inquiry(member_identifier: MEMBER_ACTIVE_COMMERCIAL))
+
+    assert_equal clock.call, response.as_of
+  end
+
+  def test_service_date_on_the_inquiry_is_available_to_fixture_lookup
+    on_date = Date.new(2026, 6, 1)
+    inquiry = eligibility_inquiry(member_identifier: MEMBER_ACTIVE_COMMERCIAL, service_date: on_date)
+    response = @client.check_eligibility(inquiry)
+
+    assert_equal on_date, inquiry.service_date
+    assert_equal :active, response.outcome
+  end
+
+  def test_unknown_is_never_no_only_explicit_inactive_is_inactive
+    scenarios = [
+      MEMBER_ACTIVE_COMMERCIAL,
+      MEMBER_MEDICAID_OPEN,
+      MEMBER_AAA72,
+      MEMBER_AAA42,
+      MEMBER_AAA_UNMAPPED,
+      MEMBER_UNKNOWN
+    ]
+
+    scenarios.each do |member|
+      outcome = check(member).outcome
+      refute_equal :inactive, outcome, "member #{member.inspect} must not read as inactive"
+    end
+
+    assert_equal :undetermined, @client.check_eligibility(eligibility_inquiry(member_identifier: nil)).outcome
+    assert_equal :inactive, check(MEMBER_INACTIVE).outcome
   end
 end
