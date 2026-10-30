@@ -708,6 +708,29 @@ class Corvid::Rcm::DepositMatcherTest < Minitest::Test
     assert_empty distinct_result.amount_mismatches
   end
 
+  def test_same_remittance_object_twice_is_a_duplicate_trace
+    r = build_remittance(
+      remittance_identifier: "TRC-R-TWICE",
+      payment_amount: BigDecimal("5.00"),
+      payment_method: "ACH"
+    )
+    deposit = build_deposit(
+      deposit_identifier: "DEP-R-TWICE",
+      trace_number: "TRC-R-TWICE",
+      amount: BigDecimal("5.00")
+    )
+
+    result = match(remittances: [ r, r ], deposits: [ deposit ])
+
+    assert_empty result.matched
+    assert_empty result.amount_mismatches
+    assert_equal 2, result.unmatched_remittances.length
+    assert_same r, result.unmatched_remittances[0]
+    assert_same r, result.unmatched_remittances[1]
+    assert_equal [ deposit ], result.unmatched_deposits
+    assert_same deposit, result.unmatched_deposits.first
+  end
+
   def test_sub_cent_amount_difference_is_a_mismatch
     remittance = build_remittance(
       remittance_identifier: "TRC-SUBCENT",
