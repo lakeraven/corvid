@@ -24,18 +24,26 @@ module Corvid::Rcm::FhirEncounterFactory
   PHI_TRAP_NOTE = "SYNTH-PHI-TRAP DO NOT EMIT"
 
   def encounter(id: "enc-synth-1", status: "finished", class_code: "AMB", class_system: ACT_CODE,
-                at_home: false, audio_only_type: false, location_physical_type: nil,
-                location_physical_system: LOCATION_PHYSICAL, telephone_type_system: SNOMED,
-                diagnosis: [], **extra)
+                class_codings: nil, at_home: false, audio_only_type: false, location_physical_type: nil,
+                location_physical_system: LOCATION_PHYSICAL, locations: nil,
+                telephone_type_system: SNOMED, diagnosis: [], **extra)
+    klass =
+      if class_codings
+        { "coding" => class_codings }
+      else
+        { "system" => class_system, "code" => class_code }
+      end
     resource = {
       "resourceType" => "Encounter",
       "id" => id,
       "status" => status,
-      "class" => { "system" => class_system, "code" => class_code },
+      "class" => klass,
       "diagnosis" => diagnosis,
       "text" => { "div" => PHI_TRAP_NOTE }
     }.merge(extra)
-    if location_physical_type
+    if locations
+      resource["location"] = locations
+    elsif location_physical_type
       resource["location"] = [ {
         "location" => { "reference" => "Location/loc-synth-room" },
         "physicalType" => {
@@ -65,15 +73,20 @@ module Corvid::Rcm::FhirEncounterFactory
   end
 
   def procedure(id:, encounter_id:, code:, status: "completed", npi: RENDERING_NPI,
-                performed_at: SERVICE_INSTANT, performed_end: nil, reason_condition_ids: [],
-                code_system: CPT, performers: nil, note: PHI_TRAP_NOTE)
+                performed_at: SERVICE_INSTANT, performed_end: nil, performed_date_time: nil,
+                reason_condition_ids: [], code_codings: nil, code_system: CPT, performers: nil,
+                note: PHI_TRAP_NOTE)
+    codings =
+      if code_codings
+        code_codings
+      else
+        [ { "system" => code_system, "code" => code } ]
+      end
     resource = {
       "resourceType" => "Procedure",
       "status" => status,
       "encounter" => { "reference" => "Encounter/#{encounter_id}" },
-      "code" => {
-        "coding" => [ { "system" => code_system, "code" => code } ]
-      },
+      "code" => { "coding" => codings },
       "note" => [ { "text" => note } ]
     }
     resource["id"] = id unless id.nil?
@@ -85,7 +98,10 @@ module Corvid::Rcm::FhirEncounterFactory
       end
     if performed_end
       resource["performedPeriod"] = { "start" => performed_at, "end" => performed_end }
-    elsif !performed_at.nil?
+    end
+    if !performed_date_time.nil?
+      resource["performedDateTime"] = performed_date_time
+    elsif performed_end.nil? && !performed_at.nil?
       resource["performedDateTime"] = performed_at
     end
     unless reason_condition_ids.empty?
@@ -123,6 +139,18 @@ module Corvid::Rcm::FhirEncounterFactory
     { "actor" => actor }
   end
 
+  STAFF_ID_SYSTEM = "http://example.org/staff-id"
+
+  def practitioner_performer_with_identifiers(reference: "Practitioner/pr-synth-staff", identifiers:)
+    {
+      "actor" => {
+        "reference" => reference,
+        "type" => "Practitioner",
+        "identifier" => identifiers
+      }
+    }
+  end
+
   def organization_performer(npi: RENDERING_NPI)
     {
       "actor" => {
@@ -142,7 +170,8 @@ module Corvid::Rcm::FhirEncounterFactory
   end
 
   def condition(id:, icd10: nil, snomed_code: nil, verification_status: nil,
-                verification_system: CONDITION_VERIFICATION, note: PHI_TRAP_NOTE)
+                verification_codings: nil, verification_system: CONDITION_VERIFICATION,
+                note: PHI_TRAP_NOTE)
     coding = []
     coding << { "system" => ICD10, "code" => icd10 } if icd10
     coding << { "system" => SNOMED, "code" => snomed_code } if snomed_code
@@ -152,7 +181,9 @@ module Corvid::Rcm::FhirEncounterFactory
       "code" => { "coding" => coding },
       "note" => [ { "text" => note } ]
     }
-    if verification_status
+    if verification_codings
+      resource["verificationStatus"] = { "coding" => verification_codings }
+    elsif verification_status
       resource["verificationStatus"] = {
         "coding" => [ { "system" => verification_system, "code" => verification_status } ]
       }
@@ -163,13 +194,17 @@ module Corvid::Rcm::FhirEncounterFactory
   AUDIO_ONLY_MODIFIER_URL = "https://corvid.example/fhir/StructureDefinition/audio-only-modifier"
 
   def coverage(id: "cov-synth-1", status: "active", member_id: "MEMBER-SYNTH-999",
-               payer_identifier: "PAYER-SYNTH-01", audio_only_modifier: nil)
+               payer_identifier: "PAYER-SYNTH-01", payor: nil, audio_only_modifier: nil)
+    default_payor = {
+      "reference" => "Organization/org-payer-synth-1",
+      "identifier" => { "value" => payer_identifier }
+    }
     resource = {
       "resourceType" => "Coverage",
       "id" => id,
       "status" => status,
       "identifier" => [ { "value" => member_id } ],
-      "payor" => [ { "identifier" => { "value" => payer_identifier } } ],
+      "payor" => payor.nil? ? [ default_payor ] : payor,
       "subscriber" => {
         "name" => [ { "given" => [ "SYNTH-SUB-GIVEN" ], "family" => "SYNTH-SUB-FAMILY" } ],
         "birthDate" => "1988-04-02",
