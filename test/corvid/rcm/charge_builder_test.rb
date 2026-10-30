@@ -27,7 +27,11 @@ class Corvid::Rcm::ChargeBuilderTest < Minitest::Test
     assert_equal 1, charge_set.problems.length, charge_set.problems.inspect
     problem = charge_set.problems.first
     assert_equal code, problem.code
-    assert_equal reference, problem.reference
+    if reference.nil?
+      assert_nil problem.reference
+    else
+      assert_equal reference, problem.reference
+    end
   end
 
   def refute_price_list_called
