@@ -23,10 +23,13 @@ payment_weight × ASC conversion factor × (labor_share × wage_index + (1 − l
 The labor-related share is a sourced row in `corvid_cms_labor_shares`
 (`payment_system` `asc`), shipped in `db/data/cms_labor_shares.csv`.
 Operators load that file with `rake cms:labor_shares:import` before
-repricing. Demo seeds insert the CY 2026 OPPS share;
-`PrcImporter.reanalyze` does not load the file. Each row cites that
-calendar year's OPPS/ASC final rule. The ASC labor-related share in
-that file is 50%. A calendar year with no row is undetermined:
+repricing. After upgrading, operators must run
+`rake cms:labor_shares:import` or OPPS/ASC prices fall to the stub.
+Demo seeds insert the CY 2026 OPPS share; `PrcImporter.reanalyze` does
+not load the file. Each row cites that calendar year's OPPS/ASC final
+rule. The ASC labor-related share in that file is 50% for CY 2008–CY
+2026. ASC CY 2007 has no row and is undetermined. A calendar year with
+no row is undetermined:
 `AscRateProvider.lookup_for` returns nil rather than pricing at a
 100% labor share. When the ASC rate and conversion factor are loaded
 and only the labor share is missing, the analyzer does not fall
@@ -134,8 +137,8 @@ Addendum AA per year). Until that loads:
   is loaded for that year and HCPCS.
 - `analyze_outpatient` falls through to OPPS pricing when the ASC
   rate itself is missing. A loaded rate and conversion factor with
-  no ASC labor share does not; load shares with
-  `rake cms:labor_shares:import`.
+  no ASC labor share does not. After upgrading, operators must run
+  `rake cms:labor_shares:import` or OPPS/ASC prices fall to the stub.
 
 So today, registering an ASC vendor doesn't yet change the rate
 they're priced against. Once Addendum AA data lands, ASC-routed claims

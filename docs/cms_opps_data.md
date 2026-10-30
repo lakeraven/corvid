@@ -216,18 +216,23 @@ apc_relative_weight × conversion_factor × (labor_share × wage_index + (1 − 
 `labor_share` is a row in `corvid_cms_labor_shares` for payment system
 `opps` and that calendar year, shipped in
 `db/data/cms_labor_shares.csv`. Operators load that file with
-`rake cms:labor_shares:import` before repricing. Demo seeds insert
-the CY 2026 OPPS share; `PrcImporter.reanalyze` does not load the
-file. Each row cites that year's OPPS/ASC final rule. The OPPS
-labor-related share in that file is 60%. A calendar year with no
-labor-share row is undetermined: the provider returns nil and the
-analyzer takes the stub path, rather than pricing the wage index
-against a 100% labor share. Arithmetic is exact `BigDecimal`, rounded
-to cents once at the end (ADR 0004). When an IPPS wage-index row is
-used, the lookup records that row's fiscal year and the labor share.
-When no wage-index row is loaded and the index defaults to 1.0, the
-lookup's wage-index fiscal year is nil and the analyzer note is
-`Wage index 1.0 (no FY N wage-index row), labor share X.`
+`rake cms:labor_shares:import` before repricing. After upgrading,
+operators must run `rake cms:labor_shares:import` or OPPS/ASC prices
+fall to the stub. Demo seeds insert the CY 2026 OPPS share;
+`PrcImporter.reanalyze` does not load the file. Each row cites that
+year's OPPS/ASC final rule. The OPPS labor-related share in that file
+is 60% for CY 2007–CY 2026. A calendar year with no labor-share row is
+undetermined: the provider returns nil and the analyzer takes the stub
+path, rather than pricing the wage index against a 100% labor share.
+When the APC weight and conversion factor are loaded and only the labor
+share is missing, the stub note names the missing OPPS labor share. A
+missing APC weight keeps the generic note that the real OPPS rate is
+unavailable for that (year, APC, locality). Arithmetic is exact
+`BigDecimal`, rounded to cents once at the end (ADR 0004). When an IPPS
+wage-index row is used, the lookup records that row's fiscal year and
+the labor share. When no wage-index row is loaded and the index defaults
+to 1.0, the lookup's wage-index fiscal year is nil and the analyzer note
+is `Wage index 1.0 (no FY N wage-index row), labor share X.`
 
 The `wage_index` column on `corvid_opps_conversion_factors` is now
 dead weight (unread by the rate provider) but still present in the

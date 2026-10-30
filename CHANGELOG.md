@@ -25,14 +25,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - OPPS and ASC calendar year N is priced with the fiscal year N IPPS
   wage index, applied only to that year's labor-related share (#722).
   Shares live in `corvid_cms_labor_shares` and
-  `db/data/cms_labor_shares.csv`. Operators load them with
-  `rake cms:labor_shares:import` (demo seeds insert the CY 2026 OPPS
-  share). `PrcImporter.reanalyze` does not. Each shipped row cites
-  that calendar year's OPPS/ASC final rule. OPPS labor-related share
-  is 60% and ASC is 50% for CY 2007–CY 2026. A calendar year with no
-  labor-share row is undetermined: the rate provider returns nil and
-  the analyzer takes the stub path, instead of pricing at a 100% labor
-  share. An ASC facility with an ASC rate and conversion factor but no
+  `db/data/cms_labor_shares.csv`. After upgrading, operators must run
+  `rake cms:labor_shares:import` or OPPS/ASC prices fall to the stub
+  (demo seeds insert the CY 2026 OPPS share only).
+  `PrcImporter.reanalyze` does not load the file. Each shipped row cites
+  that calendar year's OPPS/ASC final rule. The OPPS labor-related share
+  is 60% for CY 2007–CY 2026. The ASC labor-related share is 50% for
+  CY 2008–CY 2026. ASC CY 2007 has no row and is undetermined. A share
+  with more than four decimal places is rejected and not stored;
+  `rake cms:labor_shares:import` refuses that file and leaves the table
+  unchanged. A calendar year with no labor-share row is undetermined:
+  the rate provider returns nil and the analyzer takes the stub path,
+  instead of pricing at a 100% labor share. When an OPPS APC weight and conversion factor are loaded
+  and the labor share is missing, the stub note names the missing OPPS
+  labor share; a missing APC weight keeps the generic unavailable-rate
+  note. An ASC facility with an ASC rate and conversion factor but no
   ASC labor share stays on that stub path and does not fall through to
   OPPS; a missing ASC rate still falls through to OPPS. When an IPPS
   wage-index row is used, the lookup and the analyzer note record that
