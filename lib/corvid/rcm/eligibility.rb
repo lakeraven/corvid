@@ -10,19 +10,27 @@ module Corvid
     # These are in-memory boundary values, like Claim and Remittance: no
     # ActiveRecord, no persistence. Unknown is never a no. Only an explicit
     # inactive answer is `:inactive`; an error, a timeout, or any unmapped
-    # answer is `:undetermined` (42 CFR 136.61).
+    # answer is `:undetermined` (42 CFR 136.61). A coverage benefit answers
+    # only for a service type the inquiry asked for. An active answer whose
+    # coverage window does not contain the service date is `:undetermined`.
     #
     # EB01 codes that are an explicit coverage answer. "1" is active coverage.
     # "6" is inactive. The other active and inactive variants (2–5, 7, 8) are
     # not a clear yes or no, and a benefit such as a copay (B) or coinsurance
-    # (A) does not answer the coverage question by itself.
+    # (A) does not answer the coverage question by itself. A coverage EB with
+    # no service type is health benefit plan coverage ("30") and counts only
+    # when that service type was asked.
     ACTIVE_COVERAGE_CODE = "1"
     INACTIVE_COVERAGE_CODE = "6"
 
     ELIGIBILITY_OUTCOMES = %i[active inactive undetermined].freeze
 
-    # X12 271 default service type: 30 = Health Benefit Plan Coverage.
-    DEFAULT_SERVICE_TYPE_CODES = [ "30" ].freeze
+    # X12 271 service type 30: Health Benefit Plan Coverage. A coverage EB
+    # with a nil or blank service type is this code.
+    HEALTH_BENEFIT_PLAN_COVERAGE = "30"
+
+    # Default inquiry service type when the caller does not name one.
+    DEFAULT_SERVICE_TYPE_CODES = [ HEALTH_BENEFIT_PLAN_COVERAGE ].freeze
 
     # One eligibility question. Identifiers are opaque tokens (ADR 0003).
     # `member_identifier` may be nil when the caller does not have one; that
@@ -145,25 +153,112 @@ module Corvid
         freeze
       end
 
-      # Fail closed. `:active` requires an EB01 of "1" and no AAA reject.
-      # `:inactive` requires an EB01 of "6", no active EB, and no AAA reject.
-      # Both at once, neither, or any reject is `:undetermined`.
-      def self.outcome_for(plans:, errors:)
+      # Fail closed, for the service types the inquiry actually asked.
+      #
+      # Only coverage benefits count: EB01 "1" (active) and "6" (inactive),
+      # and only when `service_type_code` is one of `service_type_codes`.
+      # A nil or blank service type is health benefit plan coverage and
+      # counts only when "30" was asked. Copays, coinsurance, and the other
+      # EB01 variants do not answer. Any AAA error is `:undetermined`.
+      #
+      # `:active` requires a counted "1" and no counted "6". `:inactive`
+      # requires a counted "6" and no counted "1". Both, or neither, is
+      # `:undetermined`.
+      #
+      # An otherwise `:active` answer is `:undetermined` when `service_date`
+      # falls outside a contributing plan's coverage window: `coverage_start`
+      # after the service date, or `coverage_end` before it. The window is
+      # inclusive. A nil bound is unknown — a year-9999 end is stored as nil
+      # — and is not checked. A nil `service_date` skips the check. An
+      # explicit `:inactive` is not revised because of dates.
+      #
+      # @param plans [Array<EligibilityPlan>]
+      # @param errors [Array<EligibilityError>] AAA rejects; any one fails closed
+      # @param service_type_codes [Array<String>] service types the inquiry asked
+      # @param service_date [Date, nil] day the coverage window is checked against
+      # @return [Symbol] `:active`, `:inactive`, or `:undetermined`
+      def self.outcome_for(plans:, errors:, service_type_codes:, service_date:)
         return :undetermined if Array(errors).any?
 
-        codes = benefit_codes(plans)
-        active = codes.include?(ACTIVE_COVERAGE_CODE)
-        inactive = codes.include?(INACTIVE_COVERAGE_CODE)
-        return :active if active && !inactive
-        return :inactive if inactive && !active
+        counted = counted_coverage_benefits(plans, service_type_codes)
+        active = coverage_code?(counted, ACTIVE_COVERAGE_CODE)
+        inactive = coverage_code?(counted, INACTIVE_COVERAGE_CODE)
+        return :undetermined if active && inactive
+        return :inactive if inactive
+        return :undetermined unless active
+        return :undetermined if service_date_outside_window?(plans, service_type_codes, service_date)
 
-        :undetermined
+        :active
       end
 
-      def self.benefit_codes(plans)
-        Array(plans).flat_map { |plan| Array(plan.benefits).map { |benefit| benefit.code.to_s } }
+      def self.counted_coverage_benefits(plans, service_type_codes)
+        asked = Array(service_type_codes).map(&:to_s)
+        benefits = Array(plans).flat_map { |plan| Array(plan.benefits) }
+        benefits.select { |benefit| counts_toward_outcome?(benefit, asked) }
       end
-      private_class_method :benefit_codes
+      private_class_method :counted_coverage_benefits
+
+      def self.counts_toward_outcome?(benefit, asked)
+        return false unless coverage_answer?(benefit)
+
+        service_type_asked?(benefit.service_type_code, asked)
+      end
+      private_class_method :counts_toward_outcome?
+
+      def self.coverage_answer?(benefit)
+        code = benefit.code.to_s
+        code == ACTIVE_COVERAGE_CODE || code == INACTIVE_COVERAGE_CODE
+      end
+      private_class_method :coverage_answer?
+
+      def self.service_type_asked?(service_type_code, asked)
+        if blank_service_type?(service_type_code)
+          asked.include?(HEALTH_BENEFIT_PLAN_COVERAGE)
+        else
+          asked.include?(service_type_code.to_s)
+        end
+      end
+      private_class_method :service_type_asked?
+
+      def self.blank_service_type?(service_type_code)
+        service_type_code.nil? || service_type_code.to_s.strip.empty?
+      end
+      private_class_method :blank_service_type?
+
+      def self.coverage_code?(benefits, code)
+        benefits.any? { |benefit| benefit.code.to_s == code }
+      end
+      private_class_method :coverage_code?
+
+      # Dates apply only to plans that supplied a counted active benefit.
+      # One such plan outside the window fails the whole answer closed.
+      def self.service_date_outside_window?(plans, service_type_codes, service_date)
+        return false if service_date.nil?
+
+        active_plans(plans, service_type_codes).any? do |plan|
+          plan_excludes_date?(plan, service_date)
+        end
+      end
+      private_class_method :service_date_outside_window?
+
+      def self.active_plans(plans, service_type_codes)
+        Array(plans).select { |plan| active_coverage?(plan, service_type_codes) }
+      end
+      private_class_method :active_plans
+
+      def self.active_coverage?(plan, service_type_codes)
+        counted_coverage_benefits([ plan ], service_type_codes).any? do |benefit|
+          benefit.code.to_s == ACTIVE_COVERAGE_CODE
+        end
+      end
+      private_class_method :active_coverage?
+
+      def self.plan_excludes_date?(plan, service_date)
+        start_on = plan.coverage_start
+        end_on = plan.coverage_end
+        (start_on && service_date < start_on) || (end_on && service_date > end_on)
+      end
+      private_class_method :plan_excludes_date?
     end
   end
 end

@@ -27,10 +27,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `EligibilityError` are the clearinghouse port's 271 shapes.
   `ClearinghouseClient#check_eligibility` is the seam;
   `FixtureClearinghouseClient` answers from synthetic X12 271 fixtures
-  parsed by `Edi271Reader`. Only an explicit inactive benefit is
-  `:inactive`. An AAA reject, an unmapped reject, a missing fixture, or
-  any other non-answer is `:undetermined`. A coverage end in year 9999
-  is open-ended (`nil`). Live 270 generation and clearinghouse transport
+  parsed by `Edi271Reader`. The outcome counts only coverage benefits
+  (EB01 `1` or `6`) for the service types the inquiry asked; a benefit
+  with no service type counts only when `30` was asked. An otherwise
+  active answer is `:undetermined` when the service date is outside the
+  plan coverage window (unknown or open-ended bounds are not checked).
+  Only an explicit inactive benefit is `:inactive`. An AAA reject, an
+  unmapped reject, a missing fixture, a malformed fixture, or any other
+  non-answer is `:undetermined`. A coverage end in year 9999 is
+  open-ended (`nil`). Live 270 generation and clearinghouse transport
   are not included.
 - ZIP-to-CBSA wage-area crosswalk (#371). `corvid_zip_cbsa_crosswalks`
   stores the CMS crosswalk by federal fiscal year (`zip` is five ASCII

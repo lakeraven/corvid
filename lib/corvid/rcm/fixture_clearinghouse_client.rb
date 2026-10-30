@@ -16,20 +16,27 @@ module Corvid
     #
     # The fixtures are parsed, not hand-built as hashes: if a reader mis-parses
     # a segment the tests fail, which is the point. Eligibility fixtures are
-    # one 271 per member identifier. The identifier is untrusted: only a single
-    # `[A-Za-z0-9_-]` token is opened, and the resolved path has to stay inside
-    # the fixture directory. Anything else, including a blank identifier or a
-    # token with no fixture, is `:undetermined` — unknown is never a no. A
-    # fixture that exists but is not a 271 raises `Edi271Reader::MalformedError`
-    # with a fixed message that carries no member identifier (ADR 0003).
+    # one 271 per member identifier. The identifier is untrusted and is not
+    # stripped or normalised: only a raw value matching a single
+    # `[A-Za-z0-9_-]` token (`\z`, so a trailing newline fails) is opened,
+    # and the resolved path has to stay inside the fixture directory,
+    # including after symlink resolution. Anything else — a blank identifier,
+    # a token with no fixture, or a file `Edi271Reader` rejects as malformed
+    # — is `:undetermined`. Unknown is never a no. `check_eligibility` always
+    # returns an `EligibilityResponse`. The reader itself still raises
+    # `Edi271Reader::MalformedError` with a fixed message and `cause: nil`,
+    # so a member identifier or the file body cannot ride out on the
+    # exception (ADR 0003); this client catches that and answers
+    # `:undetermined` with no plans, no errors, and no raw reference.
     class FixtureClearinghouseClient < ClearinghouseClient
       FIXTURE_DIR = File.expand_path("fixtures/835", __dir__)
       ELIGIBILITY_FIXTURE_DIR = File.expand_path("fixtures/271", __dir__)
       ACKNOWLEDGMENT_TABLE = File.expand_path("data/clearinghouse_acknowledgments.yml", __dir__)
 
-      # Member identifiers are path segments. Dots, slashes, and anything else
-      # that could leave the fixture directory are refused before `File` sees
-      # them.
+      # Member identifiers are path segments. The raw value must match this
+      # token (`\z`, so a trailing newline does not pass). It is not stripped
+      # or normalised. Dots, slashes, spaces, and anything else that could
+      # leave the fixture directory are refused before `File` sees them.
       MEMBER_TOKEN = /\A[A-Za-z0-9_-]+\z/
 
       # Scenarios in a stable order — the order `fetch_remittances` returns.
@@ -98,12 +105,17 @@ module Corvid
 
       # One 271 per member identifier. Payer, service date, service type codes,
       # and provider NPI stay on the inquiry — they are what a live 270 would
-      # send — and are not a second lookup key. `as_of` is the injected clock,
-      # not a date from the file.
+      # send — and are not a second lookup key. The service type codes and
+      # the service date are the outcome's question (see
+      # `EligibilityResponse.outcome_for`). `as_of` is the injected clock,
+      # not a date from the file. A missing fixture and a file the reader
+      # rejects as malformed both answer `:undetermined` with no plans, no
+      # errors, and no raw reference — nothing taken from the identifier or
+      # the file body.
       def check_eligibility(inquiry)
         as_of = @clock.call
         parsed = read_eligibility_fixture(inquiry.member_identifier)
-        eligibility_response(parsed, as_of)
+        eligibility_response(parsed, inquiry, as_of)
       end
 
       def scenarios
@@ -147,12 +159,14 @@ module Corvid
         return nil if path.nil? || !File.file?(path)
 
         Edi271Reader.new(File.binread(path)).parse
-      rescue SystemCallError
+      rescue SystemCallError, Edi271Reader::MalformedError
         nil
       end
 
+      # The raw identifier, not a stripped one. " MBR-X" and "MBR-X\n" are
+      # not tokens and must not open MBR-X's fixture.
       def eligibility_fixture_path(member_identifier)
-        token = member_identifier.to_s.strip
+        token = member_identifier.to_s
         return nil unless token.match?(MEMBER_TOKEN)
 
         directory = File.expand_path(@eligibility_fixture_dir.to_s)
@@ -172,11 +186,16 @@ module Corvid
         File.realpath(candidate).start_with?(root)
       end
 
-      def eligibility_response(parsed, as_of)
+      def eligibility_response(parsed, inquiry, as_of)
         return undetermined_eligibility(as_of) if parsed.nil?
 
         EligibilityResponse.new(
-          outcome: EligibilityResponse.outcome_for(plans: parsed.plans, errors: parsed.errors),
+          outcome: EligibilityResponse.outcome_for(
+            plans: parsed.plans,
+            errors: parsed.errors,
+            service_type_codes: inquiry.service_type_codes,
+            service_date: inquiry.service_date
+          ),
           plans: parsed.plans,
           errors: parsed.errors,
           as_of: as_of,

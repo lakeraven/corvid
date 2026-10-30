@@ -19,7 +19,8 @@ module Corvid
     # an `Acknowledgment` (accepted or rejected — never a denial, which can
     # only come back on an 835), `fetch_remittances` always answers with
     # `Remittance` values, and `check_eligibility` always answers with an
-    # `EligibilityResponse`.
+    # `EligibilityResponse`. A malformed 271 is that response with outcome
+    # `:undetermined`, not a raised parse error.
     class ClearinghouseClient
       class TransportError < StandardError; end
 
@@ -51,9 +52,12 @@ module Corvid
       # Real-time eligibility (X12 271).
       #
       # Unknown is never a no. Only an explicit inactive answer is `:inactive`;
-      # an error, a timeout, or an unmapped answer is `:undetermined`
-      # (42 CFR 136.61). Whatever this raises must not name the patient or the
-      # member — the inquiry is not interpolated into the message.
+      # an error, a timeout, a malformed 271, or an unmapped answer is
+      # `:undetermined` (42 CFR 136.61). Implementations always return an
+      # `EligibilityResponse`: a 271 the reader cannot parse is an
+      # undetermined answer, not an exception that carries the inquiry.
+      # Whatever this raises must not name the patient or the member — the
+      # inquiry is not interpolated into the message.
       #
       # @param inquiry [Corvid::Rcm::EligibilityInquiry]
       # @return [Corvid::Rcm::EligibilityResponse]
