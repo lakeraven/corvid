@@ -229,11 +229,17 @@ module Corvid
         BigDecimal(value)
       end
 
+      # Shape first, so a non-date keeps that refusal. A string that matches
+      # the shape can still be no calendar day (February 30); that refusal
+      # names no date.
       def parse_paid_date(value)
         return nil if value.nil?
         raise ArgumentError, "paid_date must be an ISO-8601 date" unless value.is_a?(String) && ISO_DATE.match?(value)
 
-        Date.strptime(value, "%Y-%m-%d")
+        year, month, day = value.split("-").map { |part| Integer(part, 10) }
+        raise ArgumentError, "paid_date is not a valid calendar date" unless Date.valid_date?(year, month, day)
+
+        Date.new(year, month, day)
       end
     end
   end
