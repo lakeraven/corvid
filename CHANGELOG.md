@@ -22,6 +22,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   instead of `denial_reason_token`.
 
 ### Added
+- `Corvid::Rcm::ChargeBuilder` builds a `ChargeSet` from a finalized FHIR
+  encounter in memory (#748). A completed procedure in the behavioral-health
+  code set becomes a claim line priced by an injected price list. An
+  unfinished encounter, an unknown modality, a code outside the set, a
+  missing serviced date, a missing price, or a missing diagnosis is a
+  problem and not a line. Telehealth place of service and modifiers follow
+  the scrub rules (POS 02 or 10, modifier 95, audio-only 93 unless the
+  coverage names another). The charge set carries tokens and references
+  only.
 - ZIP-to-CBSA wage-area crosswalk (#371). `corvid_zip_cbsa_crosswalks`
   stores the CMS crosswalk by federal fiscal year (`zip` is five ASCII
   digits; `cbsa` is a five-digit CBSA or a two-digit rural-state code;
