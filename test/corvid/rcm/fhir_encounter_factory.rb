@@ -24,8 +24,9 @@ module Corvid::Rcm::FhirEncounterFactory
   PHI_TRAP_NOTE = "SYNTH-PHI-TRAP DO NOT EMIT"
 
   def encounter(id: "enc-synth-1", status: "finished", class_code: "AMB", class_system: ACT_CODE,
-                at_home: false, audio_only_type: false, location_physical_type: nil, diagnosis: [],
-                **extra)
+                at_home: false, audio_only_type: false, location_physical_type: nil,
+                location_physical_system: LOCATION_PHYSICAL, telephone_type_system: SNOMED,
+                diagnosis: [], **extra)
     resource = {
       "resourceType" => "Encounter",
       "id" => id,
@@ -38,20 +39,20 @@ module Corvid::Rcm::FhirEncounterFactory
       resource["location"] = [ {
         "location" => { "reference" => "Location/loc-synth-room" },
         "physicalType" => {
-          "coding" => [ { "system" => LOCATION_PHYSICAL, "code" => location_physical_type } ]
+          "coding" => [ { "system" => location_physical_system, "code" => location_physical_type } ]
         }
       } ]
     elsif at_home
       resource["location"] = [ {
         "location" => { "reference" => "Location/loc-synth-home" },
         "physicalType" => {
-          "coding" => [ { "system" => LOCATION_PHYSICAL, "code" => "ho" } ]
+          "coding" => [ { "system" => location_physical_system, "code" => "ho" } ]
         }
       } ]
     end
     if audio_only_type
       resource["type"] = [ {
-        "coding" => [ { "system" => SNOMED, "code" => TELEPHONE_ENCOUNTER } ]
+        "coding" => [ { "system" => telephone_type_system, "code" => TELEPHONE_ENCOUNTER } ]
       } ]
     end
     resource
@@ -68,7 +69,6 @@ module Corvid::Rcm::FhirEncounterFactory
                 code_system: CPT, performers: nil, note: PHI_TRAP_NOTE)
     resource = {
       "resourceType" => "Procedure",
-      "id" => id,
       "status" => status,
       "encounter" => { "reference" => "Encounter/#{encounter_id}" },
       "code" => {
@@ -76,6 +76,7 @@ module Corvid::Rcm::FhirEncounterFactory
       },
       "note" => [ { "text" => note } ]
     }
+    resource["id"] = id unless id.nil?
     resource["performer"] =
       if performers
         performers
@@ -96,11 +97,20 @@ module Corvid::Rcm::FhirEncounterFactory
   end
 
   def performer_actor(npi)
-    if npi.nil?
-      { "reference" => "Practitioner/pr-synth" }
-    else
-      { "identifier" => [ { "system" => NPI, "value" => npi } ] }
-    end
+    actor = {
+      "reference" => "Practitioner/pr-synth-1",
+      "type" => "Practitioner"
+    }
+    actor["identifier"] = [ { "system" => NPI, "value" => npi } ] unless npi.nil?
+    actor
+  end
+
+  def untyped_identifier_performer(npi: RENDERING_NPI)
+    {
+      "actor" => {
+        "identifier" => [ { "system" => NPI, "value" => npi } ]
+      }
+    }
   end
 
   def practitioner_performer(npi: RENDERING_NPI, reference: nil)
@@ -131,7 +141,8 @@ module Corvid::Rcm::FhirEncounterFactory
     }
   end
 
-  def condition(id:, icd10: nil, snomed_code: nil, verification_status: nil, note: PHI_TRAP_NOTE)
+  def condition(id:, icd10: nil, snomed_code: nil, verification_status: nil,
+                verification_system: CONDITION_VERIFICATION, note: PHI_TRAP_NOTE)
     coding = []
     coding << { "system" => ICD10, "code" => icd10 } if icd10
     coding << { "system" => SNOMED, "code" => snomed_code } if snomed_code
@@ -143,7 +154,7 @@ module Corvid::Rcm::FhirEncounterFactory
     }
     if verification_status
       resource["verificationStatus"] = {
-        "coding" => [ { "system" => CONDITION_VERIFICATION, "code" => verification_status } ]
+        "coding" => [ { "system" => verification_system, "code" => verification_status } ]
       }
     end
     resource
