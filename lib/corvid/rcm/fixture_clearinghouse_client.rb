@@ -73,8 +73,8 @@ module Corvid
       end
 
       def submit_claim(claim)
-        @submitted << claim
         edits = rejection_edits(claim)
+        @submitted << claim
         return acknowledgment(claim, :accepted, transaction_set: default_transaction_set) if edits.empty?
 
         acknowledgment(claim, :rejected,
@@ -122,18 +122,55 @@ module Corvid
 
       # One edit list for `validate_claim` and `submit_claim`, so the two
       # cannot disagree about the same claim.
+      #
+      # A claim listed under `rejections` — the key is present, whatever its
+      # value — must yield at least one edit, and every canned edit must
+      # have a non-blank code and a non-blank description. Otherwise this
+      # raises ArgumentError ("canned rejection has no usable edit"), and
+      # that message does not include the claim identifier. A missing
+      # `code` or `description` key still fails closed through `Hash#fetch`.
+      # A claim that is not listed keeps the front-door rule: a blank
+      # billing provider NPI is the missing-NPI edit, and any other claim
+      # is clean.
       def rejection_edits(claim)
-        canned = Array(rejections.dig(claim.identifier.to_s, "edits")).map do |edit|
-          AcknowledgmentEdit.new(
-            code: edit.fetch("code"),
-            description: edit.fetch("description"),
-            element: edit["element"],
-            level: edit.fetch("level", "claim")
-          )
-        end
-        return canned if canned.any?
+        identifier = claim.identifier.to_s
+        return front_door_edits(claim) unless rejections.key?(identifier)
 
-        claim.billing_provider_npi.to_s.strip.empty? ? [ MISSING_BILLING_NPI_EDIT ] : []
+        listed_rejection_edits(rejections.fetch(identifier))
+      end
+
+      def front_door_edits(claim)
+        return [ MISSING_BILLING_NPI_EDIT ] if claim.billing_provider_npi.to_s.strip.empty?
+
+        []
+      end
+
+      def listed_rejection_edits(entry)
+        raw = entry.is_a?(Hash) ? entry["edits"] : nil
+        raise_unusable_canned_rejection! if !raw.is_a?(Array) || raw.empty?
+
+        raw.map { |edit| canned_edit(edit) }
+      end
+
+      def canned_edit(edit)
+        raise_unusable_canned_rejection! unless edit.is_a?(Hash)
+
+        code = edit.fetch("code")
+        description = edit.fetch("description")
+        if code.to_s.strip.empty? || description.to_s.strip.empty?
+          raise_unusable_canned_rejection!
+        end
+
+        AcknowledgmentEdit.new(
+          code: code,
+          description: description,
+          element: edit["element"],
+          level: edit.fetch("level", "claim")
+        )
+      end
+
+      def raise_unusable_canned_rejection!
+        raise ArgumentError, "canned rejection has no usable edit"
       end
 
       def acknowledgment(claim, outcome, transaction_set:, edits: [])
