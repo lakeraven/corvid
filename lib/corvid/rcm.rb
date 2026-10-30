@@ -3,6 +3,7 @@
 require_relative "rcm/claim"
 require_relative "rcm/acknowledgment"
 require_relative "rcm/remittance"
+require_relative "rcm/posting_plan"
 require_relative "rcm/edi_835_reader"
 require_relative "rcm/adjustment_reason_codes"
 require_relative "rcm/remittance_classifier"
@@ -15,9 +16,9 @@ require_relative "rcm/scrubber"
 module Corvid
   # Revenue cycle management.
   #
-  # Phase 0 (this slice) is fixtures and rules and nothing else: plain Ruby, no
-  # ActiveRecord, no migrations, no network. It loads and runs without a
-  # database, which is what makes it testable today.
+  # Phase 0 (this slice) is fixtures, rules, and ledger-neutral posting, in
+  # plain Ruby: no ActiveRecord, no migrations, no network. It loads and runs
+  # without a database, which is what makes it testable today.
   #
   # What is here:
   #   Claim / ClaimLine / Coverage / Diagnosis  — FHIR R4-shaped inputs
@@ -27,6 +28,7 @@ module Corvid
   #   Edi835Reader                              — X12 835 -> ClaimResponse shapes
   #   AdjustmentReasonCodes                     — CARC/RARC mapping as data
   #   RemittanceClassifier                      — routing, with unmapped -> human
+  #   PostingPlan                               — ledger-neutral posting entries
   #
   # What is deliberately NOT here (wave 2 and later, per the marker issue):
   #   - persistence of any kind (tables, models, the claim event log with #507)

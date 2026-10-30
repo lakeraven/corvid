@@ -22,6 +22,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   instead of `denial_reason_token`.
 
 ### Added
+- `Corvid::Rcm::PostingPlan.from` turns an 835 remittance into
+  ledger-neutral posting entries (#749). Each balanced claim posts one
+  payer payment per non-zero service-line paid amount, or a single
+  claim-level payment when the claim has no service lines, plus every
+  CAS adjustment, including zeros. CO, PR, OI, and PI become contractual,
+  patient responsibility, other payer, and payer-initiated reduction;
+  any other group is posted as unclassified and kept. A reversal
+  (CLP02 = 22) posts the reported amounts, already negative on a
+  takeback, as `:reversal` entries. A claim that does not balance, whose
+  service lines do not sum to its payment, or a reversal with a positive
+  paid amount is listed on `#unbalanced` and contributes no entries.
 - ZIP-to-CBSA wage-area crosswalk (#371). `corvid_zip_cbsa_crosswalks`
   stores the CMS crosswalk by federal fiscal year (`zip` is five ASCII
   digits; `cbsa` is a five-digit CBSA or a two-digit rural-state code;
