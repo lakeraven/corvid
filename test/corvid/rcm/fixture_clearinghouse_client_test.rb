@@ -225,6 +225,71 @@ class Corvid::Rcm::FixtureClearinghouseClientTest < Minitest::Test
     table&.unlink
   end
 
+  def test_listed_rejection_with_transaction_set_only_and_no_edits_is_broken_canned_source
+    assert_broken_clm_rj_0001_rejection_table_fails_closed(<<~YAML)
+        transaction_set: "999"
+    YAML
+  end
+
+  def test_listed_rejection_with_empty_edits_array_is_broken_canned_source
+    assert_broken_clm_rj_0001_rejection_table_fails_closed(<<~YAML)
+        transaction_set: "277CA"
+        edits: []
+    YAML
+  end
+
+  def test_listed_rejection_with_null_entry_is_broken_canned_source
+    assert_broken_clm_rj_0001_rejection_table_fails_closed("")
+  end
+
+  def test_listed_rejection_with_blank_edit_description_is_broken_canned_source
+    assert_broken_clm_rj_0001_rejection_table_fails_closed(<<~YAML)
+        edits:
+          - code: "A7:562"
+            description: ""
+            element: "NM1*85 billing provider"
+            level: claim
+    YAML
+  end
+
+  def test_listed_rejection_with_blank_edit_code_is_broken_canned_source
+    assert_broken_clm_rj_0001_rejection_table_fails_closed(<<~YAML)
+        edits:
+          - code: "   "
+            description: "Entity's National Provider Identifier (NPI) — the billing provider NPI is not on file with this payer."
+            element: "NM1*85 billing provider"
+            level: claim
+    YAML
+  end
+
+  def test_claim_not_listed_in_rejections_table_with_billing_npi_validates_clean
+    table = Tempfile.new([ "partial_ack_table", ".yml" ])
+    table.write(<<~YAML)
+      default_transaction_set: "277CA"
+      rejections:
+        CLM-RJ-0002:
+          transaction_set: "999"
+          edits:
+            - code: "IK403:I12"
+              description: "Implementation pattern match failure — the subscriber member identifier is not in a format this payer accepts."
+              element: "NM1*IL*09 subscriber member id"
+              level: segment
+    YAML
+    table.close
+
+    client = Corvid::Rcm::FixtureClearinghouseClient.new(
+      acknowledgment_table: table.path,
+      clock: FIXED_CLOCK
+    )
+    result = client.validate_claim(Factory.claim(identifier: "CLM-2001"))
+
+    assert result.valid?
+    assert_empty result.edits
+    assert_empty client.submitted
+  ensure
+    table&.unlink
+  end
+
   def test_a_failed_validation_routes_like_a_rejected_277ca_not_a_denial
     validation = @client.validate_claim(Factory.claim(billing_provider_npi: nil))
     ack = validation.to_acknowledgment
@@ -297,6 +362,44 @@ class Corvid::Rcm::FixtureClearinghouseClientTest < Minitest::Test
   end
 
   private
+
+  def assert_broken_clm_rj_0001_rejection_table_fails_closed(rejection_body)
+    table = Tempfile.new([ "broken_ack_table", ".yml" ])
+    table.write(<<~YAML)
+      default_transaction_set: "277CA"
+      rejections:
+        CLM-RJ-0001:
+    YAML
+    table.write(rejection_body)
+    unless rejection_body.end_with?("\n")
+      table.write("\n")
+    end
+    table.close
+
+    claim = Factory.claim(identifier: "CLM-RJ-0001")
+
+    validate_client = Corvid::Rcm::FixtureClearinghouseClient.new(
+      acknowledgment_table: table.path,
+      clock: FIXED_CLOCK
+    )
+    validation_error = assert_raises(ArgumentError) { validate_client.validate_claim(claim) }
+
+    refute_instance_of Corvid::Rcm::ClaimValidation, validation_error
+    refute_includes validation_error.message, "CLM-RJ-0001"
+    assert_empty validate_client.submitted
+
+    submit_client = Corvid::Rcm::FixtureClearinghouseClient.new(
+      acknowledgment_table: table.path,
+      clock: FIXED_CLOCK
+    )
+    submit_error = assert_raises(ArgumentError) { submit_client.submit_claim(claim) }
+
+    refute_instance_of Corvid::Rcm::ClaimValidation, submit_error
+    refute_includes submit_error.message, "CLM-RJ-0001"
+    assert_empty submit_client.submitted
+  ensure
+    table&.unlink
+  end
 
   def edit(code, description, element, level)
     Corvid::Rcm::AcknowledgmentEdit.new(
