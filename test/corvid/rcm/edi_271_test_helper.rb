@@ -161,7 +161,7 @@ module Corvid::Rcm::Edi271TestHelper
   end
 
   def write_fixture(dir, member_token, content)
-    File.write(File.join(dir, "#{member_token}.271"), content)
+    File.binwrite(File.join(dir, "#{member_token}.271"), content)
   end
 
   def fixture_client(dir, clock: FIXED_CLOCK)
