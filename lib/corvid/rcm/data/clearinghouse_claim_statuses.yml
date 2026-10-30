@@ -1,0 +1,46 @@
+# Canned 277 claim-status answers for the fixture clearinghouse.
+#
+# Synthetic claim identifiers only. paid_amount is a decimal string with two
+# fractional digits (never a YAML float). paid_date is a calendar date,
+# YYYY-MM-DD, parsed strictly. A row whose category does not agree with its
+# category code is refused when this file is loaded.
+#
+# These are status inquiries, not acknowledgments and not 835s.
+# CLM-ST-REJECTED is a front-end rejection (A7). CLM-ST-DENIED is an
+# adjudicated denial (F2). They are not the same outcome.
+
+# P1 / 45 — in process, awaiting benefit determination.
+CLM-ST-PENDING:
+  payer_control_number: "PCN-ST-PENDING"
+  category: pending
+  category_code: "P1"
+  status_code: "45"
+  paid_amount: null
+  paid_date: null
+
+# F1 / 65 — claim/line has been paid.
+CLM-ST-PAID:
+  payer_control_number: "PCN-ST-PAID"
+  category: finalized_paid
+  category_code: "F1"
+  status_code: "65"
+  paid_amount: "125.40"
+  paid_date: "2026-08-15"
+
+# F2 / 585 — denied charge or non-covered charge. Adjudicated, not a rejection.
+CLM-ST-DENIED:
+  payer_control_number: "PCN-ST-DENIED"
+  category: finalized_denied
+  category_code: "F2"
+  status_code: "585"
+  paid_amount: null
+  paid_date: null
+
+# A7 / 21 — rejected for invalid information. Front-end, not a denial.
+CLM-ST-REJECTED:
+  payer_control_number: "PCN-ST-REJECTED"
+  category: rejected
+  category_code: "A7"
+  status_code: "21"
+  paid_amount: null
+  paid_date: null
