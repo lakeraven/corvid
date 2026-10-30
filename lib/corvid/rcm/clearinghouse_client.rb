@@ -2,6 +2,7 @@
 
 require_relative "acknowledgment"
 require_relative "remittance"
+require_relative "eligibility"
 
 module Corvid
   module Rcm
@@ -16,8 +17,9 @@ module Corvid
     #
     # Implementations must be substitutable: `submit_claim` always answers with
     # an `Acknowledgment` (accepted or rejected — never a denial, which can
-    # only come back on an 835), and `fetch_remittances` always answers with
-    # `Remittance` values.
+    # only come back on an 835), `fetch_remittances` always answers with
+    # `Remittance` values, and `check_eligibility` always answers with an
+    # `EligibilityResponse`.
     class ClearinghouseClient
       class TransportError < StandardError; end
 
@@ -44,6 +46,19 @@ module Corvid
       # @return [Array<Corvid::Rcm::Remittance>]
       def fetch_remittances(date_range: nil)
         raise NotImplementedError, "#{self.class}#fetch_remittances not implemented"
+      end
+
+      # Real-time eligibility (X12 271).
+      #
+      # Unknown is never a no. Only an explicit inactive answer is `:inactive`;
+      # an error, a timeout, or an unmapped answer is `:undetermined`
+      # (42 CFR 136.61). Whatever this raises must not name the patient or the
+      # member — the inquiry is not interpolated into the message.
+      #
+      # @param inquiry [Corvid::Rcm::EligibilityInquiry]
+      # @return [Corvid::Rcm::EligibilityResponse]
+      def check_eligibility(inquiry)
+        raise NotImplementedError, "#{self.class}#check_eligibility not implemented"
       end
     end
   end

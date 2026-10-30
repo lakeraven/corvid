@@ -4,19 +4,33 @@ require "yaml"
 
 require_relative "clearinghouse_client"
 require_relative "edi_835_reader"
+require_relative "edi_271_reader"
 
 module Corvid
   module Rcm
-    # A `ClearinghouseClient` backed by synthetic 835 files and a canned
+    # A `ClearinghouseClient` backed by synthetic 835 and 271 files and a canned
     # acknowledgment table. No network, no credentials, no clock skew — the
-    # same inputs always produce the same outputs, so the posting and routing
-    # logic can be tested against real X12 syntax without a payer connection.
+    # same inputs always produce the same outputs, so posting, routing, and
+    # eligibility can be tested against real X12 syntax without a payer
+    # connection.
     #
-    # The 835 fixtures are parsed, not hand-built as hashes: if the reader
-    # mis-parses a segment the tests fail, which is the point.
+    # The fixtures are parsed, not hand-built as hashes: if a reader mis-parses
+    # a segment the tests fail, which is the point. Eligibility fixtures are
+    # one 271 per member identifier. The identifier is untrusted: only a single
+    # `[A-Za-z0-9_-]` token is opened, and the resolved path has to stay inside
+    # the fixture directory. Anything else, including a blank identifier or a
+    # token with no fixture, is `:undetermined` — unknown is never a no. A
+    # fixture that exists but is not a 271 raises `Edi271Reader::MalformedError`
+    # with a fixed message that carries no member identifier (ADR 0003).
     class FixtureClearinghouseClient < ClearinghouseClient
       FIXTURE_DIR = File.expand_path("fixtures/835", __dir__)
+      ELIGIBILITY_FIXTURE_DIR = File.expand_path("fixtures/271", __dir__)
       ACKNOWLEDGMENT_TABLE = File.expand_path("data/clearinghouse_acknowledgments.yml", __dir__)
+
+      # Member identifiers are path segments. Dots, slashes, and anything else
+      # that could leave the fixture directory are refused before `File` sees
+      # them.
+      MEMBER_TOKEN = /\A[A-Za-z0-9_-]+\z/
 
       # Scenarios in a stable order — the order `fetch_remittances` returns.
       SCENARIOS = %w[
@@ -42,9 +56,11 @@ module Corvid
       )
 
       def initialize(scenarios: SCENARIOS, fixture_dir: FIXTURE_DIR,
-                     acknowledgment_table: ACKNOWLEDGMENT_TABLE, clock: -> { Time.now.utc })
+                     acknowledgment_table: ACKNOWLEDGMENT_TABLE, clock: -> { Time.now.utc },
+                     eligibility_fixture_dir: ELIGIBILITY_FIXTURE_DIR)
         @scenarios = Array(scenarios)
         @fixture_dir = fixture_dir
+        @eligibility_fixture_dir = eligibility_fixture_dir
         @clock = clock
         @table = YAML.safe_load_file(acknowledgment_table)
         @submitted = []
@@ -78,6 +94,16 @@ module Corvid
         raise ArgumentError, "no 835 fixture for scenario #{scenario.inspect}" unless File.exist?(path)
 
         Edi835Reader.read(path)
+      end
+
+      # One 271 per member identifier. Payer, service date, service type codes,
+      # and provider NPI stay on the inquiry — they are what a live 270 would
+      # send — and are not a second lookup key. `as_of` is the injected clock,
+      # not a date from the file.
+      def check_eligibility(inquiry)
+        as_of = @clock.call
+        parsed = read_eligibility_fixture(inquiry.member_identifier)
+        eligibility_response(parsed, as_of)
       end
 
       def scenarios
@@ -114,6 +140,58 @@ module Corvid
         return canned if canned.any?
 
         claim.billing_provider_npi.to_s.strip.empty? ? [ MISSING_BILLING_NPI_EDIT ] : []
+      end
+
+      def read_eligibility_fixture(member_identifier)
+        path = eligibility_fixture_path(member_identifier)
+        return nil if path.nil? || !File.file?(path)
+
+        Edi271Reader.new(File.binread(path)).parse
+      rescue SystemCallError
+        nil
+      end
+
+      def eligibility_fixture_path(member_identifier)
+        token = member_identifier.to_s.strip
+        return nil unless token.match?(MEMBER_TOKEN)
+
+        directory = File.expand_path(@eligibility_fixture_dir.to_s)
+        candidate = File.expand_path("#{token}.271", directory)
+        return nil unless contained_in?(directory, candidate)
+
+        candidate
+      rescue SystemCallError
+        nil
+      end
+
+      def contained_in?(directory, candidate)
+        return false unless candidate.start_with?("#{directory}#{File::SEPARATOR}")
+        return true unless File.exist?(candidate)
+
+        root = "#{File.realpath(directory)}#{File::SEPARATOR}"
+        File.realpath(candidate).start_with?(root)
+      end
+
+      def eligibility_response(parsed, as_of)
+        return undetermined_eligibility(as_of) if parsed.nil?
+
+        EligibilityResponse.new(
+          outcome: EligibilityResponse.outcome_for(plans: parsed.plans, errors: parsed.errors),
+          plans: parsed.plans,
+          errors: parsed.errors,
+          as_of: as_of,
+          raw_reference: parsed.raw_reference
+        )
+      end
+
+      def undetermined_eligibility(as_of)
+        EligibilityResponse.new(
+          outcome: :undetermined,
+          plans: [],
+          errors: [],
+          as_of: as_of,
+          raw_reference: nil
+        )
       end
 
       def acknowledgment(claim, outcome, transaction_set:, edits: [])

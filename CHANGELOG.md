@@ -22,6 +22,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   instead of `denial_reason_token`.
 
 ### Added
+- Typed real-time eligibility (#736). `Corvid::Rcm::EligibilityInquiry`,
+  `EligibilityResponse`, `EligibilityPlan`, `EligibilityBenefit`, and
+  `EligibilityError` are the clearinghouse port's 271 shapes.
+  `ClearinghouseClient#check_eligibility` is the seam;
+  `FixtureClearinghouseClient` answers from synthetic X12 271 fixtures
+  parsed by `Edi271Reader`. Only an explicit inactive benefit is
+  `:inactive`. An AAA reject, an unmapped reject, a missing fixture, or
+  any other non-answer is `:undetermined`. A coverage end in year 9999
+  is open-ended (`nil`). Live 270 generation and clearinghouse transport
+  are not included.
 - ZIP-to-CBSA wage-area crosswalk (#371). `corvid_zip_cbsa_crosswalks`
   stores the CMS crosswalk by federal fiscal year (`zip` is five ASCII
   digits; `cbsa` is a five-digit CBSA or a two-digit rural-state code;
