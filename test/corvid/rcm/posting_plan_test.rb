@@ -183,14 +183,17 @@ class Corvid::Rcm::PostingPlanTest < Minitest::Test
       claim_identifier: "CLM-MAP",
       payer_control_number: "PAYER-MAP",
       status_code: Corvid::Rcm::CLAIM_STATUS_PROCESSED_PRIMARY,
-      billed_amount: BigDecimal("70.00"),
+      billed_amount: BigDecimal("80.00"),
       paid_amount: BigDecimal("10.00"),
       services: [],
       adjustments: [
         Corvid::Rcm::Adjustment.new(group_code: "CO", reason_code: "45", amount: BigDecimal("10.00")),
         Corvid::Rcm::Adjustment.new(group_code: "PR", reason_code: "1", amount: BigDecimal("10.00")),
-        Corvid::Rcm::Adjustment.new(group_code: "OI", reason_code: "23", amount: BigDecimal("10.00")),
+        Corvid::Rcm::Adjustment.new(
+          group_code: Corvid::Rcm::ADJUSTMENT_GROUP_OTHER, reason_code: "23", amount: BigDecimal("10.00")
+        ),
         Corvid::Rcm::Adjustment.new(group_code: "PI", reason_code: "59", amount: BigDecimal("10.00")),
+        Corvid::Rcm::Adjustment.new(group_code: "OI", reason_code: "23", amount: BigDecimal("10.00")),
         Corvid::Rcm::Adjustment.new(group_code: "CR", reason_code: "1", amount: BigDecimal("10.00")),
         Corvid::Rcm::Adjustment.new(group_code: "ZZ", reason_code: "999", amount: BigDecimal("10.00"))
       ]
@@ -201,13 +204,106 @@ class Corvid::Rcm::PostingPlanTest < Minitest::Test
       claims: [ claim ]
     )
     plan = plan_from(remittance)
-    by_kind = entries_for(plan, "CLM-MAP").group_by(&:kind)
+    entries = entries_for(plan, "CLM-MAP")
 
+    assert_empty plan.unbalanced
+    assert_equal 8, entries.length
+
+    by_kind = entries.group_by(&:kind)
+    assert_equal 1, by_kind.fetch(:payer_payment).length
     assert_equal 1, by_kind.fetch(:contractual_adjustment).length
     assert_equal 1, by_kind.fetch(:patient_responsibility).length
     assert_equal 1, by_kind.fetch(:other_payer).length
+    assert_equal Corvid::Rcm::ADJUSTMENT_GROUP_OTHER, by_kind.fetch(:other_payer).first.group_code
     assert_equal 1, by_kind.fetch(:payer_initiated_reduction).length
-    assert_equal 2, by_kind.fetch(:unclassified).length
+    unclassified = by_kind.fetch(:unclassified)
+    assert_equal 3, unclassified.length
+    assert_equal %w[CR OI ZZ].sort, unclassified.map(&:group_code).sort
+    unclassified.each { |entry| assert_equal BigDecimal("10.00"), entry.amount }
+  end
+
+  def test_service_lines_must_each_balance_and_sum_to_claim_billed_or_unbalanced
+    serviced = Date.new(2026, 8, 18)
+    balanced_line = Corvid::Rcm::RemittanceService.new(
+      procedure_code: "90837",
+      billed_amount: BigDecimal("100.00"),
+      paid_amount: BigDecimal("80.00"),
+      serviced_date: serviced,
+      adjustments: [
+        Corvid::Rcm::Adjustment.new(group_code: "CO", reason_code: "45", amount: BigDecimal("20.00"))
+      ]
+    )
+    unbalanced_line = Corvid::Rcm::RemittanceService.new(
+      procedure_code: "90785",
+      billed_amount: BigDecimal("50.00"),
+      paid_amount: BigDecimal("0.00"),
+      serviced_date: serviced,
+      adjustments: []
+    )
+    claim = Corvid::Rcm::RemittanceClaim.new(
+      claim_identifier: "CLM-LINEBAL",
+      payer_control_number: "PAYER-LINEBAL",
+      status_code: Corvid::Rcm::CLAIM_STATUS_PROCESSED_PRIMARY,
+      billed_amount: BigDecimal("100.00"),
+      paid_amount: BigDecimal("80.00"),
+      services: [ balanced_line, unbalanced_line ],
+      adjustments: []
+    )
+    remittance = synthetic_remittance("REM-LINEBAL", BigDecimal("80.00"), [ claim ])
+    plan = plan_from(remittance)
+
+    assert_equal 1, plan.unbalanced.length
+    row = unbalanced_for(plan, "CLM-LINEBAL")
+    refute_nil row
+    assert_equal "PAYER-LINEBAL", row.payer_control_number
+    assert_empty entries_for(plan, "CLM-LINEBAL")
+  end
+
+  def test_claim_level_cas_with_balanced_lines_posts_nil_service_line_and_reconciles
+    serviced = Date.new(2026, 8, 18)
+    line = Corvid::Rcm::RemittanceService.new(
+      procedure_code: "90837",
+      billed_amount: BigDecimal("100.00"),
+      paid_amount: BigDecimal("80.00"),
+      serviced_date: serviced,
+      adjustments: [
+        Corvid::Rcm::Adjustment.new(group_code: "CO", reason_code: "45", amount: BigDecimal("20.00"))
+      ]
+    )
+    claim = Corvid::Rcm::RemittanceClaim.new(
+      claim_identifier: "CLM-CLCAS",
+      payer_control_number: "PAYER-CLCAS",
+      status_code: Corvid::Rcm::CLAIM_STATUS_PROCESSED_PRIMARY,
+      billed_amount: BigDecimal("130.00"),
+      paid_amount: BigDecimal("80.00"),
+      services: [ line ],
+      adjustments: [
+        Corvid::Rcm::Adjustment.new(group_code: "PR", reason_code: "1", amount: BigDecimal("30.00"))
+      ]
+    )
+    remittance = synthetic_remittance("REM-CLCAS", BigDecimal("80.00"), [ claim ])
+    plan = plan_from(remittance)
+    entries = entries_for(plan, "CLM-CLCAS")
+
+    assert_empty plan.unbalanced
+    assert_equal BigDecimal("130.00"), entries.sum(BigDecimal(0), &:amount)
+
+    payment = entries.find { |e| e.kind == :payer_payment }
+    refute_nil payment
+    assert_equal BigDecimal("80.00"), payment.amount
+    assert_kind_of Corvid::Rcm::PostingServiceLine, payment.service_line
+    assert_equal "90837", payment.service_line.procedure_code
+    assert_equal serviced, payment.service_line.serviced_date
+
+    contractual = entries.find { |e| e.kind == :contractual_adjustment }
+    refute_nil contractual
+    assert_equal BigDecimal("20.00"), contractual.amount
+    assert_kind_of Corvid::Rcm::PostingServiceLine, contractual.service_line
+
+    claim_pr = entries.find { |e| e.kind == :patient_responsibility && e.group_code == "PR" }
+    refute_nil claim_pr
+    assert_equal BigDecimal("30.00"), claim_pr.amount
+    assert_nil claim_pr.service_line
   end
 
   def test_zero_amount_adjustments_are_kept_not_dropped
@@ -352,6 +448,177 @@ class Corvid::Rcm::PostingPlanTest < Minitest::Test
     assert_empty entries_for(plan, "CLM-BADREV")
   end
 
+  def test_reversal_with_positive_billed_amount_is_unbalanced_and_not_posted
+    claim = Corvid::Rcm::RemittanceClaim.new(
+      claim_identifier: "CLM-REVPOSBILLED",
+      payer_control_number: "PAYER-REVPOSBILLED",
+      status_code: Corvid::Rcm::CLAIM_STATUS_REVERSAL,
+      billed_amount: BigDecimal("200.00"),
+      paid_amount: BigDecimal("0.00"),
+      services: [],
+      adjustments: [
+        Corvid::Rcm::Adjustment.new(group_code: "CO", reason_code: "50", amount: BigDecimal("200.00"))
+      ]
+    )
+    plan = plan_from(synthetic_remittance("REM-REVPOSBILLED", BigDecimal("0.00"), [ claim ]))
+
+    assert_equal 1, plan.unbalanced.length
+    assert_empty entries_for(plan, "CLM-REVPOSBILLED")
+  end
+
+  def test_unbalanced_reversal_at_claim_level_posts_nothing
+    claim = Corvid::Rcm::RemittanceClaim.new(
+      claim_identifier: "CLM-REVUNBAL",
+      payer_control_number: "PAYER-REVUNBAL",
+      status_code: Corvid::Rcm::CLAIM_STATUS_REVERSAL,
+      billed_amount: BigDecimal("-200.00"),
+      paid_amount: BigDecimal("-150.00"),
+      services: [],
+      adjustments: [
+        Corvid::Rcm::Adjustment.new(group_code: "CO", reason_code: "45", amount: BigDecimal("-60.00"))
+      ]
+    )
+    plan = plan_from(synthetic_remittance("REM-REVUNBAL", BigDecimal("-150.00"), [ claim ]))
+
+    refute_nil unbalanced_for(plan, "CLM-REVUNBAL")
+    assert_empty entries_for(plan, "CLM-REVUNBAL")
+  end
+
+  def test_reversal_whose_line_paid_amounts_do_not_sum_to_claim_paid_is_unbalanced
+    serviced = Date.new(2026, 8, 18)
+    line = Corvid::Rcm::RemittanceService.new(
+      procedure_code: "90837",
+      billed_amount: BigDecimal("-100.00"),
+      paid_amount: BigDecimal("-90.00"),
+      serviced_date: serviced,
+      adjustments: [
+        Corvid::Rcm::Adjustment.new(group_code: "CO", reason_code: "45", amount: BigDecimal("-10.00"))
+      ]
+    )
+    claim = Corvid::Rcm::RemittanceClaim.new(
+      claim_identifier: "CLM-REVLINEMISMATCH",
+      payer_control_number: "PAYER-REVLINEMISMATCH",
+      status_code: Corvid::Rcm::CLAIM_STATUS_REVERSAL,
+      billed_amount: BigDecimal("-100.00"),
+      paid_amount: BigDecimal("-80.00"),
+      services: [ line ],
+      adjustments: []
+    )
+    plan = plan_from(synthetic_remittance("REM-REVLINEMISMATCH", BigDecimal("-80.00"), [ claim ]))
+
+    assert_equal 1, plan.unbalanced.length
+    assert_empty entries_for(plan, "CLM-REVLINEMISMATCH")
+  end
+
+  def test_balanced_reversal_keeps_positive_cas_amount_as_reversal_kind
+    claim = Corvid::Rcm::RemittanceClaim.new(
+      claim_identifier: "CLM-REVPOSCAS",
+      payer_control_number: "PAYER-REVPOSCAS",
+      status_code: Corvid::Rcm::CLAIM_STATUS_REVERSAL,
+      billed_amount: BigDecimal("-100.00"),
+      paid_amount: BigDecimal("-150.00"),
+      services: [],
+      adjustments: [
+        Corvid::Rcm::Adjustment.new(group_code: "CO", reason_code: "45", amount: BigDecimal("50.00"))
+      ]
+    )
+    plan = plan_from(synthetic_remittance("REM-REVPOSCAS", BigDecimal("-150.00"), [ claim ]))
+    entries = entries_for(plan, "CLM-REVPOSCAS")
+
+    assert_empty plan.unbalanced
+    assert entries.all? { |entry| entry.kind == :reversal }
+    positive_cas = entries.find { |e| e.group_code == "CO" && e.reason_code == "45" }
+    refute_nil positive_cas
+    assert_equal BigDecimal("50.00"), positive_cas.amount
+  end
+
+  def test_reversal_without_service_lines_posts_claim_payment_as_reversal_not_payer_payment
+    claim = Corvid::Rcm::RemittanceClaim.new(
+      claim_identifier: "CLM-REVNOSVC",
+      payer_control_number: "PAYER-REVNOSVC",
+      status_code: Corvid::Rcm::CLAIM_STATUS_REVERSAL,
+      billed_amount: BigDecimal("-125.00"),
+      paid_amount: BigDecimal("-125.00"),
+      services: [],
+      adjustments: []
+    )
+    plan = plan_from(synthetic_remittance("REM-REVNOSVC", BigDecimal("-125.00"), [ claim ]))
+    entries = entries_for(plan, "CLM-REVNOSVC")
+
+    assert_empty plan.unbalanced
+    assert_equal 1, entries.length
+    assert_equal :reversal, entries.first.kind
+    refute entries.any? { |e| e.kind == :payer_payment }
+    assert_equal BigDecimal("-125.00"), entries.first.amount
+    assert_nil entries.first.service_line
+  end
+
+  def test_group_kinds_constant_lives_on_posting_plan_not_rcm_module
+    assert Corvid::Rcm::PostingPlan.const_defined?(:GROUP_KINDS, false)
+    refute Corvid::Rcm.const_defined?(:GROUP_KINDS, false)
+  end
+
+  def test_every_fixture_plan_entry_amount_is_bigdecimal
+    ALL_835_SCENARIOS.each do |scenario|
+      plan = plan_from(@client.remittance(scenario))
+      plan.entries.each do |entry|
+        assert_instance_of BigDecimal, entry.amount,
+                           "expected BigDecimal for #{scenario} #{entry.claim_identifier} #{entry.kind}"
+      end
+    end
+  end
+
+  def test_fixture_plans_carry_payer_control_number_and_line_context_on_adjustments
+    ALL_835_SCENARIOS.each do |scenario|
+      remittance = @client.remittance(scenario)
+      plan = plan_from(remittance)
+
+      remittance.claims.each do |claim|
+        entries = entries_for(plan, claim.claim_identifier)
+        next if entries.empty?
+
+        entries.each do |entry|
+          assert_equal claim.payer_control_number, entry.payer_control_number
+        end
+
+        line_adjustments = entries.reject { |e| e.kind == :payer_payment || e.kind == :reversal }
+                                  .select { |e| !e.group_code.nil? && !e.service_line.nil? }
+        line_adjustments.each do |entry|
+          assert_kind_of Corvid::Rcm::PostingServiceLine, entry.service_line
+          refute_empty entry.service_line.procedure_code
+          refute_nil entry.service_line.serviced_date
+        end
+
+        claim_level_adjustments = entries.select { |e| !e.group_code.nil? && e.service_line.nil? }
+        claim_level_adjustments.each do |entry|
+          assert_nil entry.service_line
+        end
+      end
+    end
+  end
+
+  def test_zero_paid_claim_without_service_lines_still_posts_adjustments_not_payment
+    claim = Corvid::Rcm::RemittanceClaim.new(
+      claim_identifier: "CLM-ZEROPAYADJ",
+      payer_control_number: "PAYER-ZEROPAYADJ",
+      status_code: Corvid::Rcm::CLAIM_STATUS_PROCESSED_PRIMARY,
+      billed_amount: BigDecimal("50.00"),
+      paid_amount: BigDecimal("0.00"),
+      services: [],
+      adjustments: [
+        Corvid::Rcm::Adjustment.new(group_code: "CO", reason_code: "45", amount: BigDecimal("50.00"))
+      ]
+    )
+    plan = plan_from(synthetic_remittance("REM-ZEROPAYADJ", BigDecimal("0.00"), [ claim ]))
+    entries = entries_for(plan, "CLM-ZEROPAYADJ")
+
+    assert_empty plan.unbalanced
+    refute entries.any? { |e| e.kind == :payer_payment }
+    assert_equal 1, entries.length
+    assert_equal :contractual_adjustment, entries.first.kind
+    assert_equal BigDecimal("50.00"), entries.first.amount
+  end
+
   # -- every 835 fixture -----------------------------------------------------
 
   def test_every_835_fixture_yields_a_plan_without_raising
@@ -372,6 +639,14 @@ class Corvid::Rcm::PostingPlanTest < Minitest::Test
   end
 
   private
+
+  def synthetic_remittance(remittance_identifier, payment_amount, claims)
+    Corvid::Rcm::Remittance.new(
+      remittance_identifier: remittance_identifier,
+      payment_amount: payment_amount,
+      claims: claims
+    )
+  end
 
   def read_remittance_source(source)
     path = File.join(Dir.mktmpdir, "posting_plan_test.835")
