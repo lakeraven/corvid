@@ -234,6 +234,25 @@ class Corvid::Rcm::PayerDirectoryTest < Minitest::Test
     directory_class.load(path)
   end
 
+  def invalid_entry_message
+    directory_class::INVALID_ENTRY
+  end
+
+  def assert_load_refuses_invalid_entry(path, forbidden_in_message: [])
+    error = assert_raises(ArgumentError) { load_directory_at(path) }
+
+    assert_equal invalid_entry_message, error.message
+    forbidden_in_message.each { |fragment| refute_includes error.message, fragment }
+    error
+  end
+
+  def assert_load_refuses_invalid_entry_with_nil_cause(path, forbidden_in_message: [])
+    error = assert_load_refuses_invalid_entry(path, forbidden_in_message: forbidden_in_message)
+
+    assert_nil error.cause
+    error
+  end
+
   def test_load_refuses_ambiguous_alias_and_identifier_collision_without_naming_either_identifier
     Dir.mktmpdir do |dir|
       path = File.join(dir, "payer_directory.yml")
@@ -301,6 +320,169 @@ class Corvid::Rcm::PayerDirectoryTest < Minitest::Test
       refute_includes error.message, path
       refute_includes error.message, "no_such_payer_directory.yml"
     end
+  end
+
+  def test_load_refuses_two_rows_sharing_an_alias_without_naming_any_identifier
+    Dir.mktmpdir do |dir|
+      path = File.join(dir, "payer_directory.yml")
+      write_directory(
+        path,
+        payer_row(payer_identifier: "SYNA1", name: "EXAMPLE SYNA1 PAYER", aliases: [ "SHARED" ]),
+        payer_row(payer_identifier: "SYNB1", name: "EXAMPLE SYNB1 PAYER", aliases: [ "SHARED" ])
+      )
+
+      assert_load_refuses_invalid_entry(
+        path,
+        forbidden_in_message: %w[SYNA1 SYNB1 SHARED]
+      )
+    end
+  end
+
+  def test_load_refuses_payer_identifiers_that_differ_only_by_case_without_naming_either
+    Dir.mktmpdir do |dir|
+      path = File.join(dir, "payer_directory.yml")
+      write_directory(
+        path,
+        payer_row(payer_identifier: "syn12", name: "EXAMPLE SYN12 LOWER PAYER"),
+        payer_row(payer_identifier: "SYN12", name: "EXAMPLE SYN12 UPPER PAYER")
+      )
+
+      assert_load_refuses_invalid_entry(path, forbidden_in_message: %w[syn12 SYN12])
+    end
+  end
+
+  def write_directory_with_transactions(path, payer_identifier:, name:, transactions_text:)
+    File.write(
+      path,
+      [
+        "payers:",
+        "  - payer_identifier: #{payer_identifier}",
+        "    aliases: []",
+        "    name: #{name}",
+        "    as_of: 2026-01-01",
+        "    transactions:",
+        transactions_text
+      ].join("\n") + "\n"
+    )
+  end
+
+  def test_load_refuses_duplicate_transaction_key_in_one_row
+    Dir.mktmpdir do |dir|
+      path = File.join(dir, "payer_directory.yml")
+      tx = transactions_yaml.gsub(
+        "      dental_claim:\n        supported: false\n        enrollment_required: false\n",
+        "      dental_claim:\n        supported: false\n        enrollment_required: true\n" \
+        "      dental_claim:\n        supported: true\n        enrollment_required: false\n"
+      )
+      write_directory_with_transactions(
+        path,
+        payer_identifier: "DUPTX01",
+        name: "EXAMPLE DUPLICATE TRANSACTION KEY PAYER",
+        transactions_text: tx
+      )
+
+      assert_load_refuses_invalid_entry(path, forbidden_in_message: [ "DUPTX01" ])
+    end
+  end
+
+  def test_load_refuses_duplicate_payer_identifier_key_in_one_row
+    Dir.mktmpdir do |dir|
+      path = File.join(dir, "payer_directory.yml")
+      File.write(
+        path,
+        [
+          "payers:",
+          "  - payer_identifier: DUPID01",
+          "    payer_identifier: DUPID02",
+          "    aliases: []",
+          "    name: EXAMPLE DUPLICATE PAYER IDENTIFIER KEY PAYER",
+          "    as_of: 2026-01-01",
+          "    transactions:",
+          transactions_yaml
+        ].join("\n") + "\n"
+      )
+
+      assert_load_refuses_invalid_entry(path, forbidden_in_message: %w[DUPID01 DUPID02])
+    end
+  end
+
+  def test_load_refuses_duplicate_supported_key_in_one_transaction
+    Dir.mktmpdir do |dir|
+      path = File.join(dir, "payer_directory.yml")
+      tx = transactions_yaml.gsub(
+        "      professional_claim:\n        supported: false\n        enrollment_required: false",
+        "      professional_claim:\n        supported: false\n        enrollment_required: false\n        supported: true"
+      )
+      write_directory_with_transactions(
+        path,
+        payer_identifier: "DUPSUP01",
+        name: "EXAMPLE DUPLICATE SUPPORTED KEY PAYER",
+        transactions_text: tx
+      )
+
+      assert_load_refuses_invalid_entry(path, forbidden_in_message: [ "DUPSUP01" ])
+    end
+  end
+
+  def test_load_refuses_yaml_anchor_and_alias_with_nil_cause
+    Dir.mktmpdir do |dir|
+      path = File.join(dir, "payer_directory.yml")
+      tx = transactions_yaml
+      File.write(
+        path,
+        [
+          "payers:",
+          "  - payer_identifier: &r ANCH01",
+          "    aliases: []",
+          "    name: EXAMPLE ANCHOR PAYER",
+          "    as_of: 2026-01-01",
+          "    transactions:",
+          tx,
+          "  - payer_identifier: *r",
+          "    aliases: []",
+          "    name: EXAMPLE ALIAS PAYER",
+          "    as_of: 2026-01-01",
+          "    transactions:",
+          tx
+        ].join("\n") + "\n"
+      )
+
+      assert_load_refuses_invalid_entry_with_nil_cause(path, forbidden_in_message: [ "ANCH01" ])
+    end
+  end
+
+  def test_load_refuses_as_of_timestamp_with_nil_cause
+    Dir.mktmpdir do |dir|
+      path = File.join(dir, "payer_directory.yml")
+      row = payer_row(payer_identifier: "TS01", name: "EXAMPLE TIMESTAMP AS OF PAYER")
+        .sub("as_of: 2026-01-01", "as_of: 2026-01-01T00:00:00Z")
+      write_directory(path, row)
+
+      assert_load_refuses_invalid_entry_with_nil_cause(path, forbidden_in_message: [ "TS01" ])
+    end
+  end
+
+  def test_load_refuses_ruby_symbol_tag_with_nil_cause
+    Dir.mktmpdir do |dir|
+      path = File.join(dir, "payer_directory.yml")
+      row = payer_row(payer_identifier: "SYM01", name: "EXAMPLE SYMBOL TAG PAYER")
+        .sub("name: EXAMPLE SYMBOL TAG PAYER", "name: !ruby/symbol example_symbol")
+      write_directory(path, row)
+
+      assert_load_refuses_invalid_entry_with_nil_cause(path, forbidden_in_message: [ "SYM01" ])
+    end
+  end
+
+  def test_search_is_case_insensitive_on_query_for_payer_names
+    directory = directory_class.load
+
+    upper = directory.search("MEDICAID")
+    mixed = directory.search("Medicaid")
+
+    assert_equal 1, upper.length
+    assert_equal 1, mixed.length
+    assert_equal "EXMCD01", upper.first.payer_identifier
+    assert_equal upper.map(&:payer_identifier), mixed.map(&:payer_identifier)
   end
 end
 
