@@ -801,4 +801,129 @@ class Corvid::Rcm::FixtureClearinghouseClientTest < Minitest::Test
     assert_equal 2, traces.length
     refute_equal traces.fetch(0), traces.fetch(1)
   end
+
+  # -- #739 review round 3 (decided rules) -----------------------------------
+
+  CANNED_RJ_0001_CODE = "A7:562"
+  CANNED_RJ_0001_DESCRIPTION =
+    "Entity's National Provider Identifier (NPI) — the billing provider NPI is not on file with this payer."
+  CANNED_DELAYED_CODE = "SYN:277CA"
+  CANNED_DELAYED_DESCRIPTION =
+    "Payer-level claim acknowledgment — the claim was refused on a later 277CA after the clearinghouse accepted it."
+
+  def assert_frozen_string_rejects_in_place_mutation(string)
+    assert_raises(FrozenError) { string.clear }
+    assert_raises(FrozenError) { string << "x" }
+  end
+
+  def test_immediate_canned_rejection_edit_strings_are_frozen_and_survive_resubmit
+    client = client_with_advancing_clock
+
+    ack = client.submit_claim(Factory.claim(identifier: "CLM-RJ-0001"))
+    edit = ack.edits.first
+
+    assert_equal CANNED_RJ_0001_CODE, edit.code
+    assert_equal CANNED_RJ_0001_DESCRIPTION, edit.description
+    assert_frozen_string_rejects_in_place_mutation(edit.code)
+    assert_frozen_string_rejects_in_place_mutation(edit.description)
+
+    second = client.submit_claim(Factory.claim(identifier: "CLM-RJ-0001"))
+    second_edit = second.edits.first
+
+    assert_equal CANNED_RJ_0001_CODE, second_edit.code
+    assert_equal CANNED_RJ_0001_DESCRIPTION, second_edit.description
+    refute_empty second_edit.code.strip
+    refute_empty second_edit.description.strip
+  end
+
+  def test_fetched_delayed_rejection_edit_description_is_frozen_and_survives_resubmit
+    client = client_with_advancing_clock
+
+    client.submit_claim(Factory.claim(identifier: "CLM-RJ-DELAYED-0001"))
+    ack = client.fetch_acknowledgments.fetch(0)
+    edit = ack.edits.first
+
+    assert_equal CANNED_DELAYED_CODE, edit.code
+    assert_equal CANNED_DELAYED_DESCRIPTION, edit.description
+    assert_frozen_string_rejects_in_place_mutation(edit.description)
+
+    client.submit_claim(Factory.claim(identifier: "CLM-RJ-DELAYED-0001"))
+    later = client.fetch_acknowledgments.fetch(1)
+    second_edit = later.edits.first
+
+    assert_equal CANNED_DELAYED_CODE, second_edit.code
+    assert_equal CANNED_DELAYED_DESCRIPTION, second_edit.description
+    refute_empty second_edit.code.strip
+    refute_empty second_edit.description.strip
+  end
+
+  def test_quoted_string_false_delayed_rejection_is_rejected_at_submit_not_delayed
+    claim_id = "CLM-R3-DELAYED-FALSE-STR-739"
+    body = [
+      "    delayed_rejection: \"false\"\n",
+      "    transaction_set: \"277CA\"\n",
+      "    edits:\n",
+      "      - code: \"SYN:R3-FALSE-STR\"\n",
+      "        description: \"Synthetic payer edit when delayed_rejection is the string false.\"\n",
+      "        level: claim\n"
+    ]
+    expected_row = {
+      "delayed_rejection" => "false",
+      "transaction_set" => "277CA",
+      "edits" => [
+        {
+          "code" => "SYN:R3-FALSE-STR",
+          "description" => "Synthetic payer edit when delayed_rejection is the string false.",
+          "level" => "claim"
+        }
+      ]
+    }
+
+    with_literal_acknowledgment_table(claim_id, body) do |loaded, _path, client|
+      assert_equal expected_row, loaded.fetch("rejections").fetch(claim_id)
+
+      immediate = client.submit_claim(Factory.claim(identifier: claim_id))
+
+      assert immediate.rejected?
+      refute immediate.accepted?
+      edit = immediate.edits.first
+      assert_equal "SYN:R3-FALSE-STR", edit.code
+      assert_equal expected_row.fetch("edits").fetch(0).fetch("description"), edit.description
+    end
+  end
+
+  def test_yes_string_delayed_rejection_is_rejected_at_submit_not_delayed
+    claim_id = "CLM-R3-DELAYED-YES-STR-739"
+    body = [
+      "    delayed_rejection: \"yes\"\n",
+      "    transaction_set: \"277CA\"\n",
+      "    edits:\n",
+      "      - code: \"SYN:R3-YES-STR\"\n",
+      "        description: \"Synthetic payer edit when delayed_rejection is the string yes.\"\n",
+      "        level: claim\n"
+    ]
+    expected_row = {
+      "delayed_rejection" => "yes",
+      "transaction_set" => "277CA",
+      "edits" => [
+        {
+          "code" => "SYN:R3-YES-STR",
+          "description" => "Synthetic payer edit when delayed_rejection is the string yes.",
+          "level" => "claim"
+        }
+      ]
+    }
+
+    with_literal_acknowledgment_table(claim_id, body) do |loaded, _path, client|
+      assert_equal expected_row, loaded.fetch("rejections").fetch(claim_id)
+
+      immediate = client.submit_claim(Factory.claim(identifier: claim_id))
+
+      assert immediate.rejected?
+      refute immediate.accepted?
+      edit = immediate.edits.first
+      assert_equal "SYN:R3-YES-STR", edit.code
+      assert_equal expected_row.fetch("edits").fetch(0).fetch("description"), edit.description
+    end
+  end
 end
