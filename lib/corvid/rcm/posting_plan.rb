@@ -26,8 +26,10 @@ module Corvid
 
     # A claim that must not be posted. `unexplained_amount` is the arithmetic
     # gap (billed minus paid minus adjustments). A row is also returned when
-    # that gap is zero but the service lines disagree with the claim payment,
-    # or a reversal was paid a positive amount.
+    # that gap is zero but a service line does not balance, the lines' billed
+    # amounts do not reconcile to the claim, the lines' paid amounts do not
+    # sum to the claim payment, or a reversal reports a positive billed or
+    # paid amount.
     UnbalancedClaim = Data.define(
       :claim_identifier,
       :payer_control_number,
@@ -37,24 +39,34 @@ module Corvid
     # Ledger-neutral posting entries for one remittance.
     #
     # A claim is posted only when billed equals paid plus every CAS
-    # adjustment, any service lines' paid amounts sum to the claim paid
-    # amount, and a reversal (CLP02 = 22) was not paid a positive amount.
-    # Otherwise it is returned on #unbalanced and contributes nothing to
-    # #entries. Other claims in the same remittance still post.
+    # adjustment. When it has service lines, each line's billed amount must
+    # equal that line's paid amount plus its own adjustments, those paid
+    # amounts must sum to the claim paid amount, and the lines' billed
+    # amounts must sum to the claim billed amount minus claim-level
+    # adjustments. A reversal (CLP02 = 22) must report billed and paid
+    # amounts that are each less than or equal to zero, and must meet the
+    # same claim and line balance rules. Otherwise the claim is returned on
+    # #unbalanced and contributes nothing to #entries. Other claims in the
+    # same remittance still post.
     #
     # Reversal entries keep the amounts the remittance reported. On a
     # takeback those amounts are already negative; they are not negated
     # again. Every adjustment is kept, including a zero amount. A zero
     # payer payment is omitted.
     PostingPlan = Data.define(:entries, :unbalanced) do
-      # CAS group code -> posting kind. Any other group is :unclassified
-      # and is still posted. A balanced claim never drops an adjustment.
-      GROUP_KINDS = {
+      # X12 CAS group code -> posting kind. CO, PR, OA, and PI become
+      # contractual, patient responsibility, other payer, and payer-initiated
+      # reduction. Any other group, including OI and CR, is :unclassified and
+      # is still posted. A balanced claim never drops an adjustment.
+      #
+      # const_set: `GROUP_KINDS =` inside this Data.define block binds to
+      # Corvid::Rcm, and the table belongs on PostingPlan.
+      const_set(:GROUP_KINDS, {
         ADJUSTMENT_GROUP_CONTRACTUAL => :contractual_adjustment,
         ADJUSTMENT_GROUP_PATIENT_RESPONSIBILITY => :patient_responsibility,
-        "OI" => :other_payer,
+        ADJUSTMENT_GROUP_OTHER => :other_payer,
         ADJUSTMENT_GROUP_PAYER_INITIATED => :payer_initiated_reduction
-      }.freeze
+      }.freeze)
 
       def self.from(remittance)
         entries = []
@@ -78,7 +90,19 @@ module Corvid
       end
 
       def self.postable?(claim)
-        claim.balanced? && service_payments_match?(claim) && !positive_reversal?(claim)
+        claim.balanced? && service_lines_postable?(claim) && reversal_signs_ok?(claim)
+      end
+
+      # No service lines: the claim equation is enough. With lines, each line
+      # balances on its own, paid amounts sum to the claim payment, and billed
+      # amounts sum to the claim billed amount minus claim-level adjustments.
+      def self.service_lines_postable?(claim)
+        services = Array(claim.services)
+        return true if services.empty?
+
+        service_payments_match?(claim) &&
+          services.all? { |service| line_balanced?(service) } &&
+          line_billed_matches_claim?(claim)
       end
 
       def self.service_payments_match?(claim)
@@ -86,8 +110,25 @@ module Corvid
         services.empty? || services.sum(BigDecimal(0), &:paid_amount) == claim.paid_amount
       end
 
-      def self.positive_reversal?(claim)
-        claim.reversal? && claim.paid_amount.positive?
+      def self.line_balanced?(service)
+        service.billed_amount == service.paid_amount + adjustment_sum(service.adjustments)
+      end
+
+      def self.line_billed_matches_claim?(claim)
+        Array(claim.services).sum(BigDecimal(0), &:billed_amount) ==
+          claim.billed_amount - adjustment_sum(claim.adjustments)
+      end
+
+      def self.adjustment_sum(adjustments)
+        Array(adjustments).sum(BigDecimal(0), &:amount)
+      end
+
+      # A reversal keeps the reported signs. Billed and paid must each be
+      # zero or negative; a positive amount is not a takeback.
+      def self.reversal_signs_ok?(claim)
+        return true unless claim.reversal?
+
+        claim.billed_amount <= 0 && claim.paid_amount <= 0
       end
 
       def self.unbalanced_claim(claim)
@@ -142,7 +183,7 @@ module Corvid
       def self.kind_for(group_code, reversal)
         return :reversal if reversal
 
-        GROUP_KINDS.fetch(group_code, :unclassified)
+        self::GROUP_KINDS.fetch(group_code, :unclassified)
       end
 
       def self.build_entry(claim, kind:, amount:, group_code:, reason_code:, service_line:)
@@ -157,7 +198,8 @@ module Corvid
         )
       end
 
-      private_class_method :collect, :postable?, :service_payments_match?, :positive_reversal?,
+      private_class_method :collect, :postable?, :service_lines_postable?, :service_payments_match?,
+                           :line_balanced?, :line_billed_matches_claim?, :adjustment_sum, :reversal_signs_ok?,
                            :unbalanced_claim, :rows_for, :append_claim_payment, :service_rows,
                            :adjustment_rows, :payment_row, :adjustment_row, :kind_for, :build_entry
     end
