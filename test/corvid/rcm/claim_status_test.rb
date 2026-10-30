@@ -80,6 +80,20 @@ class Corvid::Rcm::ClaimStatusTest < Minitest::Test
 
   UNMAPPED_CATEGORY_CODES = [ "Z9", "A9", "F5", "", nil, "f1", " F1" ].freeze
 
+  # Review round 3 (#740): codes that must not match via rstrip/chomp/prefix on F1/F2/A7.
+  NORMALISATION_TRAP_CATEGORY_CODES = [
+    "F1 ",
+    "F1\r",
+    "F1\r\n",
+    "F2\n",
+    "\tF2",
+    "F1X",
+    "F10",
+    "F2Z",
+    "A7 ",
+    :F1
+  ].freeze
+
   EXPECTED_MEMBERS = %i[
     claim_identifier payer_control_number category category_code status_code
     paid_amount paid_date as_of raw_reference
@@ -108,11 +122,21 @@ class Corvid::Rcm::ClaimStatusTest < Minitest::Test
   end
 
   def test_an_unmapped_category_code_is_never_paid_or_denied
-    UNMAPPED_CATEGORY_CODES.each do |code|
+    (UNMAPPED_CATEGORY_CODES + NORMALISATION_TRAP_CATEGORY_CODES).uniq.each do |code|
       category = Corvid::Rcm::ClaimStatus.category_for(code)
 
       refute_equal :finalized_paid, category, "unmapped #{code.inspect} must not read as paid"
       refute_equal :finalized_denied, category, "unmapped #{code.inspect} must not read as denied"
+    end
+  end
+
+  def test_normalisation_trap_stc01_codes_map_to_undetermined_not_paid_or_denied
+    NORMALISATION_TRAP_CATEGORY_CODES.each do |code|
+      category = Corvid::Rcm::ClaimStatus.category_for(code)
+
+      assert_equal :undetermined, category, "category_for(#{code.inspect})"
+      refute_equal :finalized_paid, category, "#{code.inspect} must not read as paid"
+      refute_equal :finalized_denied, category, "#{code.inspect} must not read as denied"
     end
   end
 
@@ -203,6 +227,40 @@ class Corvid::Rcm::ClaimStatusTest < Minitest::Test
 
     assert not_found.category == :not_found
     assert_nil not_found.category_code
+  end
+
+  def test_finalized_paid_rejects_stc01_code_with_carriage_return
+    error = assert_raises(ArgumentError) do
+      Corvid::Rcm::ClaimStatus.new(
+        claim_identifier: "CLM-X",
+        payer_control_number: nil,
+        category: :finalized_paid,
+        category_code: "F1\r",
+        status_code: "20",
+        paid_amount: nil,
+        paid_date: nil,
+        as_of: FIXED_AS_OF
+      )
+    end
+
+    assert_equal CATEGORY_DISAGREES_MESSAGE, error.message
+  end
+
+  def test_finalized_denied_rejects_stc01_code_with_line_feed
+    error = assert_raises(ArgumentError) do
+      Corvid::Rcm::ClaimStatus.new(
+        claim_identifier: "CLM-X",
+        payer_control_number: nil,
+        category: :finalized_denied,
+        category_code: "F2\n",
+        status_code: "20",
+        paid_amount: nil,
+        paid_date: nil,
+        as_of: FIXED_AS_OF
+      )
+    end
+
+    assert_equal CATEGORY_DISAGREES_MESSAGE, error.message
   end
 
   # -- predicate helpers -----------------------------------------------------
