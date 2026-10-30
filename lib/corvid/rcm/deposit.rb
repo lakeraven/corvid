@@ -16,8 +16,9 @@ module Corvid
     # Amounts stay BigDecimal so two equal payments compare exactly. An
     # Integer is stored as BigDecimal. Float and String are refused rather
     # than coerced: coercion would hide a rounding or a parse (ADR 0004).
-    # Messages stay generic so an amount, a trace, or a payer name cannot
-    # leak into an exception.
+    # A non-finite BigDecimal is refused too: Infinity and NaN are not
+    # money (ADR 0004). Messages stay generic so an amount, a trace, or a
+    # payer name cannot leak into an exception.
     Deposit = Data.define(
       :deposit_identifier,
       :trace_number,
@@ -50,7 +51,7 @@ module Corvid
       end
 
       def validated_amount(value)
-        return value if value.is_a?(BigDecimal)
+        return value if value.is_a?(BigDecimal) && value.finite?
         return BigDecimal(value) if value.is_a?(Integer)
 
         raise ArgumentError, "deposit amount must be a BigDecimal or Integer"

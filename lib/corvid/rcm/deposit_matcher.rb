@@ -110,11 +110,13 @@ module Corvid
         payment_method.is_a?(String) && payment_method.strip.upcase(:ascii) == NON_PAYMENT_METHOD
       end
 
-      # Float and String are refused, not coerced. An Integer is accepted and
-      # widened to BigDecimal so the later subtraction stays exact.
+      # Float and String are refused, not coerced. A non-finite BigDecimal
+      # is refused too: Infinity and NaN are not money (ADR 0004). An
+      # Integer is accepted and widened to BigDecimal so the later
+      # subtraction stays exact.
       def exact_payment(remittance)
         amount = remittance.payment_amount
-        return amount if amount.is_a?(BigDecimal)
+        return amount if amount.is_a?(BigDecimal) && amount.finite?
         return BigDecimal(amount) if amount.is_a?(Integer)
 
         raise ArgumentError, "remittance payment amount must be a BigDecimal or Integer"
