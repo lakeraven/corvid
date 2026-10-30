@@ -21,31 +21,6 @@ module Corvid
       find_by(payment_system: payment_system.to_s, calendar_year: calendar_year)
     end
 
-    # An identical re-seed of the same (payment_system, calendar_year)
-    # snapshot returns the row already stored. A second row with a
-    # different share, source, or label is still invalid.
-    def self.create!(attributes = nil, &block)
-      existing = identical_row(attributes)
-      return existing if existing
-
-      super
-    end
-
-    def self.identical_row(attributes)
-      attrs = attributes.respond_to?(:symbolize_keys) ? attributes.symbolize_keys : {}
-      return if attrs[:payment_system].blank? || attrs[:calendar_year].blank?
-
-      row = find_by(payment_system: attrs[:payment_system].to_s, calendar_year: attrs[:calendar_year])
-      return unless row
-      return unless row.source == attrs[:source].to_s
-      return unless row.release_label.to_s == attrs[:release_label].to_s
-      return if attrs[:labor_share].nil?
-      return unless row.labor_share == BigDecimal(attrs[:labor_share].to_s)
-
-      row
-    end
-    private_class_method :identical_row
-
     # amount × (labor_share × wage_index + (1 − labor_share)), rounded
     # to cents once. amount is weight × conversion factor, still unrounded.
     # Inputs are BigDecimal (ADR 0004); this does not coerce through Float.

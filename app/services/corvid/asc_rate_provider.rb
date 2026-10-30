@@ -18,6 +18,14 @@ module Corvid
   # at a 100% labor share. Money is exact BigDecimal, rounded to cents
   # once at the end (ADR 0004).
   #
+  # `lookup_for` is the priced lookup or nil. Nil covers a missing
+  # HCPCS rate, a missing conversion factor, and a missing labor
+  # share. `lookup_outcome` is the same queries and says which:
+  # `:missing_rate` or `:missing_conversion_factor` (the analyzer may
+  # fall through to OPPS) versus `:missing_labor_share` (rate and
+  # conversion factor are loaded; the price is undetermined and must
+  # not fall through).
+  #
   # Weights and the conversion factor use calendar-year boundaries
   # (Jan 1), matching OPPS.
   #
@@ -26,10 +34,11 @@ module Corvid
   # year N with the fiscal year N IPPS wage index (FY N starts 1 Oct
   # of N−1) — not the service date's own fiscal year. See
   # OppsRateProvider for the shared wage-area rationale and the
-  # NATIONAL / 1.0 fallback. The lookup records the wage-index fiscal
-  # year and the labor share used. The release label stays the
-  # conservative label of the HCPCS, conversion-factor, and wage-index
-  # rows, as before.
+  # NATIONAL / 1.0 fallback. When a wage-index row is used, the lookup
+  # records that row's fiscal year and the labor share. When no row is
+  # loaded and the index defaults to 1.0, `wage_index_fiscal_year` is
+  # nil. The release label stays the conservative label of the HCPCS,
+  # conversion-factor, and wage-index rows, as before.
   module AscRateProvider
     SOURCE = :asc_real
 
@@ -38,6 +47,9 @@ module Corvid
       keyword_init: true
     )
 
+    # `lookup` is set only when `reason` is `:priced`.
+    Outcome = Struct.new(:reason, :lookup, keyword_init: true)
+
     class << self
       def rate_for(hcpcs_code:, locality: nil, date: nil)
         result = lookup_for(hcpcs_code: hcpcs_code, locality: locality, date: date)
@@ -45,32 +57,42 @@ module Corvid
       end
 
       def lookup_for(hcpcs_code:, locality: nil, date: nil)
-        return nil if hcpcs_code.nil? || date.nil?
+        lookup_outcome(hcpcs_code: hcpcs_code, locality: locality, date: date).lookup
+      end
+
+      # One pass: HCPCS rate, conversion factor, labor share, then the
+      # wage-index row. Stops before the wage-index query when the
+      # price cannot be computed.
+      def lookup_outcome(hcpcs_code:, locality: nil, date: nil)
+        return Outcome.new(reason: :missing_rate) if hcpcs_code.nil? || date.nil?
 
         # CMS prices CY N with FY N. Oct–Dec of CY N stays on FY N,
         # not FY N+1. Weight and CF stay on the calendar year.
         cy = calendar_year(date)
         locality_code = normalized_locality(locality)
         rate_row = AscHcpcsRate.find_by(hcpcs_code: hcpcs_code.to_s, calendar_year: cy)
-        return nil unless rate_row
+        return Outcome.new(reason: :missing_rate) unless rate_row
 
         cf_row = AscConversionFactor.lookup(calendar_year: cy, locality: locality_code)
-        return nil unless cf_row
+        return Outcome.new(reason: :missing_conversion_factor) unless cf_row
 
         labor_row = CmsLaborShare.lookup(payment_system: "asc", calendar_year: cy)
-        return nil unless labor_row
+        return Outcome.new(reason: :missing_labor_share) unless labor_row
 
         wage_row = IppsHospitalRate.lookup(fiscal_year: cy, locality: locality_code)
         wage_index = wage_row&.wage_index || BigDecimal("1.0")
-        Lookup.new(
-          rate: CmsLaborShare.wage_adjusted_amount(
-            rate_row.payment_weight * cf_row.conversion_factor,
-            wage_index: wage_index,
+        Outcome.new(
+          reason: :priced,
+          lookup: Lookup.new(
+            rate: CmsLaborShare.wage_adjusted_amount(
+              rate_row.payment_weight * cf_row.conversion_factor,
+              wage_index: wage_index,
+              labor_share: labor_row.labor_share
+            ),
+            release_label: conservative_release_label(rate_row, cf_row, wage_row),
+            wage_index_fiscal_year: wage_row&.fiscal_year,
             labor_share: labor_row.labor_share
-          ),
-          release_label: conservative_release_label(rate_row, cf_row, wage_row),
-          wage_index_fiscal_year: cy,
-          labor_share: labor_row.labor_share
+          )
         )
       end
 

@@ -215,14 +215,19 @@ apc_relative_weight × conversion_factor × (labor_share × wage_index + (1 − 
 
 `labor_share` is a row in `corvid_cms_labor_shares` for payment system
 `opps` and that calendar year, shipped in
-`db/data/cms_labor_shares.csv` and loaded with
-`rake cms:labor_shares:import`. Each row cites that year's OPPS/ASC
-final rule. The OPPS labor-related share in that file is 60%. A
-calendar year with no labor-share row is undetermined: the provider
-returns nil and does not price the wage index against a 100% labor
-share. Arithmetic is exact `BigDecimal`, rounded to cents once at the
-end (ADR 0004). The lookup records the wage-index fiscal year and the
-labor share used.
+`db/data/cms_labor_shares.csv`. Operators load that file with
+`rake cms:labor_shares:import` before repricing. Demo seeds insert
+the CY 2026 OPPS share; `PrcImporter.reanalyze` does not load the
+file. Each row cites that year's OPPS/ASC final rule. The OPPS
+labor-related share in that file is 60%. A calendar year with no
+labor-share row is undetermined: the provider returns nil and the
+analyzer takes the stub path, rather than pricing the wage index
+against a 100% labor share. Arithmetic is exact `BigDecimal`, rounded
+to cents once at the end (ADR 0004). When an IPPS wage-index row is
+used, the lookup records that row's fiscal year and the labor share.
+When no wage-index row is loaded and the index defaults to 1.0, the
+lookup's wage-index fiscal year is nil and the analyzer note is
+`Wage index 1.0 (no FY N wage-index row), labor share X.`
 
 The `wage_index` column on `corvid_opps_conversion_factors` is now
 dead weight (unread by the rate provider) but still present in the

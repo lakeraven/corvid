@@ -34,7 +34,10 @@ module Corvid
   # the service date. An October–December CY N service uses FY N, not
   # FY N+1. Falls back to the IPPS NATIONAL row when no CBSA-specific
   # row is loaded, then to 1.0 when no IPPS wage data is loaded at all.
-  # The lookup records that wage-index fiscal year and the labor share.
+  # When a wage-index row is used, the lookup records that row's fiscal
+  # year and the labor share. When no row is loaded and the index
+  # defaults to 1.0, `wage_index_fiscal_year` is nil. The price is the
+  # same either way.
   module OppsRateProvider
     SOURCE = :opps_real
 
@@ -84,7 +87,7 @@ module Corvid
           # The labor-share row is not part of that label — a missing
           # share already returned nil above.
           release_label: conservative_release_label(weight_row, cf_row, wage_row),
-          wage_index_fiscal_year: cy,
+          wage_index_fiscal_year: wage_row&.fiscal_year,
           labor_share: labor_row.labor_share
         )
       end
