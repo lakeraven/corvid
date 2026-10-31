@@ -827,6 +827,260 @@ class Corvid::Pas::RequestBundleTest < Minitest::Test
     assert_equal baseline_resource_count + extra_count, result.resources.size
   end
 
+  def test_rejects_same_full_url_with_different_resources
+    patient_full_url = URN_REFERENCE_KEYS[0]
+
+    observation_dup = deep_copy(load_fixture("request_bundle_urn_uuid"))
+    observation_dup["entry"] << {
+      "fullUrl" => patient_full_url,
+      "resource" => {
+        "resourceType" => "Observation",
+        "id" => "obs-dup-1",
+        "status" => "final",
+        "code" => { "text" => "x-obs" }
+      }
+    }
+    assert_rejection(
+      Corvid::Pas::RequestBundle.parse(observation_dup),
+      code: "duplicate",
+      expression: "Bundle.entry[7]",
+      diagnostics: REJECTION_DIAGNOSTICS.fetch(:duplicate),
+      source_bundle: observation_dup
+    )
+
+    shared_full_url = "urn:uuid:aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+    two_patients = deep_copy(load_fixture("request_bundle_urn_uuid"))
+    two_patients["entry"][0]["resource"]["patient"]["reference"] = shared_full_url
+    two_patients["entry"] << {
+      "fullUrl" => shared_full_url,
+      "resource" => {
+        "resourceType" => "Patient",
+        "id" => "pat-dup-aaa1"
+      }
+    }
+    two_patients["entry"] << {
+      "fullUrl" => shared_full_url,
+      "resource" => {
+        "resourceType" => "Patient",
+        "id" => "pat-dup-bbb2"
+      }
+    }
+    assert_rejection(
+      Corvid::Pas::RequestBundle.parse(two_patients),
+      code: "duplicate",
+      expression: "Bundle.entry[8]",
+      diagnostics: REJECTION_DIAGNOSTICS.fetch(:duplicate),
+      source_bundle: two_patients
+    )
+  end
+
+  def test_rejects_unresolved_reference_reachable_only_transitively
+    prac_full_url = "urn:uuid:bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+    missing_issuer = "urn:uuid:ffffffff-ffff-4fff-8fff-ffffffffffff"
+
+    unresolved = deep_copy(load_fixture("request_bundle_urn_uuid"))
+    unresolved["entry"] << {
+      "fullUrl" => prac_full_url,
+      "resource" => {
+        "resourceType" => "Practitioner",
+        "id" => "prac-trans-1",
+        "qualification" => [
+          {
+            "issuer" => { "reference" => missing_issuer }
+          }
+        ]
+      }
+    }
+    unresolved["entry"][4]["resource"]["subscriber"] = { "reference" => prac_full_url }
+    assert_rejection(
+      Corvid::Pas::RequestBundle.parse(unresolved),
+      code: "not-found",
+      expression: "Bundle.entry[7].resource.qualification[0].issuer.reference",
+      diagnostics: REJECTION_DIAGNOSTICS.fetch(:not_found),
+      source_bundle: unresolved
+    )
+
+    resolved = deep_copy(load_fixture("request_bundle_urn_uuid"))
+    baseline = parse_silently(deep_copy(load_fixture("request_bundle_urn_uuid")))
+    resolved["entry"] << {
+      "fullUrl" => prac_full_url,
+      "resource" => {
+        "resourceType" => "Practitioner",
+        "id" => "prac-trans-1",
+        "qualification" => [
+          {
+            "issuer" => { "reference" => URN_REFERENCE_KEYS[1] }
+          }
+        ]
+      }
+    }
+    resolved["entry"][4]["resource"]["subscriber"] = { "reference" => prac_full_url }
+
+    result = parse_silently(resolved)
+
+    assert result.ok?
+    assert_equal baseline.references.keys.sort, result.references.keys.sort
+    refute result.references.key?(prac_full_url)
+    assert result.resources.any? { |r| r["resourceType"] == "Practitioner" && r["id"] == "prac-trans-1" }
+  end
+
+  def test_rejects_malformed_reference_shapes
+    [
+      "Patient/pat-test-1/extra",
+      " Patient/pat-test-1",
+      "Patient/pat-test-1 ",
+      "patient/pat-test-1"
+    ].each do |bad_patient_ref|
+      trial = deep_copy(load_fixture("request_bundle_client_urls"))
+      trial["entry"][0]["resource"]["patient"]["reference"] = bad_patient_ref
+      assert_rejection(
+        Corvid::Pas::RequestBundle.parse(trial),
+        code: "not-found",
+        expression: "Bundle.entry[0].resource.patient.reference",
+        diagnostics: REJECTION_DIAGNOSTICS.fetch(:not_found),
+        source_bundle: trial
+      )
+    end
+
+    contained_case = deep_copy(load_fixture("request_bundle_urn_uuid"))
+    contained_claim = contained_case["entry"][0]["resource"]
+    contained_claim["contained"] = [
+      { "resourceType" => "Practitioner", "id" => "prac-case-1" }
+    ]
+    contained_claim["careTeam"] = [
+      { "sequence" => 1, "provider" => { "reference" => "#PRAC-CASE-1" } }
+    ]
+    assert_rejection(
+      Corvid::Pas::RequestBundle.parse(contained_case),
+      code: "not-found",
+      expression: "Bundle.entry[0].resource.careTeam[0].provider.reference",
+      diagnostics: REJECTION_DIAGNOSTICS.fetch(:not_found),
+      source_bundle: contained_case
+    )
+
+    lowercase_bundle = deep_copy(load_fixture("request_bundle_urn_uuid"))
+    lowercase_bundle["resourceType"] = "bundle"
+    assert_rejection(
+      Corvid::Pas::RequestBundle.parse(lowercase_bundle),
+      code: "structure",
+      expression: "Bundle",
+      diagnostics: REJECTION_DIAGNOSTICS.fetch(:structure_bundle),
+      source_bundle: lowercase_bundle
+    )
+
+    collection_type = deep_copy(load_fixture("request_bundle_urn_uuid"))
+    collection_type["type"] = "Collection"
+    assert_rejection(
+      Corvid::Pas::RequestBundle.parse(collection_type),
+      code: "value",
+      expression: "Bundle.type",
+      diagnostics: REJECTION_DIAGNOSTICS.fetch(:value_bundle_type),
+      source_bundle: collection_type
+    )
+
+    lowercase_claim = deep_copy(load_fixture("request_bundle_urn_uuid"))
+    lowercase_claim["entry"][0]["resource"]["resourceType"] = "claim"
+    assert_rejection(
+      Corvid::Pas::RequestBundle.parse(lowercase_claim),
+      code: "structure",
+      expression: "Bundle.entry[0].resource",
+      diagnostics: REJECTION_DIAGNOSTICS.fetch(:structure_first_entry),
+      source_bundle: lowercase_claim
+    )
+  end
+
+  def test_resources_are_deep_frozen_and_input_strings_untouched
+    bundle = load_fixture("request_bundle_urn_uuid")
+    org_name = bundle.dig("entry", 2, "resource", "name")
+    refute org_name.frozen?
+
+    result = parse_silently(bundle)
+
+    assert result.ok?
+    result.resources.each do |resource|
+      assert resource.frozen?, "expected #{resource['resourceType']} resource to be frozen"
+      assert resource["resourceType"].frozen?, "expected nested resourceType string to be frozen"
+    end
+
+    org = result.resources.find { |r| r["resourceType"] == "Organization" && r["id"] == "org-clinic-urn-a" }
+    assert_raises(FrozenError) { org["name"] << "x" }
+
+    refute bundle.dig("entry", 2, "resource", "name").frozen?
+    bundle.dig("entry", 2, "resource", "name") << "mutated"
+    refute bundle.frozen?
+    refute bundle["entry"].frozen?
+  end
+
+  def test_transitive_only_resource_is_deep_frozen_and_input_untouched
+    prac_full_url = "urn:uuid:cccccccc-cccc-4ccc-8ccc-cccccccccccc"
+    bundle = deep_copy(load_fixture("request_bundle_urn_uuid"))
+    bundle["entry"] << {
+      "fullUrl" => prac_full_url,
+      "resource" => {
+        "resourceType" => "Practitioner",
+        "id" => "prac-freeze-1",
+        "name" => [ { "family" => "TESTFREEZE" } ]
+      }
+    }
+    bundle["entry"][4]["resource"]["subscriber"] = { "reference" => prac_full_url }
+
+    input_practitioner = bundle["entry"].last["resource"]
+    refute input_practitioner.frozen?
+
+    result = parse_silently(bundle)
+
+    assert result.ok?
+    practitioner = result.resources.find { |r| r["id"] == "prac-freeze-1" }
+    refute_nil practitioner
+    assert practitioner.frozen?
+    assert practitioner["name"].frozen?
+    assert practitioner["name"][0].frozen?
+    assert_raises(FrozenError) { practitioner["name"][0]["family"] << "x" }
+
+    refute input_practitioner.frozen?
+    refute input_practitioner["name"].frozen?
+  end
+
+  def test_rejects_blank_full_url
+    bundle = deep_copy(load_fixture("request_bundle_urn_uuid"))
+    bundle["entry"][2]["fullUrl"] = "   "
+
+    assert_rejection(
+      Corvid::Pas::RequestBundle.parse(bundle),
+      code: "required",
+      expression: "Bundle.entry[2].fullUrl",
+      diagnostics: REJECTION_DIAGNOSTICS.fetch(:required_entry_element),
+      source_bundle: bundle
+    )
+  end
+
+  def test_parses_many_contained_resources
+    bundle = deep_copy(load_fixture("request_bundle_urn_uuid"))
+    claim = bundle["entry"][0]["resource"]
+    baseline = parse_silently(deep_copy(load_fixture("request_bundle_urn_uuid")))
+    contained_count = 3000
+    contained = []
+    care_team = []
+
+    contained_count.times do |index|
+      prac_id = "prac-many-#{index}"
+      contained << { "resourceType" => "Practitioner", "id" => prac_id }
+      care_team << { "sequence" => index + 1, "provider" => { "reference" => "##{prac_id}" } }
+    end
+
+    claim["contained"] = contained
+    claim["careTeam"] = care_team
+
+    result = parse_silently(bundle)
+
+    assert result.ok?
+    assert_equal baseline.references.keys.size + contained_count, result.references.keys.size
+    assert_equal baseline.resources.size, result.resources.size
+    contained_count.times do |index|
+      assert result.references.key?("#prac-many-#{index}")
+    end
+  end
+
   private
 
   def load_fixture(name)
