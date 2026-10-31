@@ -3,7 +3,10 @@
 # Shared billing step definitions
 
 Given("the billing adapter is configured") do
-  # MockAdapter already supports billing methods — nothing extra needed
+  record_system_of_record(
+    facility_identifier: @facility,
+    tenant_identifier: @tenant
+  )
 end
 
 Given("I am logged in as a billing_coordinator") do

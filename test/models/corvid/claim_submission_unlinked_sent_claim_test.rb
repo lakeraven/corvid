@@ -208,6 +208,7 @@ class Corvid::ClaimSubmissionUnlinkedSentClaimTest < ActiveSupport::TestCase
     Corvid.adapter.define_singleton_method(:submit_claim) do |_|
       { claim_identifier: CLAIM_ID, status: "accepted" }
     end
+    record_system_of_record(facility_identifier: FACILITY, tenant_identifier: TENANT)
     claim.submit!
     claim.reload
     assert_nil claim.prc_referral_id

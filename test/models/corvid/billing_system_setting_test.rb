@@ -49,7 +49,7 @@ class Corvid::BillingSystemSettingTest < ActiveSupport::TestCase
     with_tenant(TENANT) do
       assert_raises(ActiveRecord::StatementInvalid) do
         Corvid::BillingSystemSetting.transaction(requires_new: true) do
-          Corvid::BillingSystemSetting.insert_all(
+          Corvid::BillingSystemSetting.insert_all!(
             [ {
               tenant_identifier: TENANT,
               facility_identifier: FACILITY,
@@ -71,7 +71,7 @@ class Corvid::BillingSystemSettingTest < ActiveSupport::TestCase
     with_tenant(TENANT) do
       assert_raises(ActiveRecord::StatementInvalid) do
         Corvid::BillingSystemSetting.transaction(requires_new: true) do
-          Corvid::BillingSystemSetting.insert_all(
+          Corvid::BillingSystemSetting.insert_all!(
             [ {
               tenant_identifier: TENANT,
               facility_identifier: FACILITY,
@@ -93,7 +93,7 @@ class Corvid::BillingSystemSettingTest < ActiveSupport::TestCase
     with_tenant(TENANT) do
       assert_raises(ActiveRecord::StatementInvalid) do
         Corvid::BillingSystemSetting.transaction(requires_new: true) do
-          Corvid::BillingSystemSetting.insert_all(
+          Corvid::BillingSystemSetting.insert_all!(
             [ {
               tenant_identifier: TENANT,
               facility_identifier: FACILITY,
@@ -123,7 +123,7 @@ class Corvid::BillingSystemSettingTest < ActiveSupport::TestCase
 
       assert_raises(ActiveRecord::StatementInvalid) do
         Corvid::BillingSystemSetting.transaction(requires_new: true) do
-          Corvid::BillingSystemSetting.insert_all(
+          Corvid::BillingSystemSetting.insert_all!(
             [ {
               tenant_identifier: TENANT,
               facility_identifier: FACILITY,
