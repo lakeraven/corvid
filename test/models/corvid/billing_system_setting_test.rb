@@ -637,4 +637,104 @@ class Corvid::BillingSystemSettingTest < ActiveSupport::TestCase
         )
     end
   end
+
+  test "system_of_record_for pins inclusive expires_on on adjacent cutover days" do
+    with_tenant(TENANT) do
+      record_system_of_record(
+        facility_identifier: FACILITY,
+        system_of_record: "corvid",
+        effective_on: Date.new(2025, 1, 1),
+        expires_on: Date.new(2025, 6, 30)
+      )
+      record_system_of_record(
+        facility_identifier: FACILITY,
+        system_of_record: "ehr",
+        effective_on: Date.new(2025, 7, 1),
+        expires_on: nil
+      )
+
+      assert_equal :corvid,
+        Corvid::BillingSystemSetting.system_of_record_for(
+          facility_identifier: FACILITY, visit_type: nil, on: Date.new(2025, 6, 30)
+        )
+      assert_equal :ehr,
+        Corvid::BillingSystemSetting.system_of_record_for(
+          facility_identifier: FACILITY, visit_type: nil, on: Date.new(2025, 7, 1)
+        )
+    end
+  end
+
+  test "system_of_record_for is unknown after corvid-only range ends with no successor row" do
+    with_tenant(TENANT) do
+      record_system_of_record(
+        facility_identifier: FACILITY,
+        system_of_record: "corvid",
+        effective_on: Date.new(2025, 1, 1),
+        expires_on: Date.new(2025, 6, 30)
+      )
+
+      assert_equal :unknown,
+        Corvid::BillingSystemSetting.system_of_record_for(
+          facility_identifier: FACILITY, visit_type: nil, on: Date.new(2025, 7, 1)
+        )
+    end
+  end
+
+  test "system_of_record_for returns unknown for a facility with no rows in the same tenant" do
+    with_tenant(TENANT) do
+      record_system_of_record(facility_identifier: FACILITY, system_of_record: "corvid")
+
+      assert_equal :unknown,
+        Corvid::BillingSystemSetting.system_of_record_for(
+          facility_identifier: OTHER_FACILITY, visit_type: nil, on: Date.new(2025, 1, 1)
+        )
+    end
+  end
+
+  test "system_of_record_for resolves independently per facility within one tenant" do
+    with_tenant(TENANT) do
+      record_system_of_record(facility_identifier: FACILITY, system_of_record: "corvid")
+      record_system_of_record(facility_identifier: OTHER_FACILITY, system_of_record: "ehr")
+      on = Date.new(2025, 1, 1)
+
+      assert_equal :corvid,
+        Corvid::BillingSystemSetting.system_of_record_for(
+          facility_identifier: FACILITY, visit_type: nil, on: on
+        )
+      assert_equal :ehr,
+        Corvid::BillingSystemSetting.system_of_record_for(
+          facility_identifier: OTHER_FACILITY, visit_type: nil, on: on
+        )
+    end
+  end
+
+  test "system_of_record_for treats blank visit_type as unknown fail closed" do
+    with_tenant(TENANT) do
+      record_system_of_record(facility_identifier: FACILITY, system_of_record: "corvid")
+      record_system_of_record(
+        facility_identifier: FACILITY, visit_type: "dental", system_of_record: "ehr"
+      )
+      on = Date.new(2025, 1, 1)
+
+      assert_equal :unknown,
+        Corvid::BillingSystemSetting.system_of_record_for(
+          facility_identifier: FACILITY, visit_type: "", on: on
+        )
+      assert_equal :unknown,
+        Corvid::BillingSystemSetting.system_of_record_for(
+          facility_identifier: FACILITY, visit_type: "  ", on: on
+        )
+    end
+  end
+
+  test "system_of_record_for treats blank visit_type as unknown when only all-visits row exists" do
+    with_tenant(TENANT) do
+      record_system_of_record(facility_identifier: FACILITY, system_of_record: "corvid")
+
+      assert_equal :unknown,
+        Corvid::BillingSystemSetting.system_of_record_for(
+          facility_identifier: FACILITY, visit_type: "", on: Date.new(2025, 1, 1)
+        )
+    end
+  end
 end

@@ -6,6 +6,7 @@ class Corvid::ClaimSubmissionSystemOfRecordTest < ActiveSupport::TestCase
   TENANT = "tnt_test"
   OTHER_TENANT = "tnt_other"
   FACILITY = "fac_a"
+  OTHER_FACILITY = "fac_b"
   SERVICE_DATE = Date.new(2025, 4, 10)
 
   NOT_SYSTEM_OF_RECORD_MESSAGE =
@@ -260,6 +261,79 @@ class Corvid::ClaimSubmissionSystemOfRecordTest < ActiveSupport::TestCase
 
     assert_equal :not_system_of_record, error.reason
     assert_equal 0, @submit_claim_calls.size
+  end
+
+  test "submit! refuses on cutover first day when EHR becomes system of record" do
+    with_tenant(TENANT) do
+      record_system_of_record(
+        facility_identifier: FACILITY,
+        system_of_record: "corvid",
+        effective_on: Date.new(2025, 1, 1),
+        expires_on: Date.new(2025, 6, 30)
+      )
+      record_system_of_record(
+        facility_identifier: FACILITY,
+        system_of_record: "ehr",
+        effective_on: Date.new(2025, 7, 1),
+        expires_on: nil
+      )
+      claim = create_draft_claim(facility: FACILITY, service_date: Date.new(2025, 7, 1))
+
+      error = assert_raises(Corvid::ClaimSubmission::SystemOfRecordRefused) { claim.submit! }
+
+      assert_equal :not_system_of_record, error.reason
+      assert_equal 0, @submit_claim_calls.size
+    end
+  end
+
+  test "submit! proceeds on inclusive last day of corvid range before cutover" do
+    with_tenant(TENANT) do
+      record_system_of_record(
+        facility_identifier: FACILITY,
+        system_of_record: "corvid",
+        effective_on: Date.new(2025, 1, 1),
+        expires_on: Date.new(2025, 6, 30)
+      )
+      record_system_of_record(
+        facility_identifier: FACILITY,
+        system_of_record: "ehr",
+        effective_on: Date.new(2025, 7, 1),
+        expires_on: nil
+      )
+      claim = create_draft_claim(facility: FACILITY, service_date: Date.new(2025, 6, 30))
+
+      claim.submit!
+
+      assert_equal 1, @submit_claim_calls.size
+    end
+  end
+
+  test "submit! refuses fac_b claim when only fac_a has system of record configured" do
+    with_tenant(TENANT) do
+      record_system_of_record(facility_identifier: FACILITY, system_of_record: "corvid")
+      claim = create_draft_claim(facility: OTHER_FACILITY, service_date: SERVICE_DATE)
+
+      error = assert_raises(Corvid::ClaimSubmission::SystemOfRecordRefused) { claim.submit! }
+
+      assert_equal :system_of_record_unset, error.reason
+      assert_equal 0, @submit_claim_calls.size
+    end
+  end
+
+  test "submit! applies system of record per facility within the same tenant" do
+    with_tenant(TENANT) do
+      record_system_of_record(facility_identifier: FACILITY, system_of_record: "corvid")
+      record_system_of_record(facility_identifier: OTHER_FACILITY, system_of_record: "ehr")
+
+      fac_b_claim = create_draft_claim(facility: OTHER_FACILITY, service_date: SERVICE_DATE)
+      error = assert_raises(Corvid::ClaimSubmission::SystemOfRecordRefused) { fac_b_claim.submit! }
+      assert_equal :not_system_of_record, error.reason
+
+      fac_a_claim = create_draft_claim(facility: FACILITY, service_date: SERVICE_DATE)
+      fac_a_claim.submit!
+
+      assert_equal 1, @submit_claim_calls.size
+    end
   end
 
   private
