@@ -3,6 +3,8 @@
 require_relative "rcm/claim"
 require_relative "rcm/acknowledgment"
 require_relative "rcm/remittance"
+require_relative "rcm/deposit"
+require_relative "rcm/deposit_matcher"
 require_relative "rcm/edi_835_reader"
 require_relative "rcm/adjustment_reason_codes"
 require_relative "rcm/remittance_classifier"
@@ -27,6 +29,7 @@ module Corvid
   #   Edi835Reader                              — X12 835 -> ClaimResponse shapes
   #   AdjustmentReasonCodes                     — CARC/RARC mapping as data
   #   RemittanceClassifier                      — routing, with unmapped -> human
+  #   Deposit / DepositMatcher                  — 835 TRN trace to a bank deposit
   #
   # What is deliberately NOT here (wave 2 and later, per the marker issue):
   #   - persistence of any kind (tables, models, the claim event log with #507)

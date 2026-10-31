@@ -22,6 +22,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   instead of `denial_reason_token`.
 
 ### Added
+- Remittance-to-deposit reassociation (#750). `Corvid::Rcm::Deposit` holds
+  one bank credit with an exact amount; `Corvid::Rcm::DepositMatcher.match`
+  pairs each 835 with the deposit carrying the same TRN trace (surrounding
+  whitespace stripped, leading zeros and case kept). A same-trace pair with
+  a different amount is an amount mismatch with a signed `difference`;
+  duplicate or blank traces go to the unmatched lists; NON and zero-pay
+  remittances are left out and never hold a deposit.
 - ZIP-to-CBSA wage-area crosswalk (#371). `corvid_zip_cbsa_crosswalks`
   stores the CMS crosswalk by federal fiscal year (`zip` is five ASCII
   digits; `cbsa` is a five-digit CBSA or a two-digit rural-state code;
