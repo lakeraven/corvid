@@ -26,8 +26,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   payer, facility and service month for one tenant, claims sent and the
   rejection, denial, first-pass and payment figures from the
   `ClaimSubmission` KPI helpers, with the claim ids behind each figure,
-  denials by CARC work queue (`unmapped` and `uncoded` kept as buckets),
-  and a CSV export. Rejections and denials are never combined. Measure
+  denials by CARC work queue (`unmapped` and `uncoded` kept as buckets;
+  a known RARC is skipped, and a claim with only RARCs is uncoded),
+  and a CSV export that prefixes a formula-leading string cell with a
+  quote. Rejections and denials are never combined. Measure
   definitions are in `docs/claim_outcome_report.md`.
 - ZIP-to-CBSA wage-area crosswalk (#371). `corvid_zip_cbsa_crosswalks`
   stores the CMS crosswalk by federal fiscal year (`zip` is five ASCII

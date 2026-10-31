@@ -26,7 +26,10 @@ module Corvid
   #
   # A denied claim counts once per distinct CARC category. A mapped code
   # uses its AdjustmentReasonCodes work queue. An unmapped code is
-  # "unmapped". A denied claim with no codes is "uncoded".
+  # "unmapped". A denied claim with no codes is "uncoded". A known RARC
+  # is skipped, and a denied claim with only RARCs is "uncoded". `to_csv`
+  # prefixes a string cell that begins with `=`, `+`, `-`, `@`, a tab, or
+  # a carriage return with a single quote; Row values stay raw.
   class ClaimOutcomeReport
     MEASURE_KEYS = %i[
       claims_sent rejected_claims rejection_rate adjudicated_claims denied_claims denial_rate
@@ -75,6 +78,10 @@ module Corvid
       finalized_claims: :finalized?,
       paid_claims: :paid?
     }.freeze
+
+    # A spreadsheet may treat a cell that starts with one of these as a formula.
+    CSV_FORMULA_LEADERS = [ "=", "+", "-", "@", "\t", "\r" ].freeze
+    private_constant :CSV_FORMULA_LEADERS
 
     # One plucked claim. No patient identifier, token, or amount.
     Snapshot = Data.define(*READ_COLUMNS) do
@@ -204,10 +211,19 @@ module Corvid
       def categories_for(claim)
         return [] unless claim.denied?
 
-        codes = present_codes(claim.denial_reason_codes)
+        codes = present_codes(claim.denial_reason_codes).reject { |code| known_remark?(code) }
         return [ "uncoded" ] if codes.empty?
 
         codes.map { |code| category_for(code) }.uniq
+      end
+
+      # A RARC qualifies a CARC and never chooses a category. #remark looks
+      # the code up as given, so match the table's own strip + upcase first.
+      def known_remark?(code)
+        table = Corvid::Rcm::AdjustmentReasonCodes.default
+        return false if table.mapped?(code)
+
+        !table.remark(code.to_s.strip.upcase).nil?
       end
 
       def present_codes(codes)
@@ -312,18 +328,24 @@ module Corvid
         "facility_identifier",
         "month",
         *MEASURE_KEYS.map(&:to_s),
-        *categories.map { |category| "denials_#{category}" }
+        *categories.map { |category| "denials_#{csv_cell(category)}" }
       ]
     end
 
     def csv_values(row, categories)
       [
-        row.payer_identifier,
-        row.facility_identifier,
-        row.month.strftime("%Y-%m"),
+        csv_cell(row.payer_identifier),
+        csv_cell(row.facility_identifier),
+        csv_cell(row.month.strftime("%Y-%m")),
         *MEASURE_KEYS.map { |key| row.measures.fetch(key) },
         *categories.map { |category| row.denials_by_category.fetch(category, 0) }
       ]
+    end
+
+    def csv_cell(value)
+      return value unless value.is_a?(String) && value.start_with?(*CSV_FORMULA_LEADERS)
+
+      "'#{value}"
     end
   end
 end

@@ -34,4 +34,6 @@ Rejections and denials are never combined into one count, rate, or column.
 
 Each count, and each rate's numerator and denominator, can be opened to the claim ids behind it. Those ids match the count.
 
-Denied claims are also split by CARC category. `Corvid::Rcm::AdjustmentReasonCodes` maps a code to a work queue. An unmapped code is its own `unmapped` bucket and is not dropped. A denied claim with no codes is `uncoded`. A claim counts once in each distinct category it hits.
+Denied claims are also split by CARC category. `Corvid::Rcm::AdjustmentReasonCodes` maps a code to a work queue. An unmapped code is its own `unmapped` bucket and is not dropped. A denied claim with no codes is `uncoded`. A claim counts once in each distinct category it hits. A known RARC is skipped, and a denied claim with only RARCs is `uncoded`.
+
+`to_csv` prefixes a string cell that begins with `=`, `+`, `-`, `@`, a tab, or a carriage return with a single quote.
