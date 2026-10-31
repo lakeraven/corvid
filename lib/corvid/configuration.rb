@@ -26,6 +26,13 @@ module Corvid
   # #inspect lists verification snapshot key versions and does not reveal
   # key material. #as_json, #to_json, and #to_yaml emit those same redacted
   # fields and omit key bytes.
+  #
+  # payer_authorization_turnarounds maps payer_identifier to a positive
+  # ActiveSupport::Duration (default {}). Keys are stored as strings.
+  # The writer rejects a non-Hash, a blank key, a non-duration, and a
+  # duration that is not positive. It is not secret. It is omitted from
+  # inspect/as_json/to_yaml with the other operational settings so those
+  # methods stay an allow-list of snapshot key versions.
   class Configuration
     # Alternate-resource types whose check freshness is configurable (#640).
     # Duplicated so configuration can boot without loading app models.
@@ -50,6 +57,15 @@ module Corvid
       @fetch_provenance = ->(**) { [] }
       @verification_snapshot_keys = {}
       @verification_snapshot_key_version = nil
+      @payer_authorization_turnarounds = {}.freeze
+    end
+
+    def payer_authorization_turnarounds
+      @payer_authorization_turnarounds
+    end
+
+    def payer_authorization_turnarounds=(turnarounds)
+      @payer_authorization_turnarounds = validated_payer_authorization_turnarounds(turnarounds)
     end
 
     def inspect
@@ -111,6 +127,30 @@ module Corvid
       return {} unless defined?(@alternate_resource_check_max_age_overrides)
 
       @alternate_resource_check_max_age_overrides
+    end
+
+    # Symbol keys become strings. Blank keys, non-durations, and
+    # non-positive durations are rejected. Anything other than a Hash
+    # is rejected before the pairs are read.
+    def validated_payer_authorization_turnarounds(turnarounds)
+      unless turnarounds.is_a?(Hash)
+        raise ArgumentError, "payer authorization turnarounds must be a hash"
+      end
+
+      turnarounds.to_h { |key, value|
+        payer = key.to_s
+        if payer.strip.empty?
+          raise ArgumentError, "payer authorization turnaround payer identifier can't be blank"
+        end
+        unless value.is_a?(ActiveSupport::Duration)
+          raise ArgumentError, "payer authorization turnaround must be a duration"
+        end
+        unless value.positive?
+          raise ArgumentError, "payer authorization turnaround must be positive"
+        end
+
+        [ payer, value ]
+      }.freeze
     end
 
     # Symbol keys become strings. Unknown types, non-durations, and

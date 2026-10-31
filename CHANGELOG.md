@@ -22,6 +22,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   instead of `denial_reason_token`.
 
 ### Added
+- Payer authorization requests (#793). `corvid_payer_authorization_requests`
+  records a prior-authorization request to a payer (`pas`, `x12_278`,
+  `portal`, `fax`) and the decision that comes back. Status changes only
+  along the allowed transitions. `lock_version` makes a stale save raise
+  `ActiveRecord::StaleObjectError`, and a failed transition leaves the
+  in-memory request unchanged. `submit!` requires a sign-off identifier
+  and sets `follow_up_due_at` from
+  `Corvid.configuration.payer_authorization_turnarounds` when that payer
+  has a positive duration; otherwise there is no timer. The turnaround
+  writer takes a hash of payer identifiers to positive durations.
+  `overdue(as_of:)` requires a time, not a date. `overdue` and `expiring`
+  stay inside the current tenant. The payer's authorization number is
+  stored on the request and is not written to the referral's PRC
+  `authorization_number`. A request linked to another tenant's referral
+  is invalid, including one that has not been saved. The database rejects
+  that link with a composite foreign key, and a request with no referral
+  is still allowed. When the referral names a facility, the request must
+  name the same one. An unknown or missing decision is not an approval.
 - ZIP-to-CBSA wage-area crosswalk (#371). `corvid_zip_cbsa_crosswalks`
   stores the CMS crosswalk by federal fiscal year (`zip` is five ASCII
   digits; `cbsa` is a five-digit CBSA or a two-digit rural-state code;

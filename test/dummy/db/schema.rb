@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_10_28_000001) do
+ActiveRecord::Schema[8.1].define(version: 2026_10_31_000003) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
@@ -489,6 +489,38 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_28_000001) do
     t.index ["calendar_year", "locality"], name: "idx_corvid_opps_conversion_factors_cy_locality", unique: true
   end
 
+  create_table "corvid_payer_authorization_requests", force: :cascade do |t|
+    t.string "tenant_identifier", null: false
+    t.string "facility_identifier"
+    t.bigint "prc_referral_id"
+    t.string "payer_identifier", null: false
+    t.string "channel", null: false
+    t.string "status", default: "drafted", null: false
+    t.datetime "submitted_at"
+    t.string "submitted_by_identifier"
+    t.datetime "follow_up_due_at"
+    t.string "payer_authorization_identifier"
+    t.integer "approved_units"
+    t.date "approved_from"
+    t.date "approved_to"
+    t.integer "lock_version", default: 0, null: false
+    t.datetime "created_at", null: false
+    t.datetime "updated_at", null: false
+    t.index ["prc_referral_id"], name: "index_corvid_payer_authorization_requests_on_prc_referral_id"
+    t.index ["tenant_identifier", "approved_to"], name: "idx_corvid_payer_auth_requests_tenant_approved_to"
+    t.index ["tenant_identifier", "facility_identifier"], name: "idx_corvid_payer_auth_requests_tenant_facility"
+    t.index ["tenant_identifier", "follow_up_due_at"], name: "idx_corvid_payer_auth_requests_tenant_follow_up"
+    t.index ["tenant_identifier", "status"], name: "idx_corvid_payer_auth_requests_tenant_status"
+    t.check_constraint "(status::text <> ALL (ARRAY['approved'::character varying, 'partially_approved'::character varying]::text[])) OR payer_authorization_identifier IS NOT NULL AND btrim(payer_authorization_identifier::text) <> ''::text AND approved_from IS NOT NULL AND approved_to IS NOT NULL", name: "corvid_payer_auth_requests_approval_check"
+    t.check_constraint "(status::text = ANY (ARRAY['approved'::character varying, 'partially_approved'::character varying, 'cancelled'::character varying]::text[])) OR payer_authorization_identifier IS NULL AND approved_from IS NULL AND approved_to IS NULL AND approved_units IS NULL", name: "corvid_payer_auth_requests_approval_fields_check"
+    t.check_constraint "(status::text = ANY (ARRAY['drafted'::character varying, 'cancelled'::character varying]::text[])) OR submitted_at IS NOT NULL AND submitted_by_identifier IS NOT NULL AND btrim(submitted_by_identifier::text) <> ''::text", name: "corvid_payer_auth_requests_submitted_check"
+    t.check_constraint "approved_from IS NULL OR approved_to IS NULL OR approved_to >= approved_from", name: "corvid_payer_auth_requests_approved_range_check"
+    t.check_constraint "approved_units IS NULL OR approved_units > 0", name: "corvid_payer_auth_requests_approved_units_check"
+    t.check_constraint "btrim(tenant_identifier::text) <> ''::text AND btrim(payer_identifier::text) <> ''::text AND (facility_identifier IS NULL OR btrim(facility_identifier::text) <> ''::text) AND (submitted_by_identifier IS NULL OR btrim(submitted_by_identifier::text) <> ''::text) AND (payer_authorization_identifier IS NULL OR btrim(payer_authorization_identifier::text) <> ''::text)", name: "corvid_payer_auth_requests_identifiers_check"
+    t.check_constraint "channel::text = ANY (ARRAY['pas'::character varying, 'x12_278'::character varying, 'portal'::character varying, 'fax'::character varying]::text[])", name: "corvid_payer_auth_requests_channel_check"
+    t.check_constraint "status::text = ANY (ARRAY['drafted'::character varying, 'submitted'::character varying, 'pended'::character varying, 'approved'::character varying, 'partially_approved'::character varying, 'denied'::character varying, 'cancelled'::character varying]::text[])", name: "corvid_payer_auth_requests_status_check"
+  end
+
   create_table "corvid_payments", force: :cascade do |t|
     t.string "tenant_identifier", null: false
     t.string "facility_identifier"
@@ -622,6 +654,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_28_000001) do
     t.string "management_rejected_by_identifier"
     t.string "management_rejection_reason_token"
     t.index ["case_id"], name: "index_corvid_prc_referrals_on_case_id"
+    t.index ["id", "tenant_identifier"], name: "idx_corvid_prc_referrals_id_tenant", unique: true
     t.index ["tenant_identifier", "facility_identifier", "referral_identifier"], name: "idx_corvid_prc_referrals_tenant_referral", unique: true
     t.index ["tenant_identifier", "status"], name: "index_corvid_prc_referrals_on_tenant_identifier_and_status"
     t.check_constraint "priority_system IS NULL OR priority_system::text = 'corvid_v1'::text", name: "corvid_prc_referrals_priority_system_check"
@@ -707,6 +740,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_28_000001) do
   add_foreign_key "corvid_fmap_determinations", "corvid_fmap_determinations", column: "superseded_by_id"
   add_foreign_key "corvid_fmap_determinations", "corvid_fmap_rules", column: "best_available_rule_key", primary_key: "rule_key"
   add_foreign_key "corvid_fmap_determinations", "corvid_fmap_rules", column: "rule_key", primary_key: "rule_key"
+  add_foreign_key "corvid_payer_authorization_requests", "corvid_prc_referrals", column: ["prc_referral_id", "tenant_identifier"], primary_key: ["id", "tenant_identifier"]
   add_foreign_key "corvid_prc_overpayment_analyses", "corvid_prc_obligations", column: "prc_obligation_id"
   add_foreign_key "corvid_prc_payments", "corvid_prc_obligations", column: "prc_obligation_id"
   add_foreign_key "corvid_prc_referrals", "corvid_cases", column: "case_id"
