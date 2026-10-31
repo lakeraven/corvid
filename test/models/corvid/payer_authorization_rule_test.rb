@@ -71,11 +71,14 @@ module Corvid
 
     test "service_code must match five-character uppercase alphanumeric" do
       with_tenant(TENANT) do
-        %w[9921 992131 9921X x9213].each do |bad|
+        (%w[9921 992131 x9213] + [ "9921-", "99 13", "99213 " ]).each do |bad|
           rule = build_rule(service_code: bad)
           refute rule.valid?, "expected #{bad.inspect} to be rejected"
           assert rule.errors[:service_code].any?
         end
+
+        mixed_alphanumeric = build_rule(service_code: "9921X")
+        assert mixed_alphanumeric.valid?, mixed_alphanumeric.errors.full_messages.join(", ")
       end
     end
 

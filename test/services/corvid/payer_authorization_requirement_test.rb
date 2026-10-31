@@ -244,6 +244,28 @@ module Corvid
       end
     end
 
+    test "fail closed when omitted inputs leave a plan-and-place rule possibly applicable" do
+      with_tenant(TENANT) do
+        create_rule!(service_code: "99213", requirement: "not_required")
+        plan_and_pos = create_rule!(
+          service_code: "99213", plan_identifier: "plan_gold", place_of_service: "22",
+          requirement: "required"
+        )
+
+        assert_equal :unknown,
+                     lookup(service_code: "99213", plan_identifier: nil, place_of_service: nil).requirement
+        assert_equal :unknown,
+                     lookup(service_code: "99213", plan_identifier: "plan_gold", place_of_service: nil).requirement
+        assert_equal :unknown,
+                     lookup(service_code: "99213", plan_identifier: nil, place_of_service: "22").requirement
+        assert_equal :not_required,
+                     lookup(service_code: "99213", plan_identifier: "plan_basic", place_of_service: nil).requirement
+        result = lookup(service_code: "99213", plan_identifier: "plan_gold", place_of_service: "22")
+        assert_equal :required, result.requirement
+        assert_equal [ plan_and_pos.id ], result.rule_ids
+      end
+    end
+
     test "pos-specific rule that agrees with payer-wide does not force unknown" do
       with_tenant(TENANT) do
         create_rule!(service_code: "99213", requirement: "required")
