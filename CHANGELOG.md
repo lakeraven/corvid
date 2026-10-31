@@ -22,6 +22,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   instead of `denial_reason_token`.
 
 ### Added
+- Medical frailty classification (#794). Hosts register per-state
+  criteria with `Corvid::MedicalFrailtyCriteria`: ICD-10-CM prefixes,
+  medication system and code, and CPT/HCPCS codes. The engine ships no
+  states. `Corvid::MedicalFrailtyClassifier` reads conditions,
+  medications, and claims in memory and returns `likely_frail`,
+  `not_indicated`, or `unknown`, with each matching category, date, and
+  source type. An unconfigured state, a nil read, or undated would-be
+  evidence is `unknown`, never `not_indicated`. The result carries no
+  display text, codes, dosage text, raw references, or patient
+  identifier.
 - ZIP-to-CBSA wage-area crosswalk (#371). `corvid_zip_cbsa_crosswalks`
   stores the CMS crosswalk by federal fiscal year (`zip` is five ASCII
   digits; `cbsa` is a five-digit CBSA or a two-digit rural-state code;
