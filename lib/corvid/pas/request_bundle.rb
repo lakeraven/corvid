@@ -62,7 +62,8 @@ module Corvid
         Entry = Data.define(:index, :full_url, :resource)
         Target = Data.define(:resource, :entry_index)
         # Element path stopped at the parent of a non-element key.
-        StoppedPath = Data.define(:text)
+        # Descendants share this link and render as that parent path.
+        StoppedPath = Data.define(:parent)
 
         def initialize(input)
           # Copy before freeze so the caller's objects stay mutable and
@@ -465,10 +466,12 @@ module Corvid
         end
 
         # Explicit stack so a deep or cyclic resource cannot blow the call
-        # stack. References are yielded in document order.
+        # stack. References are yielded in document order. Each frame keeps
+        # a parent link, [parent, key or index], and the element path is
+        # rendered only for a reference reported as a problem.
         def each_reference(resource)
           seen = {}.compare_by_identity
-          stack = [ [ :node, resource, "", 0 ] ]
+          stack = [ [ :node, resource, nil, 0 ] ]
           until stack.empty?
             kind, value, path, depth = stack.pop
             return :deep if depth > MAX_NESTING
@@ -499,7 +502,16 @@ module Corvid
         end
 
         def contained_list?(path, value)
-          value.is_a?(Array) && same_text?(path, "contained")
+          value.is_a?(Array) && root_contained_path?(path)
+        end
+
+        # Only the resource root's contained array. A stopped path and any
+        # deeper "contained" key stay out, matching a path string of exactly
+        # "contained".
+        def root_contained_path?(path)
+          return false unless path.is_a?(Array) && path[0].nil?
+
+          same_text?(path[1], "contained")
         end
 
         # Reachable entries only, ordered with unresolved references.
@@ -567,7 +579,7 @@ module Corvid
         def append_index(path, index)
           return path if stopped_path?(path)
 
-          "#{path}[#{index}]"
+          [ path, index ]
         end
 
         def frame_for(key, child, path, depth)
@@ -590,18 +602,11 @@ module Corvid
           return path if stopped_path?(path)
           return stop_path(path) unless fhir_element_name?(key)
 
-          join_segment(path, key)
-        end
-
-        def join_segment(path, key)
-          text = path_text(path)
-          return key if text.empty?
-
-          "#{text}.#{key}"
+          [ path, key ]
         end
 
         def stop_path(path)
-          StoppedPath.new(path_text(path))
+          StoppedPath.new(path)
         end
 
         def stopped_path?(path)
@@ -609,7 +614,18 @@ module Corvid
         end
 
         def path_text(path)
-          stopped_path?(path) ? path.text : path
+          return "" if path.nil?
+          return path_text(path.parent) if stopped_path?(path)
+
+          parent, segment = path
+          join_segment(path_text(parent), segment)
+        end
+
+        def join_segment(text, segment)
+          return "#{text}[#{segment}]" if segment.is_a?(Integer)
+          return segment if text.empty?
+
+          "#{text}.#{segment}"
         end
 
         def build_parsed(references, reachable)
