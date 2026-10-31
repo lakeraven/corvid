@@ -230,12 +230,13 @@ class Corvid::ClaimSubmissionSystemOfRecordTest < ActiveSupport::TestCase
     with_tenant(OTHER_TENANT) do
       claim_in_context = Corvid::ClaimSubmission.unscoped.find(claim.id)
       claim_in_context.submit!
+
+      assert_equal OTHER_TENANT, Corvid::TenantContext.current_tenant_identifier
     end
 
     assert_equal 1, @submit_claim_calls.size
     submitted = Corvid::ClaimSubmission.unscoped.find(claim.id)
     assert_equal "submitted", submitted.status
-    assert_equal OTHER_TENANT, Corvid::TenantContext.current_tenant_identifier
   end
 
   test "submit! with no tenant context still reads the claim's own setting" do
