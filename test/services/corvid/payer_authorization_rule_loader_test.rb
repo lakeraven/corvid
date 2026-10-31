@@ -407,7 +407,7 @@ module Corvid
         end
       end
 
-      assert_raises(ThreadError) { b_finished.pop(timeout: 0.5) }
+      assert_nil b_finished.pop(timeout: 0.5), "second load finished while the first held the tenant lock"
 
       released = true
       release_a.push(true)
