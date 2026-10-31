@@ -256,11 +256,20 @@ module Corvid
         def scan_entry(index)
           @scan_index = index
           @ordinal = 0
+          clear_contained_index
           status = each_reference(@entries[index].resource) do |reference, path|
             @ordinal += 1
             follow(index, @ordinal, reference, path)
           end
           @problems << [ index, @ordinal + 1, :nesting, nil ] if status == :deep
+          clear_contained_index
+        end
+
+        # The id map exists only while this entry's resource is scanned.
+        def clear_contained_index
+          @indexed_contained_list = nil
+          @contained_by_id = nil
+          @duplicate_contained_at = nil
         end
 
         def follow(index, ordinal, reference, path)
@@ -365,16 +374,12 @@ module Corvid
           list = resource["contained"]
           return nil unless list.is_a?(Array)
 
-          match = list.find { |item| contained_item?(item, id) }
+          match = contained_id_map(list)[id]
           return nil unless match
 
           # Contained resources are not Bundle entries, so they have no
           # entry index and stay out of the resources list.
           Target.new(resource: match, entry_index: nil)
-        end
-
-        def contained_item?(item, id)
-          item.is_a?(Hash) && same_text?(item["id"], id)
         end
 
         def relative_type_and_id(reference)
@@ -500,22 +505,41 @@ module Corvid
         # Reachable entries only, ordered with unresolved references.
         # Entries that are never reached are not checked.
         def record_duplicate_contained(list)
-          index = duplicate_contained_index(list)
-          return if index.nil?
+          contained_id_map(list)
+          return if @duplicate_contained_at.nil?
 
-          @problems << [ @scan_index, @ordinal + 1, :contained, index ]
+          @problems << [ @scan_index, @ordinal + 1, :contained, @duplicate_contained_at ]
         end
 
-        def duplicate_contained_index(list)
-          seen = []
-          list.each_with_index do |item, index|
-            id = contained_item_id(item)
-            next if id.nil?
-            return index if seen.any? { |prior| same_text?(prior, id) }
+        # Once for this contained list, then dropped when the entry scan
+        # finishes. Ids are usable strings only, so key equality stays
+        # exact and case-sensitive. The later duplicate index is kept.
+        def contained_id_map(list)
+          return @contained_by_id if @indexed_contained_list.equal?(list)
 
-            seen << id
+          by_id, duplicate_at = index_contained_list(list)
+          @indexed_contained_list = list
+          @contained_by_id = by_id
+          @duplicate_contained_at = duplicate_at
+          by_id
+        end
+
+        def index_contained_list(list)
+          by_id = {}
+          duplicate_at = nil
+          list.each_with_index do |item, index|
+            duplicate_at = track_contained_item(by_id, item, index, duplicate_at)
           end
-          nil
+          [ by_id, duplicate_at ]
+        end
+
+        def track_contained_item(by_id, item, index, duplicate_at)
+          id = contained_item_id(item)
+          return duplicate_at if id.nil?
+          return duplicate_at || index if by_id.key?(id)
+
+          by_id[id] = item
+          duplicate_at
         end
 
         def contained_item_id(item)
