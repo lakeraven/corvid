@@ -205,6 +205,18 @@ module Corvid
       assert_db_check_rejects(plan_identifier: "  ")
     end
 
+    test "insert_all! under tenant context does not persist another tenant_identifier" do
+      with_tenant(TENANT) do
+        row = raw_rule_row(tenant_identifier: "tnt_other")
+        begin
+          PayerAuthorizationRule.insert_all!([ row ])
+        rescue ActiveRecord::StatementInvalid
+          nil
+        end
+        assert_equal 0, PayerAuthorizationRule.unscoped.where(tenant_identifier: "tnt_other").count
+      end
+    end
+
     private
 
     def build_rule(**attrs)
@@ -243,7 +255,7 @@ module Corvid
     def assert_db_check_rejects(**overrides)
       assert_raises(ActiveRecord::StatementInvalid) do
         PayerAuthorizationRule.transaction(requires_new: true) do
-          PayerAuthorizationRule.insert_all!([ raw_rule_row(overrides) ])
+          PayerAuthorizationRule.unscoped.insert_all!([ raw_rule_row(overrides) ])
         end
       end
     end

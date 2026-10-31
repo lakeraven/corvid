@@ -51,6 +51,27 @@ module Corvid
       end
     end
 
+    test "lookup normalizes lowercase ASCII letters in service_code" do
+      with_tenant(TENANT) do
+        create_rule!(service_code: "J1234", requirement: "required")
+        assert_equal :required, lookup(service_code: "j1234").requirement
+      end
+    end
+
+    test "dotless i service_code does not match rule stored as uppercase I" do
+      with_tenant(TENANT) do
+        create_rule!(service_code: "I9213", requirement: "required")
+        assert_equal :unknown, lookup(service_code: "ı9213").requirement
+      end
+    end
+
+    test "unicode ligature service_code does not match rule stored as FF" do
+      with_tenant(TENANT) do
+        create_rule!(service_code: "FF123", requirement: "required")
+        assert_equal :unknown, lookup(service_code: "\uFB00123").requirement
+      end
+    end
+
     test "range rule covers inclusive string-sorted endpoints" do
       with_tenant(TENANT) do
         create_rule!(

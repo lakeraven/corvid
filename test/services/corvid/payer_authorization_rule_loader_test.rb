@@ -295,6 +295,59 @@ module Corvid
       end
     end
 
+    test "lowercase ASCII service_code in CSV normalizes to uppercase" do
+      with_tenant(TENANT) do
+        csv = <<~CSV
+          #{HEADER}
+          payer_a,j1234,,,,,required,2025-01-01,
+        CSV
+        PayerAuthorizationRuleLoader.load!(StringIO.new(csv), tenant_identifier: TENANT)
+
+        rule = PayerAuthorizationRule.unscoped.find_by!(tenant_identifier: TENANT, service_code: "J1234")
+        assert_equal "J1234", rule.service_code
+      end
+    end
+
+    test "dotless i in service_code cell raises InvalidFile naming service_code" do
+      with_tenant(TENANT) do
+        existing = seed_existing_rule!
+        csv = <<~CSV
+          #{HEADER}
+          payer_a,ı9213,,,,,required,2025-01-01,
+        CSV
+
+        error = assert_raises(PayerAuthorizationRuleLoader::InvalidFile) do
+          PayerAuthorizationRuleLoader.load!(StringIO.new(csv), tenant_identifier: TENANT)
+        end
+
+        assert_match(/row 1/i, error.message)
+        assert_match(/service_code/i, error.message)
+        assert PayerAuthorizationRule.unscoped.exists?(id: existing.id)
+        refute PayerAuthorizationRule.unscoped.exists?(tenant_identifier: TENANT, service_code: "I9213")
+        refute PayerAuthorizationRule.unscoped.exists?(tenant_identifier: TENANT, service_code: "ı9213")
+      end
+    end
+
+    test "unicode ligature in service_code cell raises InvalidFile naming service_code" do
+      with_tenant(TENANT) do
+        existing = seed_existing_rule!
+        ligature_code = "\uFB00123"
+        csv = <<~CSV
+          #{HEADER}
+          payer_a,#{ligature_code},,,,,required,2025-01-01,
+        CSV
+
+        error = assert_raises(PayerAuthorizationRuleLoader::InvalidFile) do
+          PayerAuthorizationRuleLoader.load!(StringIO.new(csv), tenant_identifier: TENANT)
+        end
+
+        assert_match(/row 1/i, error.message)
+        assert_match(/service_code/i, error.message)
+        assert PayerAuthorizationRule.unscoped.exists?(id: existing.id)
+        refute PayerAuthorizationRule.unscoped.exists?(tenant_identifier: TENANT, service_code: "FF123")
+      end
+    end
+
     test "extra cell on row 2 raises InvalidFile and preserves prior rules" do
       with_tenant(TENANT) do
         existing = seed_existing_rule!
@@ -465,6 +518,74 @@ module Corvid
         }.merge(attrs)
       )
     end
+  end
+
+  class PayerAuthorizationRuleLoaderOuterTransactionTest < ActiveSupport::TestCase
+    self.use_transactional_tests = false
+
+    TENANT = "tnt_test"
+    ON = Date.new(2025, 6, 15)
+
+    setup do
+      PayerAuthorizationRule.unscoped.where(tenant_identifier: TENANT).delete_all
+    end
+
+    teardown do
+      PayerAuthorizationRule.unscoped.where(tenant_identifier: TENANT).delete_all
+      Corvid::TenantContext.reset!
+    end
+
+    test "load failure inside caller transaction rolls back delete and partial rows" do
+      seeded = PayerAuthorizationRule.unscoped.create!(
+        tenant_identifier: TENANT,
+        payer_identifier: "payer_a",
+        service_code: "99213",
+        requirement: "required",
+        effective_on: Date.new(2025, 1, 1)
+      )
+      csv = <<~CSV
+        #{HEADER}
+        payer_a,99214,,,,,required,2025-01-01,
+        payer_a,99215,,,,,required,2025-01-01,
+      CSV
+      creates = 0
+      real_create = PayerAuthorizationRule.method(:create!)
+      stub_create = lambda do |attrs|
+        creates += 1
+        if creates == 2
+          record = PayerAuthorizationRule.new(attrs)
+          record.errors.add(:base, "stubbed invalid row")
+          raise ActiveRecord::RecordInvalid, record
+        end
+        real_create.call(attrs)
+      end
+
+      with_tenant(TENANT) do
+        PayerAuthorizationRule.stub(:create!, stub_create) do
+          PayerAuthorizationRule.transaction do
+            begin
+              PayerAuthorizationRuleLoader.load!(StringIO.new(csv), tenant_identifier: TENANT)
+            rescue PayerAuthorizationRuleLoader::InvalidFile
+              nil
+            end
+          end
+        end
+
+        assert PayerAuthorizationRule.unscoped.exists?(id: seeded.id)
+        refute PayerAuthorizationRule.unscoped.exists?(tenant_identifier: TENANT, service_code: "99214")
+        result = PayerAuthorizationRequirement.lookup(
+          payer_identifier: "payer_a",
+          service_code: "99213",
+          place_of_service: nil,
+          plan_identifier: nil,
+          on: ON,
+          tenant_identifier: TENANT
+        )
+        assert_equal :required, result.requirement
+      end
+    end
+
+    HEADER = PayerAuthorizationRuleLoaderTest::HEADER
   end
 
   class PayerAuthorizationRuleLoaderConcurrencyTest < ActiveSupport::TestCase
