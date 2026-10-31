@@ -22,7 +22,8 @@ module Corvid
 
     # First key of pg_advisory_xact_lock(int, int), via hashtext. The
     # tenant identifier is the second key, so one tenant's loads
-    # serialize and other tenants do not share the lock.
+    # serialize. hashtext can collide, so two tenants may occasionally
+    # serialize, but a load never touches another tenant's rows.
     LOCK_NAMESPACE = "corvid_payer_authorization_rules"
 
     # Not one hierarchy. Errno::* is SystemCallError; IOError,
@@ -127,9 +128,11 @@ module Corvid
       end
 
       def code_cell(row, column, number)
-        text = cell_text(row, column, number).upcase
+        text = cell_text(row, column, number)
         return nil if text.empty?
-        return text if text.match?(PayerAuthorizationRule::CODE_FORMAT)
+
+        normalized = PayerAuthorizationRule.normalize_code(text)
+        return normalized if normalized
 
         invalid!(number, column)
       end
@@ -245,9 +248,10 @@ module Corvid
 
       # Delete and insert share one transaction. The advisory lock is
       # taken before the delete: under READ COMMITTED two loads can
-      # otherwise interleave and both files' rows survive. create! runs
-      # inside the named tenant; the delete is unscoped so another
-      # thread tenant cannot spare this tenant's old rows.
+      # otherwise interleave and both files' rows survive. The insert
+      # is unscoped and names the tenant argument, so the thread tenant
+      # cannot overwrite it. The delete is unscoped so another thread
+      # tenant cannot spare this tenant's old rows.
       def replace!(tenant, rows)
         PayerAuthorizationRule.transaction(requires_new: true) do
           lock_tenant!(tenant)
@@ -269,10 +273,8 @@ module Corvid
       end
 
       def insert_rows!(tenant, rows)
-        Corvid::TenantContext.with_tenant(tenant) do
-          rows.each_with_index do |attrs, index|
-            create_row!(tenant, attrs, index + 1)
-          end
+        rows.each_with_index do |attrs, index|
+          create_row!(tenant, attrs, index + 1)
         end
       end
 
@@ -283,7 +285,9 @@ module Corvid
       # The exception propagates so the transaction rolls the delete
       # and the earlier inserts back.
       def create_row!(tenant, attrs, number)
-        PayerAuthorizationRule.create!(attrs.merge(tenant_identifier: tenant))
+        PayerAuthorizationRule.unscoped do
+          PayerAuthorizationRule.create!(attrs.merge(tenant_identifier: tenant))
+        end
       rescue ActiveRecord::ActiveRecordError => error
         invalid!(number, column_from(error))
       rescue ArgumentError

@@ -35,15 +35,18 @@ module Corvid
     validate :code_range_pattern
     validate :expires_on_on_or_after_effective_on
 
-    # insert_all! is implemented as `all.insert_all!`. `all` runs the tenant
-    # default scope, which raises with no thread tenant and then overwrites
-    # tenant_identifier from that scope. These rows already name their tenant.
-    def self.insert_all!(...)
-      unscoped.insert_all!(...)
-    end
+    # Five ASCII letters or digits, then ASCII upcase. The shape is
+    # checked before upcase so Unicode case mapping cannot turn "ı9213"
+    # into "I9213" or the ff ligature into "FF123". Nil when the
+    # stripped text is not that shape or the encoding is unusable.
+    def self.normalize_code(value)
+      text = value.to_s.strip
+      return unless text.encoding.ascii_compatible? && text.valid_encoding?
+      return unless text.match?(/\A[A-Za-z0-9]{5}\z/)
 
-    def self.insert_all(...)
-      unscoped.insert_all(...)
+      text.upcase(:ascii)
+    rescue ArgumentError, EncodingError
+      nil
     end
 
     def self.code_pattern(code)

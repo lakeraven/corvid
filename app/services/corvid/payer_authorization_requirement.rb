@@ -31,7 +31,7 @@ module Corvid
 
     def initialize(payer_identifier:, service_code:, place_of_service:, plan_identifier:, on:, tenant_identifier:)
       @payer = payer_identifier.to_s.strip
-      @code = service_code.to_s.strip.upcase
+      @code = PayerAuthorizationRule.normalize_code(service_code) || ""
       @place = present_or_nil(place_of_service)
       @plan = present_or_nil(plan_identifier)
       @on = on

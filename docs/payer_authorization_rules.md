@@ -54,10 +54,10 @@ The loader strips surrounding whitespace and upcases codes before it
 stores them. A lowercase code in the file is accepted only once it
 upcases into that shape. A cell that is only whitespace, including
 characters such as U+00A0 that Ruby `strip` leaves behind, is blank.
-A NUL or any other control character in a cell is invalid. The loader
-names the row and the column's place in the header, counting the first
-column as 1, and does not repeat the cell. Nothing from that file is
-loaded.
+Surrounding whitespace, including tabs, is stripped. A control
+character left inside a cell is invalid. The loader names the row and
+the column's place in the header, counting the first column as 1, and
+does not repeat the cell. Nothing from that file is loaded.
 
 Dates are strict ISO calendar days: four-digit year, two-digit month,
 two-digit day, hyphen-separated. `2025-1-1` and `2025/01/01` are
@@ -103,9 +103,11 @@ the file's rows are inserted in one transaction. Loads for one tenant
 are serialized. Before deleting, the loader takes a transaction-scoped
 lock keyed by that tenant, so one load finishes before the next load
 for that tenant deletes and inserts. The later file wins entirely.
-Loads for different tenants do not share that lock. A header-only file
-is valid and clears that tenant's rules. Other tenants are left
-untouched. The return value is the number of rows loaded.
+The lock keys are hashtext values, which can collide, so two tenants
+may occasionally serialize, but a load never touches another tenant's
+rows. A header-only file is valid and clears that tenant's rules.
+Other tenants are left untouched. The return value is the number of
+rows loaded.
 
 ## Lookup
 
