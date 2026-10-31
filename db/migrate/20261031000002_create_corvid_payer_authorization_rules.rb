@@ -8,6 +8,10 @@
 class CreateCorvidPayerAuthorizationRules < ActiveRecord::Migration[8.1]
   REQUIREMENTS = %w[required not_required documentation_only].freeze
   CODE_SHAPE = "^[A-Z0-9]{5}$"
+  # Same mapping as PayerAuthorizationRule::CODE_PATTERN_FROM/TO.
+  # Kept here so the migration does not call the model.
+  PATTERN_FROM = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+  PATTERN_TO = "9999999999AAAAAAAAAAAAAAAAAAAAAAAAAA"
 
   def change
     create_table :corvid_payer_authorization_rules do |t|
@@ -31,6 +35,7 @@ class CreateCorvidPayerAuthorizationRules < ActiveRecord::Migration[8.1]
 
     add_value_checks
     add_code_checks
+    add_pattern_check
   end
 
   private
@@ -74,5 +79,17 @@ class CreateCorvidPayerAuthorizationRules < ActiveRecord::Migration[8.1]
                          "(code_from IS NULL AND code_to IS NULL) OR " \
                          "(char_length(code_from) = char_length(code_to) AND code_from <= code_to)",
                          name: "corvid_payer_auth_rules_code_range_check"
+  end
+
+  # When both ends are present they share one digit/letter pattern.
+  # A NULL end is an exact service code, or a partial row the form
+  # check already rejects. "10000" and "6999F" are not one pattern.
+  def add_pattern_check
+    from = connection.quote(PATTERN_FROM)
+    to = connection.quote(PATTERN_TO)
+    same_pattern = "translate(code_from, #{from}, #{to}) = translate(code_to, #{from}, #{to})"
+    add_check_constraint :corvid_payer_authorization_rules,
+                         "code_from IS NULL OR code_to IS NULL OR (#{same_pattern})",
+                         name: "corvid_payer_auth_rules_code_pattern_check"
   end
 end

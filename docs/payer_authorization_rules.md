@@ -31,12 +31,24 @@ payer_identifier,service_code,code_from,code_to,place_of_service,plan_identifier
 A row uses exactly one code form. Set `service_code` and leave
 `code_from` and `code_to` blank, or leave `service_code` blank and set
 both `code_from` and `code_to`. A range is inclusive. Both ends are the
-same length, and `code_from` sorts before or on `code_to` as strings.
+same length, `code_from` sorts before or on `code_to` as strings, and
+both ends share one character pattern. Each position is a digit in
+both codes or a letter in both codes. `10000` through `69999` is five
+digits. `J0000` through `J9999` is a letter and four digits. `0001F`
+through `9999F` is four digits and a letter. A range from `10000` to
+`6999F` is invalid, because the last position is a digit on one end
+and a letter on the other.
+
+Every data row has exactly as many cells as the header. A row with
+more cells or fewer cells is invalid. The loader names that row and
+does not repeat the cell values. Nothing from that file is loaded. A
+completely blank line after the last data row is ignored.
 
 Codes are five characters from `A`–`Z` and `0`–`9` (`^[A-Z0-9]{5}$`).
 The loader strips surrounding whitespace and upcases codes before it
 stores them. A lowercase code in the file is accepted only once it
-upcases into that shape.
+upcases into that shape. A cell that is only whitespace, including
+characters such as U+00A0 that Ruby `strip` leaves behind, is blank.
 
 Dates are strict ISO calendar days: four-digit year, two-digit month,
 two-digit day, hyphen-separated. `2025-1-1` and `2025/01/01` are
@@ -60,15 +72,25 @@ column and does not repeat the cell.
 
 `Corvid::PayerAuthorizationRuleLoader.load!(path_or_io, tenant_identifier:)`
 reads a file path or an IO. A blank `tenant_identifier` raises
-`ArgumentError`.
+`ArgumentError`. A missing path or a directory raises `InvalidFile`.
+That message says the file could not be read and does not include the
+path. Nothing is changed.
 
 The file replaces that tenant's rules all or nothing. Every row is
 checked before any row is written. When a row is invalid, nothing from
-that file is loaded and the tenant's previous rules stay. When the file
-is valid, the tenant's existing rules are deleted and the file's rows
-are inserted in one transaction. A header-only file is valid and clears
-that tenant's rules. Other tenants are left untouched. The return value
-is the number of rows loaded.
+that file is loaded and the tenant's previous rules stay. A row that
+fails while it is saved is invalid too. The loader names the row and,
+when it knows which, the column, and does not repeat the cell. The
+transaction rolls back, so the tenant's previous rules stay.
+
+When the file is valid, the tenant's existing rules are deleted and
+the file's rows are inserted in one transaction. Loads for one tenant
+are serialized. Before deleting, the loader takes a transaction-scoped
+lock keyed by that tenant, so one load finishes before the next load
+for that tenant deletes and inserts. The later file wins entirely.
+Loads for different tenants do not share that lock. A header-only file
+is valid and clears that tenant's rules. Other tenants are left
+untouched. The return value is the number of rows loaded.
 
 ## Lookup
 
@@ -96,7 +118,11 @@ A rule matches when all of these hold:
 - The day is on or after `effective_on`, and on or before `expires_on`
   when `expires_on` is set. Both ends are inclusive.
 - The code equals `service_code`, or it falls inside `code_from` ..
-  `code_to` in string order, including the endpoints.
+  `code_to` in string order, including the endpoints, and it has the
+  same digit-versus-letter pattern as those endpoints. A five-digit
+  range does not cover a code with a letter in it. `10000` through
+  `69999` does not cover `2033F`. `J0000` through `J9999` covers
+  `J1234`. `0001F` through `9999F` covers `2033F`.
 - `place_of_service` on the rule is blank, or it equals the place asked
   about. A blank place on the call matches only rules that leave place
   blank.

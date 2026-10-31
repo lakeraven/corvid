@@ -4,9 +4,9 @@ require "csv"
 require "date"
 
 module Corvid
-  # Replaces one tenant's payer authorization rules from a CSV. Every row
-  # is validated before any write: a bad cell must not delete the rules
-  # already in force. Messages name the row and column only.
+  # Replaces one tenant's payer authorization rules from a CSV. A bad
+  # cell or a failed save must not leave the tenant's previous rules
+  # deleted. Messages name the row and, when known, the column only.
   class PayerAuthorizationRuleLoader
     class InvalidFile < StandardError; end
 
@@ -20,6 +20,11 @@ module Corvid
     # an impossible day such as 2025-02-30.
     DATE_SHAPE = /\A\d{4}-\d{2}-\d{2}\z/
 
+    # First key of pg_advisory_xact_lock(int, int), via hashtext. The
+    # tenant identifier is the second key, so one tenant's loads
+    # serialize and other tenants do not share the lock.
+    LOCK_NAMESPACE = "corvid_payer_authorization_rules"
+
     class << self
       def load!(path_or_io, tenant_identifier:)
         tenant = normalize_tenant(tenant_identifier)
@@ -32,24 +37,57 @@ module Corvid
 
       def normalize_tenant(value)
         tenant = value.to_s.strip
-        raise ArgumentError, "tenant_identifier is blank" if tenant.empty?
+        raise ArgumentError, "tenant_identifier is blank" if tenant.blank?
 
         tenant
       end
 
       def read_source(path_or_io)
-        return path_or_io.read if path_or_io.respond_to?(:read)
+        return read_io(path_or_io) if path_or_io.respond_to?(:read)
 
-        File.read(path_or_io)
+        read_file(path_or_io)
+      end
+
+      def read_io(io)
+        io.read
+      rescue SystemCallError
+        unreadable_file!
+      end
+
+      def read_file(path)
+        unreadable_file! unless File.file?(path)
+
+        File.read(path)
+      rescue SystemCallError
+        unreadable_file!
+      end
+
+      def unreadable_file!
+        raise InvalidFile, "file could not be read", cause: nil
       end
 
       def parse(content)
-        table = CSV.parse(content.to_s, headers: true)
-        raise InvalidFile, "header is invalid" unless table.headers == HEADERS
+        header, *data = CSV.parse(content.to_s)
+        raise InvalidFile, "header is invalid" unless header == HEADERS
 
-        table.each_with_index.map { |row, index| build_row(row, index + 1) }
+        data_rows(data).each_with_index.map { |fields, index| build_fields(fields, index + 1) }
       rescue CSV::MalformedCSVError
         raise InvalidFile, "file is invalid"
+      end
+
+      # CSV.parse turns a blank line into an empty field list. One at
+      # the end is not a row. One between data rows is a short row.
+      def data_rows(rows)
+        last = rows.rindex { |fields| !fields.empty? }
+        return [] if last.nil?
+
+        rows[0..last]
+      end
+
+      def build_fields(fields, number)
+        invalid!(number) unless fields.size == HEADERS.size
+
+        build_row(CSV::Row.new(HEADERS, fields), number)
       end
 
       def build_row(row, number)
@@ -79,7 +117,7 @@ module Corvid
       end
 
       def code_cell(row, column, number)
-        text = row[column].to_s.strip.upcase
+        text = cell_text(row, column).upcase
         return nil if text.empty?
         return text if text.match?(PayerAuthorizationRule::CODE_FORMAT)
 
@@ -98,32 +136,48 @@ module Corvid
 
       def check_range!(code_from, code_to, number)
         return if code_from.nil? && code_to.nil?
-        return if code_from && code_to && code_from.length == code_to.length && code_from <= code_to
+        return if spanning_range?(code_from, code_to)
 
         invalid!(number, "code_from")
       end
 
-      def required_text(row, column, number)
+      def spanning_range?(code_from, code_to)
+        return false if code_from.nil? || code_to.nil?
+
+        code_from.length == code_to.length &&
+          code_from <= code_to &&
+          PayerAuthorizationRule.same_code_pattern?(code_from, code_to)
+      end
+
+      # strip leaves U+00A0 and other characters Rails blank? rejects.
+      # Collapse those to empty here so a row the loader accepts is not
+      # refused at save for blankness. Optional blanks become NULL.
+      def cell_text(row, column)
         text = row[column].to_s.strip
+        text.blank? ? "" : text
+      end
+
+      def required_text(row, column, number)
+        text = cell_text(row, column)
         return text if text.present?
 
         invalid!(number, column)
       end
 
       def optional_text(row, column)
-        text = row[column].to_s.strip
+        text = cell_text(row, column)
         text.empty? ? nil : text
       end
 
       def requirement_for(row, number)
-        text = row["requirement"].to_s.strip
+        text = cell_text(row, "requirement")
         return text if PayerAuthorizationRule::REQUIREMENTS.include?(text)
 
         invalid!(number, "requirement")
       end
 
       def date_for(row, column, number, required:)
-        text = row[column].to_s.strip
+        text = cell_text(row, column)
         return nil if text.empty? && !required
 
         parsed = strict_date(text)
@@ -149,22 +203,58 @@ module Corvid
         invalid!(number, "expires_on")
       end
 
-      def invalid!(number, column)
-        raise InvalidFile, "row #{number}: #{column} is invalid"
+      def invalid!(number, column = nil)
+        message = column ? "row #{number}: #{column} is invalid" : "row #{number} is invalid"
+        raise InvalidFile, message
       end
 
-      # Delete and insert share one transaction. create! runs inside the
-      # named tenant; the delete is unscoped so another thread tenant
-      # cannot spare this tenant's old rows.
+      # Delete and insert share one transaction. The advisory lock is
+      # taken before the delete: under READ COMMITTED two loads can
+      # otherwise interleave and both files' rows survive. create! runs
+      # inside the named tenant; the delete is unscoped so another
+      # thread tenant cannot spare this tenant's old rows.
       def replace!(tenant, rows)
         PayerAuthorizationRule.transaction(requires_new: true) do
+          lock_tenant!(tenant)
           PayerAuthorizationRule.unscoped.where(tenant_identifier: tenant).delete_all
-          Corvid::TenantContext.with_tenant(tenant) do
-            rows.each do |attrs|
-              PayerAuthorizationRule.create!(attrs.merge(tenant_identifier: tenant))
-            end
+          insert_rows!(tenant, rows)
+        end
+      end
+
+      def lock_tenant!(tenant)
+        sql = PayerAuthorizationRule.sanitize_sql_array([
+          "SELECT pg_advisory_xact_lock(hashtext(?), hashtext(?))",
+          LOCK_NAMESPACE,
+          tenant
+        ])
+        PayerAuthorizationRule.with_connection do |connection|
+          result = connection.execute(sql, "Payer authorization rule load lock")
+          result.clear if result.respond_to?(:clear)
+        end
+      end
+
+      def insert_rows!(tenant, rows)
+        Corvid::TenantContext.with_tenant(tenant) do
+          rows.each_with_index do |attrs, index|
+            create_row!(tenant, attrs, index + 1)
           end
         end
+      end
+
+      # RecordInvalid, StatementInvalid, and any other ActiveRecord
+      # error become InvalidFile. The exception propagates so the
+      # transaction rolls the delete and the earlier inserts back.
+      def create_row!(tenant, attrs, number)
+        PayerAuthorizationRule.create!(attrs.merge(tenant_identifier: tenant))
+      rescue ActiveRecord::ActiveRecordError => error
+        invalid!(number, column_from(error))
+      end
+
+      def column_from(error)
+        record = error.record if error.respond_to?(:record)
+        return unless record.respond_to?(:errors)
+
+        HEADERS.find { |name| record.errors[name].present? }
       end
     end
   end

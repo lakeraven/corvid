@@ -505,6 +505,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_31_000002) do
     t.index ["tenant_identifier", "payer_identifier"], name: "idx_corvid_payer_auth_rules_tenant_payer"
     t.check_constraint "code_from IS NULL AND code_to IS NULL OR char_length(code_from::text) = char_length(code_to::text) AND code_from::text <= code_to::text", name: "corvid_payer_auth_rules_code_range_check"
     t.check_constraint "code_from IS NULL OR code_from::text ~ '^[A-Z0-9]{5}$'::text", name: "corvid_payer_auth_rules_code_from_check"
+    t.check_constraint "code_from IS NULL OR code_to IS NULL OR translate(code_from::text, '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ'::text, '9999999999AAAAAAAAAAAAAAAAAAAAAAAAAA'::text) = translate(code_to::text, '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ'::text, '9999999999AAAAAAAAAAAAAAAAAAAAAAAAAA'::text)", name: "corvid_payer_auth_rules_code_pattern_check"
     t.check_constraint "code_to IS NULL OR code_to::text ~ '^[A-Z0-9]{5}$'::text", name: "corvid_payer_auth_rules_code_to_check"
     t.check_constraint "expires_on IS NULL OR expires_on >= effective_on", name: "corvid_payer_auth_rules_expires_on_check"
     t.check_constraint "payer_identifier::text !~ '^[[:space:]]*$'::text", name: "corvid_payer_auth_rules_payer_check"

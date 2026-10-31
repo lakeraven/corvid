@@ -77,11 +77,21 @@ module Corvid
     def code_matches?(rule)
       if rule.service_code.present?
         rule.service_code == @code
-      elsif rule.code_from.present? && rule.code_to.present?
-        rule.code_from <= @code && @code <= rule.code_to
       else
-        false
+        range_covers?(rule)
       end
+    end
+
+    # String order is not enough: "2033F" sits between "10000" and
+    # "69999". The code has to share the endpoints' digit and letter
+    # positions. Endpoints that disagree with each other match nothing.
+    def range_covers?(rule)
+      from = rule.code_from
+      to = rule.code_to
+      return false if from.blank? || to.blank?
+      return false unless PayerAuthorizationRule.same_code_pattern?(from, to, @code)
+
+      from <= @code && @code <= to
     end
 
     def in_force?(rule)

@@ -2,7 +2,9 @@
 
 module Corvid
   # Whether a payer requires authorization for a service code or an
-  # inclusive code range. NULL place of service and NULL plan mean any.
+  # inclusive code range. A range's endpoints share one digit-versus-letter
+  # pattern, and a code is inside the range only when it shares that
+  # pattern too. NULL place of service and NULL plan mean any.
   # Blank text is rejected so it cannot be confused with that wildcard.
   # Stored requirements are only the three decisions; unknown and conflict
   # are lookup outcomes, never rows. Checks mirror the database so
@@ -14,6 +16,10 @@ module Corvid
 
     REQUIREMENTS = %w[required not_required documentation_only].freeze
     CODE_FORMAT = /\A[A-Z0-9]{5}\z/
+    # Same two strings as translate() in the code-pattern CHECK.
+    # Digits become 9 and letters become A, position by position.
+    CODE_PATTERN_FROM = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+    CODE_PATTERN_TO = "9999999999AAAAAAAAAAAAAAAAAAAAAAAAAA"
 
     validates :payer_identifier, presence: true
     validates :requirement, inclusion: { in: REQUIREMENTS }
@@ -26,6 +32,7 @@ module Corvid
 
     validate :exactly_one_code_form
     validate :code_range_bounds
+    validate :code_range_pattern
     validate :expires_on_on_or_after_effective_on
 
     # insert_all! is implemented as `all.insert_all!`. `all` runs the tenant
@@ -37,6 +44,15 @@ module Corvid
 
     def self.insert_all(...)
       unscoped.insert_all(...)
+    end
+
+    def self.code_pattern(code)
+      code.tr(CODE_PATTERN_FROM, CODE_PATTERN_TO)
+    end
+
+    def self.same_code_pattern?(*codes)
+      pattern = code_pattern(codes.first)
+      codes.all? { |code| code_pattern(code) == pattern }
     end
 
     private
@@ -60,6 +76,16 @@ module Corvid
 
       errors.add(:code_from, "must be the same length as code_to and not after it")
       errors.add(:code_to, "must be on or after code_from")
+    end
+
+    # "10000".."6999F" sorts as a range and then covers "2033F". The
+    # endpoints have to be the same shape, digit or letter at each spot.
+    def code_range_pattern
+      return if code_from.blank? || code_to.blank?
+      return if self.class.same_code_pattern?(code_from, code_to)
+
+      errors.add(:code_from, "must use the same digit and letter pattern as code_to")
+      errors.add(:code_to, "must use the same digit and letter pattern as code_from")
     end
 
     def expires_on_on_or_after_effective_on
