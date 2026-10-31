@@ -5,6 +5,7 @@ ENV["RAILS_ENV"] = "test"
 require_relative "dummy/config/environment"
 require "rails/test_help"
 require_relative "../features/support/alternate_resource_exhaustion_helper"
+require_relative "../features/support/billing_system_of_record_helper"
 
 # FK-correct table cleanup. Mirrors features/support/env.rb so minitest
 # and cucumber share the same deletion order.
@@ -21,6 +22,9 @@ def clean_corvid_tables!
   Corvid::ZipLocality.unscoped.delete_all
   if Corvid.const_defined?(:ZipCbsaCrosswalk, false)
     Corvid::ZipCbsaCrosswalk.unscoped.delete_all
+  end
+  if Corvid.const_defined?(:BillingSystemSetting, false)
+    Corvid::BillingSystemSetting.unscoped.delete_all
   end
   Corvid::LocalityLookup.clear_cache!
   Corvid::ApiCallLog.unscoped.delete_all
@@ -50,6 +54,8 @@ end
 # Reset state between tests
 module ActiveSupport
   class TestCase
+    include BillingSystemOfRecordHelper
+
     setup do
       Corvid::TenantContext.reset!
       Corvid.configure { |c| c.adapter = Corvid::Adapters::MockAdapter.new }
