@@ -93,6 +93,30 @@ class Corvid::PayerAuthorizationRequestTest < ActiveSupport::TestCase
     end
   end
 
+  test "new records must start drafted even when create! or save! names another status with full supporting fields" do
+    non_drafted_statuses = EXPECTED_STATUSES - [ "drafted" ]
+
+    with_tenant(TENANT) do
+      non_drafted_statuses.each do |status|
+        attrs = attrs_for_non_drafted_new_record(status)
+        before_count = Corvid::PayerAuthorizationRequest.count
+
+        error = assert_raises(ActiveRecord::RecordInvalid) do
+          Corvid::PayerAuthorizationRequest.create!(attrs)
+        end
+        assert error.record.errors[:status].present?, "expected status error for #{status}"
+        assert_equal before_count, Corvid::PayerAuthorizationRequest.count
+
+        request = Corvid::PayerAuthorizationRequest.new(attrs_for_non_drafted_new_record(status))
+        refute request.persisted?
+        error = assert_raises(ActiveRecord::RecordInvalid) { request.save! }
+        assert error.record.errors[:status].present?, "expected status error for #{status} on save!"
+        refute request.persisted?
+        assert_equal before_count, Corvid::PayerAuthorizationRequest.count
+      end
+    end
+  end
+
   test "belongs_to prc_referral is optional" do
     with_tenant(TENANT) do
       request = Corvid::PayerAuthorizationRequest.create!(
@@ -137,6 +161,36 @@ class Corvid::PayerAuthorizationRequestTest < ActiveSupport::TestCase
 
       assert_raises(ArgumentError) { request.submit!(submitted_by_identifier: nil, at: Time.current) }
       assert_equal "drafted", request.reload.status
+    end
+  end
+
+  test "submit! rejects non-Time at with ArgumentError and stays drafted" do
+    with_tenant(TENANT) do
+      request = create_request
+      [ Date.new(2026, 3, 1), "2026-03-01" ].each do |bad_at|
+        assert_raises(ArgumentError) { request.submit!(submitted_by_identifier: SIGNOFF, at: bad_at) }
+        assert_equal "drafted", request.reload.status
+        assert_nil request.reload.submitted_at
+      end
+    end
+  end
+
+  test "update! into submitted sets follow_up_due_at from payer turnaround and overdue includes row at due time" do
+    Corvid.configure { |c| c.payer_authorization_turnarounds = { PAYER_A => 5.days } }
+    submitted_at = Time.utc(2026, 3, 10, 14, 0, 0)
+    due_at = Time.utc(2026, 3, 15, 14, 0, 0)
+
+    with_tenant(TENANT) do
+      request = create_request(payer_identifier: PAYER_A)
+      request.update!(
+        status: "submitted",
+        submitted_at: submitted_at,
+        submitted_by_identifier: SIGNOFF
+      )
+      assert_equal due_at, request.follow_up_due_at
+
+      results = Corvid::PayerAuthorizationRequest.overdue(as_of: due_at)
+      assert_includes results, request.reload
     end
   end
 
@@ -247,9 +301,10 @@ class Corvid::PayerAuthorizationRequestTest < ActiveSupport::TestCase
     column = Corvid::PayerAuthorizationRequest.columns_hash.fetch("lock_version")
     assert_equal :integer, column.type
     assert column.null == false, "lock_version must be NOT NULL"
-    assert_equal 0, column.default
+    assert column.default.nil? || column.default.to_i == 0, "lock_version default must cast to 0"
 
     with_tenant(TENANT) do
+      assert_equal 0, Corvid::PayerAuthorizationRequest.new.lock_version
       request = request_in("submitted")
       stale_copy = Corvid::PayerAuthorizationRequest.find(request.id)
       fresh_copy = Corvid::PayerAuthorizationRequest.find(request.id)
@@ -417,6 +472,71 @@ class Corvid::PayerAuthorizationRequestTest < ActiveSupport::TestCase
     end
   end
 
+  test "partially_approve! does not write payer authorization number onto PRC referral authorization_number" do
+    with_tenant(TENANT) do
+      referral = create_referral(authorization_number: PRC_AUTH_ON_REFERRAL)
+      request = create_request(prc_referral: referral)
+      request.submit!(submitted_by_identifier: SIGNOFF, at: Time.utc(2026, 3, 1, 12, 0, 0))
+      request.partially_approve!(
+        payer_authorization_identifier: PAYER_AUTH_ID,
+        approved_from: Date.new(2026, 4, 1),
+        approved_to: Date.new(2026, 4, 30)
+      )
+      assert_equal PRC_AUTH_ON_REFERRAL, referral.reload.authorization_number
+    end
+  end
+
+  test "partially_approve! leaves nil PRC referral authorization_number nil" do
+    with_tenant(TENANT) do
+      referral = create_referral(authorization_number: nil)
+      request = create_request(prc_referral: referral)
+      request.submit!(submitted_by_identifier: SIGNOFF, at: Time.utc(2026, 3, 1, 12, 0, 0))
+      request.partially_approve!(
+        payer_authorization_identifier: PAYER_AUTH_ID,
+        approved_from: Date.new(2026, 4, 1),
+        approved_to: Date.new(2026, 4, 30)
+      )
+      assert_nil referral.reload.authorization_number
+    end
+  end
+
+  test "submission evidence is immutable after the payer was asked on submitted pended and denied rows" do
+    with_tenant(TENANT) do
+      %w[submitted pended denied].each do |status|
+        assert_submission_evidence_immutable(request_in(status))
+      end
+    end
+  end
+
+  test "approval evidence is immutable after approve or partially_approve including after cancel!" do
+    with_tenant(TENANT) do
+      assert_approval_evidence_immutable(request_in("approved"))
+      assert_approval_evidence_immutable(request_in("partially_approved"))
+
+      cancelled_after_approval = request_in("approved")
+      cancelled_after_approval.cancel!
+      assert_approval_evidence_immutable(cancelled_after_approval.reload)
+    end
+  end
+
+  test "non-decided rows may not carry approval fields on update!" do
+    approval_patch = {
+      payer_authorization_identifier: PAYER_AUTH_ID,
+      approved_from: Date.new(2026, 4, 1),
+      approved_to: Date.new(2026, 4, 30)
+    }
+
+    with_tenant(TENANT) do
+      %w[denied submitted pended].each do |status|
+        request = request_in(status)
+        baseline_status = request.status
+        assert_raises(ActiveRecord::RecordInvalid) { request.update!(approval_patch) }
+        assert_equal baseline_status, request.reload.status
+        refute request.payer_authorization_identifier.present?
+      end
+    end
+  end
+
   test "overdue includes submitted and pended rows due on or before as_of for current tenant only" do
     as_of = Time.utc(2026, 5, 10, 15, 0, 0)
     due_on_boundary = as_of
@@ -437,6 +557,7 @@ class Corvid::PayerAuthorizationRequestTest < ActiveSupport::TestCase
       cancelled = request_in("cancelled")
 
       results = Corvid::PayerAuthorizationRequest.overdue(as_of: as_of)
+      expected_ids = [ on_boundary.id, pended_overdue.id ].sort
 
       assert_includes results, on_boundary
       assert_includes results, pended_overdue
@@ -445,6 +566,8 @@ class Corvid::PayerAuthorizationRequestTest < ActiveSupport::TestCase
       refute_includes results, drafted
       refute_includes results, denied
       refute_includes results, cancelled
+      assert_empty results.where(tenant_identifier: OTHER_TENANT)
+      assert_equal expected_ids, results.map(&:id).sort
     end
   end
 
@@ -481,6 +604,7 @@ class Corvid::PayerAuthorizationRequestTest < ActiveSupport::TestCase
       cancelled = request_in("cancelled")
 
       results = Corvid::PayerAuthorizationRequest.expiring(within: within, as_of: as_of)
+      expected_ids = [ lower_bound.id, upper_bound.id ].sort
 
       assert_includes results, lower_bound
       assert_includes results, upper_bound
@@ -488,6 +612,8 @@ class Corvid::PayerAuthorizationRequestTest < ActiveSupport::TestCase
       refute_includes results, after_window
       refute_includes results, denied
       refute_includes results, cancelled
+      assert_empty results.where(tenant_identifier: OTHER_TENANT)
+      assert_equal expected_ids, results.map(&:id).sort
     end
   end
 
@@ -522,6 +648,61 @@ class Corvid::PayerAuthorizationRequestTest < ActiveSupport::TestCase
   end
 
   private
+
+  def attrs_for_non_drafted_new_record(status)
+    base = {
+      payer_identifier: PAYER_A,
+      channel: "pas",
+      facility_identifier: FACILITY,
+      status: status
+    }
+    case status
+    when "submitted", "pended", "denied"
+      base.merge(
+        submitted_at: Time.utc(2026, 3, 1, 10, 0, 0),
+        submitted_by_identifier: SIGNOFF
+      )
+    when "approved", "partially_approved"
+      base.merge(
+        submitted_at: Time.utc(2026, 3, 1, 10, 0, 0),
+        submitted_by_identifier: SIGNOFF,
+        payer_authorization_identifier: PAYER_AUTH_ID,
+        approved_from: Date.new(2026, 4, 1),
+        approved_to: Date.new(2026, 4, 30)
+      )
+    when "cancelled"
+      base
+    else
+      raise ArgumentError, "unexpected status: #{status}"
+    end
+  end
+
+  def assert_submission_evidence_immutable(request)
+    baseline = request.attributes.slice("submitted_at", "submitted_by_identifier", "follow_up_due_at")
+    copy = Corvid::PayerAuthorizationRequest.find(request.id)
+    copy.submitted_at = baseline.fetch("submitted_at") + 1.hour if baseline.fetch("submitted_at")
+    copy.submitted_by_identifier = "pr_other_signoff"
+    copy.follow_up_due_at = Time.utc(2099, 1, 1, 12, 0, 0)
+
+    assert_raises(ActiveRecord::RecordInvalid) { copy.save! }
+    assert_equal baseline, request.reload.attributes.slice("submitted_at", "submitted_by_identifier", "follow_up_due_at")
+  end
+
+  def assert_approval_evidence_immutable(request)
+    baseline = request.attributes.slice(
+      "payer_authorization_identifier", "approved_from", "approved_to", "approved_units"
+    )
+    copy = Corvid::PayerAuthorizationRequest.find(request.id)
+    copy.payer_authorization_identifier = "PAUTH-IMMUTABLE-OTHER"
+    copy.approved_from = Date.new(2099, 1, 1)
+    copy.approved_to = Date.new(2099, 12, 31)
+    copy.approved_units = 99
+
+    assert_raises(ActiveRecord::RecordInvalid) { copy.save! }
+    assert_equal baseline, request.reload.attributes.slice(
+      "payer_authorization_identifier", "approved_from", "approved_to", "approved_units"
+    )
+  end
 
   def build_request(**attrs)
     defaults = {

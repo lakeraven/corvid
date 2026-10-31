@@ -144,6 +144,21 @@ class Corvid::PayerAuthorizationRequestCheckConstraintsTest < ActiveSupport::Tes
     end
   end
 
+  test "database rejects denied row carrying approval fields via insert_all!" do
+    with_tenant(TENANT) do
+      assert_raises(ActiveRecord::StatementInvalid) do
+        insert_row!(
+          submitted_row_attrs.merge(
+            status: "denied",
+            payer_authorization_identifier: PAYER_AUTH_ID,
+            approved_from: Date.new(2026, 5, 1),
+            approved_to: Date.new(2026, 5, 31)
+          )
+        )
+      end
+    end
+  end
+
   private
 
   def insert_row!(attrs)
