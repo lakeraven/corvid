@@ -614,11 +614,11 @@ class Corvid::Pas::RequestBundleTest < Minitest::Test
     bundle = deep_copy(load_fixture("request_bundle_urn_uuid"))
     claim = bundle["entry"][0]["resource"]
     claim["contained"] = [
-      { "resourceType" => "Practitioner", "id" => "a" },
-      { "resourceType" => "Organization", "id" => "a" }
+      { "resourceType" => "Practitioner", "id" => "dup-inner-1" },
+      { "resourceType" => "Organization", "id" => "dup-inner-1" }
     ]
     claim["careTeam"] = [
-      { "sequence" => 1, "provider" => { "reference" => "#a" } }
+      { "sequence" => 1, "provider" => { "reference" => "#dup-inner-1" } }
     ]
 
     assert_rejection(
@@ -747,24 +747,17 @@ class Corvid::Pas::RequestBundleTest < Minitest::Test
     bundle = deep_copy(load_fixture("request_bundle_urn_uuid"))
     claim = bundle["entry"][0]["resource"]
     claim["contained"] = [
-      { "resourceType" => "Practitioner", "id" => "x" }
+      { "resourceType" => "Practitioner", "id" => "scope-inner-1" }
     ]
-    bundle["entry"][4]["resource"]["subscriber"] = { "reference" => "#x" }
+    bundle["entry"][4]["resource"]["subscriber"] = { "reference" => "#scope-inner-1" }
 
-    rejected = Corvid::Pas::RequestBundle.parse(bundle)
-    refute rejected.ok?
-    assert_instance_of Corvid::Pas::RequestBundle::Rejected, rejected
-
-    issue = rejected.operation_outcome["issue"].first
-    assert_equal "not-found", issue["code"]
-    assert_equal [ "Bundle.entry[4].resource.subscriber.reference" ], issue["expression"]
-    assert_equal REJECTION_DIAGNOSTICS.fetch(:not_found), issue["diagnostics"]
-
-    outcome_json = JSON.generate(rejected.operation_outcome)
-    refute_includes outcome_json, "#x"
-    STATIC_PHI_FORBIDDEN.each do |fragment|
-      refute_includes outcome_json, fragment
-    end
+    assert_rejection(
+      Corvid::Pas::RequestBundle.parse(bundle),
+      code: "not-found",
+      expression: "Bundle.entry[4].resource.subscriber.reference",
+      diagnostics: REJECTION_DIAGNOSTICS.fetch(:not_found),
+      source_bundle: bundle
+    )
   end
 
   def test_relative_type_id_does_not_resolve_when_entry_full_url_is_not_restful_or_urn_uuid
