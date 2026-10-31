@@ -22,7 +22,11 @@ class Corvid::PayerAuthorizationRequestTest < ActiveSupport::TestCase
   EXPECTED_COLUMNS = %w[
     id tenant_identifier facility_identifier prc_referral_id payer_identifier channel status
     submitted_at submitted_by_identifier follow_up_due_at payer_authorization_identifier
-    approved_units approved_from approved_to created_at updated_at
+    approved_units approved_from approved_to lock_version created_at updated_at
+  ].freeze
+
+  NON_TERMINAL_TARGET_STATUSES = %w[
+    drafted submitted pended approved partially_approved denied cancelled
   ].freeze
 
   FORBIDDEN_PHI_COLUMNS = %w[
@@ -103,13 +107,13 @@ class Corvid::PayerAuthorizationRequestTest < ActiveSupport::TestCase
     assert_equal({}, Corvid.configuration.payer_authorization_turnarounds)
   end
 
-  test "submit! sets follow_up_due_at from payer turnaround configuration" do
+  test "submit! sets follow_up_due_at from submitted at not wall clock now" do
     Corvid.configure { |c| c.payer_authorization_turnarounds = { PAYER_A => 3.days } }
     submitted_at = Time.utc(2026, 3, 2, 10, 0, 0)
 
     with_tenant(TENANT) do
       request = create_request(payer_identifier: PAYER_A)
-      travel_to(submitted_at) do
+      travel_to(Time.utc(2026, 3, 5, 10, 0, 0)) do
         request.submit!(submitted_by_identifier: SIGNOFF, at: submitted_at)
       end
       assert_equal Time.utc(2026, 3, 5, 10, 0, 0), request.follow_up_due_at
@@ -144,11 +148,13 @@ class Corvid::PayerAuthorizationRequestTest < ActiveSupport::TestCase
       assert_raises(ArgumentError) do
         request.approve!(payer_authorization_identifier: "", approved_from: Date.new(2026, 4, 1), approved_to: Date.new(2026, 4, 30))
       end
+      assert_equal baseline_status, request.status
       assert_equal baseline_status, request.reload.status
 
       assert_raises(ArgumentError) do
         request.approve!(payer_authorization_identifier: PAYER_AUTH_ID, approved_from: nil, approved_to: Date.new(2026, 4, 30))
       end
+      assert_equal baseline_status, request.status
       assert_equal baseline_status, request.reload.status
 
       assert_raises(ArgumentError) do
@@ -158,6 +164,7 @@ class Corvid::PayerAuthorizationRequestTest < ActiveSupport::TestCase
           approved_to: Date.new(2026, 4, 1)
         )
       end
+      assert_equal baseline_status, request.status
       assert_equal baseline_status, request.reload.status
 
       assert_raises(ArgumentError) do
@@ -168,7 +175,35 @@ class Corvid::PayerAuthorizationRequestTest < ActiveSupport::TestCase
           approved_units: 0
         )
       end
+      assert_equal baseline_status, request.status
       assert_equal baseline_status, request.reload.status
+    end
+  end
+
+  test "failed approve! transition leaves status submitted in memory and in the database" do
+    with_tenant(TENANT) do
+      request = request_in("submitted")
+
+      assert_raises(ActiveRecord::RecordInvalid) do
+        request.approve!(
+          payer_authorization_identifier: PAYER_AUTH_ID,
+          approved_from: Date.new(2026, 4, 1),
+          approved_to: Date.new(2026, 4, 30),
+          approved_units: 1.5
+        )
+      end
+      assert_equal "submitted", request.status
+      assert_equal "submitted", request.reload.status
+
+      assert_raises(ArgumentError) do
+        request.approve!(
+          payer_authorization_identifier: PAYER_AUTH_ID,
+          approved_from: "not-a-date",
+          approved_to: Date.new(2026, 4, 30)
+        )
+      end
+      assert_equal "submitted", request.status
+      assert_equal "submitted", request.reload.status
     end
   end
 
@@ -193,6 +228,62 @@ class Corvid::PayerAuthorizationRequestTest < ActiveSupport::TestCase
       refute request.valid?
       assert request.errors[:status].present?
       assert_raises(ActiveRecord::RecordInvalid) { request.save! }
+    end
+  end
+
+  test "terminal statuses cannot be changed through save or update!" do
+    with_tenant(TENANT) do
+      assert_terminal_save_blocked(request_in("denied"))
+      assert_terminal_save_blocked(request_in("cancelled"))
+
+      approved = request_in("approved")
+      disallowed_target_statuses("approved").each do |target_status|
+        assert_direct_status_update_invalid(approved, target_status)
+      end
+    end
+  end
+
+  test "lock_version column enables optimistic locking on concurrent saves" do
+    column = Corvid::PayerAuthorizationRequest.columns_hash.fetch("lock_version")
+    assert_equal :integer, column.type
+    assert column.null == false, "lock_version must be NOT NULL"
+    assert_equal 0, column.default
+
+    with_tenant(TENANT) do
+      request = request_in("submitted")
+      stale_copy = Corvid::PayerAuthorizationRequest.find(request.id)
+      fresh_copy = Corvid::PayerAuthorizationRequest.find(request.id)
+
+      fresh_copy.deny!
+      assert_equal "denied", request.reload.status
+
+      assert_raises(ActiveRecord::StaleObjectError) do
+        stale_copy.update!(
+          status: "approved",
+          payer_authorization_identifier: PAYER_AUTH_ID,
+          approved_from: Date.new(2026, 4, 1),
+          approved_to: Date.new(2026, 4, 30)
+        )
+      end
+      assert_equal "denied", stale_copy.reload.status
+
+      submitted = request_in("submitted")
+      stale_approved = Corvid::PayerAuthorizationRequest.find(submitted.id)
+      Corvid::PayerAuthorizationRequest.find(submitted.id).approve!(
+        payer_authorization_identifier: PAYER_AUTH_ID,
+        approved_from: Date.new(2026, 5, 1),
+        approved_to: Date.new(2026, 5, 31)
+      )
+
+      assert_raises(Corvid::PayerAuthorizationRequest::InvalidTransition) do
+        stale_approved.deny!
+      end
+      assert_equal "approved", stale_approved.reload.status
+
+      assert_raises(ActiveRecord::StaleObjectError) do
+        stale_approved.update!(status: "denied")
+      end
+      assert_equal "approved", stale_approved.reload.status
     end
   end
 
@@ -228,6 +319,72 @@ class Corvid::PayerAuthorizationRequestTest < ActiveSupport::TestCase
       request = build_request(prc_referral: referral, facility_identifier: "fac_mismatch")
       refute request.valid?
       assert request.errors[:facility_identifier].present? || request.errors[:prc_referral].present?
+    end
+  end
+
+  test "facility_identifier must match linked referral when request facility is nil" do
+    with_tenant(TENANT) do
+      referral = create_referral(facility_identifier: FACILITY)
+      request = build_request(prc_referral: referral, facility_identifier: nil)
+      refute request.valid?
+      assert request.errors[:facility_identifier].present?
+    end
+  end
+
+  test "referral with nil facility accepts any request facility_identifier" do
+    with_tenant(TENANT) do
+      referral = create_referral(facility_identifier: nil)
+      request = build_request(prc_referral: referral, facility_identifier: FACILITY)
+      assert request.valid?, request.errors.full_messages.join(", ")
+    end
+  end
+
+  test "non-existent prc_referral_id is invalid" do
+    with_tenant(TENANT) do
+      request = build_request
+      request.prc_referral_id = 9_999_999_999
+      refute request.valid?
+      assert request.errors[:prc_referral].present?
+    end
+  end
+
+  test "unsaved prc_referral from another tenant makes save invalid and persists neither row" do
+    other_case = nil
+    with_tenant(OTHER_TENANT) do
+      other_case = Corvid::Case.create!(
+        patient_identifier: "pt_pauth_other_#{SecureRandom.hex(3)}",
+        facility_identifier: FACILITY
+      )
+    end
+
+    with_tenant(TENANT) do
+      unsaved_other_referral = Corvid::PrcReferral.new(
+        tenant_identifier: OTHER_TENANT,
+        case: other_case,
+        referral_identifier: "rf_pauth_unsaved_#{SecureRandom.hex(4)}",
+        facility_identifier: FACILITY
+      )
+      request = build_request(prc_referral: unsaved_other_referral)
+
+      assert_raises(ActiveRecord::RecordInvalid) { request.save! }
+      assert request.errors[:prc_referral].present?
+      refute request.persisted?
+      refute unsaved_other_referral.persisted?
+    end
+  end
+
+  test "database rejects prc_referral_id from another tenant via update_columns" do
+    other_referral = nil
+    with_tenant(OTHER_TENANT) do
+      other_referral = create_referral
+    end
+
+    with_tenant(TENANT) do
+      request = create_request
+      assert_raises(ActiveRecord::StatementInvalid) do
+        request.update_columns(prc_referral_id: other_referral.id)
+      end
+      assert_nil request.reload.prc_referral_id
     end
   end
 
@@ -270,6 +427,7 @@ class Corvid::PayerAuthorizationRequestTest < ActiveSupport::TestCase
 
     with_tenant(TENANT) do
       on_boundary = create_request_with_follow_up(status: "submitted", follow_up_due_at: due_on_boundary)
+      pended_overdue = create_request_with_follow_up(status: "pended", follow_up_due_at: due_on_boundary)
       not_yet = create_request_with_follow_up(status: "pended", follow_up_due_at: due_one_second_later)
       no_timer = create_request(payer_identifier: PAYER_B)
       no_timer.submit!(submitted_by_identifier: SIGNOFF, at: as_of - 1.day)
@@ -280,6 +438,7 @@ class Corvid::PayerAuthorizationRequestTest < ActiveSupport::TestCase
       results = Corvid::PayerAuthorizationRequest.overdue(as_of: as_of)
 
       assert_includes results, on_boundary
+      assert_includes results, pended_overdue
       refute_includes results, not_yet
       refute_includes results, no_timer
       refute_includes results, drafted
@@ -331,6 +490,14 @@ class Corvid::PayerAuthorizationRequestTest < ActiveSupport::TestCase
     end
   end
 
+  test "overdue rejects Date as_of because midnight would skew boundaries" do
+    with_tenant(TENANT) do
+      assert_raises(ArgumentError) do
+        Corvid::PayerAuthorizationRequest.overdue(as_of: Date.new(2026, 5, 10))
+      end
+    end
+  end
+
   EXPECTED_STATUSES.product(TRANSITION_METHODS).each do |from_status, method|
     test "transition #{method} from #{from_status}" do
       with_tenant(TENANT) do
@@ -371,7 +538,7 @@ class Corvid::PayerAuthorizationRequestTest < ActiveSupport::TestCase
   def create_referral(facility_identifier: FACILITY, authorization_number: nil)
     kase = Corvid::Case.create!(
       patient_identifier: "pt_pauth_#{SecureRandom.hex(3)}",
-      facility_identifier: facility_identifier
+      facility_identifier: facility_identifier || FACILITY
     )
     Corvid::PrcReferral.create!(
       case: kase,
@@ -379,6 +546,42 @@ class Corvid::PayerAuthorizationRequestTest < ActiveSupport::TestCase
       facility_identifier: facility_identifier,
       authorization_number: authorization_number
     )
+  end
+
+  def assert_terminal_save_blocked(request)
+    baseline = request.attributes.slice("status", "payer_authorization_identifier", "approved_from", "approved_to")
+    disallowed_target_statuses(request.status).each do |target_status|
+      assert_direct_status_update_invalid(request, target_status)
+    end
+    request.reload
+    assert_equal baseline, request.attributes.slice("status", "payer_authorization_identifier", "approved_from", "approved_to")
+  end
+
+  def disallowed_target_statuses(from_status)
+    NON_TERMINAL_TARGET_STATUSES.reject do |target_status|
+      target_status == from_status ||
+        Corvid::PayerAuthorizationRequest.transition_allowed?(from_status, target_status)
+    end
+  end
+
+  def assert_direct_status_update_invalid(request, target_status)
+    attrs = { status: target_status }
+    if Corvid::PayerAuthorizationRequest::APPROVAL_STATUSES.include?(target_status)
+      attrs.merge!(
+        payer_authorization_identifier: PAYER_AUTH_ID,
+        approved_from: Date.new(2026, 4, 1),
+        approved_to: Date.new(2026, 4, 30)
+      )
+    end
+    if Corvid::PayerAuthorizationRequest::SUBMISSION_STATUSES.include?(target_status)
+      attrs[:submitted_at] = Time.utc(2026, 3, 1, 10, 0, 0)
+      attrs[:submitted_by_identifier] = SIGNOFF
+    end
+
+    copy = Corvid::PayerAuthorizationRequest.find(request.id)
+    assert_raises(ActiveRecord::RecordInvalid) { copy.update!(attrs) }
+    assert copy.errors[:status].present?
+    assert_equal request.reload.status, copy.reload.status
   end
 
   def approval_kwargs
