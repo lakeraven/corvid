@@ -63,6 +63,49 @@ module Corvid
       end
     end
 
+    test "numeric range 99200 through 99299 includes endpoints and excludes neighbors" do
+      with_tenant(TENANT) do
+        create_rule!(
+          service_code: nil, code_from: "99200", code_to: "99299",
+          requirement: "required"
+        )
+        assert_equal :required, lookup(service_code: "99200").requirement
+        assert_equal :required, lookup(service_code: "99299").requirement
+        assert_equal :unknown, lookup(service_code: "99199").requirement
+        assert_equal :unknown, lookup(service_code: "99300").requirement
+      end
+    end
+
+    test "digit-only range does not cover codes with letter positions unlike endpoints" do
+      with_tenant(TENANT) do
+        create_rule!(
+          service_code: nil, code_from: "10000", code_to: "69999",
+          requirement: "required"
+        )
+        assert_equal :unknown, lookup(service_code: "2033F").requirement
+      end
+    end
+
+    test "J-prefixed range covers J codes with matching pattern" do
+      with_tenant(TENANT) do
+        create_rule!(
+          service_code: nil, code_from: "J0000", code_to: "J9999",
+          requirement: "required"
+        )
+        assert_equal :required, lookup(service_code: "J1234").requirement
+      end
+    end
+
+    test "F-suffix range covers codes with trailing F matching endpoints" do
+      with_tenant(TENANT) do
+        create_rule!(
+          service_code: nil, code_from: "0001F", code_to: "9999F",
+          requirement: "required"
+        )
+        assert_equal :required, lookup(service_code: "2033F").requirement
+      end
+    end
+
     test "on must be a Date" do
       with_tenant(TENANT) do
         create_rule!(service_code: "99213", requirement: "required")

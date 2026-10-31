@@ -1,0 +1,2 @@
+payer_identifier,service_code,code_from,code_to,place_of_service,plan_identifier,requirement,effective_on,expires_on
+payer_b,99214,,,,,not_required,2025-01-01,

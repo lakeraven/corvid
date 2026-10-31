@@ -92,6 +92,23 @@ module Corvid
 
         length_mismatch = build_rule(service_code: nil, code_from: "70540", code_to: "7055")
         refute length_mismatch.valid?
+
+        pattern_mismatch = build_rule(service_code: nil, code_from: "10000", code_to: "6999F")
+        refute pattern_mismatch.valid?
+      end
+    end
+
+    test "valid J-prefixed code range passes validation" do
+      with_tenant(TENANT) do
+        rule = build_rule(service_code: nil, code_from: "J0000", code_to: "J9999")
+        assert rule.valid?, rule.errors.full_messages.join(", ")
+      end
+    end
+
+    test "valid F-suffix code range passes validation" do
+      with_tenant(TENANT) do
+        rule = build_rule(service_code: nil, code_from: "0001F", code_to: "9999F")
+        assert rule.valid?, rule.errors.full_messages.join(", ")
       end
     end
 
@@ -152,6 +169,10 @@ module Corvid
 
     test "database check rejects code range with mismatched lengths on insert_all!" do
       assert_db_check_rejects(service_code: nil, code_from: "70540", code_to: "7055")
+    end
+
+    test "database check rejects code range with mismatched endpoint patterns on insert_all!" do
+      assert_db_check_rejects(service_code: nil, code_from: "10000", code_to: "6999F")
     end
 
     test "database check rejects reversed code range on insert_all!" do
