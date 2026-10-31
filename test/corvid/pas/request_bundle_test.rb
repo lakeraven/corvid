@@ -350,7 +350,8 @@ class Corvid::Pas::RequestBundleTest < Minitest::Test
   end
 
   def test_unexpected_internal_error_raises_sanitized_error_without_cause
-    payload = RaisingHash.new("resourceType" => "Bundle")
+    payload = RaisingHash.new
+    payload.store("resourceType", "Bundle")
 
     error = assert_raises(Corvid::Pas::RequestBundle::Error) do
       Corvid::Pas::RequestBundle.parse(payload)
@@ -359,6 +360,17 @@ class Corvid::Pas::RequestBundleTest < Minitest::Test
     assert_equal "[REDACTED]", error.message
     refute_includes error.message, "PATIENT 001"
     assert_nil error.cause
+  end
+
+  def test_references_hold_only_the_claims_own_reference_strings
+    bundle = deep_copy(load_fixture("request_bundle_urn_uuid"))
+    bundle["entry"][4]["resource"]["subscriber"] = { "reference" => "Patient/pat-test-urn-1" }
+
+    result = parse_silently(bundle)
+
+    assert result.ok?
+    assert_equal URN_REFERENCE_KEYS.sort, result.references.keys.sort
+    assert_equal 1, result.resources.count { |r| r["resourceType"] == "Patient" }
   end
 
   def test_relative_reference_from_urn_entry_resolves_by_type_and_id
