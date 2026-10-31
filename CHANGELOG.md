@@ -8,6 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed (breaking)
+- `ClaimSubmission#submit!` now refuses unless Corvid is the billing system
+  of record for the claim's facility on its service date (#791). Hosts must
+  create a `Corvid::BillingSystemSetting` (`system_of_record: "corvid"`) for
+  each facility Corvid bills before submitting; with no setting, or an `ehr`
+  setting, `submit!` raises `Corvid::ClaimSubmission::SystemOfRecordRefused`
+  (`reason` `:system_of_record_unset` / `:not_system_of_record`) and never
+  calls the adapter.
 - `corvid_eligibility_checklists.application_completed_by` and
   `management_approved_by` are renamed to `application_completed_by_identifier`
   and `management_approved_by_identifier`. They hold a practitioner identifier
@@ -22,6 +29,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   instead of `denial_reason_token`.
 
 ### Added
+- Billing system of record per facility (#791). `corvid_billing_system_settings`
+  records whether Corvid or the EHR bills a facility, optionally per visit
+  type, over dated ranges that cannot overlap (enforced by a `btree_gist`
+  exclusion constraint). `Corvid::BillingSystemSetting.system_of_record_for`
+  answers `:corvid`, `:ehr` or `:unknown`.
 - ZIP-to-CBSA wage-area crosswalk (#371). `corvid_zip_cbsa_crosswalks`
   stores the CMS crosswalk by federal fiscal year (`zip` is five ASCII
   digits; `cbsa` is a five-digit CBSA or a two-digit rural-state code;
