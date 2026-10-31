@@ -40,6 +40,9 @@ def clean_corvid_tables!
   # left behind by an interrupted run would fail the next setup on the FK
   # rather than being cleaned up. features/support/env.rb orders it the same way.
   Corvid::ReferralFulfilmentReport.unscoped.delete_all
+  if Corvid.const_defined?(:PayerAuthorizationRequest, false)
+    Corvid::PayerAuthorizationRequest.unscoped.delete_all
+  end
   Corvid::PrcReferral.unscoped.delete_all
   Corvid::CaseProgram.unscoped.delete_all
   Corvid::Case.unscoped.delete_all

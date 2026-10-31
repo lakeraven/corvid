@@ -1,0 +1,469 @@
+# frozen_string_literal: true
+
+require "test_helper"
+
+class Corvid::PayerAuthorizationRequestTest < ActiveSupport::TestCase
+  include ActiveSupport::Testing::TimeHelpers
+
+  TENANT = "tnt_test"
+  OTHER_TENANT = "tnt_other"
+  FACILITY = "fac_a"
+  PAYER_A = "payer_a"
+  PAYER_B = "payer_b"
+  SIGNOFF = "pr_signoff_001"
+  PAYER_AUTH_ID = "PAUTH-TEST-0001"
+  PRC_AUTH_ON_REFERRAL = "PRC-AUTH-TEST-01"
+
+  EXPECTED_CHANNELS = %w[pas x12_278 portal fax].freeze
+  EXPECTED_STATUSES = %w[
+    drafted submitted pended approved partially_approved denied cancelled
+  ].freeze
+
+  EXPECTED_COLUMNS = %w[
+    id tenant_identifier facility_identifier prc_referral_id payer_identifier channel status
+    submitted_at submitted_by_identifier follow_up_due_at payer_authorization_identifier
+    approved_units approved_from approved_to created_at updated_at
+  ].freeze
+
+  FORBIDDEN_PHI_COLUMNS = %w[
+    notes note reason rationale comment description patient_name display_name free_text
+  ].freeze
+
+  TRANSITION_METHODS = %w[submit! pend! approve! partially_approve! deny! cancel!].freeze
+
+  ALLOWED_TRANSITIONS = {
+    %w[drafted submit!] => "submitted",
+    %w[drafted cancel!] => "cancelled",
+    %w[submitted pend!] => "pended",
+    %w[submitted approve!] => "approved",
+    %w[submitted partially_approve!] => "partially_approved",
+    %w[submitted deny!] => "denied",
+    %w[submitted cancel!] => "cancelled",
+    %w[pended approve!] => "approved",
+    %w[pended partially_approve!] => "partially_approved",
+    %w[pended deny!] => "denied",
+    %w[pended cancel!] => "cancelled",
+    %w[approved cancel!] => "cancelled",
+    %w[partially_approved cancel!] => "cancelled"
+  }.freeze
+
+  teardown do
+    Corvid.reset_configuration!
+  end
+
+  test "table is corvid_payer_authorization_requests" do
+    assert_equal "corvid_payer_authorization_requests", Corvid::PayerAuthorizationRequest.table_name
+  end
+
+  test "includes TenantScoped" do
+    assert_includes Corvid::PayerAuthorizationRequest.included_modules, Corvid::TenantScoped
+  end
+
+  test "queries without tenant context raise" do
+    assert_raises(Corvid::MissingTenantContextError) do
+      Corvid::PayerAuthorizationRequest.first
+    end
+  end
+
+  test "column set matches ADR expectations without PHI text columns" do
+    columns = Corvid::PayerAuthorizationRequest.column_names
+    assert_equal EXPECTED_COLUMNS.sort, columns.sort
+    FORBIDDEN_PHI_COLUMNS.each do |forbidden|
+      refute_includes columns, forbidden, "must not store #{forbidden} at rest (ADR 0003)"
+    end
+  end
+
+  test "CHANNELS constant lists allowed channels" do
+    assert_equal EXPECTED_CHANNELS, Corvid::PayerAuthorizationRequest::CHANNELS
+  end
+
+  test "STATUSES constant lists allowed statuses" do
+    assert_equal EXPECTED_STATUSES, Corvid::PayerAuthorizationRequest::STATUSES
+  end
+
+  test "defaults status to drafted" do
+    with_tenant(TENANT) do
+      request = build_request
+      assert_equal "drafted", request.status
+      assert request.persisted? || request.valid?
+    end
+  end
+
+  test "belongs_to prc_referral is optional" do
+    with_tenant(TENANT) do
+      request = Corvid::PayerAuthorizationRequest.create!(
+        payer_identifier: PAYER_A,
+        channel: "pas"
+      )
+      assert_nil request.prc_referral_id
+    end
+  end
+
+  test "payer_authorization_turnarounds defaults to empty Hash" do
+    assert_equal({}, Corvid.configuration.payer_authorization_turnarounds)
+  end
+
+  test "submit! sets follow_up_due_at from payer turnaround configuration" do
+    Corvid.configure { |c| c.payer_authorization_turnarounds = { PAYER_A => 3.days } }
+    submitted_at = Time.utc(2026, 3, 2, 10, 0, 0)
+
+    with_tenant(TENANT) do
+      request = create_request(payer_identifier: PAYER_A)
+      travel_to(submitted_at) do
+        request.submit!(submitted_by_identifier: SIGNOFF, at: submitted_at)
+      end
+      assert_equal Time.utc(2026, 3, 5, 10, 0, 0), request.follow_up_due_at
+    end
+  end
+
+  test "submit! leaves follow_up_due_at nil when payer has no configured turnaround" do
+    with_tenant(TENANT) do
+      request = create_request(payer_identifier: PAYER_B)
+      request.submit!(submitted_by_identifier: SIGNOFF, at: Time.utc(2026, 3, 2, 10, 0, 0))
+      assert_nil request.follow_up_due_at
+    end
+  end
+
+  test "submit! rejects blank submitted_by_identifier with ArgumentError and stays drafted" do
+    with_tenant(TENANT) do
+      request = create_request
+      assert_raises(ArgumentError) { request.submit!(submitted_by_identifier: "", at: Time.current) }
+      assert_equal "drafted", request.reload.status
+      assert_nil request.submitted_at
+
+      assert_raises(ArgumentError) { request.submit!(submitted_by_identifier: nil, at: Time.current) }
+      assert_equal "drafted", request.reload.status
+    end
+  end
+
+  test "approve! rejects invalid approval fields with ArgumentError and leaves row unchanged" do
+    with_tenant(TENANT) do
+      request = request_in("submitted")
+      baseline_status = request.status
+
+      assert_raises(ArgumentError) do
+        request.approve!(payer_authorization_identifier: "", approved_from: Date.new(2026, 4, 1), approved_to: Date.new(2026, 4, 30))
+      end
+      assert_equal baseline_status, request.reload.status
+
+      assert_raises(ArgumentError) do
+        request.approve!(payer_authorization_identifier: PAYER_AUTH_ID, approved_from: nil, approved_to: Date.new(2026, 4, 30))
+      end
+      assert_equal baseline_status, request.reload.status
+
+      assert_raises(ArgumentError) do
+        request.approve!(
+          payer_authorization_identifier: PAYER_AUTH_ID,
+          approved_from: Date.new(2026, 4, 30),
+          approved_to: Date.new(2026, 4, 1)
+        )
+      end
+      assert_equal baseline_status, request.reload.status
+
+      assert_raises(ArgumentError) do
+        request.approve!(
+          payer_authorization_identifier: PAYER_AUTH_ID,
+          approved_from: Date.new(2026, 4, 1),
+          approved_to: Date.new(2026, 4, 30),
+          approved_units: 0
+        )
+      end
+      assert_equal baseline_status, request.reload.status
+    end
+  end
+
+  test "partially_approve! rejects invalid approval fields with ArgumentError and leaves row unchanged" do
+    with_tenant(TENANT) do
+      request = request_in("submitted")
+      assert_raises(ArgumentError) do
+        request.partially_approve!(
+          payer_authorization_identifier: nil,
+          approved_from: Date.new(2026, 4, 1),
+          approved_to: Date.new(2026, 4, 30)
+        )
+      end
+      assert_equal "submitted", request.reload.status
+    end
+  end
+
+  test "direct status assignment with disallowed transition is invalid on status" do
+    with_tenant(TENANT) do
+      request = request_in("drafted")
+      request.status = "approved"
+      refute request.valid?
+      assert request.errors[:status].present?
+      assert_raises(ActiveRecord::RecordInvalid) { request.save! }
+    end
+  end
+
+  test "InvalidTransition is a StandardError subclass with from and to in message" do
+    assert_operator Corvid::PayerAuthorizationRequest::InvalidTransition, :<, StandardError
+
+    with_tenant(TENANT) do
+      request = request_in("drafted")
+      error = assert_raises(Corvid::PayerAuthorizationRequest::InvalidTransition) do
+        request.pend!
+      end
+      assert_match(/drafted/i, error.message)
+      assert_match(/pended/i, error.message)
+    end
+  end
+
+  test "prc_referral from another tenant is invalid" do
+    other_referral = nil
+    with_tenant(OTHER_TENANT) do
+      other_referral = create_referral
+    end
+
+    with_tenant(TENANT) do
+      request = build_request(prc_referral: other_referral)
+      refute request.valid?
+      assert request.errors[:prc_referral].present?
+    end
+  end
+
+  test "facility_identifier must match linked referral when referral has one" do
+    with_tenant(TENANT) do
+      referral = create_referral(facility_identifier: FACILITY)
+      request = build_request(prc_referral: referral, facility_identifier: "fac_mismatch")
+      refute request.valid?
+      assert request.errors[:facility_identifier].present? || request.errors[:prc_referral].present?
+    end
+  end
+
+  test "approve! does not write payer authorization number onto PRC referral authorization_number" do
+    with_tenant(TENANT) do
+      referral = create_referral(authorization_number: PRC_AUTH_ON_REFERRAL)
+      request = create_request(prc_referral: referral)
+      request.submit!(submitted_by_identifier: SIGNOFF, at: Time.utc(2026, 3, 1, 12, 0, 0))
+      request.approve!(
+        payer_authorization_identifier: PAYER_AUTH_ID,
+        approved_from: Date.new(2026, 4, 1),
+        approved_to: Date.new(2026, 4, 30)
+      )
+      assert_equal PRC_AUTH_ON_REFERRAL, referral.reload.authorization_number
+    end
+  end
+
+  test "approve! leaves nil PRC referral authorization_number nil" do
+    with_tenant(TENANT) do
+      referral = create_referral(authorization_number: nil)
+      request = create_request(prc_referral: referral)
+      request.submit!(submitted_by_identifier: SIGNOFF, at: Time.utc(2026, 3, 1, 12, 0, 0))
+      request.approve!(
+        payer_authorization_identifier: PAYER_AUTH_ID,
+        approved_from: Date.new(2026, 4, 1),
+        approved_to: Date.new(2026, 4, 30)
+      )
+      assert_nil referral.reload.authorization_number
+    end
+  end
+
+  test "overdue includes submitted and pended rows due on or before as_of for current tenant only" do
+    as_of = Time.utc(2026, 5, 10, 15, 0, 0)
+    due_on_boundary = as_of
+    due_one_second_later = as_of + 1.second
+
+    with_tenant(OTHER_TENANT) do
+      create_request_with_follow_up(status: "submitted", follow_up_due_at: due_on_boundary)
+    end
+
+    with_tenant(TENANT) do
+      on_boundary = create_request_with_follow_up(status: "submitted", follow_up_due_at: due_on_boundary)
+      not_yet = create_request_with_follow_up(status: "pended", follow_up_due_at: due_one_second_later)
+      no_timer = create_request(payer_identifier: PAYER_B)
+      no_timer.submit!(submitted_by_identifier: SIGNOFF, at: as_of - 1.day)
+      drafted = create_request
+      denied = request_in("denied")
+      cancelled = request_in("cancelled")
+
+      results = Corvid::PayerAuthorizationRequest.overdue(as_of: as_of)
+
+      assert_includes results, on_boundary
+      refute_includes results, not_yet
+      refute_includes results, no_timer
+      refute_includes results, drafted
+      refute_includes results, denied
+      refute_includes results, cancelled
+    end
+  end
+
+  test "expiring returns approved and partially_approved rows expiring within window for current tenant only" do
+    as_of = Date.new(2026, 6, 1)
+    within = 7.days
+
+    with_tenant(OTHER_TENANT) do
+      create_decided_request(
+        status: "approved",
+        approved_from: as_of,
+        approved_to: as_of + 3.days
+      )
+    end
+
+    with_tenant(TENANT) do
+      lower_bound = create_decided_request(status: "approved", approved_from: as_of - 10.days, approved_to: as_of)
+      upper_bound = create_decided_request(
+        status: "partially_approved",
+        approved_from: as_of,
+        approved_to: as_of + within
+      )
+      before_window = create_decided_request(
+        status: "approved",
+        approved_from: as_of - 20.days,
+        approved_to: as_of - 1.day
+      )
+      after_window = create_decided_request(
+        status: "approved",
+        approved_from: as_of,
+        approved_to: as_of + within + 1.day
+      )
+      denied = request_in("denied")
+      cancelled = request_in("cancelled")
+
+      results = Corvid::PayerAuthorizationRequest.expiring(within: within, as_of: as_of)
+
+      assert_includes results, lower_bound
+      assert_includes results, upper_bound
+      refute_includes results, before_window
+      refute_includes results, after_window
+      refute_includes results, denied
+      refute_includes results, cancelled
+    end
+  end
+
+  EXPECTED_STATUSES.product(TRANSITION_METHODS).each do |from_status, method|
+    test "transition #{method} from #{from_status}" do
+      with_tenant(TENANT) do
+        request = request_in(from_status)
+        before_status = request.status
+
+        expected = ALLOWED_TRANSITIONS[[ from_status, method ]]
+
+        if expected
+          result = apply_transition!(request, method)
+          assert_same request, result
+          assert_equal expected, request.reload.status
+        else
+          assert_raises(Corvid::PayerAuthorizationRequest::InvalidTransition) do
+            apply_transition!(request, method)
+          end
+          assert_equal before_status, request.reload.status
+        end
+      end
+    end
+  end
+
+  private
+
+  def build_request(**attrs)
+    defaults = {
+      payer_identifier: PAYER_A,
+      channel: "pas",
+      facility_identifier: FACILITY
+    }
+    Corvid::PayerAuthorizationRequest.new(defaults.merge(attrs))
+  end
+
+  def create_request(**attrs)
+    build_request(**attrs).tap(&:save!)
+  end
+
+  def create_referral(facility_identifier: FACILITY, authorization_number: nil)
+    kase = Corvid::Case.create!(
+      patient_identifier: "pt_pauth_#{SecureRandom.hex(3)}",
+      facility_identifier: facility_identifier
+    )
+    Corvid::PrcReferral.create!(
+      case: kase,
+      referral_identifier: "rf_pauth_#{SecureRandom.hex(4)}",
+      facility_identifier: facility_identifier,
+      authorization_number: authorization_number
+    )
+  end
+
+  def approval_kwargs
+    {
+      payer_authorization_identifier: PAYER_AUTH_ID,
+      approved_from: Date.new(2026, 4, 1),
+      approved_to: Date.new(2026, 4, 30)
+    }
+  end
+
+  def request_in(status)
+    request = create_request
+    case status
+    when "drafted"
+      request
+    when "submitted"
+      request.submit!(submitted_by_identifier: SIGNOFF, at: Time.utc(2026, 3, 1, 9, 0, 0))
+      request.reload
+    when "pended"
+      request.submit!(submitted_by_identifier: SIGNOFF, at: Time.utc(2026, 3, 1, 9, 0, 0))
+      request.pend!
+      request.reload
+    when "approved"
+      request.submit!(submitted_by_identifier: SIGNOFF, at: Time.utc(2026, 3, 1, 9, 0, 0))
+      request.approve!(**approval_kwargs)
+      request.reload
+    when "partially_approved"
+      request.submit!(submitted_by_identifier: SIGNOFF, at: Time.utc(2026, 3, 1, 9, 0, 0))
+      request.partially_approve!(**approval_kwargs)
+      request.reload
+    when "denied"
+      request.submit!(submitted_by_identifier: SIGNOFF, at: Time.utc(2026, 3, 1, 9, 0, 0))
+      request.deny!
+      request.reload
+    when "cancelled"
+      request.cancel!
+      request.reload
+    else
+      raise ArgumentError, "unknown status fixture: #{status}"
+    end
+  end
+
+  def apply_transition!(request, method)
+    case method
+    when "submit!"
+      request.submit!(submitted_by_identifier: SIGNOFF, at: Time.current)
+    when "pend!"
+      request.pend!
+    when "approve!"
+      request.approve!(**approval_kwargs)
+    when "partially_approve!"
+      request.partially_approve!(**approval_kwargs)
+    when "deny!"
+      request.deny!
+    when "cancel!"
+      request.cancel!
+    else
+      raise ArgumentError, method
+    end
+  end
+
+  def create_request_with_follow_up(status:, follow_up_due_at:)
+    request = create_request
+    request.submit!(submitted_by_identifier: SIGNOFF, at: follow_up_due_at - 3.days)
+    request.pend! if status == "pended"
+    request.update_columns(follow_up_due_at: follow_up_due_at, status: status)
+    request.reload
+  end
+
+  def create_decided_request(status:, approved_from:, approved_to:)
+    request = create_request
+    request.submit!(submitted_by_identifier: SIGNOFF, at: Time.utc(2026, 3, 1, 9, 0, 0))
+    if status == "approved"
+      request.approve!(
+        payer_authorization_identifier: PAYER_AUTH_ID,
+        approved_from: approved_from,
+        approved_to: approved_to
+      )
+    else
+      request.partially_approve!(
+        payer_authorization_identifier: PAYER_AUTH_ID,
+        approved_from: approved_from,
+        approved_to: approved_to
+      )
+    end
+    request.reload
+  end
+end
