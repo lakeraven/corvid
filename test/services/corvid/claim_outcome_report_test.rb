@@ -562,6 +562,238 @@ class Corvid::ClaimOutcomeReportTest < ActiveSupport::TestCase
     assert_includes text, "uncoded"
   end
 
+  test "to_csv matches every row measure and category" do
+    sent = { submitted_at: 2.days.ago }
+    create_claim_submission(
+      tenant: TENANT, payer: "payer_a", facility: "fac_a",
+      service_date: Date.new(2025, 1, 10), status: "paid", patient: "pt_csv_a1", **sent
+    )
+    create_claim_submission(
+      tenant: TENANT, payer: "payer_a", facility: "fac_a",
+      service_date: Date.new(2025, 1, 11), status: "paid", rejected_at: 3.days.ago,
+      patient: "pt_csv_a2", **sent
+    )
+    create_claim_submission(
+      tenant: TENANT, payer: "payer_a", facility: "fac_a",
+      service_date: Date.new(2025, 1, 12), status: "denied", denied_at: 1.day.ago,
+      denial_reason_codes: [ "CO-50" ], patient: "pt_csv_a3", **sent
+    )
+    create_claim_submission(
+      tenant: TENANT, payer: "payer_b", facility: nil,
+      service_date: Date.new(2025, 1, 15), status: "denied", denied_at: 1.day.ago,
+      denial_reason_codes: [ "CO-16" ], patient: "pt_csv_b1", **sent
+    )
+    create_claim_submission(
+      tenant: TENANT, payer: nil, facility: nil,
+      service_date: Date.new(2025, 2, 8), status: "submitted", patient: "pt_csv_pending", **sent
+    )
+
+    report = Corvid::ClaimOutcomeReport.new(tenant_identifier: TENANT, date_range: FULL_YEAR)
+    rows = report.rows
+    assert_operator rows.size, :>=, 3
+
+    table = CSV.parse(report.to_csv, headers: true)
+    assert_equal rows.size, table.size
+
+    denial_headers = table.headers.grep(/\Adenials_/)
+    rows.each_with_index do |row, index|
+      csv_row = table[index]
+
+      MEASURE_KEYS.each do |key|
+        assert_equal row.measures.fetch(key).to_s, csv_row[key.to_s], "row #{index} #{key}"
+      end
+
+      denial_headers.each do |header|
+        category = header.delete_prefix("denials_")
+        expected = row.denials_by_category.fetch(category, 0).to_s
+        assert_equal expected, csv_row[header], "row #{index} #{header}"
+      end
+
+      assert_equal row.month.strftime("%Y-%m"), csv_row["month"]
+      assert_equal "", csv_row["payer_identifier"].to_s, "row #{index} payer" if row.payer_identifier.nil?
+      assert_equal "", csv_row["facility_identifier"].to_s, "row #{index} facility" if row.facility_identifier.nil?
+    end
+  end
+
+  test "a denied claim with a mapped and an unmapped code counts in both" do
+    claim = create_claim_submission(
+      tenant: TENANT, payer: "payer_a", facility: "fac_a",
+      service_date: Date.new(2025, 11, 1), status: "denied", submitted_at: 2.days.ago,
+      denied_at: 1.day.ago, denial_reason_codes: %w[CO-50 CO-999], patient: "pt_dual_code"
+    )
+
+    row = sole_row(
+      Corvid::ClaimOutcomeReport.new(tenant_identifier: TENANT, date_range: FULL_YEAR).rows
+    )
+
+    assert_equal 1, row.denials_by_category["medical_necessity_appeal"]
+    assert_equal 1, row.denials_by_category["unmapped"]
+    assert_equal [ claim.id ], row.claim_ids_for_denial_category("medical_necessity_appeal")
+    assert_equal [ claim.id ], row.claim_ids_for_denial_category("unmapped")
+  end
+
+  test "a rejected claim never sent counts in no sent-based figure" do
+    sent = { submitted_at: 2.days.ago }
+    never_sent = create_claim_submission(
+      tenant: TENANT, payer: "payer_a", facility: "fac_a",
+      service_date: Date.new(2025, 11, 10), status: "rejected", rejected_at: 1.day.ago,
+      submitted_at: nil, patient: "pt_never_sent"
+    )
+    sent_paid = create_claim_submission(
+      tenant: TENANT, payer: "payer_a", facility: "fac_a",
+      service_date: Date.new(2025, 11, 11), status: "paid", patient: "pt_sent_paid", **sent
+    )
+
+    row = sole_row(
+      Corvid::ClaimOutcomeReport.new(tenant_identifier: TENANT, date_range: FULL_YEAR).rows
+    )
+
+    refute_includes row.claim_ids(:claims_sent), never_sent.id
+    refute_includes row.claim_ids(:rejected_claims), never_sent.id
+    assert_includes row.claim_ids(:outcome_claims), never_sent.id
+    assert_includes row.claim_ids(:finalized_claims), never_sent.id
+
+    with_tenant(TENANT) do
+      relation = Corvid::ClaimSubmission.where(id: [ never_sent.id, sent_paid.id ])
+      assert_in_delta relation.rejection_rate, row.rejection_rate, 0.001
+    end
+  end
+
+  test "an exclusive-end date range excludes its end date" do
+    january = create_claim_submission(
+      tenant: TENANT, payer: "payer_a", facility: "fac_a",
+      service_date: Date.new(2025, 1, 31), status: "paid", submitted_at: 1.day.ago,
+      patient: "pt_jan_31"
+    )
+    create_claim_submission(
+      tenant: TENANT, payer: "payer_a", facility: "fac_a",
+      service_date: Date.new(2025, 2, 1), status: "paid", submitted_at: 1.day.ago,
+      patient: "pt_feb_1"
+    )
+
+    range = Date.new(2025, 1, 1)...Date.new(2025, 2, 1)
+    row = sole_row(
+      Corvid::ClaimOutcomeReport.new(tenant_identifier: TENANT, date_range: range).rows
+    )
+
+    assert_equal JANUARY, row.month
+    assert_equal [ january.id ], row.claim_ids(:claims_sent)
+  end
+
+  test "blank and padded codes" do
+    empty_string = create_claim_submission(
+      tenant: TENANT, payer: "payer_a", facility: "fac_a",
+      service_date: Date.new(2025, 12, 1), status: "denied", submitted_at: 2.days.ago,
+      denied_at: 1.day.ago, denial_reason_codes: [ "" ], patient: "pt_blank_code"
+    )
+    whitespace = create_claim_submission(
+      tenant: TENANT, payer: "payer_a", facility: "fac_a",
+      service_date: Date.new(2025, 12, 2), status: "denied", submitted_at: 2.days.ago,
+      denied_at: 1.day.ago, denial_reason_codes: [ "  " ], patient: "pt_pad_code"
+    )
+    padded_carc = create_claim_submission(
+      tenant: TENANT, payer: "payer_a", facility: "fac_a",
+      service_date: Date.new(2025, 12, 3), status: "denied", submitted_at: 2.days.ago,
+      denied_at: 1.day.ago, denial_reason_codes: [ " co-50 " ], patient: "pt_padded_carc"
+    )
+
+    row = sole_row(
+      Corvid::ClaimOutcomeReport.new(tenant_identifier: TENANT, date_range: FULL_YEAR).rows
+    )
+
+    assert_equal 2, row.denials_by_category["uncoded"]
+    assert_equal [ empty_string.id, whitespace.id ].sort,
+      row.claim_ids_for_denial_category("uncoded")
+    assert_equal 1, row.denials_by_category["medical_necessity_appeal"]
+    assert_equal [ padded_carc.id ], row.claim_ids_for_denial_category("medical_necessity_appeal")
+  end
+
+  test "remark codes qualify a CARC and are not a denial category" do
+    carc_with_remark = create_claim_submission(
+      tenant: TENANT, payer: "payer_remark_a", facility: "fac_a",
+      service_date: Date.new(2025, 12, 10), status: "denied", submitted_at: 2.days.ago,
+      denied_at: 1.day.ago, denial_reason_codes: %w[CO-16 N286], patient: "pt_carc_remark"
+    )
+    remark_only = create_claim_submission(
+      tenant: TENANT, payer: "payer_remark_b", facility: "fac_a",
+      service_date: Date.new(2025, 12, 11), status: "denied", submitted_at: 2.days.ago,
+      denied_at: 1.day.ago, denial_reason_codes: [ "N286" ], patient: "pt_remark_only"
+    )
+    unknown_carc = create_claim_submission(
+      tenant: TENANT, payer: "payer_remark_c", facility: "fac_a",
+      service_date: Date.new(2025, 12, 12), status: "denied", submitted_at: 2.days.ago,
+      denied_at: 1.day.ago, denial_reason_codes: [ "ZZ-9" ], patient: "pt_unknown_carc"
+    )
+
+    rows = Corvid::ClaimOutcomeReport.new(tenant_identifier: TENANT, date_range: FULL_YEAR).rows
+    row_for = ->(claim) { rows.find { |row| row.claim_ids(:denied_claims).include?(claim.id) } }
+
+    carc_row = row_for.call(carc_with_remark)
+    assert_equal [ "missing_information" ], carc_row.denials_by_category.keys
+    refute carc_row.denials_by_category.key?("unmapped")
+    assert_equal [ carc_with_remark.id ], carc_row.claim_ids_for_denial_category("missing_information")
+
+    remark_row = row_for.call(remark_only)
+    assert_equal [ "uncoded" ], remark_row.denials_by_category.keys
+    assert_equal [ remark_only.id ], remark_row.claim_ids_for_denial_category("uncoded")
+
+    unknown_row = row_for.call(unknown_carc)
+    assert_equal [ "unmapped" ], unknown_row.denials_by_category.keys
+    assert_equal [ unknown_carc.id ], unknown_row.claim_ids_for_denial_category("unmapped")
+
+    remark = Corvid::Rcm::AdjustmentReasonCodes.default.remark("N286")
+    assert remark, "N286 must be a known RARC in the default code table"
+  end
+
+  test "to_csv neutralises spreadsheet formulas in identifier cells" do
+    sent = { submitted_at: 2.days.ago }
+    [
+      [ "=HYPERLINK(\"http://example.invalid\")", "fac_formula" ],
+      [ "+1+1", "fac_plus" ],
+      [ "-2", "fac_minus" ],
+      [ "@SUM(A1)", "fac_at" ]
+    ].each_with_index do |(payer_id, facility), index|
+      create_claim_submission(
+        tenant: TENANT, payer: payer_id, facility: facility,
+        service_date: Date.new(2025, 12, 20 + index), status: "paid",
+        patient: "pt_formula_#{index}", **sent
+      )
+    end
+    create_claim_submission(
+      tenant: TENANT, payer: "payer_tab", facility: "\tfac",
+      service_date: Date.new(2025, 12, 25), status: "paid", patient: "pt_tab_fac", **sent
+    )
+    create_claim_submission(
+      tenant: TENANT, payer: "payer_a", facility: "fac_a",
+      service_date: Date.new(2025, 12, 26), status: "paid", patient: "pt_plain", **sent
+    )
+
+    report = Corvid::ClaimOutcomeReport.new(tenant_identifier: TENANT, date_range: FULL_YEAR)
+    table = CSV.parse(report.to_csv, headers: true)
+
+    [
+      "=HYPERLINK(\"http://example.invalid\")",
+      "+1+1",
+      "-2",
+      "@SUM(A1)"
+    ].each do |raw|
+      csv_cell = table.find { |row| row["payer_identifier"].to_s.delete_prefix("'") == raw }["payer_identifier"]
+      assert csv_cell.start_with?("'"), "expected formula neutralisation for payer #{raw.inspect}"
+      assert_equal "'#{raw}", csv_cell
+    end
+
+    tab_row = table.find { |row| row["payer_identifier"] == "payer_tab" }
+    assert tab_row["facility_identifier"].start_with?("'")
+    assert_equal "'\tfac", tab_row["facility_identifier"]
+
+    plain_row = table.find { |row| row["payer_identifier"] == "payer_a" && row["facility_identifier"] == "fac_a" }
+    assert_equal "payer_a", plain_row["payer_identifier"]
+    assert_equal "fac_a", plain_row["facility_identifier"]
+
+    assert_includes report.rows.map(&:payer_identifier), "=HYPERLINK(\"http://example.invalid\")"
+    refute_includes report.rows.map(&:payer_identifier), "'=HYPERLINK(\"http://example.invalid\")"
+  end
+
   private
 
   def create_claim_submission(tenant:, service_date:, patient: "pt_001", **attrs)
