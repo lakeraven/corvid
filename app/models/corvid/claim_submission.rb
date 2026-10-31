@@ -61,6 +61,23 @@ module Corvid
       end
     end
 
+    # submit! refuses when Corvid is not the billing system of record for
+    # this facility on the service date, or when that setting is missing.
+    # The message is fixed and names no facility, tenant, or claim (ADR 0003).
+    class SystemOfRecordRefused < StandardError
+      attr_reader :reason
+
+      MESSAGE_FOR = {
+        not_system_of_record: "This claim cannot be submitted because Corvid is not the billing system of record.",
+        system_of_record_unset: "This claim cannot be submitted because no billing system of record is configured."
+      }.freeze
+
+      def initialize(reason)
+        @reason = reason
+        super(MESSAGE_FOR.fetch(reason))
+      end
+    end
+
     # The referral this claim bills, where there is one. Optional: claims
     # billed outside the referral workflow, and legacy rows the backfill could
     # not match unambiguously, carry no reference.
@@ -247,6 +264,9 @@ module Corvid
     end
 
     def submit!
+      # Before referral checks and the adapter. An EHR-billed or
+      # unconfigured claim must not be sent.
+      enforce_system_of_record!
       enforce_referral_authorization_gate!
       enforce_alternate_resources_current!
       result = Corvid.adapter.submit_claim(to_claim_data)
@@ -547,6 +567,24 @@ module Corvid
 
     def exhausted_for_claim?(referral)
       AlternateResourceCheck.all_exhausted?(referral, date_of_service: service_date, as_of: Time.current)
+    end
+
+    # Claims do not store a visit type. A nil visit type is unknown when
+    # an applicable visit-type row names a different system than the
+    # all-visits row, so an untyped claim cannot slip through as Corvid.
+    def enforce_system_of_record!
+      system = BillingSystemSetting.system_of_record_for(
+        facility_identifier: facility_identifier,
+        visit_type: nil,
+        on: service_date
+      )
+      return if system == :corvid
+
+      raise SystemOfRecordRefused, refusal_reason_for(system)
+    end
+
+    def refusal_reason_for(system)
+      system == :ehr ? :not_system_of_record : :system_of_record_unset
     end
 
     # A claim that bills a PRC referral may only be submitted once that
