@@ -25,6 +25,16 @@ module Corvid
     # serialize and other tenants do not share the lock.
     LOCK_NAMESPACE = "corvid_payer_authorization_rules"
 
+    # Not one hierarchy. Errno::* is SystemCallError; IOError,
+    # EncodingError, and a malformed CSV are not. Their messages quote
+    # the source, so each becomes InvalidFile with that text dropped.
+    SOURCE_ERRORS = [
+      SystemCallError,
+      IOError,
+      EncodingError,
+      CSV::MalformedCSVError
+    ].freeze
+
     class << self
       def load!(path_or_io, tenant_identifier:)
         tenant = normalize_tenant(tenant_identifier)
@@ -50,7 +60,7 @@ module Corvid
 
       def read_io(io)
         io.read
-      rescue SystemCallError
+      rescue *SOURCE_ERRORS
         unreadable_file!
       end
 
@@ -58,7 +68,7 @@ module Corvid
         unreadable_file! unless File.file?(path)
 
         File.read(path)
-      rescue SystemCallError
+      rescue *SOURCE_ERRORS
         unreadable_file!
       end
 
@@ -71,8 +81,8 @@ module Corvid
         raise InvalidFile, "header is invalid" unless header == HEADERS
 
         data_rows(data).each_with_index.map { |fields, index| build_fields(fields, index + 1) }
-      rescue CSV::MalformedCSVError
-        raise InvalidFile, "file is invalid"
+      rescue *SOURCE_ERRORS
+        raise InvalidFile, "file is invalid", cause: nil
       end
 
       # CSV.parse turns a blank line into an empty field list. One at
@@ -97,8 +107,8 @@ module Corvid
           service_code: codes[:service_code],
           code_from: codes[:code_from],
           code_to: codes[:code_to],
-          place_of_service: optional_text(row, "place_of_service"),
-          plan_identifier: optional_text(row, "plan_identifier"),
+          place_of_service: optional_text(row, "place_of_service", number),
+          plan_identifier: optional_text(row, "plan_identifier", number),
           requirement: requirement_for(row, number),
           effective_on: date_for(row, "effective_on", number, required: true),
           expires_on: date_for(row, "expires_on", number, required: false)
@@ -117,7 +127,7 @@ module Corvid
       end
 
       def code_cell(row, column, number)
-        text = cell_text(row, column).upcase
+        text = cell_text(row, column, number).upcase
         return nil if text.empty?
         return text if text.match?(PayerAuthorizationRule::CODE_FORMAT)
 
@@ -152,32 +162,57 @@ module Corvid
       # strip leaves U+00A0 and other characters Rails blank? rejects.
       # Collapse those to empty here so a row the loader accepts is not
       # refused at save for blankness. Optional blanks become NULL.
-      def cell_text(row, column)
-        text = row[column].to_s.strip
+      def cell_text(row, column, number)
+        text = scrubbed_cell(row[column])
+        reject_control_character!(text, number, column)
+        text
+      end
+
+      # A NUL makes the pg gem raise ArgumentError ("string contains
+      # null byte") at save, which is not an ActiveRecord error. Other
+      # controls are not identifiers either. Refuse them before any
+      # write. Name the row and the column's place in the header so the
+      # message does not repeat the cell.
+      def reject_control_character!(text, number, column)
+        return unless control_character?(text)
+
+        invalid!(number, "column #{HEADERS.index(column) + 1}")
+      end
+
+      def scrubbed_cell(value)
+        text = value.to_s.strip
         text.blank? ? "" : text
+      rescue ArgumentError, EncodingError
+        value.to_s
+      end
+
+      def control_character?(text)
+        text.match?(/[[:cntrl:]]/)
+      rescue ArgumentError, EncodingError
+        true
       end
 
       def required_text(row, column, number)
-        text = cell_text(row, column)
+        text = cell_text(row, column, number)
         return text if text.present?
 
         invalid!(number, column)
       end
 
-      def optional_text(row, column)
-        text = cell_text(row, column)
+      def optional_text(row, column, number)
+        text = cell_text(row, column, number)
         text.empty? ? nil : text
       end
 
       def requirement_for(row, number)
-        text = cell_text(row, "requirement")
+        text = cell_text(row, "requirement", number)
         return text if PayerAuthorizationRule::REQUIREMENTS.include?(text)
 
         invalid!(number, "requirement")
       end
 
       def date_for(row, column, number, required:)
-        text = cell_text(row, column)
+        text = cell_text(row, column, number)
         return nil if text.empty? && !required
 
         parsed = strict_date(text)
@@ -242,12 +277,17 @@ module Corvid
       end
 
       # RecordInvalid, StatementInvalid, and any other ActiveRecord
-      # error become InvalidFile. The exception propagates so the
-      # transaction rolls the delete and the earlier inserts back.
+      # error become InvalidFile. ArgumentError does too: a NUL the
+      # cell check missed makes the pg gem raise it, and that is not
+      # an ActiveRecord error. The column is not known on that path.
+      # The exception propagates so the transaction rolls the delete
+      # and the earlier inserts back.
       def create_row!(tenant, attrs, number)
         PayerAuthorizationRule.create!(attrs.merge(tenant_identifier: tenant))
       rescue ActiveRecord::ActiveRecordError => error
         invalid!(number, column_from(error))
+      rescue ArgumentError
+        invalid!(number)
       end
 
       def column_from(error)

@@ -84,14 +84,34 @@ module Corvid
 
     # String order is not enough: "2033F" sits between "10000" and
     # "69999". The code has to share the endpoints' digit and letter
-    # positions. Endpoints that disagree with each other match nothing.
+    # positions. A letter both endpoints share is fixed too, so
+    # "0001F".."9999F" covers "2033F" and not "0001T" or "2033G".
+    # "A0000".."C9999" shares no first letter, so it still covers
+    # "B1234". Endpoints whose patterns disagree match nothing.
     def range_covers?(rule)
       from = rule.code_from
       to = rule.code_to
       return false if from.blank? || to.blank?
       return false unless PayerAuthorizationRule.same_code_pattern?(from, to, @code)
+      return false unless fixed_letters_match?(from, to)
 
       from <= @code && @code <= to
+    end
+
+    def fixed_letters_match?(from, to)
+      from.each_char.with_index.all? do |from_char, index|
+        next true unless same_letter?(from_char, to[index])
+
+        @code[index] == from_char
+      end
+    end
+
+    def same_letter?(from_char, to_char)
+      from_char == to_char && letter?(from_char)
+    end
+
+    def letter?(char)
+      PayerAuthorizationRule.code_pattern(char) == "A"
     end
 
     def in_force?(rule)

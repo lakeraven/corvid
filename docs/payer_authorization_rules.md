@@ -37,7 +37,12 @@ both codes or a letter in both codes. `10000` through `69999` is five
 digits. `J0000` through `J9999` is a letter and four digits. `0001F`
 through `9999F` is four digits and a letter. A range from `10000` to
 `6999F` is invalid, because the last position is a digit on one end
-and a letter on the other.
+and a letter on the other. A range covers a code only when the code
+has that same digit-versus-letter pattern and, at every position
+where both endpoints have the same letter, the code has that letter.
+`0001F` through `9999F` covers `2033F`, not `0001T` or `2033G`.
+`J0000` through `J9999` covers `J1234`, not `K1234`. `A0000` through
+`C9999` covers `B1234`.
 
 Every data row has exactly as many cells as the header. A row with
 more cells or fewer cells is invalid. The loader names that row and
@@ -49,6 +54,10 @@ The loader strips surrounding whitespace and upcases codes before it
 stores them. A lowercase code in the file is accepted only once it
 upcases into that shape. A cell that is only whitespace, including
 characters such as U+00A0 that Ruby `strip` leaves behind, is blank.
+A NUL or any other control character in a cell is invalid. The loader
+names the row and the column's place in the header, counting the first
+column as 1, and does not repeat the cell. Nothing from that file is
+loaded.
 
 Dates are strict ISO calendar days: four-digit year, two-digit month,
 two-digit day, hyphen-separated. `2025-1-1` and `2025/01/01` are
@@ -72,16 +81,22 @@ column and does not repeat the cell.
 
 `Corvid::PayerAuthorizationRuleLoader.load!(path_or_io, tenant_identifier:)`
 reads a file path or an IO. A blank `tenant_identifier` raises
-`ArgumentError`. A missing path or a directory raises `InvalidFile`.
-That message says the file could not be read and does not include the
-path. Nothing is changed.
+`ArgumentError`. A missing path, a directory, or an IO that cannot
+be read raises `InvalidFile`. A read that raises `IOError` or an
+encoding error is the same failure. That message says the file could
+not be read and does not include the path, the underlying error, or
+any cell. Nothing is changed. A malformed file is `InvalidFile` as
+well, and that message does not include the file's text.
 
 The file replaces that tenant's rules all or nothing. Every row is
 checked before any row is written. When a row is invalid, nothing from
 that file is loaded and the tenant's previous rules stay. A row that
 fails while it is saved is invalid too. The loader names the row and,
-when it knows which, the column, and does not repeat the cell. The
-transaction rolls back, so the tenant's previous rules stay.
+when it knows which, the column, and does not repeat the cell. An
+`ArgumentError` from the save, such as a driver rejecting a string
+the cell check did not catch, is the same kind of failure and names
+the row. The transaction rolls back, so the tenant's previous rules
+stay.
 
 When the file is valid, the tenant's existing rules are deleted and
 the file's rows are inserted in one transaction. Loads for one tenant
@@ -117,12 +132,17 @@ A rule matches when all of these hold:
 - The payer is the rule's payer.
 - The day is on or after `effective_on`, and on or before `expires_on`
   when `expires_on` is set. Both ends are inclusive.
-- The code equals `service_code`, or it falls inside `code_from` ..
-  `code_to` in string order, including the endpoints, and it has the
-  same digit-versus-letter pattern as those endpoints. A five-digit
-  range does not cover a code with a letter in it. `10000` through
-  `69999` does not cover `2033F`. `J0000` through `J9999` covers
-  `J1234`. `0001F` through `9999F` covers `2033F`.
+- The code equals `service_code`, or the range covers it. A range
+  covers a code only when the code has the endpoints' digit-versus-letter
+  pattern and, at every position where both endpoints have the same
+  letter, the code has that letter. It also has to fall inside
+  `code_from` .. `code_to` in string order, including the endpoints.
+  A five-digit range does not cover a code with a letter in it.
+  `10000` through `69999` does not cover `2033F`. `J0000` through
+  `J9999` covers `J1234` and does not cover `K1234`. `0001F` through
+  `9999F` covers `2033F` and does not cover `0001T` or `2033G`.
+  `A0000` through `C9999` covers `B1234`, because those endpoints do
+  not share a letter in the first position.
 - `place_of_service` on the rule is blank, or it equals the place asked
   about. A blank place on the call matches only rules that leave place
   blank.
