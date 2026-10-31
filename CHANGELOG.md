@@ -22,6 +22,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   instead of `denial_reason_token`.
 
 ### Added
+- Payer authorization rules (#792). `corvid_payer_authorization_rules`
+  stores, per tenant and payer, whether a service code or an inclusive
+  code range requires authorization. Place of service and plan are
+  optional; blank means any. `Corvid::PayerAuthorizationRequirement.lookup`
+  returns the most specific matching requirement. Nothing matches is
+  `unknown`, never `not_required`. Equally specific rules that disagree
+  are `conflict`. An omitted place or plan is `unknown` when a rule on
+  that dimension would change the answer. Another tenant's rules never
+  match. `Corvid::PayerAuthorizationRuleLoader.load!` replaces that
+  tenant's rules from a CSV, all or nothing, and rejects a file that
+  contains an unknown requirement without loading any of its rows. See
+  `docs/payer_authorization_rules.md`.
 - ZIP-to-CBSA wage-area crosswalk (#371). `corvid_zip_cbsa_crosswalks`
   stores the CMS crosswalk by federal fiscal year (`zip` is five ASCII
   digits; `cbsa` is a five-digit CBSA or a two-digit rural-state code;

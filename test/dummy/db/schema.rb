@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_10_28_000001) do
+ActiveRecord::Schema[8.1].define(version: 2026_10_31_000002) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
@@ -487,6 +487,32 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_28_000001) do
     t.datetime "created_at", null: false
     t.datetime "updated_at", null: false
     t.index ["calendar_year", "locality"], name: "idx_corvid_opps_conversion_factors_cy_locality", unique: true
+  end
+
+  create_table "corvid_payer_authorization_rules", force: :cascade do |t|
+    t.string "tenant_identifier", null: false
+    t.string "payer_identifier", null: false
+    t.string "service_code"
+    t.string "code_from"
+    t.string "code_to"
+    t.string "place_of_service"
+    t.string "plan_identifier"
+    t.string "requirement", null: false
+    t.date "effective_on", null: false
+    t.date "expires_on"
+    t.datetime "created_at", null: false
+    t.datetime "updated_at", null: false
+    t.index ["tenant_identifier", "payer_identifier"], name: "idx_corvid_payer_auth_rules_tenant_payer"
+    t.check_constraint "code_from IS NULL AND code_to IS NULL OR char_length(code_from::text) = char_length(code_to::text) AND code_from::text <= code_to::text", name: "corvid_payer_auth_rules_code_range_check"
+    t.check_constraint "code_from IS NULL OR code_from::text ~ '^[A-Z0-9]{5}$'::text", name: "corvid_payer_auth_rules_code_from_check"
+    t.check_constraint "code_to IS NULL OR code_to::text ~ '^[A-Z0-9]{5}$'::text", name: "corvid_payer_auth_rules_code_to_check"
+    t.check_constraint "expires_on IS NULL OR expires_on >= effective_on", name: "corvid_payer_auth_rules_expires_on_check"
+    t.check_constraint "payer_identifier::text !~ '^[[:space:]]*$'::text", name: "corvid_payer_auth_rules_payer_check"
+    t.check_constraint "place_of_service IS NULL OR place_of_service::text !~ '^[[:space:]]*$'::text", name: "corvid_payer_auth_rules_pos_check"
+    t.check_constraint "plan_identifier IS NULL OR plan_identifier::text !~ '^[[:space:]]*$'::text", name: "corvid_payer_auth_rules_plan_check"
+    t.check_constraint "requirement::text = ANY (ARRAY['required'::character varying, 'not_required'::character varying, 'documentation_only'::character varying]::text[])", name: "corvid_payer_auth_rules_requirement_check"
+    t.check_constraint "service_code IS NOT NULL AND code_from IS NULL AND code_to IS NULL OR service_code IS NULL AND code_from IS NOT NULL AND code_to IS NOT NULL", name: "corvid_payer_auth_rules_code_form_check"
+    t.check_constraint "service_code IS NULL OR service_code::text ~ '^[A-Z0-9]{5}$'::text", name: "corvid_payer_auth_rules_service_code_check"
   end
 
   create_table "corvid_payments", force: :cascade do |t|
