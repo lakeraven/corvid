@@ -103,6 +103,29 @@ module Corvid
           requirement: "required"
         )
         assert_equal :required, lookup(service_code: "2033F").requirement
+        assert_equal :unknown, lookup(service_code: "0001T").requirement
+        assert_equal :unknown, lookup(service_code: "2033G").requirement
+      end
+    end
+
+    test "J-prefixed range excludes codes with a different leading letter" do
+      with_tenant(TENANT) do
+        create_rule!(
+          service_code: nil, code_from: "J0000", code_to: "J9999",
+          requirement: "required"
+        )
+        assert_equal :required, lookup(service_code: "J1234").requirement
+        assert_equal :unknown, lookup(service_code: "K1234").requirement
+      end
+    end
+
+    test "letter endpoints require matching letters at shared fixed positions" do
+      with_tenant(TENANT) do
+        create_rule!(
+          service_code: nil, code_from: "A0000", code_to: "C9999",
+          requirement: "required"
+        )
+        assert_equal :required, lookup(service_code: "B1234").requirement
       end
     end
 
@@ -113,6 +136,22 @@ module Corvid
           result = lookup(service_code: "99213", on: bad_on)
           assert_equal :unknown, result.requirement, "expected unknown for on=#{bad_on.inspect}"
         end
+      end
+    end
+
+    test "another payer's rules never decide a lookup for the requested payer" do
+      with_tenant(TENANT) do
+        create_rule!(payer_identifier: "payer_b", service_code: "99213", requirement: "not_required")
+        result = lookup(payer_identifier: "payer_a", service_code: "99213")
+        assert_equal :unknown, result.requirement
+        assert_empty result.rule_ids
+
+        PayerAuthorizationRule.unscoped.where(tenant_identifier: TENANT).delete_all
+        payer_a_rule = create_rule!(payer_identifier: "payer_a", service_code: "99213", requirement: "required")
+        create_rule!(payer_identifier: "payer_b", service_code: "99213", requirement: "not_required")
+        result = lookup(payer_identifier: "payer_a", service_code: "99213")
+        assert_equal :required, result.requirement
+        assert_equal [ payer_a_rule.id ], result.rule_ids
       end
     end
 
@@ -242,6 +281,40 @@ module Corvid
         )
         assert_equal :conflict, result.requirement
         assert_equal [ plan_rule.id, pos_rule.id ].sort, result.rule_ids
+      end
+    end
+
+    test "plan range and place exact rules that disagree yield conflict without dominance" do
+      with_tenant(TENANT) do
+        plan_range = create_rule!(
+          service_code: nil, code_from: "99200", code_to: "99299",
+          plan_identifier: "plan_gold", requirement: "required"
+        )
+        place_exact = create_rule!(
+          service_code: "99213", place_of_service: "11", requirement: "not_required"
+        )
+        result = lookup(
+          service_code: "99213", plan_identifier: "plan_gold", place_of_service: "11"
+        )
+        assert_equal :conflict, result.requirement
+        assert_equal [ plan_range.id, place_exact.id ].sort, result.rule_ids
+      end
+    end
+
+    test "gap check when confirmed match names place and a stricter place-and-plan rule exists" do
+      with_tenant(TENANT) do
+        create_rule!(service_code: "99213", place_of_service: "11", requirement: "not_required")
+        create_rule!(
+          service_code: "99213", place_of_service: "11", plan_identifier: "plan_gold",
+          requirement: "required"
+        )
+
+        assert_equal :unknown,
+                     lookup(service_code: "99213", place_of_service: "11", plan_identifier: nil).requirement
+        assert_equal :not_required,
+                     lookup(service_code: "99213", place_of_service: "11", plan_identifier: "plan_basic").requirement
+        assert_equal :required,
+                     lookup(service_code: "99213", place_of_service: "11", plan_identifier: "plan_gold").requirement
       end
     end
 

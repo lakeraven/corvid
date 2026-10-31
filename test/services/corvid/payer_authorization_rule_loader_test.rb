@@ -136,6 +136,135 @@ module Corvid
       end
     end
 
+    test "invalid expires_on date shape loads nothing and preserves prior rules" do
+      with_tenant(TENANT) do
+        existing = seed_existing_rule!
+        invalid_dates = {
+          "2020-13-01" => /expires_on/i,
+          "2020-1-01" => /expires_on/i,
+          "2020/01/01" => /expires_on/i
+        }
+
+        invalid_dates.each do |expires_on, pattern|
+          csv = <<~CSV
+            #{HEADER}
+            payer_a,99213,,,,,required,2025-01-01,#{expires_on}
+          CSV
+
+          error = assert_raises(PayerAuthorizationRuleLoader::InvalidFile) do
+            PayerAuthorizationRuleLoader.load!(StringIO.new(csv), tenant_identifier: TENANT)
+          end
+
+          assert_match(/row 1/i, error.message)
+          assert_match(pattern, error.message)
+          assert PayerAuthorizationRule.unscoped.exists?(id: existing.id)
+          assert_equal 1, PayerAuthorizationRule.unscoped.where(tenant_identifier: TENANT).count
+        end
+      end
+    end
+
+    test "loaded rows store CSV columns for place plan codes and dates" do
+      with_tenant(TENANT) do
+        path = fixture_path("column_mapping.csv")
+        PayerAuthorizationRuleLoader.load!(path, tenant_identifier: TENANT)
+
+        range = PayerAuthorizationRule.unscoped.find_by!(
+          tenant_identifier: TENANT, code_from: "70540", code_to: "70559"
+        )
+        assert_nil range.place_of_service
+        assert_nil range.plan_identifier
+        assert_equal Date.new(2025, 1, 1), range.effective_on
+        assert_equal Date.new(2025, 12, 31), range.expires_on
+
+        pos_only = PayerAuthorizationRule.unscoped.find_by!(
+          tenant_identifier: TENANT, service_code: "99213", place_of_service: "11", plan_identifier: nil
+        )
+        assert_equal "required", pos_only.requirement
+        assert_equal Date.new(2025, 2, 1), pos_only.effective_on
+        assert_nil pos_only.expires_on
+
+        plan_only = PayerAuthorizationRule.unscoped.find_by!(
+          tenant_identifier: TENANT, service_code: "99213", plan_identifier: "plan_gold", place_of_service: nil
+        )
+        assert_equal "not_required", plan_only.requirement
+        assert_equal Date.new(2025, 3, 1), plan_only.effective_on
+
+        payer_wide = PayerAuthorizationRule.unscoped.find_by!(
+          tenant_identifier: TENANT,
+          service_code: "99213",
+          place_of_service: nil,
+          plan_identifier: nil,
+          requirement: "not_required"
+        )
+        assert_equal Date.new(2025, 4, 1), payer_wide.effective_on
+
+        on = Date.new(2025, 6, 15)
+        result = PayerAuthorizationRequirement.lookup(
+          payer_identifier: "payer_a",
+          service_code: "99213",
+          place_of_service: "11",
+          plan_identifier: "plan_basic",
+          on: on,
+          tenant_identifier: TENANT
+        )
+        assert_equal :required, result.requirement
+      end
+    end
+
+    test "io read failure raises InvalidFile without leaking values and preserves prior rules" do
+      with_tenant(TENANT) do
+        existing = seed_existing_rule!
+        io_error = Class.new do
+          def read
+            raise IOError, "synthetic read failure for test"
+          end
+        end.new
+
+        error = assert_raises(PayerAuthorizationRuleLoader::InvalidFile) do
+          PayerAuthorizationRuleLoader.load!(io_error, tenant_identifier: TENANT)
+        end
+
+        refute_match(/synthetic|payer|99213|OLD99/i, error.message)
+        assert PayerAuthorizationRule.unscoped.exists?(id: existing.id)
+        assert_equal 1, PayerAuthorizationRule.unscoped.where(tenant_identifier: TENANT).count
+      end
+    end
+
+    test "io encoding failure raises InvalidFile without leaking values and preserves prior rules" do
+      with_tenant(TENANT) do
+        existing = seed_existing_rule!
+        encoding_error = Class.new do
+          def read
+            raise Encoding::UndefinedConversionError, "synthetic encoding failure for test"
+          end
+        end.new
+
+        error = assert_raises(PayerAuthorizationRuleLoader::InvalidFile) do
+          PayerAuthorizationRuleLoader.load!(encoding_error, tenant_identifier: TENANT)
+        end
+
+        refute_match(/synthetic|payer|99213|OLD99/i, error.message)
+        assert PayerAuthorizationRule.unscoped.exists?(id: existing.id)
+        assert_equal 1, PayerAuthorizationRule.unscoped.where(tenant_identifier: TENANT).count
+      end
+    end
+
+    test "nul byte in plan_identifier cell raises InvalidFile naming row and preserves prior rules" do
+      with_tenant(TENANT) do
+        existing = seed_existing_rule!
+        csv = "#{HEADER}\npayer_a,99213,,,,plan\u0000gold,required,2025-01-01,\n"
+
+        error = assert_raises(PayerAuthorizationRuleLoader::InvalidFile) do
+          PayerAuthorizationRuleLoader.load!(StringIO.new(csv), tenant_identifier: TENANT)
+        end
+
+        assert_match(/row 1/i, error.message)
+        refute_match(/plan|gold|payer|99213/i, error.message)
+        assert PayerAuthorizationRule.unscoped.exists?(id: existing.id)
+        assert_equal 1, PayerAuthorizationRule.unscoped.where(tenant_identifier: TENANT).count
+      end
+    end
+
     test "expires_on before effective_on loads nothing" do
       with_tenant(TENANT) do
         existing = seed_existing_rule!

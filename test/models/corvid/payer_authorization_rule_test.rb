@@ -112,6 +112,13 @@ module Corvid
       end
     end
 
+    test "valid multi-letter endpoint code range passes validation" do
+      with_tenant(TENANT) do
+        rule = build_rule(service_code: nil, code_from: "A0000", code_to: "C9999")
+        assert rule.valid?, rule.errors.full_messages.join(", ")
+      end
+    end
+
     test "expires_on must be on or after effective_on" do
       with_tenant(TENANT) do
         rule = build_rule(
