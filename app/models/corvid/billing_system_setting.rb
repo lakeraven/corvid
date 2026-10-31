@@ -21,11 +21,13 @@ module Corvid
 
     class << self
       # :corvid, :ehr, or :unknown. A visit-type row wins over the
-      # all-visits row. With no visit type, the all-visits row answers
-      # only when every applicable visit-type row names that same
-      # system. A disagreement is unknown: an untyped claim might be
-      # the visit the other system still bills. No row, a blank
-      # facility, a blank tenant, or a value that is not a Date is
+      # all-visits row. A nil visit_type is untyped: the all-visits row
+      # answers only when every applicable visit-type row names that
+      # same system. A disagreement is unknown: an untyped claim might
+      # be the visit the other system still bills. A String visit_type
+      # that is blank after stripping, or any non-nil value that is not
+      # a String, is unknown and never the all-visits answer. No row, a
+      # blank facility, a blank tenant, or a value that is not a Date is
       # unknown. The query filters tenant_identifier itself, so the
       # answer stays that tenant's rows when the thread context differs.
       def system_of_record_for(
@@ -37,6 +39,7 @@ module Corvid
         return :unknown unless on.instance_of?(Date)
         return :unknown if facility_identifier.blank?
         return :unknown if tenant_identifier.blank?
+        return :unknown unless visit_type.nil? || named_visit_type?(visit_type)
 
         rows = applicable_on(facility_identifier, on, tenant_identifier)
         return system_for_untyped(rows) if visit_type.nil?
@@ -54,6 +57,10 @@ module Corvid
           .where(effective_on: ..on)
           .where("expires_on IS NULL OR expires_on >= ?", on)
           .to_a
+      end
+
+      def named_visit_type?(visit_type)
+        visit_type.is_a?(String) && !visit_type.strip.empty?
       end
 
       def system_for_visit(rows, visit_type)
