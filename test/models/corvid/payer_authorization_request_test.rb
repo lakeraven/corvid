@@ -269,6 +269,7 @@ class Corvid::PayerAuthorizationRequestTest < ActiveSupport::TestCase
 
       submitted = request_in("submitted")
       stale_approved = Corvid::PayerAuthorizationRequest.find(submitted.id)
+      stale_for_update = Corvid::PayerAuthorizationRequest.find(submitted.id)
       Corvid::PayerAuthorizationRequest.find(submitted.id).approve!(
         payer_authorization_identifier: PAYER_AUTH_ID,
         approved_from: Date.new(2026, 5, 1),
@@ -281,9 +282,9 @@ class Corvid::PayerAuthorizationRequestTest < ActiveSupport::TestCase
       assert_equal "approved", stale_approved.reload.status
 
       assert_raises(ActiveRecord::StaleObjectError) do
-        stale_approved.update!(status: "denied")
+        stale_for_update.update!(status: "denied")
       end
-      assert_equal "approved", stale_approved.reload.status
+      assert_equal "approved", stale_for_update.reload.status
     end
   end
 
