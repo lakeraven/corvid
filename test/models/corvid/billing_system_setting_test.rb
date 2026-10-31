@@ -140,6 +140,119 @@ class Corvid::BillingSystemSettingTest < ActiveSupport::TestCase
     end
   end
 
+  test "database rejects a range that starts on another range's last day" do
+    now = Time.current
+    with_tenant(TENANT) do
+      Corvid::BillingSystemSetting.create!(
+        facility_identifier: FACILITY,
+        visit_type: nil,
+        system_of_record: "corvid",
+        effective_on: Date.new(2020, 1, 1),
+        expires_on: Date.new(2026, 6, 30)
+      )
+
+      assert_raises(ActiveRecord::StatementInvalid) do
+        Corvid::BillingSystemSetting.transaction(requires_new: true) do
+          Corvid::BillingSystemSetting.insert_all!(
+            [ {
+              tenant_identifier: TENANT,
+              facility_identifier: FACILITY,
+              visit_type: nil,
+              system_of_record: "ehr",
+              effective_on: Date.new(2026, 6, 30),
+              expires_on: nil,
+              created_at: now,
+              updated_at: now
+            } ]
+          )
+        end
+      end
+    end
+  end
+
+  test "database rejects extending a range onto the next range's first day" do
+    with_tenant(TENANT) do
+      row1 = Corvid::BillingSystemSetting.create!(
+        facility_identifier: FACILITY,
+        visit_type: nil,
+        system_of_record: "corvid",
+        effective_on: Date.new(2020, 1, 1),
+        expires_on: Date.new(2026, 6, 30)
+      )
+      Corvid::BillingSystemSetting.create!(
+        facility_identifier: FACILITY,
+        visit_type: nil,
+        system_of_record: "ehr",
+        effective_on: Date.new(2026, 7, 1),
+        expires_on: nil
+      )
+
+      assert_raises(ActiveRecord::StatementInvalid) do
+        row1.update_columns(expires_on: Date.new(2026, 7, 1))
+      end
+    end
+  end
+
+  test "database rejects a dental range that starts on another dental range's last day" do
+    now = Time.current
+    with_tenant(TENANT) do
+      Corvid::BillingSystemSetting.create!(
+        facility_identifier: FACILITY,
+        visit_type: "dental",
+        system_of_record: "corvid",
+        effective_on: Date.new(2020, 1, 1),
+        expires_on: Date.new(2026, 6, 30)
+      )
+
+      assert_raises(ActiveRecord::StatementInvalid) do
+        Corvid::BillingSystemSetting.transaction(requires_new: true) do
+          Corvid::BillingSystemSetting.insert_all!(
+            [ {
+              tenant_identifier: TENANT,
+              facility_identifier: FACILITY,
+              visit_type: "dental",
+              system_of_record: "ehr",
+              effective_on: Date.new(2026, 6, 30),
+              expires_on: nil,
+              created_at: now,
+              updated_at: now
+            } ]
+          )
+        end
+      end
+    end
+  end
+
+  test "database allows a dental range starting on an all-visits range's last day" do
+    now = Time.current
+    with_tenant(TENANT) do
+      Corvid::BillingSystemSetting.create!(
+        facility_identifier: FACILITY,
+        visit_type: nil,
+        system_of_record: "corvid",
+        effective_on: Date.new(2020, 1, 1),
+        expires_on: Date.new(2026, 6, 30)
+      )
+
+      Corvid::BillingSystemSetting.transaction(requires_new: true) do
+        Corvid::BillingSystemSetting.insert_all!(
+          [ {
+            tenant_identifier: TENANT,
+            facility_identifier: FACILITY,
+            visit_type: "dental",
+            system_of_record: "ehr",
+            effective_on: Date.new(2026, 6, 30),
+            expires_on: nil,
+            created_at: now,
+            updated_at: now
+          } ]
+        )
+      end
+
+      assert_equal 2, Corvid::BillingSystemSetting.count
+    end
+  end
+
   test "database allows adjacent effective ranges for the same tenant facility and visit type" do
     with_tenant(TENANT) do
       Corvid::BillingSystemSetting.create!(
@@ -282,6 +395,71 @@ class Corvid::BillingSystemSettingTest < ActiveSupport::TestCase
       )
       refute overlap.valid?
       assert overlap.errors[:effective_on].any?
+    end
+  end
+
+  test "range starting on another range's last day is invalid on effective_on" do
+    with_tenant(TENANT) do
+      Corvid::BillingSystemSetting.create!(
+        facility_identifier: FACILITY,
+        visit_type: nil,
+        system_of_record: "corvid",
+        effective_on: Date.new(2020, 1, 1),
+        expires_on: Date.new(2026, 6, 30)
+      )
+
+      boundary = Corvid::BillingSystemSetting.new(
+        facility_identifier: FACILITY,
+        visit_type: nil,
+        system_of_record: "ehr",
+        effective_on: Date.new(2026, 6, 30),
+        expires_on: nil
+      )
+      refute boundary.valid?
+      assert boundary.errors[:effective_on].any?
+    end
+  end
+
+  test "dental range starting on another dental range's last day is invalid on effective_on" do
+    with_tenant(TENANT) do
+      Corvid::BillingSystemSetting.create!(
+        facility_identifier: FACILITY,
+        visit_type: "dental",
+        system_of_record: "corvid",
+        effective_on: Date.new(2020, 1, 1),
+        expires_on: Date.new(2026, 6, 30)
+      )
+
+      boundary = Corvid::BillingSystemSetting.new(
+        facility_identifier: FACILITY,
+        visit_type: "dental",
+        system_of_record: "ehr",
+        effective_on: Date.new(2026, 6, 30),
+        expires_on: nil
+      )
+      refute boundary.valid?
+      assert boundary.errors[:effective_on].any?
+    end
+  end
+
+  test "dental range starting on an all-visits range's last day is valid" do
+    with_tenant(TENANT) do
+      Corvid::BillingSystemSetting.create!(
+        facility_identifier: FACILITY,
+        visit_type: nil,
+        system_of_record: "corvid",
+        effective_on: Date.new(2020, 1, 1),
+        expires_on: Date.new(2026, 6, 30)
+      )
+
+      boundary = Corvid::BillingSystemSetting.new(
+        facility_identifier: FACILITY,
+        visit_type: "dental",
+        system_of_record: "ehr",
+        effective_on: Date.new(2026, 6, 30),
+        expires_on: nil
+      )
+      assert boundary.valid?, boundary.errors.full_messages.join(", ")
     end
   end
 
