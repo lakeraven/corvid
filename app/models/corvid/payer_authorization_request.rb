@@ -21,8 +21,9 @@ module Corvid
     APPROVAL_STATUSES = %w[approved partially_approved].freeze
     # Still waiting on the payer. Used by overdue; a decision is not overdue.
     AWAITING_DECISION_STATUSES = %w[submitted pended].freeze
-    # Written when the payer is asked. Locked once that ask is stored.
-    SUBMISSION_EVIDENCE = %i[submitted_at submitted_by_identifier follow_up_due_at].freeze
+    # Locked once the payer was asked, including after a later cancellation.
+    # payer_identifier and channel are fixed with that evidence.
+    SUBMISSION_EVIDENCE = %i[submitted_at submitted_by_identifier follow_up_due_at payer_identifier channel].freeze
     # Written by an approval. A later cancellation keeps them.
     APPROVAL_EVIDENCE = %i[payer_authorization_identifier approved_from approved_to approved_units].freeze
 
@@ -60,6 +61,7 @@ module Corvid
     validate :optional_identifiers_not_blank
     validate :submission_recorded_when_sent
     validate :submission_evidence_unchanged
+    validate :submission_blank_when_cancelled_from_draft
     validate :approval_recorded_when_approved
     validate :approval_evidence_unchanged
     validate :approval_fields_match_status
@@ -169,7 +171,8 @@ module Corvid
 
     # No duration for this payer means no timer. A non-duration is not a
     # turnaround; do not invent a due time. A blank submitted_at has no
-    # start, so it also has no due time.
+    # start, so it also has no due time. The sum is submitted_at in UTC
+    # plus the turnaround, so Time.zone cannot move the due instant.
     def set_follow_up_due_at
       return unless will_save_change_to_status? && status == "submitted"
 
@@ -185,7 +188,7 @@ module Corvid
       turnaround = turnarounds[payer_identifier]
       return unless turnaround.is_a?(ActiveSupport::Duration)
 
-      submitted_at + turnaround
+      submitted_at.utc + turnaround
     end
 
     # Once the payer was asked, the ask cannot be rewritten. A new row's
@@ -203,6 +206,23 @@ module Corvid
       return false if status_in_database == "drafted"
 
       submitted_at_in_database.present?
+    end
+
+    # Cancelling a draft records no ask. A later save cannot fill the
+    # submission columns. Approval columns stay blank on that row too:
+    # approval_fields_match_status refuses them when no approval was stored.
+    def submission_blank_when_cancelled_from_draft
+      return unless cancelled_from_draft?
+
+      %i[submitted_at submitted_by_identifier follow_up_due_at].each do |name|
+        errors.add(name, "must be blank") if self[name].present?
+      end
+    end
+
+    def cancelled_from_draft?
+      return false if new_record?
+
+      status_in_database == "cancelled" && submitted_at_in_database.nil?
     end
 
     # An approval's decision stays as it was recorded, including after
@@ -305,11 +325,13 @@ module Corvid
       errors.add(:status, "is not an allowed change")
     end
 
-    # The tenant scope would hide another tenant's referral, and a hidden
-    # row looks like "no referral". An assigned referral, including one
-    # that has not been saved, is read from memory so it is not autosaved
-    # before this check. Otherwise read the row by id with the scope off.
-    # When that referral names a facility, this request must name the same
+    # An assigned referral, including one that has not been saved, is read
+    # from memory so it is not autosaved before this check. That target is
+    # current only when its id is prc_referral_id. A changed id leaves the
+    # previous target loaded, and an unloaded association has no target.
+    # Both are read with Corvid::PrcReferral.unscoped by the current id and
+    # this request's tenant, so a cross-tenant id is a validation error.
+    # When the referral names a facility, this request must name the same
     # one, including when this request's facility is nil.
     def prc_referral_in_same_tenant
       return unless linked_referral?
@@ -326,16 +348,30 @@ module Corvid
     end
 
     def linked_referral?
-      association(:prc_referral).target.present? || prc_referral_id.present?
+      current_prc_referral.present? || prc_referral_id.present?
     end
 
     def linked_referral_tenant_and_facility
-      referral = association(:prc_referral).target
+      referral = current_prc_referral
       if referral
         [ referral.tenant_identifier, referral.facility_identifier ]
       else
-        Corvid::PrcReferral.unscoped.where(id: prc_referral_id).pick(:tenant_identifier, :facility_identifier)
+        referral_tenant_and_facility_by_id
       end
+    end
+
+    def current_prc_referral
+      referral = association(:prc_referral).target
+      return if referral.nil? || referral.id != prc_referral_id
+
+      referral
+    end
+
+    def referral_tenant_and_facility_by_id
+      Corvid::PrcReferral.unscoped.where(
+        id: prc_referral_id,
+        tenant_identifier: tenant_identifier
+      ).pick(:tenant_identifier, :facility_identifier)
     end
   end
 end
