@@ -264,18 +264,17 @@ module Corvid
     end
 
     def submit!
-      # Before referral checks and the adapter. An EHR-billed or
-      # unconfigured claim must not be sent.
-      enforce_system_of_record!
-      enforce_referral_authorization_gate!
-      enforce_alternate_resources_current!
-      result = Corvid.adapter.submit_claim(to_claim_data)
-      save_through_submission_gate!(
-        claim_identifier: result[:claim_identifier],
-        status: result[:status] == "accepted" ? "submitted" : result[:status],
-        submitted_at: Time.current
-      )
-      result
+      # Referral resolution, alternate-resource checks, and the
+      # provenance tenant follow the thread. Switch to this claim's
+      # tenant for the submission when the thread names a different
+      # one; with_tenant restores the caller. A thread that already
+      # matches tenant_identifier, and a blank tenant, run in place.
+      tenant = tenant_identifier
+      if tenant.present? && tenant != Corvid::TenantContext.current_tenant_identifier
+        Corvid::TenantContext.with_tenant(tenant) { submit_for_claim_tenant! }
+      else
+        submit_for_claim_tenant!
+      end
     end
 
     def check_status!
@@ -569,18 +568,45 @@ module Corvid
       AlternateResourceCheck.all_exhausted?(referral, date_of_service: service_date, as_of: Time.current)
     end
 
+    # Before referral checks and the adapter. An EHR-billed or
+    # unconfigured claim must not be sent.
+    def submit_for_claim_tenant!
+      enforce_system_of_record!
+      enforce_referral_authorization_gate!
+      enforce_alternate_resources_current!
+      result = Corvid.adapter.submit_claim(to_claim_data)
+      save_through_submission_gate!(
+        claim_identifier: result[:claim_identifier],
+        status: result[:status] == "accepted" ? "submitted" : result[:status],
+        submitted_at: Time.current
+      )
+      result
+    end
+
     # Claims do not store a visit type. A nil visit type is unknown when
     # an applicable visit-type row names a different system than the
     # all-visits row, so an untyped claim cannot slip through as Corvid.
+    # The setting is the claim's tenant_identifier. A blank tenant is
+    # unset. with_tenant restores the caller's context on the way out.
     def enforce_system_of_record!
-      system = BillingSystemSetting.system_of_record_for(
-        facility_identifier: facility_identifier,
-        visit_type: nil,
-        on: service_date
-      )
+      system = system_of_record_for_claim
       return if system == :corvid
 
       raise SystemOfRecordRefused, refusal_reason_for(system)
+    end
+
+    def system_of_record_for_claim
+      tenant = tenant_identifier
+      return :unknown if tenant.blank?
+
+      Corvid::TenantContext.with_tenant(tenant) do
+        BillingSystemSetting.system_of_record_for(
+          facility_identifier: facility_identifier,
+          visit_type: nil,
+          on: service_date,
+          tenant_identifier: tenant
+        )
+      end
     end
 
     def refusal_reason_for(system)

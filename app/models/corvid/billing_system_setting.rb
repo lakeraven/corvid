@@ -25,12 +25,20 @@ module Corvid
       # only when every applicable visit-type row names that same
       # system. A disagreement is unknown: an untyped claim might be
       # the visit the other system still bills. No row, a blank
-      # facility, or a value that is not a Date is unknown.
-      def system_of_record_for(facility_identifier:, visit_type:, on:)
+      # facility, a blank tenant, or a value that is not a Date is
+      # unknown. The query filters tenant_identifier itself, so the
+      # answer stays that tenant's rows when the thread context differs.
+      def system_of_record_for(
+        facility_identifier:,
+        visit_type:,
+        on:,
+        tenant_identifier: Corvid::TenantContext.current_tenant_identifier
+      )
         return :unknown unless on.instance_of?(Date)
         return :unknown if facility_identifier.blank?
+        return :unknown if tenant_identifier.blank?
 
-        rows = applicable_on(facility_identifier, on)
+        rows = applicable_on(facility_identifier, on, tenant_identifier)
         return system_for_untyped(rows) if visit_type.nil?
 
         system_for_visit(rows, visit_type)
@@ -38,8 +46,11 @@ module Corvid
 
       private
 
-      def applicable_on(facility_identifier, on)
-        where(facility_identifier: facility_identifier)
+      # unscoped so TenantScoped's default scope cannot substitute the
+      # thread tenant for the tenant this call named.
+      def applicable_on(facility_identifier, on, tenant_identifier)
+        unscoped.where(tenant_identifier: tenant_identifier)
+          .where(facility_identifier: facility_identifier)
           .where(effective_on: ..on)
           .where("expires_on IS NULL OR expires_on >= ?", on)
           .to_a

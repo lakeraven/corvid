@@ -17,7 +17,14 @@ class CreateCorvidBillingSystemSettings < ActiveRecord::Migration[8.1]
   SQL
 
   def change
-    enable_extension "btree_gist"
+    # Enabling is idempotent. Rollback leaves the extension in place:
+    # DROP EXTENSION fails when another object depends on it, and would
+    # remove an extension the host database may already have enabled.
+    reversible do |dir|
+      dir.up do
+        enable_extension "btree_gist" unless extension_enabled?("btree_gist")
+      end
+    end
 
     create_table :corvid_billing_system_settings do |t|
       t.string :tenant_identifier, null: false
