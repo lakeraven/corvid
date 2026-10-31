@@ -8,6 +8,7 @@ class Corvid::PayerAuthorizationRequestTest < ActiveSupport::TestCase
   TENANT = "tnt_test"
   OTHER_TENANT = "tnt_other"
   FACILITY = "fac_a"
+  FACILITY_B = "fac_b"
   PAYER_A = "payer_a"
   PAYER_B = "payer_b"
   SIGNOFF = "pr_signoff_001"
@@ -149,6 +150,42 @@ class Corvid::PayerAuthorizationRequestTest < ActiveSupport::TestCase
       request = create_request(payer_identifier: PAYER_B)
       request.submit!(submitted_by_identifier: SIGNOFF, at: Time.utc(2026, 3, 2, 10, 0, 0))
       assert_nil request.follow_up_due_at
+    end
+  end
+
+  test "follow_up_due_at uses per-payer turnaround lookup only for configured payers" do
+    Corvid.configure { |c| c.payer_authorization_turnarounds = { PAYER_A => 2.days } }
+    submitted_at = Time.utc(2026, 4, 1, 12, 0, 0)
+
+    with_tenant(TENANT) do
+      request_b = create_request(payer_identifier: PAYER_B)
+      request_b.submit!(submitted_by_identifier: SIGNOFF, at: submitted_at)
+      assert_nil request_b.follow_up_due_at
+      refute_includes Corvid::PayerAuthorizationRequest.overdue(as_of: submitted_at + 1.year), request_b
+
+      request_a = create_request(payer_identifier: PAYER_A)
+      request_a.submit!(submitted_by_identifier: SIGNOFF, at: submitted_at)
+      assert_equal submitted_at + 2.days, request_a.follow_up_due_at
+    end
+  end
+
+  test "follow_up_due_at from submit! is computed in UTC regardless of Time.zone" do
+    Corvid.configure { |c| c.payer_authorization_turnarounds = { PAYER_A => 1.day } }
+    submitted_at = Time.utc(2026, 3, 8, 4)
+    expected_due = Time.utc(2026, 3, 9, 4)
+
+    with_tenant(TENANT) do
+      Time.use_zone("America/New_York") do
+        request = create_request(payer_identifier: PAYER_A)
+        request.submit!(submitted_by_identifier: SIGNOFF, at: submitted_at)
+        assert_equal expected_due, request.follow_up_due_at
+      end
+
+      Time.use_zone("UTC") do
+        request = create_request(payer_identifier: PAYER_A)
+        request.submit!(submitted_by_identifier: SIGNOFF, at: submitted_at)
+        assert_equal expected_due, request.follow_up_due_at
+      end
     end
   end
 
@@ -378,6 +415,36 @@ class Corvid::PayerAuthorizationRequestTest < ActiveSupport::TestCase
     end
   end
 
+  test "referral consistency validates current prc_referral_id not a stale association" do
+    with_tenant(TENANT) do
+      referral_a = create_referral(facility_identifier: FACILITY)
+      referral_b = create_referral(facility_identifier: FACILITY_B)
+      request = create_request(prc_referral: referral_a, facility_identifier: FACILITY)
+      assert_equal referral_a.id, request.reload.prc_referral_id
+
+      request.prc_referral_id = referral_b.id
+      refute request.valid?
+      assert request.errors[:prc_referral].present? || request.errors[:facility_identifier].present?
+      assert_raises(ActiveRecord::RecordInvalid) { request.save! }
+      assert_equal referral_a.id, request.reload.prc_referral_id
+    end
+
+    other_referral = nil
+    with_tenant(OTHER_TENANT) do
+      other_referral = create_referral
+    end
+
+    with_tenant(TENANT) do
+      referral_a = create_referral(facility_identifier: FACILITY)
+      request = create_request(prc_referral: referral_a, facility_identifier: FACILITY)
+      request.prc_referral_id = other_referral.id
+
+      error = assert_raises(ActiveRecord::RecordInvalid) { request.save! }
+      assert error.record.errors[:prc_referral].present?
+      assert_equal referral_a.id, request.reload.prc_referral_id
+    end
+  end
+
   test "facility_identifier must match linked referral when request facility is nil" do
     with_tenant(TENANT) do
       referral = create_referral(facility_identifier: FACILITY)
@@ -500,11 +567,49 @@ class Corvid::PayerAuthorizationRequestTest < ActiveSupport::TestCase
     end
   end
 
-  test "submission evidence is immutable after the payer was asked on submitted pended and denied rows" do
+  test "submission evidence is immutable after the payer was asked on submitted pended denied and cancelled after submission rows" do
     with_tenant(TENANT) do
       %w[submitted pended denied].each do |status|
         assert_submission_evidence_immutable(request_in(status))
       end
+
+      cancelled_after_submission = create_request
+      cancelled_after_submission.submit!(submitted_by_identifier: SIGNOFF, at: Time.utc(2026, 3, 1, 9, 0, 0))
+      cancelled_after_submission.cancel!
+      assert_submission_evidence_immutable(cancelled_after_submission.reload)
+    end
+  end
+
+  test "payer_identifier and channel are locked after the payer was asked on submitted pended approved and cancelled after submission" do
+    Corvid.configure { |c| c.payer_authorization_turnarounds = { PAYER_A => 2.days, PAYER_B => 30.days } }
+    submitted_at = Time.utc(2026, 3, 1, 10, 0, 0)
+
+    with_tenant(TENANT) do
+      fixtures = [
+        request_in("submitted"),
+        request_in("pended"),
+        request_in("approved"),
+        begin
+          request = create_request(payer_identifier: PAYER_A)
+          request.submit!(submitted_by_identifier: SIGNOFF, at: submitted_at)
+          request.cancel!
+          request.reload
+        end
+      ]
+
+      fixtures.each do |request|
+        assert_payer_identifier_and_channel_immutable(request)
+      end
+
+      request = create_request(payer_identifier: PAYER_A)
+      request.submit!(submitted_by_identifier: SIGNOFF, at: submitted_at)
+      expected_due = submitted_at + 2.days
+      assert_equal expected_due, request.follow_up_due_at
+
+      copy = Corvid::PayerAuthorizationRequest.find(request.id)
+      assert_raises(ActiveRecord::RecordInvalid) { copy.update!(payer_identifier: PAYER_B) }
+      assert_equal PAYER_A, request.reload.payer_identifier
+      assert_equal expected_due, request.follow_up_due_at
     end
   end
 
@@ -516,6 +621,60 @@ class Corvid::PayerAuthorizationRequestTest < ActiveSupport::TestCase
       cancelled_after_approval = request_in("approved")
       cancelled_after_approval.cancel!
       assert_approval_evidence_immutable(cancelled_after_approval.reload)
+    end
+  end
+
+  test "approval evidence cannot be cleared or extended after approve then cancel" do
+    with_tenant(TENANT) do
+      request = create_request
+      request.submit!(submitted_by_identifier: SIGNOFF, at: Time.utc(2026, 3, 1, 9, 0, 0))
+      request.approve!(**approval_kwargs)
+      baseline = request.attributes.slice(
+        "payer_authorization_identifier", "approved_from", "approved_to", "approved_units"
+      )
+      request.cancel!
+
+      copy = Corvid::PayerAuthorizationRequest.find(request.id)
+      refute copy.update(payer_authorization_identifier: nil, approved_from: nil, approved_to: nil)
+      assert_equal baseline, request.reload.attributes.slice(
+        "payer_authorization_identifier", "approved_from", "approved_to", "approved_units"
+      )
+
+      copy_later = Corvid::PayerAuthorizationRequest.find(request.id)
+      refute copy_later.update(approved_to: Date.new(2026, 12, 31))
+      assert_equal baseline, request.reload.attributes.slice(
+        "payer_authorization_identifier", "approved_from", "approved_to", "approved_units"
+      )
+    end
+  end
+
+  test "cancelled from drafted cannot receive submission or approval evidence via update" do
+    with_tenant(TENANT) do
+      request = create_request
+      request.cancel!
+      assert_equal "cancelled", request.status
+      assert_nil request.submitted_at
+
+      copy = Corvid::PayerAuthorizationRequest.find(request.id)
+      assert_raises(ActiveRecord::RecordInvalid) do
+        copy.update!(
+          submitted_at: Time.utc(2026, 5, 1, 12, 0, 0),
+          submitted_by_identifier: SIGNOFF,
+          follow_up_due_at: 1.hour.ago
+        )
+      end
+      assert_nil request.reload.submitted_at
+      assert_nil request.submitted_by_identifier
+
+      copy_approval = Corvid::PayerAuthorizationRequest.find(request.id)
+      assert_raises(ActiveRecord::RecordInvalid) do
+        copy_approval.update!(
+          payer_authorization_identifier: "PAUTH-CANCEL-DRAFT",
+          approved_from: Date.new(2026, 4, 1),
+          approved_to: Date.new(2026, 4, 30)
+        )
+      end
+      refute request.reload.payer_authorization_identifier.present?
     end
   end
 
@@ -680,12 +839,36 @@ class Corvid::PayerAuthorizationRequestTest < ActiveSupport::TestCase
   def assert_submission_evidence_immutable(request)
     baseline = request.attributes.slice("submitted_at", "submitted_by_identifier", "follow_up_due_at")
     copy = Corvid::PayerAuthorizationRequest.find(request.id)
-    copy.submitted_at = baseline.fetch("submitted_at") + 1.hour if baseline.fetch("submitted_at")
-    copy.submitted_by_identifier = "pr_other_signoff"
-    copy.follow_up_due_at = Time.utc(2099, 1, 1, 12, 0, 0)
+    other_submitted_at = baseline.fetch("submitted_at") ? baseline.fetch("submitted_at") + 1.hour : Time.utc(2026, 6, 1, 12, 0, 0)
+    copy.submitted_at = other_submitted_at
+    copy.submitted_by_identifier = "pr_other"
 
-    assert_raises(ActiveRecord::RecordInvalid) { copy.save! }
+    assert_raises(ActiveRecord::RecordInvalid) { copy.update!(submitted_at: other_submitted_at, submitted_by_identifier: "pr_other") }
     assert_equal baseline, request.reload.attributes.slice("submitted_at", "submitted_by_identifier", "follow_up_due_at")
+
+    copy_mutate = Corvid::PayerAuthorizationRequest.find(request.id)
+    copy_mutate.submitted_at = other_submitted_at
+    copy_mutate.submitted_by_identifier = "pr_other"
+    copy_mutate.follow_up_due_at = Time.utc(2099, 1, 1, 12, 0, 0)
+
+    assert_raises(ActiveRecord::RecordInvalid) { copy_mutate.save! }
+    assert_equal baseline, request.reload.attributes.slice("submitted_at", "submitted_by_identifier", "follow_up_due_at")
+  end
+
+  def assert_payer_identifier_and_channel_immutable(request)
+    baseline_payer = request.payer_identifier
+    baseline_channel = request.channel
+    baseline_due = request.follow_up_due_at
+
+    copy_payer = Corvid::PayerAuthorizationRequest.find(request.id)
+    assert_raises(ActiveRecord::RecordInvalid) { copy_payer.update!(payer_identifier: PAYER_B) }
+    assert_equal baseline_payer, request.reload.payer_identifier
+    assert_equal baseline_due, request.follow_up_due_at
+
+    copy_channel = Corvid::PayerAuthorizationRequest.find(request.id)
+    assert_raises(ActiveRecord::RecordInvalid) { copy_channel.update!(channel: "portal") }
+    assert_equal baseline_channel, request.reload.channel
+    assert_equal baseline_due, request.follow_up_due_at
   end
 
   def assert_approval_evidence_immutable(request)
