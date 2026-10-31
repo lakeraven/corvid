@@ -44,6 +44,29 @@ module Corvid
 
     belongs_to :prc_referral, class_name: "Corvid::PrcReferral", optional: true
 
+    # PostgreSQL reports an integer default as text. The column's default
+    # is the integer declared in the schema.
+    class << self
+      private
+
+      def load_schema!
+        super
+        cast_lock_version_default
+      end
+
+      def cast_lock_version_default
+        column = @columns_hash["lock_version"]
+        return if column.nil? || !column.default.is_a?(String)
+
+        casted = column.fetch_cast_type(connection).deserialize(column.default)
+        return if casted == column.default
+
+        replacement = column.dup
+        replacement.instance_variable_set(:@default, casted)
+        @columns_hash = @columns_hash.merge("lock_version" => replacement.freeze).freeze
+      end
+    end
+
     validates :payer_identifier, presence: true
     validates :channel, inclusion: { in: CHANNELS }
     validates :status, inclusion: { in: STATUSES }
@@ -58,7 +81,13 @@ module Corvid
 
     # Follow-up is only open while the payer has not decided. Due at as_of
     # counts; a later timestamp does not. Rows with no timer are absent.
+    # as_of must be a Time, a DateTime, or a TimeWithZone. A Date is
+    # midnight and would move the boundary.
     scope :overdue, ->(as_of:) {
+      unless as_of.is_a?(Time) || as_of.is_a?(DateTime)
+        raise ArgumentError, "as_of must be a Time, DateTime, or ActiveSupport::TimeWithZone"
+      end
+
       where(status: AWAITING_DECISION_STATUSES).where(follow_up_due_at: ..as_of)
     }
 
@@ -113,12 +142,21 @@ module Corvid
       apply_transition!("cancelled")
     end
 
+    # update_columns skips validations and hits the composite foreign key
+    # directly. A violation aborts the surrounding PostgreSQL transaction,
+    # so a caller that rescues it cannot keep using the connection. Roll
+    # the write back to a savepoint; the row stays as it was.
+    def update_columns(attributes)
+      self.class.transaction(requires_new: true) { super }
+    end
+
     private
 
     # Lock the row, then decide. Two callers can both read "submitted"
     # and both try to write; the second must observe the first decision
     # and refuse. Raising rolls the savepoint back, so a failure leaves
-    # the stored row as it was.
+    # the stored row as it was. Rollback keeps the attempted assignment
+    # in memory, so restore and reload until the object matches the row.
     def apply_transition!(to_status)
       with_lock do
         from_status = status
@@ -131,6 +169,14 @@ module Corvid
         save!
         self
       end
+    rescue StandardError
+      restore_failed_transition!
+      raise
+    end
+
+    def restore_failed_transition!
+      restore_attributes
+      reload if persisted?
     end
 
     def follow_up_due_at_for(submitted_at)
@@ -207,23 +253,36 @@ module Corvid
     end
 
     # The tenant scope would hide another tenant's referral, and a hidden
-    # row looks like "no referral". Read the row by id with the scope off
-    # and compare tenant_identifier. When that referral names a facility,
-    # this request must name the same one.
+    # row looks like "no referral". An assigned referral, including one
+    # that has not been saved, is read from memory so it is not autosaved
+    # before this check. Otherwise read the row by id with the scope off.
+    # When that referral names a facility, this request must name the same
+    # one, including when this request's facility is nil.
     def prc_referral_in_same_tenant
-      return if prc_referral_id.blank?
+      return unless linked_referral?
 
-      found = Corvid::PrcReferral.unscoped.where(id: prc_referral_id).pick(:tenant_identifier, :facility_identifier)
-      if found.nil? || found.first != tenant_identifier
+      tenant, facility = linked_referral_tenant_and_facility
+      if tenant != tenant_identifier
         errors.add(:prc_referral, "must belong to the same tenant")
         return
       end
 
-      facility = found.last
-      return if facility.blank?
-      return if facility == facility_identifier
+      return if facility.blank? || facility == facility_identifier
 
       errors.add(:facility_identifier, "must match the linked referral")
+    end
+
+    def linked_referral?
+      association(:prc_referral).target.present? || prc_referral_id.present?
+    end
+
+    def linked_referral_tenant_and_facility
+      referral = association(:prc_referral).target
+      if referral
+        [ referral.tenant_identifier, referral.facility_identifier ]
+      else
+        Corvid::PrcReferral.unscoped.where(id: prc_referral_id).pick(:tenant_identifier, :facility_identifier)
+      end
     end
   end
 end

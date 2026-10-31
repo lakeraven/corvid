@@ -6,7 +6,9 @@
 # cancelled without a sign-off; every status that means the payer was
 # asked requires submitted_at and a non-blank sign-off. An approval
 # requires the payer's authorization id and a real date range. Empty
-# strings are not identifiers (ADR 0001, ADR 0003).
+# strings are not identifiers (ADR 0001, ADR 0003). lock_version is the
+# optimistic lock. The referral link is a composite foreign key on
+# (prc_referral_id, tenant_identifier); a null referral id stays allowed.
 class CreateCorvidPayerAuthorizationRequests < ActiveRecord::Migration[8.1]
   CHANNELS = %w[pas x12_278 portal fax].freeze
   STATUSES = %w[drafted submitted pended approved partially_approved denied cancelled].freeze
@@ -20,6 +22,7 @@ class CreateCorvidPayerAuthorizationRequests < ActiveRecord::Migration[8.1]
     create_payer_authorization_requests
     add_payer_authorization_indexes
     add_payer_authorization_checks
+    add_prc_referral_tenant_foreign_key
   end
 
   private
@@ -28,7 +31,7 @@ class CreateCorvidPayerAuthorizationRequests < ActiveRecord::Migration[8.1]
     create_table :corvid_payer_authorization_requests do |t|
       t.string :tenant_identifier, null: false
       t.string :facility_identifier
-      t.references :prc_referral, foreign_key: { to_table: :corvid_prc_referrals }
+      t.references :prc_referral
       t.string :payer_identifier, null: false
       t.string :channel, null: false
       t.string :status, null: false, default: "drafted"
@@ -39,6 +42,8 @@ class CreateCorvidPayerAuthorizationRequests < ActiveRecord::Migration[8.1]
       t.integer :approved_units
       t.date :approved_from
       t.date :approved_to
+      # Stale in-memory rows must not overwrite a decision already saved.
+      t.integer :lock_version, null: false, default: 0
       t.timestamps
     end
   end
@@ -52,6 +57,18 @@ class CreateCorvidPayerAuthorizationRequests < ActiveRecord::Migration[8.1]
       name: "idx_corvid_payer_auth_requests_tenant_follow_up"
     add_index :corvid_payer_authorization_requests, [ :tenant_identifier, :approved_to ],
       name: "idx_corvid_payer_auth_requests_tenant_approved_to"
+  end
+
+  # id is already unique. This index exists so the foreign key can name
+  # both id and tenant_identifier. MATCH SIMPLE still allows a null
+  # prc_referral_id.
+  def add_prc_referral_tenant_foreign_key
+    add_index :corvid_prc_referrals, [ :id, :tenant_identifier ],
+      unique: true,
+      name: "idx_corvid_prc_referrals_id_tenant"
+    add_foreign_key :corvid_payer_authorization_requests, :corvid_prc_referrals,
+      column: [ :prc_referral_id, :tenant_identifier ],
+      primary_key: [ :id, :tenant_identifier ]
   end
 
   def add_payer_authorization_checks

@@ -503,6 +503,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_31_000003) do
     t.integer "approved_units"
     t.date "approved_from"
     t.date "approved_to"
+    t.integer "lock_version", default: 0, null: false
     t.datetime "created_at", null: false
     t.datetime "updated_at", null: false
     t.index ["prc_referral_id"], name: "index_corvid_payer_authorization_requests_on_prc_referral_id"
@@ -652,6 +653,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_31_000003) do
     t.string "management_rejected_by_identifier"
     t.string "management_rejection_reason_token"
     t.index ["case_id"], name: "index_corvid_prc_referrals_on_case_id"
+    t.index ["id", "tenant_identifier"], name: "idx_corvid_prc_referrals_id_tenant", unique: true
     t.index ["tenant_identifier", "facility_identifier", "referral_identifier"], name: "idx_corvid_prc_referrals_tenant_referral", unique: true
     t.index ["tenant_identifier", "status"], name: "index_corvid_prc_referrals_on_tenant_identifier_and_status"
     t.check_constraint "priority_system IS NULL OR priority_system::text = 'corvid_v1'::text", name: "corvid_prc_referrals_priority_system_check"
@@ -737,7 +739,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_31_000003) do
   add_foreign_key "corvid_fmap_determinations", "corvid_fmap_determinations", column: "superseded_by_id"
   add_foreign_key "corvid_fmap_determinations", "corvid_fmap_rules", column: "best_available_rule_key", primary_key: "rule_key"
   add_foreign_key "corvid_fmap_determinations", "corvid_fmap_rules", column: "rule_key", primary_key: "rule_key"
-  add_foreign_key "corvid_payer_authorization_requests", "corvid_prc_referrals", column: "prc_referral_id"
+  add_foreign_key "corvid_payer_authorization_requests", "corvid_prc_referrals", column: ["prc_referral_id", "tenant_identifier"], primary_key: ["id", "tenant_identifier"]
   add_foreign_key "corvid_prc_overpayment_analyses", "corvid_prc_obligations", column: "prc_obligation_id"
   add_foreign_key "corvid_prc_payments", "corvid_prc_obligations", column: "prc_obligation_id"
   add_foreign_key "corvid_prc_referrals", "corvid_cases", column: "case_id"
