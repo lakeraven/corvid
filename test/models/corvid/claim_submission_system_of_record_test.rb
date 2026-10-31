@@ -4,7 +4,9 @@ require "test_helper"
 
 class Corvid::ClaimSubmissionSystemOfRecordTest < ActiveSupport::TestCase
   TENANT = "tnt_test"
+  OTHER_TENANT = "tnt_other"
   FACILITY = "fac_a"
+  SERVICE_DATE = Date.new(2025, 4, 10)
 
   NOT_SYSTEM_OF_RECORD_MESSAGE =
     "This claim cannot be submitted because Corvid is not the billing system of record."
@@ -163,7 +165,109 @@ class Corvid::ClaimSubmissionSystemOfRecordTest < ActiveSupport::TestCase
     end
   end
 
+  test "submit! ignores another tenant's corvid setting" do
+    record_system_of_record(
+      facility_identifier: FACILITY,
+      tenant_identifier: OTHER_TENANT,
+      system_of_record: "corvid"
+    )
+    claim = with_tenant(TENANT) do
+      create_draft_claim(facility: FACILITY, service_date: SERVICE_DATE)
+    end
+    before = claim_snapshot(claim.id)
+
+    with_tenant(OTHER_TENANT) do
+      claim_in_context = Corvid::ClaimSubmission.unscoped.find(claim.id)
+      error = assert_raises(Corvid::ClaimSubmission::SystemOfRecordRefused) { claim_in_context.submit! }
+
+      assert_equal :system_of_record_unset, error.reason
+    end
+
+    assert_equal 0, @submit_claim_calls.size
+    assert_equal before, claim_snapshot(claim.id)
+  end
+
+  test "submit! uses the claim's own ehr setting even inside another tenant's context" do
+    record_system_of_record(
+      facility_identifier: FACILITY,
+      tenant_identifier: TENANT,
+      system_of_record: "ehr"
+    )
+    record_system_of_record(
+      facility_identifier: FACILITY,
+      tenant_identifier: OTHER_TENANT,
+      system_of_record: "corvid"
+    )
+    claim = with_tenant(TENANT) do
+      create_draft_claim(facility: FACILITY, service_date: SERVICE_DATE)
+    end
+
+    with_tenant(OTHER_TENANT) do
+      claim_in_context = Corvid::ClaimSubmission.unscoped.find(claim.id)
+      error = assert_raises(Corvid::ClaimSubmission::SystemOfRecordRefused) { claim_in_context.submit! }
+
+      assert_equal :not_system_of_record, error.reason
+    end
+
+    assert_equal 0, @submit_claim_calls.size
+  end
+
+  test "submit! uses the claim's own corvid setting even inside another tenant's context" do
+    record_system_of_record(
+      facility_identifier: FACILITY,
+      tenant_identifier: TENANT,
+      system_of_record: "corvid"
+    )
+    record_system_of_record(
+      facility_identifier: FACILITY,
+      tenant_identifier: OTHER_TENANT,
+      system_of_record: "ehr"
+    )
+    claim = with_tenant(TENANT) do
+      create_draft_claim(facility: FACILITY, service_date: SERVICE_DATE)
+    end
+
+    with_tenant(OTHER_TENANT) do
+      claim_in_context = Corvid::ClaimSubmission.unscoped.find(claim.id)
+      claim_in_context.submit!
+    end
+
+    assert_equal 1, @submit_claim_calls.size
+    submitted = Corvid::ClaimSubmission.unscoped.find(claim.id)
+    assert_equal "submitted", submitted.status
+    assert_equal OTHER_TENANT, Corvid::TenantContext.current_tenant_identifier
+  end
+
+  test "submit! with no tenant context still reads the claim's own setting" do
+    record_system_of_record(
+      facility_identifier: FACILITY,
+      tenant_identifier: TENANT,
+      system_of_record: "ehr"
+    )
+    record_system_of_record(
+      facility_identifier: FACILITY,
+      tenant_identifier: OTHER_TENANT,
+      system_of_record: "corvid"
+    )
+    claim = with_tenant(TENANT) do
+      create_draft_claim(facility: FACILITY, service_date: SERVICE_DATE)
+    end
+
+    Corvid::TenantContext.reset!
+    claim_without_context = Corvid::ClaimSubmission.unscoped.find(claim.id)
+    error = assert_raises(Corvid::ClaimSubmission::SystemOfRecordRefused) { claim_without_context.submit! }
+
+    assert_equal :not_system_of_record, error.reason
+    assert_equal 0, @submit_claim_calls.size
+  end
+
   private
+
+  def claim_snapshot(claim_id)
+    Corvid::ClaimSubmission.unscoped.find(claim_id).attributes.slice(
+      "status", "claim_identifier", "submitted_at"
+    )
+  end
 
   def create_draft_claim(facility:, service_date:, **attrs)
     Corvid::ClaimSubmission.create!(
