@@ -36,8 +36,12 @@ class Corvid::Pas::RequestBundleTest < Minitest::Test
     required_entry_element: "Each Bundle entry must include fullUrl and resource.",
     structure_first_entry: "The first Bundle entry must be a Claim resource.",
     duplicate: "The same resource must not appear twice in the Bundle.",
-    not_found: "A reference in the Bundle could not be resolved."
+    not_found: "A reference in the Bundle could not be resolved.",
+    invariant_full_url: "A Bundle entry fullUrl must match its resource type and id.",
+    nesting: "A Bundle entry is nested too deeply to resolve."
   }.freeze
+
+  FHIR_ELEMENT_NAME = /\A[a-z][A-Za-z0-9]*\z/
 
   STATIC_PHI_FORBIDDEN = [
     "TEST",
@@ -502,6 +506,334 @@ class Corvid::Pas::RequestBundleTest < Minitest::Test
     assert_equal baseline.references.keys.sort, result.references.keys.sort
   end
 
+  def test_rejects_unresolved_reference_with_expression_stopped_before_non_fhir_object_key
+    bundle = deep_copy(load_fixture("request_bundle_urn_uuid"))
+    claim = bundle["entry"][0]["resource"]
+    claim["Jane Doe 1960-02-03"] = {
+      "reference" => "urn:uuid:ffffffff-ffff-4fff-8fff-ffffffffffff"
+    }
+
+    rejected = Corvid::Pas::RequestBundle.parse(bundle)
+    assert_rejection(
+      rejected,
+      code: "not-found",
+      expression: "Bundle.entry[0].resource",
+      diagnostics: REJECTION_DIAGNOSTICS.fetch(:not_found),
+      source_bundle: bundle
+    )
+
+    outcome_json = JSON.generate(rejected.operation_outcome)
+    refute_includes outcome_json, "Jane"
+    refute_includes outcome_json, "Doe"
+    refute_includes outcome_json, "1960"
+  end
+
+  def test_rejects_unresolved_reference_with_expression_stopped_before_non_fhir_coverage_key
+    bundle = deep_copy(load_fixture("request_bundle_urn_uuid"))
+    claim = bundle["entry"][0]["resource"]
+    claim["insurance"] = [
+      {
+        "sequence" => 1,
+        "focal" => true,
+        "coverage" => {
+          "PATIENT_001" => {
+            "reference" => "urn:uuid:ffffffff-ffff-4fff-8fff-ffffffffffff"
+          }
+        }
+      }
+    ]
+
+    assert_rejection(
+      Corvid::Pas::RequestBundle.parse(bundle),
+      code: "not-found",
+      expression: "Bundle.entry[0].resource.insurance[0].coverage",
+      diagnostics: REJECTION_DIAGNOSTICS.fetch(:not_found),
+      source_bundle: bundle
+    )
+  end
+
+  def test_rejects_invalid_encoding_in_object_key_without_raising
+    bundle = deep_copy(load_fixture("request_bundle_urn_uuid"))
+    claim = bundle["entry"][0]["resource"]
+    invalid_key = "\xFF".b
+    claim["x"] = {
+      invalid_key => {
+        "reference" => "urn:uuid:ffffffff-ffff-4fff-8fff-ffffffffffff"
+      }
+    }
+
+    assert_rejection(
+      Corvid::Pas::RequestBundle.parse(bundle),
+      code: "not-found",
+      expression: "Bundle.entry[0].resource.x",
+      diagnostics: REJECTION_DIAGNOSTICS.fetch(:not_found),
+      source_bundle: bundle
+    )
+  end
+
+  def test_rejects_invalid_encoding_in_reference_string_without_raising
+    bundle = deep_copy(load_fixture("request_bundle_urn_uuid"))
+    bundle["entry"][0]["resource"]["patient"] = { "reference" => "\xFF".b }
+
+    assert_rejection(
+      Corvid::Pas::RequestBundle.parse(bundle),
+      code: "not-found",
+      expression: "Bundle.entry[0].resource.patient.reference",
+      diagnostics: REJECTION_DIAGNOSTICS.fetch(:not_found),
+      source_bundle: bundle
+    )
+  end
+
+  def test_rejects_restful_full_url_when_entry_resource_type_does_not_match
+    bundle = deep_copy(load_fixture("request_bundle_client_urls"))
+    bundle["entry"][1]["resource"]["resourceType"] = "Organization"
+
+    assert_rejection(
+      Corvid::Pas::RequestBundle.parse(bundle),
+      code: "invariant",
+      expression: "Bundle.entry[1].fullUrl",
+      diagnostics: REJECTION_DIAGNOSTICS.fetch(:invariant_full_url),
+      source_bundle: bundle
+    )
+  end
+
+  def test_rejects_restful_full_url_when_entry_resource_id_does_not_match
+    bundle = deep_copy(load_fixture("request_bundle_client_urls"))
+    bundle["entry"][1]["resource"]["id"] = "pat-other"
+
+    assert_rejection(
+      Corvid::Pas::RequestBundle.parse(bundle),
+      code: "invariant",
+      expression: "Bundle.entry[1].fullUrl",
+      diagnostics: REJECTION_DIAGNOSTICS.fetch(:invariant_full_url),
+      source_bundle: bundle
+    )
+  end
+
+  def test_rejects_duplicate_contained_resource_ids_within_claim
+    bundle = deep_copy(load_fixture("request_bundle_urn_uuid"))
+    claim = bundle["entry"][0]["resource"]
+    claim["contained"] = [
+      { "resourceType" => "Practitioner", "id" => "a" },
+      { "resourceType" => "Organization", "id" => "a" }
+    ]
+    claim["careTeam"] = [
+      { "sequence" => 1, "provider" => { "reference" => "#a" } }
+    ]
+
+    assert_rejection(
+      Corvid::Pas::RequestBundle.parse(bundle),
+      code: "duplicate",
+      expression: "Bundle.entry[0].resource.contained[1]",
+      diagnostics: REJECTION_DIAGNOSTICS.fetch(:duplicate),
+      source_bundle: bundle
+    )
+  end
+
+  def test_rejects_claim_entry_when_reference_nesting_exceeds_limit
+    bundle = deep_copy(load_fixture("request_bundle_urn_uuid"))
+    missing = "urn:uuid:ffffffff-ffff-4fff-8fff-ffffffffffff"
+    bundle["entry"][0]["resource"]["patient"] = deep_reference_node(70, missing)
+
+    assert_rejection(
+      Corvid::Pas::RequestBundle.parse(bundle),
+      code: "structure",
+      expression: "Bundle.entry[0]",
+      diagnostics: REJECTION_DIAGNOSTICS.fetch(:nesting),
+      source_bundle: bundle
+    )
+  end
+
+  def test_resolves_deeply_nested_reference_when_within_nesting_limit
+    bundle = deep_copy(load_fixture("request_bundle_urn_uuid"))
+    missing = "urn:uuid:ffffffff-ffff-4fff-8fff-ffffffffffff"
+    part_levels = 30
+    bundle["entry"][0]["resource"]["patient"] = plain_part_reference_nest(part_levels, missing)
+    assert_equal 32, json_containers_below_resource_to_reference(part_levels)
+
+    part_suffix = ".part" * part_levels
+    assert_rejection(
+      Corvid::Pas::RequestBundle.parse(bundle),
+      code: "not-found",
+      expression: "Bundle.entry[0].resource.patient#{part_suffix}.reference",
+      diagnostics: REJECTION_DIAGNOSTICS.fetch(:not_found),
+      source_bundle: bundle
+    )
+  end
+
+  def test_resolves_reference_when_nesting_is_at_json_container_limit
+    bundle = deep_copy(load_fixture("request_bundle_urn_uuid"))
+    missing = "urn:uuid:ffffffff-ffff-4fff-8fff-ffffffffffff"
+    part_levels = json_container_part_levels_for_limit(64)
+    bundle["entry"][0]["resource"]["patient"] = plain_part_reference_nest(part_levels, missing)
+    assert_equal 64, json_containers_below_resource_to_reference(part_levels)
+
+    part_suffix = ".part" * part_levels
+    assert_rejection(
+      Corvid::Pas::RequestBundle.parse(bundle),
+      code: "not-found",
+      expression: "Bundle.entry[0].resource.patient#{part_suffix}.reference",
+      diagnostics: REJECTION_DIAGNOSTICS.fetch(:not_found),
+      source_bundle: bundle
+    )
+  end
+
+  def test_rejects_reference_when_nesting_exceeds_json_container_limit_by_one
+    bundle = deep_copy(load_fixture("request_bundle_urn_uuid"))
+    missing = "urn:uuid:ffffffff-ffff-4fff-8fff-ffffffffffff"
+    part_levels = json_container_part_levels_for_limit(65)
+    bundle["entry"][0]["resource"]["patient"] = plain_part_reference_nest(part_levels, missing)
+    assert_equal 65, json_containers_below_resource_to_reference(part_levels)
+
+    assert_rejection(
+      Corvid::Pas::RequestBundle.parse(bundle),
+      code: "structure",
+      expression: "Bundle.entry[0]",
+      diagnostics: REJECTION_DIAGNOSTICS.fetch(:nesting),
+      source_bundle: bundle
+    )
+  end
+
+  def test_rejects_unresolved_reference_inside_claim_contained_resource
+    bundle = deep_copy(load_fixture("request_bundle_urn_uuid"))
+    claim = bundle["entry"][0]["resource"]
+    claim["contained"] = [
+      {
+        "resourceType" => "Practitioner",
+        "id" => "prac-inner-1",
+        "qualification" => [
+          {
+            "issuer" => {
+              "reference" => "urn:uuid:ffffffff-ffff-4fff-8fff-ffffffffffff"
+            }
+          }
+        ]
+      }
+    ]
+
+    assert_rejection(
+      Corvid::Pas::RequestBundle.parse(bundle),
+      code: "not-found",
+      expression: "Bundle.entry[0].resource.contained[0].qualification[0].issuer.reference",
+      diagnostics: REJECTION_DIAGNOSTICS.fetch(:not_found),
+      source_bundle: bundle
+    )
+  end
+
+  def test_resolves_reference_inside_claim_contained_resource_to_bundle_entry
+    bundle = deep_copy(load_fixture("request_bundle_urn_uuid"))
+    claim = bundle["entry"][0]["resource"]
+    claim["contained"] = [
+      {
+        "resourceType" => "Practitioner",
+        "id" => "prac-inner-1",
+        "qualification" => [
+          {
+            "issuer" => {
+              "reference" => URN_REFERENCE_KEYS[1]
+            }
+          }
+        ]
+      }
+    ]
+
+    result = parse_silently(bundle)
+
+    assert result.ok?
+    assert result.resources.any? { |r| r["resourceType"] == "Organization" && r["id"] == "org-clinic-urn-a" }
+  end
+
+  def test_contained_fragment_reference_does_not_resolve_against_other_entries_contained
+    bundle = deep_copy(load_fixture("request_bundle_urn_uuid"))
+    claim = bundle["entry"][0]["resource"]
+    claim["contained"] = [
+      { "resourceType" => "Practitioner", "id" => "x" }
+    ]
+    bundle["entry"][4]["resource"]["subscriber"] = { "reference" => "#x" }
+
+    rejected = Corvid::Pas::RequestBundle.parse(bundle)
+    refute rejected.ok?
+    assert_instance_of Corvid::Pas::RequestBundle::Rejected, rejected
+
+    issue = rejected.operation_outcome["issue"].first
+    assert_equal "not-found", issue["code"]
+    assert_equal [ "Bundle.entry[4].resource.subscriber.reference" ], issue["expression"]
+    assert_equal REJECTION_DIAGNOSTICS.fetch(:not_found), issue["diagnostics"]
+
+    outcome_json = JSON.generate(rejected.operation_outcome)
+    refute_includes outcome_json, "#x"
+    STATIC_PHI_FORBIDDEN.each do |fragment|
+      refute_includes outcome_json, fragment
+    end
+  end
+
+  def test_relative_type_id_does_not_resolve_when_entry_full_url_is_not_restful_or_urn_uuid
+    bundle = deep_copy(load_fixture("request_bundle_urn_uuid"))
+    bundle["entry"][0]["fullUrl"] = "urn:oid:2.16.840.1.113883.3.9999"
+    bundle["entry"][0]["resource"]["patient"]["reference"] = "Patient/pat-test-urn-1"
+
+    assert_rejection(
+      Corvid::Pas::RequestBundle.parse(bundle),
+      code: "not-found",
+      expression: "Bundle.entry[0].resource.patient.reference",
+      diagnostics: REJECTION_DIAGNOSTICS.fetch(:not_found),
+      source_bundle: bundle
+    )
+  end
+
+  def test_rejects_four_segment_reference_without_history_tail
+    bundle = deep_copy(load_fixture("request_bundle_client_urls"))
+    bundle["entry"][0]["resource"]["patient"]["reference"] = "Patient/pat-test-1/x/2"
+
+    assert_rejection(
+      Corvid::Pas::RequestBundle.parse(bundle),
+      code: "not-found",
+      expression: "Bundle.entry[0].resource.patient.reference",
+      diagnostics: REJECTION_DIAGNOSTICS.fetch(:not_found),
+      source_bundle: bundle
+    )
+  end
+
+  def test_parsed_result_deep_freezes_nested_reference_strings_and_resource_fields
+    result = parse_silently(load_fixture("request_bundle_urn_uuid"))
+
+    assert_raises(FrozenError) { result.claim["patient"]["reference"] = "x" }
+    assert_raises(FrozenError) { result.claim["insurance"][0]["coverage"]["reference"] << "x" }
+    assert_raises(FrozenError) { result.references.values.first["resourceType"] = "x" }
+    assert_raises(FrozenError) { result.resources.first["id"] = "x" }
+  end
+
+  def test_parse_succeeds_with_many_supporting_info_document_reference_entries
+    bundle = deep_copy(load_fixture("request_bundle_urn_uuid"))
+    claim = bundle["entry"][0]["resource"]
+    baseline = parse_silently(deep_copy(load_fixture("request_bundle_urn_uuid")))
+    baseline_resource_count = baseline.resources.size
+    extra_count = 3000
+    extra_supporting = []
+
+    extra_count.times do |index|
+      suffix = format("%012x", 0x1000 + index)
+      full_url = "urn:uuid:00000000-0000-4000-8000-#{suffix}"
+      doc_id = "doc-scale-#{index}"
+      bundle["entry"] << {
+        "fullUrl" => full_url,
+        "resource" => {
+          "resourceType" => "DocumentReference",
+          "id" => doc_id,
+          "status" => "current"
+        }
+      }
+      extra_supporting << { "valueReference" => { "reference" => full_url } }
+    end
+
+    claim["supportingInfo"] = claim["supportingInfo"] + extra_supporting
+
+    result = parse_silently(bundle)
+
+    assert result.ok?
+    assert_equal baseline_resource_count + extra_count, result.resources.size
+  end
+
   private
 
   def load_fixture(name)
@@ -543,9 +875,54 @@ class Corvid::Pas::RequestBundleTest < Minitest::Test
 
   def assert_operation_outcome_has_no_phi(rejected, source_bundle)
     json = JSON.generate(rejected.operation_outcome)
-    forbidden = STATIC_PHI_FORBIDDEN + bundle_sensitive_strings(source_bundle)
+    forbidden = STATIC_PHI_FORBIDDEN +
+                bundle_sensitive_strings(source_bundle) +
+                non_fhir_element_hash_keys(source_bundle)
     forbidden.uniq.each do |fragment|
       refute_includes json, fragment, "OperationOutcome leaked #{fragment.inspect}"
+    end
+  end
+
+  def deep_reference_node(levels, reference)
+    node = { "reference" => reference }
+    levels.times { node = { "extension" => [ node ] } }
+    node
+  end
+
+  # Plain Hash wrappers: patient.part…part.reference (no extension/array doubling).
+  def plain_part_reference_nest(part_levels, reference)
+    node = { "reference" => reference }
+    part_levels.times { node = { "part" => node } }
+    node
+  end
+
+  # Nesting limit counts JSON containers (each Hash or Array) below
+  # Bundle.entry[i].resource; the resource root is not counted. Path to a
+  # Reference under patient uses patient (1) + part_levels part Hashes +
+  # the Reference object's Hash (1).
+  def json_containers_below_resource_to_reference(part_levels)
+    1 + part_levels + 1
+  end
+
+  def json_container_part_levels_for_limit(container_limit)
+    container_limit - 2
+  end
+
+  def non_fhir_element_hash_keys(value)
+    keys = []
+    collect_non_fhir_element_hash_keys(value, keys)
+    keys
+  end
+
+  def collect_non_fhir_element_hash_keys(value, keys)
+    case value
+    when Hash
+      value.each_key do |key|
+        keys << key if key.is_a?(String) && !key.match?(FHIR_ELEMENT_NAME)
+        collect_non_fhir_element_hash_keys(value[key], keys)
+      end
+    when Array
+      value.each { |child| collect_non_fhir_element_hash_keys(child, keys) }
     end
   end
 
