@@ -156,6 +156,29 @@ class Corvid::ClaimOutcomeReportTest < ActiveSupport::TestCase
     assert_equal [ nil, nil, "fac_a", nil, "fac_b" ], rows.map(&:facility_identifier)
   end
 
+  test "rows sort payer before facility within a month" do
+    create_claim_submission(
+      tenant: TENANT, payer: "payer_b", facility: nil,
+      service_date: Date.new(2025, 4, 20), status: "paid", submitted_at: 1.day.ago,
+      patient: "pt_sort_payer_first"
+    )
+    create_claim_submission(
+      tenant: TENANT, payer: nil, facility: "fac_a",
+      service_date: Date.new(2025, 4, 5), status: "paid", submitted_at: 1.day.ago,
+      patient: "pt_sort_nil_payer"
+    )
+
+    april = Corvid::ClaimOutcomeReport.new(tenant_identifier: TENANT, date_range: FULL_YEAR).rows.select do |row|
+      row.month == Date.new(2025, 4, 1)
+    end
+
+    assert_equal 2, april.size
+    assert_nil april[0].payer_identifier
+    assert_equal "fac_a", april[0].facility_identifier
+    assert_equal "payer_b", april[1].payer_identifier
+    assert_nil april[1].facility_identifier
+  end
+
   test "row measures expose counts and rates without combining rejections and denials" do
     sent = { submitted_at: 2.days.ago }
     create_claim_submission(
@@ -442,6 +465,71 @@ class Corvid::ClaimOutcomeReportTest < ActiveSupport::TestCase
     assert_includes row.claim_ids(:adjudicated_claims), claim.id
   end
 
+  test "denial categories follow denied_at, not the current status" do
+    sent = { submitted_at: 2.days.ago }
+    paid_denied = create_claim_submission(
+      tenant: TENANT, payer: "payer_a", facility: "fac_a",
+      service_date: Date.new(2025, 5, 20), status: "paid",
+      denied_at: 3.days.ago, denial_reason_codes: [ "CO-50" ],
+      patient: "pt_cat_status_paid", **sent
+    )
+    appealed_denied = create_claim_submission(
+      tenant: TENANT, payer: "payer_a", facility: "fac_a",
+      service_date: Date.new(2025, 5, 21), status: "appealed",
+      denied_at: 1.day.ago, denial_reason_codes: [ "CO-16" ],
+      patient: "pt_cat_status_appealed", **sent
+    )
+
+    row = sole_row(
+      Corvid::ClaimOutcomeReport.new(tenant_identifier: TENANT, date_range: FULL_YEAR).rows
+    )
+
+    assert_equal 2, row.denied_claims
+    assert_equal(
+      { "medical_necessity_appeal" => 1, "missing_information" => 1 },
+      row.denials_by_category
+    )
+    assert_equal [ paid_denied.id ], row.claim_ids_for_denial_category("medical_necessity_appeal")
+    assert_equal [ appealed_denied.id ], row.claim_ids_for_denial_category("missing_information")
+    assert_equal row.denied_claims, row.denials_by_category.values.sum
+  end
+
+  test "denial category ids are sorted even when rows come back out of order" do
+    sent = { submitted_at: 2.days.ago }
+    claim_a = create_claim_submission(
+      tenant: TENANT, payer: "payer_a", facility: "fac_a",
+      service_date: Date.new(2025, 5, 10), status: "denied", denied_at: 1.day.ago,
+      denial_reason_codes: [ "CO-50" ], patient: "pt_heap_sort_a", **sent
+    )
+    claim_b = create_claim_submission(
+      tenant: TENANT, payer: "payer_a", facility: "fac_a",
+      service_date: Date.new(2025, 5, 11), status: "denied", denied_at: 1.day.ago,
+      denial_reason_codes: [ "CO-50" ], patient: "pt_heap_sort_b", **sent
+    )
+    claim_c = create_claim_submission(
+      tenant: TENANT, payer: "payer_a", facility: "fac_a",
+      service_date: Date.new(2025, 5, 12), status: "denied", denied_at: 1.day.ago,
+      denial_reason_codes: [ "CO-50" ], patient: "pt_heap_sort_c", **sent
+    )
+
+    with_tenant(TENANT) do
+      claim_a.update_columns(updated_at: 1.minute.from_now)
+    end
+
+    with_tenant(TENANT) do
+      heap_order = Corvid::ClaimSubmission.where(id: [ claim_a.id, claim_b.id, claim_c.id ]).pluck(:id)
+      skip "heap order matched id order" if heap_order == [ claim_a.id, claim_b.id, claim_c.id ].sort
+    end
+
+    row = sole_row(
+      Corvid::ClaimOutcomeReport.new(tenant_identifier: TENANT, date_range: FULL_YEAR).rows
+    )
+    sorted_ids = [ claim_a.id, claim_b.id, claim_c.id ].sort
+
+    assert_equal sorted_ids, row.claim_ids_for_denial_category("medical_necessity_appeal")
+    assert_equal sorted_ids, row.claim_ids(:denied_claims)
+  end
+
   test "denials_by_category maps codes uncoded and unmapped with drill-down ids" do
     medical = create_claim_submission(
       tenant: TENANT, payer: "payer_a", facility: "fac_a",
@@ -502,6 +590,13 @@ class Corvid::ClaimOutcomeReportTest < ActiveSupport::TestCase
       row.claim_ids_for_denial_category("missing_information")
     assert_equal [ unmapped.id ], row.claim_ids_for_denial_category("unmapped")
     assert_equal [ uncoded.id ], row.claim_ids_for_denial_category("uncoded")
+
+    assert_operator by_category.fetch("medical_necessity_appeal"), :>=, 3
+    by_category.each_key do |category|
+      ids = row.claim_ids_for_denial_category(category)
+      assert ids.frozen?, category
+      assert_equal ids.sort, ids, category
+    end
   end
 
   test "lower-case and padded RARCs are still remarks" do
@@ -700,6 +795,12 @@ class Corvid::ClaimOutcomeReportTest < ActiveSupport::TestCase
 
     table = CSV.parse(report.to_csv, headers: true)
     assert_equal rows.size, table.size
+
+    expected_denial_categories = rows.flat_map { |r| r.denials_by_category.keys }.uniq.sort
+    denial_header_categories = table.headers.grep(/\Adenials_/).map { |h| h.delete_prefix("denials_") }.sort
+    assert_equal expected_denial_categories, denial_header_categories
+    assert_includes expected_denial_categories, "medical_necessity_appeal"
+    assert_includes expected_denial_categories, "missing_information"
 
     denial_headers = table.headers.grep(/\Adenials_/)
     rows.each_with_index do |row, index|
