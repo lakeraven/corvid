@@ -187,9 +187,9 @@ class Corvid::ClaimOutcomeReportTest < ActiveSupport::TestCase
     assert_equal 4, measures[:claims_sent]
     assert_equal 1, measures[:rejected_claims]
     assert_in_delta 25.0, measures[:rejection_rate]
-    assert_equal 3, measures[:adjudicated_claims]
+    assert_equal 4, measures[:adjudicated_claims]
     assert_equal 2, measures[:denied_claims]
-    assert_in_delta 66.7, measures[:denial_rate]
+    assert_in_delta 50.0, measures[:denial_rate]
     assert_equal 4, measures[:outcome_claims]
     assert_equal 1, measures[:first_pass_claims]
     assert_in_delta 25.0, measures[:first_pass_rate]
@@ -203,6 +203,67 @@ class Corvid::ClaimOutcomeReportTest < ActiveSupport::TestCase
       next unless name.include?("reject") && name.include?("den")
 
       flunk "Row public method #{method_name} combines rejection and denial naming"
+    end
+  end
+
+  test "rates equal the ClaimSubmission KPI helpers on the same claims" do
+    sent = { submitted_at: 2.days.ago }
+    group = []
+    group << create_claim_submission(
+      tenant: TENANT, payer: "payer_a", facility: "fac_a",
+      service_date: Date.new(2025, 6, 1), status: "paid", patient: "pt_kpi1", **sent
+    )
+    group << create_claim_submission(
+      tenant: TENANT, payer: "payer_a", facility: "fac_a",
+      service_date: Date.new(2025, 6, 2), status: "paid", rejected_at: 3.days.ago,
+      patient: "pt_kpi2", **sent
+    )
+    group << create_claim_submission(
+      tenant: TENANT, payer: "payer_a", facility: "fac_a",
+      service_date: Date.new(2025, 6, 3), status: "paid", denied_at: 3.days.ago,
+      patient: "pt_kpi3", **sent
+    )
+    group << create_claim_submission(
+      tenant: TENANT, payer: "payer_a", facility: "fac_a",
+      service_date: Date.new(2025, 6, 4), status: "denied", denied_at: 1.day.ago,
+      patient: "pt_kpi4", **sent
+    )
+    group << create_claim_submission(
+      tenant: TENANT, payer: "payer_a", facility: "fac_a",
+      service_date: Date.new(2025, 6, 5), status: "rejected", rejected_at: 1.day.ago,
+      patient: "pt_kpi5", **sent
+    )
+    group << create_claim_submission(
+      tenant: TENANT, payer: "payer_a", facility: "fac_a",
+      service_date: Date.new(2025, 6, 6), status: "appealed", denied_at: 1.day.ago,
+      patient: "pt_kpi6", **sent
+    )
+    group << create_claim_submission(
+      tenant: TENANT, payer: "payer_a", facility: "fac_a",
+      service_date: Date.new(2025, 6, 7), status: "submitted", patient: "pt_kpi7", **sent
+    )
+    draft = create_claim_submission(
+      tenant: TENANT, payer: "payer_a", facility: "fac_a",
+      service_date: Date.new(2025, 6, 8), status: "draft", submitted_at: nil,
+      patient: "pt_kpi8"
+    )
+    group << draft
+    all_ids = group.map(&:id)
+
+    row = sole_row(
+      Corvid::ClaimOutcomeReport.new(tenant_identifier: TENANT, date_range: FULL_YEAR).rows
+    )
+
+    with_tenant(TENANT) do
+      relation = Corvid::ClaimSubmission.where(id: all_ids)
+      assert_in_delta relation.rejection_rate, row.rejection_rate, 0.001
+      assert_in_delta relation.denial_rate, row.denial_rate, 0.001
+      assert_in_delta relation.first_pass_rate, row.first_pass_rate, 0.001
+      assert_in_delta relation.payment_rate, row.payment_rate, 0.001
+    end
+
+    MEASURE_KEYS.each do |measure|
+      refute_includes row.claim_ids(measure), draft.id, measure.to_s
     end
   end
 
