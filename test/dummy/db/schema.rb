@@ -512,6 +512,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_31_000003) do
     t.index ["tenant_identifier", "follow_up_due_at"], name: "idx_corvid_payer_auth_requests_tenant_follow_up"
     t.index ["tenant_identifier", "status"], name: "idx_corvid_payer_auth_requests_tenant_status"
     t.check_constraint "(status::text <> ALL (ARRAY['approved'::character varying, 'partially_approved'::character varying]::text[])) OR payer_authorization_identifier IS NOT NULL AND btrim(payer_authorization_identifier::text) <> ''::text AND approved_from IS NOT NULL AND approved_to IS NOT NULL", name: "corvid_payer_auth_requests_approval_check"
+    t.check_constraint "(status::text = ANY (ARRAY['approved'::character varying, 'partially_approved'::character varying, 'cancelled'::character varying]::text[])) OR payer_authorization_identifier IS NULL AND approved_from IS NULL AND approved_to IS NULL AND approved_units IS NULL", name: "corvid_payer_auth_requests_approval_fields_check"
     t.check_constraint "(status::text = ANY (ARRAY['drafted'::character varying, 'cancelled'::character varying]::text[])) OR submitted_at IS NOT NULL AND submitted_by_identifier IS NOT NULL AND btrim(submitted_by_identifier::text) <> ''::text", name: "corvid_payer_auth_requests_submitted_check"
     t.check_constraint "approved_from IS NULL OR approved_to IS NULL OR approved_to >= approved_from", name: "corvid_payer_auth_requests_approved_range_check"
     t.check_constraint "approved_units IS NULL OR approved_units > 0", name: "corvid_payer_auth_requests_approved_units_check"

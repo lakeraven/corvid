@@ -5,8 +5,10 @@
 # Channel and status are closed string sets (ADR 0002). A draft can be
 # cancelled without a sign-off; every status that means the payer was
 # asked requires submitted_at and a non-blank sign-off. An approval
-# requires the payer's authorization id and a real date range. Empty
-# strings are not identifiers (ADR 0001, ADR 0003). lock_version is the
+# requires the payer's authorization id and a real date range. Those
+# approval columns stay null unless the status is an approval or a
+# cancellation that kept an earlier approval. Empty strings are not
+# identifiers (ADR 0001, ADR 0003). lock_version is the
 # optimistic lock. The referral link is a composite foreign key on
 # (prc_referral_id, tenant_identifier); a null referral id stays allowed.
 class CreateCorvidPayerAuthorizationRequests < ActiveRecord::Migration[8.1]
@@ -17,11 +19,15 @@ class CreateCorvidPayerAuthorizationRequests < ActiveRecord::Migration[8.1]
   # mean the request was sent, so they are not in this list.
   NO_SUBMISSION_STATUSES = %w[drafted cancelled].freeze
   APPROVED_STATUSES = %w[approved partially_approved].freeze
+  # Cancellation is included so a withdrawn approval can keep its
+  # decision. drafted, submitted, pended, and denied store NULL.
+  APPROVAL_FIELD_STATUSES = %w[approved partially_approved cancelled].freeze
 
   def change
     create_payer_authorization_requests
     add_payer_authorization_indexes
     add_payer_authorization_checks
+    add_approval_fields_null_check
     add_prc_referral_tenant_foreign_key
   end
 
@@ -71,6 +77,11 @@ class CreateCorvidPayerAuthorizationRequests < ActiveRecord::Migration[8.1]
       primary_key: [ :id, :tenant_identifier ]
   end
 
+  def add_approval_fields_null_check
+    add_check_constraint :corvid_payer_authorization_requests, approval_fields_sql,
+      name: "corvid_payer_auth_requests_approval_fields_check"
+  end
+
   def add_payer_authorization_checks
     add_check_constraint :corvid_payer_authorization_requests, in_list("channel", CHANNELS),
       name: "corvid_payer_auth_requests_channel_check"
@@ -92,6 +103,12 @@ class CreateCorvidPayerAuthorizationRequests < ActiveRecord::Migration[8.1]
     "#{in_list("status", NO_SUBMISSION_STATUSES)} OR (" \
       "submitted_at IS NOT NULL AND submitted_by_identifier IS NOT NULL AND " \
       "btrim(submitted_by_identifier) <> '')"
+  end
+
+  def approval_fields_sql
+    "#{in_list("status", APPROVAL_FIELD_STATUSES)} OR (" \
+      "payer_authorization_identifier IS NULL AND approved_from IS NULL AND " \
+      "approved_to IS NULL AND approved_units IS NULL)"
   end
 
   def approval_sql

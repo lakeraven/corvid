@@ -21,6 +21,10 @@ module Corvid
     APPROVAL_STATUSES = %w[approved partially_approved].freeze
     # Still waiting on the payer. Used by overdue; a decision is not overdue.
     AWAITING_DECISION_STATUSES = %w[submitted pended].freeze
+    # Written when the payer is asked. Locked once that ask is stored.
+    SUBMISSION_EVIDENCE = %i[submitted_at submitted_by_identifier follow_up_due_at].freeze
+    # Written by an approval. A later cancellation keeps them.
+    APPROVAL_EVIDENCE = %i[payer_authorization_identifier approved_from approved_to approved_units].freeze
 
     # from status => statuses a later save may enter. Missing keys and
     # empty lists allow nothing, so an unknown status cannot become an approval.
@@ -44,28 +48,9 @@ module Corvid
 
     belongs_to :prc_referral, class_name: "Corvid::PrcReferral", optional: true
 
-    # PostgreSQL reports an integer default as text. The column's default
-    # is the integer declared in the schema.
-    class << self
-      private
-
-      def load_schema!
-        super
-        cast_lock_version_default
-      end
-
-      def cast_lock_version_default
-        column = @columns_hash["lock_version"]
-        return if column.nil? || !column.default.is_a?(String)
-
-        casted = column.fetch_cast_type(connection).deserialize(column.default)
-        return if casted == column.default
-
-        replacement = column.dup
-        replacement.instance_variable_set(:@default, casted)
-        @columns_hash = @columns_hash.merge("lock_version" => replacement.freeze).freeze
-      end
-    end
+    # submit! and update!(status: "submitted") share this. The due time is
+    # submitted_at plus the payer's turnaround, not the wall clock.
+    before_validation :set_follow_up_due_at
 
     validates :payer_identifier, presence: true
     validates :channel, inclusion: { in: CHANNELS }
@@ -74,7 +59,10 @@ module Corvid
 
     validate :optional_identifiers_not_blank
     validate :submission_recorded_when_sent
+    validate :submission_evidence_unchanged
     validate :approval_recorded_when_approved
+    validate :approval_evidence_unchanged
+    validate :approval_fields_match_status
     validate :approved_dates_in_order
     validate :status_follows_transitions
     validate :prc_referral_in_same_tenant
@@ -106,13 +94,13 @@ module Corvid
     def submit!(submitted_by_identifier:, at: Time.current)
       raise ArgumentError, "submitted_by_identifier is required" if submitted_by_identifier.blank?
       raise ArgumentError, "submitted at is required" if at.blank?
+      unless at.is_a?(Time) || at.is_a?(ActiveSupport::TimeWithZone)
+        raise ArgumentError, "submitted at must be a Time"
+      end
 
       apply_transition!("submitted") do
         self.submitted_at = at
         self.submitted_by_identifier = submitted_by_identifier
-        # No duration for this payer means no timer. A non-duration is
-        # not a turnaround; do not invent a due time.
-        self.follow_up_due_at = follow_up_due_at_for(at)
       end
     end
 
@@ -179,7 +167,18 @@ module Corvid
       reload if persisted?
     end
 
+    # No duration for this payer means no timer. A non-duration is not a
+    # turnaround; do not invent a due time. A blank submitted_at has no
+    # start, so it also has no due time.
+    def set_follow_up_due_at
+      return unless will_save_change_to_status? && status == "submitted"
+
+      self.follow_up_due_at = follow_up_due_at_for(submitted_at)
+    end
+
     def follow_up_due_at_for(submitted_at)
+      return if submitted_at.blank?
+
       turnarounds = Corvid.configuration.payer_authorization_turnarounds
       return unless turnarounds.is_a?(Hash)
 
@@ -187,6 +186,58 @@ module Corvid
       return unless turnaround.is_a?(ActiveSupport::Duration)
 
       submitted_at + turnaround
+    end
+
+    # Once the payer was asked, the ask cannot be rewritten. A new row's
+    # status_in_database is the column default, and a draft was not sent.
+    def submission_evidence_unchanged
+      return unless submission_evidence_recorded?
+
+      SUBMISSION_EVIDENCE.each do |name|
+        errors.add(name, "can't be changed") if will_save_change_to_attribute?(name)
+      end
+    end
+
+    def submission_evidence_recorded?
+      return false if new_record?
+      return false if status_in_database == "drafted"
+
+      submitted_at_in_database.present?
+    end
+
+    # An approval's decision stays as it was recorded, including after
+    # the request is cancelled. Cancelling a draft recorded nothing.
+    def approval_evidence_unchanged
+      return unless approval_evidence_recorded?
+
+      APPROVAL_EVIDENCE.each do |name|
+        errors.add(name, "can't be changed") if will_save_change_to_attribute?(name)
+      end
+    end
+
+    def approval_evidence_recorded?
+      return false if new_record?
+      return true if APPROVAL_STATUSES.include?(status_in_database)
+
+      status_in_database == "cancelled" && approval_evidence_in_database?
+    end
+
+    def approval_evidence_in_database?
+      APPROVAL_EVIDENCE.any? { |name| attribute_in_database(name).present? }
+    end
+
+    # These columns are an approval, or a cancellation that kept one.
+    # A cancellation cannot gain them, and no other status may hold them.
+    def approval_fields_match_status
+      return if approval_fields_allowed?
+
+      APPROVAL_EVIDENCE.each do |name|
+        errors.add(name, "must be blank") if self[name].present?
+      end
+    end
+
+    def approval_fields_allowed?
+      APPROVAL_STATUSES.include?(status) || (status == "cancelled" && approval_evidence_recorded?)
     end
 
     def require_approval!(payer_authorization_identifier, approved_from, approved_to, approved_units)
@@ -240,14 +291,16 @@ module Corvid
     end
 
     # Any save, including update!(status:), uses the same map as the
-    # transition methods. status_in_database is the stored status. A new
-    # row whose stored status is still nil may only start as drafted.
+    # transition methods. status_in_database on a new row is the column
+    # default, not a status anyone saved, so a new row may only be drafted.
     def status_follows_transitions
-      return unless will_save_change_to_status?
+      if new_record?
+        errors.add(:status, "is not an allowed change") unless status == "drafted"
+        return
+      end
 
-      from_status = status_in_database
-      return if from_status.nil? && status == "drafted"
-      return if self.class.transition_allowed?(from_status, status)
+      return unless will_save_change_to_status?
+      return if self.class.transition_allowed?(status_in_database, status)
 
       errors.add(:status, "is not an allowed change")
     end
