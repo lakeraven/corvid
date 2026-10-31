@@ -26,6 +26,11 @@ module Corvid
   # #inspect lists verification snapshot key versions and does not reveal
   # key material. #as_json, #to_json, and #to_yaml emit those same redacted
   # fields and omit key bytes.
+  #
+  # payer_authorization_turnarounds maps payer_identifier to an
+  # ActiveSupport::Duration (default {}). It is not secret. It is omitted
+  # from inspect/as_json/to_yaml with the other operational settings so
+  # those methods stay an allow-list of snapshot key versions.
   class Configuration
     # Alternate-resource types whose check freshness is configurable (#640).
     # Duplicated so configuration can boot without loading app models.
@@ -39,6 +44,7 @@ module Corvid
 
     attr_accessor :adapter, :edi_adapter, :phi_sanitizer, :on_provenance, :fetch_provenance
     attr_accessor :verification_snapshot_keys, :verification_snapshot_key_version
+    attr_accessor :payer_authorization_turnarounds
 
     def initialize
       @adapter = nil
@@ -50,6 +56,7 @@ module Corvid
       @fetch_provenance = ->(**) { [] }
       @verification_snapshot_keys = {}
       @verification_snapshot_key_version = nil
+      @payer_authorization_turnarounds = {}
     end
 
     def inspect
