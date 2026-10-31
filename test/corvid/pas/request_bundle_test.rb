@@ -5,6 +5,9 @@ require "json"
 require "corvid/pas"
 
 class Corvid::Pas::RequestBundleTest < Minitest::Test
+  class << self
+    attr_accessor :wide_deep_parse_seconds
+  end
   FIXTURES_DIR = File.expand_path("../../fixtures/pas", __dir__)
 
   URN_REFERENCE_KEYS = [
@@ -1081,6 +1084,131 @@ class Corvid::Pas::RequestBundleTest < Minitest::Test
     end
   end
 
+  def test_relative_reference_in_a_later_entry_resolves_against_that_entrys_base
+    prac_full_url = "http://other.example.org/fhir/Practitioner/prac-other-2"
+    org_other_full_url = "http://other.example.org/fhir/Organization/org-other-2"
+
+    unresolved = deep_copy(load_fixture("request_bundle_client_urls"))
+    unresolved["entry"] << {
+      "fullUrl" => prac_full_url,
+      "resource" => {
+        "resourceType" => "Practitioner",
+        "id" => "prac-other-2",
+        "qualification" => [
+          {
+            "issuer" => { "reference" => "Organization/org-clinic-a" }
+          }
+        ]
+      }
+    }
+    unresolved["entry"][0]["resource"]["careTeam"] = [
+      { "sequence" => 1, "provider" => { "reference" => prac_full_url } }
+    ]
+    assert_rejection(
+      Corvid::Pas::RequestBundle.parse(unresolved),
+      code: "not-found",
+      expression: "Bundle.entry[7].resource.qualification[0].issuer.reference",
+      diagnostics: REJECTION_DIAGNOSTICS.fetch(:not_found),
+      source_bundle: unresolved
+    )
+
+    resolved = deep_copy(load_fixture("request_bundle_client_urls"))
+    resolved["entry"] << {
+      "fullUrl" => prac_full_url,
+      "resource" => {
+        "resourceType" => "Practitioner",
+        "id" => "prac-other-2",
+        "qualification" => [
+          {
+            "issuer" => { "reference" => "Organization/org-other-2" }
+          }
+        ]
+      }
+    }
+    resolved["entry"] << {
+      "fullUrl" => org_other_full_url,
+      "resource" => {
+        "resourceType" => "Organization",
+        "id" => "org-other-2",
+        "name" => "TEST CLINIC OTHER"
+      }
+    }
+    resolved["entry"][0]["resource"]["careTeam"] = [
+      { "sequence" => 1, "provider" => { "reference" => prac_full_url } }
+    ]
+
+    result = parse_silently(resolved)
+
+    assert result.ok?
+    assert result.resources.any? { |r| r["resourceType"] == "Practitioner" && r["id"] == "prac-other-2" }
+    assert result.resources.any? { |r| r["resourceType"] == "Organization" && r["id"] == "org-other-2" }
+  end
+
+  def test_rejects_duplicate_contained_ids_in_a_later_entry
+    bundle = deep_copy(load_fixture("request_bundle_client_urls"))
+    coverage = bundle["entry"][4]["resource"]
+    coverage["contained"] = [
+      { "resourceType" => "Organization", "id" => "dup-cov-1" },
+      { "resourceType" => "Patient", "id" => "dup-cov-1" }
+    ]
+    coverage["payor"] = [ { "reference" => "#dup-cov-1" } ]
+
+    assert_rejection(
+      Corvid::Pas::RequestBundle.parse(bundle),
+      code: "duplicate",
+      expression: "Bundle.entry[4].resource.contained[1]",
+      diagnostics: REJECTION_DIAGNOSTICS.fetch(:duplicate),
+      source_bundle: bundle
+    )
+  end
+
+  def test_rejects_over_deep_nesting_in_a_later_entry
+    bundle = deep_copy(load_fixture("request_bundle_urn_uuid"))
+    missing_deep = "Patient/missing-deep-1"
+    bundle["entry"][4]["resource"].merge!(deep_reference_node(70, missing_deep))
+
+    assert_rejection(
+      Corvid::Pas::RequestBundle.parse(bundle),
+      code: "structure",
+      expression: "Bundle.entry[4]",
+      diagnostics: REJECTION_DIAGNOSTICS.fetch(:nesting),
+      source_bundle: bundle
+    )
+  end
+
+  def test_reports_the_earliest_entry_first_regardless_of_claim_order
+    missing = "urn:uuid:ffffffff-ffff-4fff-8fff-ffffffffffff"
+    bundle = deep_copy(load_fixture("request_bundle_urn_uuid"))
+    bundle["entry"][0]["resource"] = claim_with_insurance_before_patient(bundle["entry"][0]["resource"])
+    bundle["entry"][1]["resource"]["managingOrganization"] = { "reference" => missing }
+    bundle["entry"][4]["resource"]["payor"][0]["reference"] = missing
+
+    assert_rejection(
+      Corvid::Pas::RequestBundle.parse(bundle),
+      code: "not-found",
+      expression: "Bundle.entry[1].resource.managingOrganization.reference",
+      diagnostics: REJECTION_DIAGNOSTICS.fetch(:not_found),
+      source_bundle: bundle
+    )
+  end
+
+  def test_wide_and_deep_input_with_long_keys_parses
+    bundle = deep_copy(load_fixture("request_bundle_urn_uuid"))
+    claim = bundle["entry"][0]["resource"]
+    long_key = "a" * 2000
+    nested = { "item" => Array.new(5000) { {} } }
+    40.times { nested = { "part" => nested } }
+    claim["extension"] = [ { long_key => nested } ]
+
+    result = nil
+    started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
+    result = parse_silently(bundle)
+    self.class.wide_deep_parse_seconds = Process.clock_gettime(Process::CLOCK_MONOTONIC) - started
+
+    assert result.ok?
+    assert_equal URN_REFERENCE_KEYS.sort, result.references.keys.sort
+  end
+
   private
 
   def load_fixture(name)
@@ -1089,6 +1217,17 @@ class Corvid::Pas::RequestBundleTest < Minitest::Test
 
   def deep_copy(value)
     JSON.parse(JSON.generate(value))
+  end
+
+  def claim_with_insurance_before_patient(claim)
+    ordered = {}
+    ordered["insurance"] = deep_copy(claim["insurance"]) if claim.key?("insurance")
+    claim.each do |key, value|
+      next if key == "insurance"
+
+      ordered[key] = value
+    end
+    ordered
   end
 
   def parse_silently(bundle)
