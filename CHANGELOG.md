@@ -22,6 +22,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   instead of `denial_reason_token`.
 
 ### Added
+- Claim outcome report (#784). `Corvid::ClaimOutcomeReport` reports, per
+  payer, facility and service month for one tenant, claims sent and the
+  rejection, denial, first-pass and payment figures from the
+  `ClaimSubmission` KPI helpers, with the claim ids behind each figure,
+  denials by CARC work queue (`unmapped` and `uncoded` kept as buckets),
+  and a CSV export. Rejections and denials are never combined. Measure
+  definitions are in `docs/claim_outcome_report.md`.
 - ZIP-to-CBSA wage-area crosswalk (#371). `corvid_zip_cbsa_crosswalks`
   stores the CMS crosswalk by federal fiscal year (`zip` is five ASCII
   digits; `cbsa` is a five-digit CBSA or a two-digit rural-state code;
