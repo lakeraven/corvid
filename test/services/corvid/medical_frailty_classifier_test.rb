@@ -1373,6 +1373,53 @@ class Corvid::MedicalFrailtyClassifierTest < ActiveSupport::TestCase
     end
   end
 
+  test "adapter condition code_system with trailing null after cleaning alone yields unknown unreadable_evidence" do
+    with_tenant(TENANT) do
+      prefix_state = register_prefix_state("E10")
+      seed_empty_medications_and_claims
+      seed_condition(
+        code: "E10.9",
+        onset_date: AS_OF,
+        code_system: "#{ICD10}\u0000"
+      )
+
+      result = classify(state_code: prefix_state)
+
+      assert_unknown result, :unreadable_evidence
+    end
+  end
+
+  test "adapter condition code_system with interior ascii space after cleaning alone yields unknown unreadable_evidence" do
+    with_tenant(TENANT) do
+      prefix_state = register_prefix_state("E10")
+      seed_empty_medications_and_claims
+      seed_condition(
+        code: "E10.9",
+        onset_date: AS_OF,
+        code_system: "#{ICD10} x"
+      )
+
+      result = classify(state_code: prefix_state)
+
+      assert_unknown result, :unreadable_evidence
+    end
+  end
+
+  test "adapter snomed condition code_system with trailing null after cleaning alone yields unknown unreadable_evidence" do
+    with_tenant(TENANT) do
+      seed_empty_medications_and_claims
+      seed_condition(
+        code: "123456",
+        onset_date: AS_OF,
+        code_system: "http://snomed.info/sct\u0000"
+      )
+
+      result = classify
+
+      assert_unknown result, :unreadable_evidence
+    end
+  end
+
   test "adapter medication code with trailing tab stripped after cleaning matches in window" do
     register_amendment_rx_criteria!
 
