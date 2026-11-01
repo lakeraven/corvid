@@ -116,6 +116,7 @@ module Fragments
     saved = {}
     begin
       File.write(temp, result.text)
+      File.chmod(File.stat(changelog_path).mode & 0o7777, temp) # keep the changelog's own permissions
       result.files.each do |path|
         bytes = File.binread(path)
         deleter.call(path)

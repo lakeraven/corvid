@@ -206,7 +206,11 @@ class ChangelogFragmentsTest < Minitest::Test
   end
 
   def test_two_branches_adding_distinct_fragments_merge_cleanly
-    _, status = Open3.capture2e("git", "--version")
+    status = begin
+      Open3.capture2e("git", "--version").last
+    rescue Errno::ENOENT
+      nil
+    end
     skip "SKIPPED LOUDLY: git is unavailable, so the merge-conflict-freedom check did not run" unless status.success?
 
     repo = Dir.mktmpdir("repo")
@@ -261,6 +265,13 @@ class ChangelogFragmentsTest < Minitest::Test
     assert_includes File.read(@path), "Bug (#8)"
     assert_empty Dir.children(@sub)
     assert_equal [ "CHANGELOG.md", "frags" ], Dir.children(@dir).sort, "no temp file may be left behind"
+  end
+
+  def test_apply_keeps_the_changelog_file_mode
+    setup_release("7.added.md" => "New thing (#7)\n")
+    File.chmod(0o640, @path)
+    Fragments.apply(changelog_path: @path, dir: @sub)
+    assert_equal 0o640, File.stat(@path).mode & 0o777, "replacing the changelog must not change its permissions"
   end
 
   # Design: delete the fragments into memory first, restore them if anything later fails.
