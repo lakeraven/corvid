@@ -81,7 +81,7 @@ Reviewers check:
 ## Releasing
 
 Versioning follows [SemVer](https://semver.org/). Pre-1.0 minor versions
-may include breaking changes. Tag and release notes go in CHANGELOG.md.
+may include breaking changes. Tag and release notes go in CHANGELOG.md. A PR adds a changelog fragment under `changelog.d/` instead of editing it (see `changelog.d/README.md`).
 
 ## Code of conduct
 
