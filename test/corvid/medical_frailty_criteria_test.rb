@@ -335,6 +335,221 @@ class Corvid::MedicalFrailtyCriteriaTest < Minitest::Test
     assert_equal "RX_TEST_004", entry.categories["med_cat"].medication_codes.first[:code]
   end
 
+  # ---- Issue #794 gate round 3 spec amendment (rule A: registry cleaning) ----
+
+  def test_register_raises_when_icd10_prefix_blank_after_surrounding_whitespace_stripped
+    error = assert_raises(ArgumentError) do
+      Corvid::MedicalFrailtyCriteria.register(
+        "AW",
+        categories: {
+          bad_prefix: {
+            icd10_prefixes: [ "\u00A0" ],
+            medication_codes: [],
+            procedure_codes: []
+          }
+        }
+      )
+    end
+    refute_match(/\u00A0/, error.message)
+  end
+
+  def test_register_raises_when_procedure_code_blank_after_surrounding_whitespace_stripped
+    error = assert_raises(ArgumentError) do
+      Corvid::MedicalFrailtyCriteria.register(
+        "PW",
+        categories: {
+          bad_proc: {
+            icd10_prefixes: [],
+            medication_codes: [],
+            procedure_codes: [ "\u200B" ]
+          }
+        }
+      )
+    end
+    refute_match(/\u200B/, error.message)
+  end
+
+  def test_register_raises_when_medication_code_blank_after_surrounding_whitespace_stripped
+    error = assert_raises(ArgumentError) do
+      Corvid::MedicalFrailtyCriteria.register(
+        "CW",
+        categories: {
+          bad_med: {
+            icd10_prefixes: [],
+            medication_codes: [ { system: RX_SYSTEM, code: "\u3000" } ],
+            procedure_codes: []
+          }
+        }
+      )
+    end
+    refute_match(/\u3000/, error.message)
+  end
+
+  def test_register_raises_when_medication_system_blank_after_surrounding_whitespace_stripped
+    error = assert_raises(ArgumentError) do
+      Corvid::MedicalFrailtyCriteria.register(
+        "SW",
+        categories: {
+          bad_med: {
+            icd10_prefixes: [],
+            medication_codes: [ { system: "\u00A0", code: "RX_TEST_005" } ],
+            procedure_codes: []
+          }
+        }
+      )
+    end
+    refute_match(/\u00A0/, error.message)
+  end
+
+  def test_register_stores_medication_system_without_surrounding_unicode_whitespace
+    plain_system = "http://example.test/rx"
+    Corvid::MedicalFrailtyCriteria.register(
+      "WS",
+      categories: {
+        pad_med: {
+          icd10_prefixes: [],
+          medication_codes: [
+            { system: "#{plain_system}\u00A0", code: "RX_PAD_001" },
+            { system: "#{plain_system}\u200B", code: "RX_PAD_002" }
+          ],
+          procedure_codes: []
+        }
+      }
+    )
+
+    entry = Corvid::MedicalFrailtyCriteria.lookup("WS")
+    stored = entry.categories["pad_med"].medication_codes
+    assert_equal plain_system, stored[0][:system]
+    assert_equal plain_system, stored[1][:system]
+  end
+
+  def test_register_stores_icd10_prefix_without_surrounding_unicode_whitespace
+    Corvid::MedicalFrailtyCriteria.register(
+      "WI",
+      categories: {
+        pad_icd: {
+          icd10_prefixes: [ "\u00A0Z9981\u200B" ],
+          medication_codes: [],
+          procedure_codes: []
+        }
+      }
+    )
+
+    entry = Corvid::MedicalFrailtyCriteria.lookup("WI")
+    assert_equal "Z9981", entry.categories["pad_icd"].icd10_prefixes.first
+  end
+
+  def test_register_stores_procedure_code_without_surrounding_unicode_whitespace
+    Corvid::MedicalFrailtyCriteria.register(
+      "WP",
+      categories: {
+        pad_proc: {
+          icd10_prefixes: [],
+          medication_codes: [],
+          procedure_codes: [ "\u3000HCPCS_PAD_A\u00A0" ]
+        }
+      }
+    )
+
+    entry = Corvid::MedicalFrailtyCriteria.lookup("WP")
+    assert_equal "HCPCS_PAD_A", entry.categories["pad_proc"].procedure_codes.first
+  end
+
+  def test_register_raises_when_medication_system_contains_nul_after_surrounding_strip
+    assert_raises(ArgumentError) do
+      Corvid::MedicalFrailtyCriteria.register(
+        "NU",
+        categories: {
+          bad_med: {
+            icd10_prefixes: [],
+            medication_codes: [ { system: "http://example.test/rx\u0000", code: "RX_TEST_006" } ],
+            procedure_codes: []
+          }
+        }
+      )
+    end
+  end
+
+  def test_register_raises_when_medication_code_contains_interior_whitespace
+    assert_raises(ArgumentError) do
+      Corvid::MedicalFrailtyCriteria.register(
+        "MW",
+        categories: {
+          bad_med: {
+            icd10_prefixes: [],
+            medication_codes: [ { system: RX_SYSTEM, code: "RX\u0009TEST" } ],
+            procedure_codes: []
+          }
+        }
+      )
+    end
+  end
+
+  def test_register_raises_when_icd10_prefix_contains_interior_control_character
+    assert_raises(ArgumentError) do
+      Corvid::MedicalFrailtyCriteria.register(
+        "IC",
+        categories: {
+          bad_prefix: {
+            icd10_prefixes: [ "Z99\u000081" ],
+            medication_codes: [],
+            procedure_codes: []
+          }
+        }
+      )
+    end
+  end
+
+  def test_register_raises_for_medication_system_that_is_not_uri_shaped
+    error = assert_raises(ArgumentError) do
+      Corvid::MedicalFrailtyCriteria.register(
+        "UR",
+        categories: {
+          bad_med: {
+            icd10_prefixes: [],
+            medication_codes: [ { system: "not a uri", code: "RX_TEST_007" } ],
+            procedure_codes: []
+          }
+        }
+      )
+    end
+    refute_match(/not a uri/, error.message)
+  end
+
+  def test_lookup_category_code_lists_and_medication_hashes_are_frozen
+    entry = register_sample("FZ")
+    category = Corvid::MedicalFrailtyCriteria.lookup("FZ").categories["synthetic_z9981"]
+
+    assert category.icd10_prefixes.frozen?
+    assert category.procedure_codes.frozen?
+    assert category.medication_codes.frozen?
+    assert category.medication_codes.first.frozen?
+  end
+
+  def test_mutating_lookup_icd10_prefixes_raises_frozen_error
+    register_sample("ML")
+    prefixes = Corvid::MedicalFrailtyCriteria.lookup("ML").categories["synthetic_z9981"].icd10_prefixes
+    assert_raises(FrozenError) { prefixes << "MUTATED" }
+  end
+
+  def test_mutating_lookup_procedure_codes_raises_frozen_error
+    register_sample("MP")
+    procedures = Corvid::MedicalFrailtyCriteria.lookup("MP").categories["synthetic_z9981"].procedure_codes
+    assert_raises(FrozenError) { procedures[0] = "MUTATED" }
+  end
+
+  def test_mutating_lookup_medication_codes_raises_frozen_error
+    register_sample("MQ")
+    medications = Corvid::MedicalFrailtyCriteria.lookup("MQ").categories["synthetic_z9981"].medication_codes
+    assert_raises(FrozenError) { medications << { system: RX_SYSTEM, code: "MUTATED" } }
+  end
+
+  def test_mutating_lookup_medication_entry_raises_frozen_error
+    register_sample("MH")
+    medication = Corvid::MedicalFrailtyCriteria.lookup("MH").categories["synthetic_z9981"].medication_codes.first
+    assert_raises(FrozenError) { medication[:code] = "MUTATED" }
+  end
+
   private
 
   def minimal_categories

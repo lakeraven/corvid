@@ -1115,6 +1115,194 @@ class Corvid::MedicalFrailtyClassifierTest < ActiveSupport::TestCase
     end
   end
 
+  # ---- Issue #794 gate round 3 spec amendment --------------------------------
+
+  test "registry strips padded medication system so plain adapter system matches likely_frail" do
+    plain_system = "http://example.test/rx"
+    Corvid::MedicalFrailtyCriteria.reset!
+    Corvid::MedicalFrailtyCriteria.register(
+      STATE,
+      categories: {
+        synthetic_z9981: {
+          icd10_prefixes: [],
+          medication_codes: [ { system: "#{plain_system}\u00A0", code: "RX_PAD_MATCH" } ],
+          procedure_codes: []
+        }
+      }
+    )
+
+    with_tenant(TENANT) do
+      seed_medication(code: "RX_PAD_MATCH", code_system: plain_system, authored_on: AS_OF)
+
+      result = classify
+
+      assert_likely_frail result
+      assert_evidence result, evidence_row("synthetic_z9981", AS_OF, :medication)
+    end
+  end
+
+  test "string condition onset_date alone yields unknown undated_evidence" do
+    with_tenant(TENANT) do
+      seed_condition(code: "Z99.81", onset_date: "2026-06-15")
+      seed_empty_medications_and_claims
+
+      result = classify
+
+      assert_unknown result, :undated_evidence
+    end
+  end
+
+  test "string medication authored_on alone yields unknown undated_evidence" do
+    with_tenant(TENANT) do
+      seed_empty_conditions_and_claims
+      seed_medication(code: "RX_TEST_001", authored_on: "2026-06-01")
+
+      result = classify
+
+      assert_unknown result, :undated_evidence
+    end
+  end
+
+  test "string claim serviced_date alone yields unknown undated_evidence" do
+    with_tenant(TENANT) do
+      seed_empty_conditions_and_medications
+      seed_claim_line(procedure_code: "HCPCS_TEST_A", serviced_date: "2026-06-01")
+
+      result = classify
+
+      assert_unknown result, :undated_evidence
+    end
+  end
+
+  test "medication authored_on as time with offset uses calendar date in window" do
+    with_tenant(TENANT) do
+      seed_empty_conditions_and_claims
+      seed_medication(
+        code: "RX_TEST_001",
+        authored_on: Time.new(2026, 6, 1, 22, 0, 0, "-05:00")
+      )
+
+      result = classify(as_of: Date.new(2026, 6, 1), lookback_months: 1)
+
+      assert_likely_frail result
+      assert_evidence result, evidence_row("synthetic_z9981", Date.new(2026, 6, 1), :medication)
+    end
+  end
+
+  test "medication authored_on as time with zone uses calendar date in window" do
+    with_tenant(TENANT) do
+      seed_empty_conditions_and_claims
+      authored_on = Time.use_zone("America/Chicago") { Time.zone.local(2026, 6, 1, 22) }
+      seed_medication(code: "RX_TEST_001", authored_on: authored_on)
+
+      result = classify(as_of: Date.new(2026, 6, 1), lookback_months: 1)
+
+      assert_likely_frail result
+      assert_evidence result, evidence_row("synthetic_z9981", Date.new(2026, 6, 1), :medication)
+    end
+  end
+
+  test "medication authored_on as datetime uses calendar date in window" do
+    with_tenant(TENANT) do
+      seed_empty_conditions_and_claims
+      seed_medication(code: "RX_TEST_001", authored_on: DateTime.new(2026, 6, 1, 10))
+
+      result = classify(as_of: Date.new(2026, 6, 1), lookback_months: 1)
+
+      assert_likely_frail result
+      assert_evidence result, evidence_row("synthetic_z9981", Date.new(2026, 6, 1), :medication)
+    end
+  end
+
+  test "condition in who icd10 system does not match icd10 cm criteria" do
+    with_tenant(TENANT) do
+      seed_condition(
+        code: "Z99.81",
+        onset_date: AS_OF,
+        code_system: "http://hl7.org/fhir/sid/icd-10"
+      )
+
+      result = classify
+
+      assert_not_indicated result
+    end
+  end
+
+  test "condition in uppercased icd10 cm system uri does not match" do
+    with_tenant(TENANT) do
+      seed_condition(
+        code: "Z99.81",
+        onset_date: AS_OF,
+        code_system: "HTTP://HL7.ORG/FHIR/SID/ICD-10-CM"
+      )
+
+      result = classify
+
+      assert_not_indicated result
+    end
+  end
+
+  test "medication code comparison is case exact against registered code" do
+    Corvid::MedicalFrailtyCriteria.reset!
+    Corvid::MedicalFrailtyCriteria.register(
+      STATE,
+      categories: {
+        synthetic_z9981: {
+          icd10_prefixes: [],
+          medication_codes: [ { system: RX_SYSTEM, code: "abc" } ],
+          procedure_codes: []
+        }
+      }
+    )
+
+    with_tenant(TENANT) do
+      seed_medication(code: "ABC", authored_on: AS_OF)
+
+      result = classify
+
+      assert_not_indicated result
+    end
+  end
+
+  test "medication system comparison is case exact against registered system" do
+    lower_system = "http://example.test/rxlower"
+    Corvid::MedicalFrailtyCriteria.reset!
+    Corvid::MedicalFrailtyCriteria.register(
+      STATE,
+      categories: {
+        synthetic_z9981: {
+          icd10_prefixes: [],
+          medication_codes: [ { system: lower_system, code: "RX_CASE_SYS" } ],
+          procedure_codes: []
+        }
+      }
+    )
+
+    with_tenant(TENANT) do
+      seed_medication(
+        code: "RX_CASE_SYS",
+        code_system: lower_system.upcase,
+        authored_on: AS_OF
+      )
+
+      result = classify
+
+      assert_not_indicated result
+    end
+  end
+
+  test "condition code shorter than registered icd10 prefix does not yield likely_frail" do
+    with_tenant(TENANT) do
+      prefix_state = register_prefix_state("E10")
+      seed_condition(code: "E1", onset_date: AS_OF, code_system: ICD10)
+
+      result = classify(state_code: prefix_state)
+
+      refute_equal :likely_frail, result.status
+      assert_includes [ :not_indicated, :unknown ], result.status
+    end
+  end
+
   private
 
   def window_start
