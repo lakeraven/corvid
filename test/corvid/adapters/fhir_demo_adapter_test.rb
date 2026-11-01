@@ -97,6 +97,24 @@ class Corvid::Adapters::FhirDemoAdapterTest < Minitest::Test
     end
   end
 
+  def test_list_claims_does_not_match_empty_patient_reference_tokens
+    claim = synthetic_claim.merge("patient" => { "reference" => "Patient/" })
+    adapter = Corvid::Adapters::FhirDemoAdapter.new(resources: [ claim ])
+
+    assert_equal [], adapter.list_claims("Patient/"),
+                 "Claim with Patient/ must not appear under list_claims(\"Patient/\")"
+
+    bundle = adapter.send(:fhir_search, "Claim", { "patient" => "" })
+    assert_equal 0, bundle["total"],
+                   "Claim with Patient/ must not match Claim?patient= blank search"
+
+    blank_patient_ref = synthetic_claim.merge("patient" => { "reference" => "" })
+    blank_adapter = Corvid::Adapters::FhirDemoAdapter.new(resources: [ blank_patient_ref ])
+    blank_bundle = blank_adapter.send(:fhir_search, "Claim", { "patient" => "" })
+    assert_equal 0, blank_bundle["total"],
+                   "blank patient search must not match claim with empty patient reference"
+  end
+
   # The overlay demo installs this adapter as Corvid.adapter, so referral
   # writes must work in memory instead of reaching for HTTP.
   def test_create_referral_stores_a_service_request_that_reads_find_and_list
@@ -196,6 +214,21 @@ class Corvid::Adapters::FhirDemoAdapterTest < Minitest::Test
       "authoredOn" => "2024-01-15",
       "medicationReference" => { "reference" => "Medication/med_demo_001" },
       "dosageInstruction" => [ { "text" => "TEST DEMO DOSAGE 001" } ]
+    }
+  end
+
+  def synthetic_claim
+    {
+      "resourceType" => "Claim",
+      "id" => "clm_demo_001",
+      "patient" => { "reference" => "Patient/pt-demo-001" },
+      "item" => [ {
+        "sequence" => 1,
+        "productOrService" => {
+          "coding" => [ { "system" => "http://www.ama-assn.org/go/cpt", "code" => "99213" } ]
+        },
+        "net" => { "value" => 100.0, "currency" => "USD" }
+      } ]
     }
   end
 end
