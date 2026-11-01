@@ -10,7 +10,7 @@ require "pathname"
 class RakeTestTasksTest < Minitest::Test
   ROOT = File.expand_path("../..", __dir__)
   OVERLAY_TEST = "test/lib/corvid/demo/fhir_overlay_test.rb"
-  RAKE_TEST_TASKS = %w[test_lib test_models].freeze
+  RAKE_TEST_TASKS = %w[test_lib test_models test_tools].freeze
 
   def setup
     @rake_test_files = rake_test_task_files_by_name
