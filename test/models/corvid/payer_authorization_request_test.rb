@@ -9,6 +9,7 @@ class Corvid::PayerAuthorizationRequestTest < ActiveSupport::TestCase
   OTHER_TENANT = "tnt_other"
   FACILITY = "fac_a"
   FACILITY_B = "fac_b"
+  FACILITY_OTHER = "fac_other"
   PAYER_A = "payer_a"
   PAYER_B = "payer_b"
   SIGNOFF = "pr_signoff_001"
@@ -412,6 +413,69 @@ class Corvid::PayerAuthorizationRequestTest < ActiveSupport::TestCase
       request = build_request(prc_referral: referral, facility_identifier: "fac_mismatch")
       refute request.valid?
       assert request.errors[:facility_identifier].present? || request.errors[:prc_referral].present?
+    end
+  end
+
+  test "facility check uses persisted referral facility not unsaved association edits" do
+    with_tenant(TENANT) do
+      referral = create_referral(facility_identifier: FACILITY_OTHER)
+      request = build_request(facility_identifier: FACILITY)
+      request.prc_referral_id = referral.id
+      request.prc_referral = Corvid::PrcReferral.find(referral.id)
+      request.prc_referral.facility_identifier = FACILITY
+
+      refute request.save
+      assert request.errors[:facility_identifier].present?
+      refute request.persisted?
+      assert_equal FACILITY_OTHER, referral.reload.facility_identifier
+    end
+  end
+
+  test "prc_referral_id and facility_identifier are locked after the payer was asked on submitted pended approved and cancelled after submission" do
+    with_tenant(TENANT) do
+      submitted_at = Time.utc(2026, 3, 1, 10, 0, 0)
+
+      [
+        request_in("submitted", prc_referral: create_referral, facility_identifier: FACILITY),
+        request_in("pended", prc_referral: create_referral, facility_identifier: FACILITY),
+        request_in("approved", prc_referral: create_referral, facility_identifier: FACILITY),
+        begin
+          request = create_request(prc_referral: create_referral, facility_identifier: FACILITY)
+          request.submit!(submitted_by_identifier: SIGNOFF, at: submitted_at)
+          request.cancel!
+          request.reload
+        end
+      ].each do |request|
+        assert_referral_and_facility_immutable_after_ask(request, linked: true)
+      end
+
+      [
+        request_in("submitted"),
+        request_in("pended"),
+        request_in("approved"),
+        begin
+          request = create_request
+          request.submit!(submitted_by_identifier: SIGNOFF, at: submitted_at)
+          request.cancel!
+          request.reload
+        end
+      ].each do |request|
+        assert_referral_and_facility_immutable_after_ask(request, linked: false)
+      end
+    end
+  end
+
+  test "drafted row may change prc_referral_id and facility_identifier" do
+    with_tenant(TENANT) do
+      referral_a = create_referral(facility_identifier: FACILITY)
+      referral_b = create_referral(facility_identifier: FACILITY_B)
+      request = create_request(prc_referral: referral_a, facility_identifier: FACILITY)
+
+      request.prc_referral_id = referral_b.id
+      request.facility_identifier = FACILITY_B
+      assert request.save
+      assert_equal referral_b.id, request.reload.prc_referral_id
+      assert_equal FACILITY_B, request.facility_identifier
     end
   end
 
@@ -1021,6 +1085,32 @@ class Corvid::PayerAuthorizationRequestTest < ActiveSupport::TestCase
     assert_equal baseline, request.reload.attributes.slice("submitted_at", "submitted_by_identifier", "follow_up_due_at")
   end
 
+  def assert_referral_and_facility_immutable_after_ask(request, linked:)
+    baseline = request.attributes.slice("prc_referral_id", "facility_identifier")
+    facility_for_referrals = baseline.fetch("facility_identifier") || FACILITY
+    other_referral = create_referral(facility_identifier: facility_for_referrals)
+
+    if linked
+      assert_ask_context_change_rejected(request, baseline, prc_referral_id: other_referral.id)
+      assert_ask_context_change_rejected(request, baseline, prc_referral_id: nil)
+    else
+      link_referral = create_referral(facility_identifier: facility_for_referrals)
+      assert_ask_context_change_rejected(request, baseline, prc_referral_id: link_referral.id)
+    end
+
+    assert_ask_context_change_rejected(request, baseline, facility_identifier: FACILITY_B)
+  end
+
+  def assert_ask_context_change_rejected(request, baseline, attrs)
+    copy = Corvid::PayerAuthorizationRequest.find(request.id)
+    copy.assign_attributes(attrs)
+    error = assert_raises(ActiveRecord::RecordInvalid) { copy.save! }
+    attrs.each_key do |name|
+      assert_includes error.record.errors[name].join, "can't be changed"
+    end
+    assert_equal baseline, request.reload.attributes.slice("prc_referral_id", "facility_identifier")
+  end
+
   def assert_payer_identifier_and_channel_immutable(request)
     baseline_payer = request.payer_identifier
     baseline_channel = request.channel
@@ -1123,8 +1213,8 @@ class Corvid::PayerAuthorizationRequestTest < ActiveSupport::TestCase
     }
   end
 
-  def request_in(status)
-    request = create_request
+  def request_in(status, **create_attrs)
+    request = create_request(**create_attrs)
     case status
     when "drafted"
       request

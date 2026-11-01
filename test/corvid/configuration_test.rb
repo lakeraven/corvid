@@ -224,6 +224,21 @@ class Corvid::ConfigurationTest < Minitest::Test
     end
   end
 
+  def test_payer_authorization_turnarounds_rejects_duplicate_keys_after_normalization
+    duplicate_pairs = [
+      { payer_p: 30.days, "payer_p" => 1.day },
+      { " payer_a " => 2.days, "payer_a" => 1.day }
+    ]
+
+    duplicate_pairs.each do |turnarounds|
+      error = assert_raises(ArgumentError) do
+        Corvid.configure { |c| c.payer_authorization_turnarounds = turnarounds }
+      end
+      refute_includes error.message, "payer_p"
+      refute_includes error.message, "payer_a"
+    end
+  end
+
   # -- verification snapshot keys (ADR 0008) ---------------------------------
 
   def test_verification_snapshot_keys_defaults_to_empty_hash
