@@ -33,7 +33,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   never `not_indicated`. `:unreadable_evidence` takes precedence over
   undated evidence unless a dated in-window match exists. Surrounding
   whitespace is stripped from codes, code systems, and statuses before
-  they are validated or compared. The result carries no display text,
+  they are validated or compared. Registration cleans ICD-10 prefixes,
+  procedure codes, and medication systems and codes the same way, and
+  rejects a medication system or code that still contains whitespace or
+  a control character. The result carries no display text,
   codes, dosage text, raw references, or patient identifier.
 - ZIP-to-CBSA wage-area crosswalk (#371). `corvid_zip_cbsa_crosswalks`
   stores the CMS crosswalk by federal fiscal year (`zip` is five ASCII

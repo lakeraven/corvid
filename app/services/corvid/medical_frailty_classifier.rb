@@ -15,14 +15,21 @@ module Corvid
   # every read answered and nothing in the lookback matched. A readable
   # condition in another code system is not a match.
   #
-  # Codes, code systems, and statuses are normalised before they are
-  # validated or compared. The text is read as UTF-8 the same way as
-  # registered criteria: an invalid encoding, or one that is not
-  # ASCII-compatible, is nil and does not raise. Surrounding Unicode
-  # whitespace and invisible format characters are stripped. What remains
-  # is nil when it has no visible letter or digit. A nil code, code
-  # system, or procedure code is unreadable evidence unless a dated
-  # in-window match exists.
+  # Codes, code systems, and statuses are cleaned with
+  # MedicalFrailtyCriteria.clean_text before they are validated or
+  # compared. Registration uses that same function, so the two cannot
+  # drift. An invalid encoding, or one that is not ASCII-compatible, is
+  # nil and does not raise. Surrounding Unicode whitespace and invisible
+  # format characters are stripped. What remains is nil when it has no
+  # visible letter or digit. A nil code, code system, or procedure code
+  # is unreadable evidence unless a dated in-window match exists. A
+  # medication whose cleaned code or code system still contains
+  # whitespace or a control character is unreadable the same way. A
+  # condition whose cleaned code system still contains whitespace or a
+  # control character is unreadable whatever the system is. A
+  # well-formed system other than ICD-10-CM stays a clean non-match.
+  # That check is MedicalFrailtyCriteria.whitespace_or_control?, the one
+  # registration uses to reject a medication system or code.
   #
   # The result lists each matching category, date, and source type. It
   # has no display text, codes, dosage text, raw references, or patient
@@ -31,13 +38,6 @@ module Corvid
     ICD10_CM = "http://hl7.org/fhir/sid/icd-10-cm"
     ENTERED_IN_ERROR = "entered-in-error"
     READS = %i[get_conditions get_medications list_claims].freeze
-    # Ends only. Unicode whitespace, ASCII whitespace including NUL, and
-    # invisible format characters (U+00A0, U+3000, U+200B). Interior
-    # characters stay so code systems and medication codes still compare
-    # exactly.
-    SURROUNDING_INVISIBLE =
-      /\A[[:space:]\p{Cf}\u0000]+|[[:space:]\p{Cf}\u0000]+\z/
-    private_constant :SURROUNDING_INVISIBLE
 
     Result = Struct.new(:status, :reason, :evidence, keyword_init: true) do
       def to_h
@@ -170,7 +170,7 @@ module Corvid
 
       code = stripped_text(medication.code)
       system = stripped_text(medication.code_system)
-      return :unreadable if code.nil? || system.nil?
+      return :unreadable unless readable_medication?(code, system)
 
       names = category_names(criteria) { |category| medication_match?(category, system, code) }
       return if names.empty?
@@ -188,13 +188,27 @@ module Corvid
       record(names, claim.serviced_date, :claim, window, rows)
     end
 
-    # A non-blank code and system are readable. ICD-10-CM also requires a
-    # real ICD-10 shape; another code system does not.
+    # A non-blank code and system are readable. A cleaned system that
+    # still contains whitespace or a control character is not, whatever
+    # the system is. ICD-10-CM also requires a real ICD-10 shape;
+    # another code system does not.
     def readable_condition?(code, system)
       return false if code.nil? || system.nil?
+      return false if MedicalFrailtyCriteria.whitespace_or_control?(system)
       return true unless system == ICD10_CM
 
       !icd10_body(code).nil?
+    end
+
+    # Nil is unreadable. So is a cleaned code or system that still
+    # contains whitespace or a control character. Registration rejects
+    # those with the same check.
+    def readable_medication?(code, system)
+      return false if code.nil? || system.nil?
+      return false if MedicalFrailtyCriteria.whitespace_or_control?(code)
+      return false if MedicalFrailtyCriteria.whitespace_or_control?(system)
+
+      true
     end
 
     def category_names(criteria)
@@ -283,16 +297,10 @@ module Corvid
     # Nil for a non-String, text that cannot be read as UTF-8, or text
     # with no visible letter or digit after surrounding Unicode whitespace
     # and format characters are removed. Never raises. Callers fail closed
-    # on nil.
+    # on nil. The rule lives on MedicalFrailtyCriteria so registration
+    # cannot clean a different way.
     def stripped_text(value)
-      return unless value.is_a?(String)
-
-      # Copy first so a subclass cannot override the encoding read.
-      text = MedicalFrailtyCriteria.utf8_text(String.new(value))
-      return if text.nil?
-
-      trimmed = text.gsub(SURROUNDING_INVISIBLE, "")
-      trimmed unless MedicalFrailtyCriteria.blank_text?(trimmed)
+      MedicalFrailtyCriteria.clean_text(value)
     end
 
     def likely(rows)

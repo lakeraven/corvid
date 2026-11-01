@@ -20,6 +20,13 @@ module Corvid
   # Lookup of an unregistered or malformed code returns NotConfigured.
   # Callers must not treat that as "no frailty criteria".
   #
+  # ICD-10 prefixes, procedure codes, and medication systems and codes
+  # are cleaned with .clean_text before they are validated or stored.
+  # That is the same rule the classifier uses for adapter values. A blank
+  # result is rejected. A medication system or code that still contains
+  # whitespace or a control character is rejected. URI shape and code
+  # shape are checked on the cleaned value.
+  #
   # Registration errors name the problem only. They do not include the
   # supplied state, category, or code (ADR 0003).
   module MedicalFrailtyCriteria
@@ -40,6 +47,18 @@ module Corvid
     # category but render as nothing, so they do not count. Same set as
     # StateMedicaidRules.
     VISIBLE = /[\p{L}\p{N}&&[^\u115F\u1160\u3164\uFFA0]]/
+    # Ends only. Unicode whitespace and invisible format characters
+    # (no-break space, ideographic space, zero-width space). Interior
+    # characters stay. NUL is a control character, not whitespace or
+    # format, so it is left in place and medication registration rejects it.
+    SURROUNDING_INVISIBLE =
+      /\A[[:space:]\p{Cf}]+|[[:space:]\p{Cf}]+\z/
+    # Whitespace or a control character still inside a cleaned medication
+    # system or code. Those values compare exactly, so they are not stored.
+    # Alternation, not one character class: [[:space:]] already includes
+    # some Cc characters, and Ruby warns on that duplicated range.
+    WHITESPACE_OR_CONTROL = /[[:space:]]|\p{Cc}/
+    private_constant :SURROUNDING_INVISIBLE, :WHITESPACE_OR_CONTROL
 
     Entry = Struct.new(:state_code, :categories, keyword_init: true) do
       def configured? = true
@@ -90,6 +109,26 @@ module Corvid
       # category key. Hangul fillers do not count.
       def blank_text?(text)
         !VISIBLE.match?(text)
+      end
+
+      # Public so registration and the classifier share one cleaning rule
+      # and cannot drift. Nil for a non-String, text that cannot be read
+      # as UTF-8, or text with no visible letter or digit after surrounding
+      # Unicode whitespace and format characters are removed. Never raises.
+      # Control characters such as NUL are not removed.
+      def clean_text(value)
+        text = copied_text(value)
+        return if text.nil?
+
+        trimmed = text.gsub(SURROUNDING_INVISIBLE, "")
+        trimmed unless blank_text?(trimmed)
+      end
+
+      # Public so registration and the classifier share one check and
+      # cannot drift. True when text contains whitespace or a control
+      # character. Callers clean with .clean_text first.
+      def whitespace_or_control?(text)
+        WHITESPACE_OR_CONTROL.match?(text)
       end
 
       private
@@ -188,7 +227,7 @@ module Corvid
       end
 
       def store_icd10(value)
-        text = copied_text(value)
+        text = clean_text(value)
         raise ArgumentError, "icd10 prefix is not usable" if icd10_body(text).nil?
 
         text.freeze
@@ -201,22 +240,43 @@ module Corvid
       def store_medication(entry)
         fields = medication_fields(entry)
         system = store_system(fields[:system])
-        code = store_token(fields[:code], "medication code is not usable")
+        code = store_medication_code(fields[:code])
         { system:, code: }.freeze
       end
 
       def store_system(value)
-        text = copied_text(value)
-        raise ArgumentError, "medication system is not usable" unless text&.match?(SYSTEM_URI)
+        text = clean_text(value)
+        raise ArgumentError, "medication system is not usable" unless usable_medication_system?(text)
+
+        text.freeze
+      end
+
+      def store_medication_code(value)
+        text = clean_text(value)
+        raise ArgumentError, "medication code is not usable" unless usable_medication_code?(text)
 
         text.freeze
       end
 
       def store_token(value, message)
-        text = copied_text(value)
+        text = clean_text(value)
         raise ArgumentError, message if token_key(text).nil?
 
         text.freeze
+      end
+
+      # SYSTEM_URI rejects whitespace, not control characters. A trailing
+      # NUL still matches [^\s], so it has to be rejected on its own.
+      def usable_medication_system?(text)
+        return false if text.nil? || whitespace_or_control?(text)
+
+        text.match?(SYSTEM_URI)
+      end
+
+      def usable_medication_code?(text)
+        return false if text.nil? || whitespace_or_control?(text)
+
+        !token_key(text).nil?
       end
 
       def icd10_body(text)
@@ -233,6 +293,7 @@ module Corvid
         key if CODE_TOKEN.match?(key)
       end
 
+      # Copy first so a subclass cannot override the encoding read.
       def copied_text(value)
         return unless value.is_a?(String)
 
