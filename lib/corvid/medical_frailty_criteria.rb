@@ -74,6 +74,24 @@ module Corvid
         @entries = {}
       end
 
+      # Public so an adapter value and a registered value share one UTF-8
+      # read. Nil when the encoding is invalid or not ASCII-compatible.
+      # ASCII-8BIT is nil when it contains a non-ASCII byte.
+      def utf8_text(text)
+        return unless text.valid_encoding? && text.encoding.ascii_compatible?
+        return if text.encoding == Encoding::ASCII_8BIT && !text.ascii_only?
+
+        text.encode(Encoding::UTF_8)
+      rescue EncodingError
+        nil
+      end
+
+      # Public so "no visible letter or digit" is the same rule as a
+      # category key. Hangul fillers do not count.
+      def blank_text?(text)
+        !VISIBLE.match?(text)
+      end
+
       private
 
       def entries
@@ -230,19 +248,6 @@ module Corvid
         return String.new(key.name) if key.is_a?(Symbol)
 
         String.new(key) if key.is_a?(String)
-      end
-
-      def utf8_text(text)
-        return unless text.valid_encoding? && text.encoding.ascii_compatible?
-        return if text.encoding == Encoding::ASCII_8BIT && !text.ascii_only?
-
-        text.encode(Encoding::UTF_8)
-      rescue EncodingError
-        nil
-      end
-
-      def blank_text?(text)
-        !VISIBLE.match?(text)
       end
 
       def normalize_state_code(state_code)

@@ -15,8 +15,14 @@ module Corvid
   # every read answered and nothing in the lookback matched. A readable
   # condition in another code system is not a match.
   #
-  # Surrounding whitespace is stripped from codes, code systems, and
-  # statuses before they are validated or compared.
+  # Codes, code systems, and statuses are normalised before they are
+  # validated or compared. The text is read as UTF-8 the same way as
+  # registered criteria: an invalid encoding, or one that is not
+  # ASCII-compatible, is nil and does not raise. Surrounding Unicode
+  # whitespace and invisible format characters are stripped. What remains
+  # is nil when it has no visible letter or digit. A nil code, code
+  # system, or procedure code is unreadable evidence unless a dated
+  # in-window match exists.
   #
   # The result lists each matching category, date, and source type. It
   # has no display text, codes, dosage text, raw references, or patient
@@ -25,6 +31,13 @@ module Corvid
     ICD10_CM = "http://hl7.org/fhir/sid/icd-10-cm"
     ENTERED_IN_ERROR = "entered-in-error"
     READS = %i[get_conditions get_medications list_claims].freeze
+    # Ends only. Unicode whitespace, ASCII whitespace including NUL, and
+    # invisible format characters (U+00A0, U+3000, U+200B). Interior
+    # characters stay so code systems and medication codes still compare
+    # exactly.
+    SURROUNDING_INVISIBLE =
+      /\A[[:space:]\p{Cf}\u0000]+|[[:space:]\p{Cf}\u0000]+\z/
+    private_constant :SURROUNDING_INVISIBLE
 
     Result = Struct.new(:status, :reason, :evidence, keyword_init: true) do
       def to_h
@@ -267,13 +280,19 @@ module Corvid
       key if MedicalFrailtyCriteria::CODE_TOKEN.match?(key)
     end
 
-    # Nil for a non-String or a string that is blank once surrounding
-    # whitespace is removed. Callers fail closed on nil.
+    # Nil for a non-String, text that cannot be read as UTF-8, or text
+    # with no visible letter or digit after surrounding Unicode whitespace
+    # and format characters are removed. Never raises. Callers fail closed
+    # on nil.
     def stripped_text(value)
       return unless value.is_a?(String)
 
-      text = value.strip
-      text unless text.empty?
+      # Copy first so a subclass cannot override the encoding read.
+      text = MedicalFrailtyCriteria.utf8_text(String.new(value))
+      return if text.nil?
+
+      trimmed = text.gsub(SURROUNDING_INVISIBLE, "")
+      trimmed unless MedicalFrailtyCriteria.blank_text?(trimmed)
     end
 
     def likely(rows)
