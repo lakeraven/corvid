@@ -748,6 +748,294 @@ class Corvid::MedicalFrailtyClassifierTest < ActiveSupport::TestCase
     end
   end
 
+  test "unreadable condition blank code_system alone yields unknown unreadable_evidence" do
+    with_tenant(TENANT) do
+      result = classify_with(
+        fixed_lists_adapter(
+          conditions: [ synthetic_condition(code: "Z99.81", code_system: "   ", onset_date: AS_OF) ]
+        )
+      )
+
+      assert_unknown result, :unreadable_evidence
+    end
+  end
+
+  test "unreadable condition integer code_system alone yields unknown unreadable_evidence" do
+    with_tenant(TENANT) do
+      result = classify_with(
+        fixed_lists_adapter(
+          conditions: [ synthetic_condition(code: "Z99.81", code_system: 794, onset_date: AS_OF) ]
+        )
+      )
+
+      assert_unknown result, :unreadable_evidence
+    end
+  end
+
+  test "unreadable medication blank code_system alone yields unknown unreadable_evidence" do
+    with_tenant(TENANT) do
+      result = classify_with(
+        fixed_lists_adapter(
+          medications: [ synthetic_medication(code: "RX_TEST_001", code_system: "   ", authored_on: AS_OF) ]
+        )
+      )
+
+      assert_unknown result, :unreadable_evidence
+    end
+  end
+
+  test "unreadable medication integer code_system alone yields unknown unreadable_evidence" do
+    with_tenant(TENANT) do
+      result = classify_with(
+        fixed_lists_adapter(
+          medications: [ synthetic_medication(code: "RX_TEST_001", code_system: 794, authored_on: AS_OF) ]
+        )
+      )
+
+      assert_unknown result, :unreadable_evidence
+    end
+  end
+
+  test "unreadable condition code_system nbsp alone yields unknown unreadable_evidence" do
+    with_tenant(TENANT) do
+      result = classify_with(
+        fixed_lists_adapter(
+          conditions: [ synthetic_condition(code: "Z99.81", code_system: "\u00A0", onset_date: AS_OF) ]
+        )
+      )
+
+      assert_unknown result, :unreadable_evidence
+    end
+  end
+
+  test "unreadable condition code_system ideographic space alone yields unknown unreadable_evidence" do
+    with_tenant(TENANT) do
+      result = classify_with(
+        fixed_lists_adapter(
+          conditions: [ synthetic_condition(code: "Z99.81", code_system: "\u3000", onset_date: AS_OF) ]
+        )
+      )
+
+      assert_unknown result, :unreadable_evidence
+    end
+  end
+
+  test "unreadable condition code_system zero width space alone yields unknown unreadable_evidence" do
+    with_tenant(TENANT) do
+      result = classify_with(
+        fixed_lists_adapter(
+          conditions: [ synthetic_condition(code: "Z99.81", code_system: "\u200B", onset_date: AS_OF) ]
+        )
+      )
+
+      assert_unknown result, :unreadable_evidence
+    end
+  end
+
+  test "unreadable medication code nbsp alone yields unknown unreadable_evidence" do
+    with_tenant(TENANT) do
+      result = classify_with(
+        fixed_lists_adapter(
+          medications: [ synthetic_medication(code: "\u00A0", authored_on: AS_OF) ]
+        )
+      )
+
+      assert_unknown result, :unreadable_evidence
+    end
+  end
+
+  test "unreadable medication code_system ideographic space alone yields unknown unreadable_evidence" do
+    with_tenant(TENANT) do
+      result = classify_with(
+        fixed_lists_adapter(
+          medications: [
+            synthetic_medication(code: "RX_TEST_001", code_system: "\u3000", authored_on: AS_OF)
+          ]
+        )
+      )
+
+      assert_unknown result, :unreadable_evidence
+    end
+  end
+
+  test "unreadable snomed condition code nbsp alone yields unknown unreadable_evidence" do
+    with_tenant(TENANT) do
+      result = classify_with(
+        fixed_lists_adapter(
+          conditions: [
+            synthetic_condition(
+              code: "\u00A0",
+              code_system: "http://snomed.info/sct",
+              onset_date: AS_OF
+            )
+          ]
+        )
+      )
+
+      assert_unknown result, :unreadable_evidence
+    end
+  end
+
+  test "unicode whitespace padded icd10 condition code_system matches in window" do
+    with_tenant(TENANT) do
+      prefix_state = register_prefix_state("E10")
+      seed_condition(code: "E10.9", code_system: "#{ICD10}\u00A0", onset_date: AS_OF)
+
+      result = classify(state_code: prefix_state)
+
+      assert_likely_frail result
+      assert_evidence result, evidence_row("prefix_e10", AS_OF, :condition)
+    end
+  end
+
+  test "unicode whitespace padded icd10 condition code matches in window" do
+    with_tenant(TENANT) do
+      prefix_state = register_prefix_state("E10")
+      seed_condition(code: "\u00A0E10.9", onset_date: AS_OF)
+
+      result = classify(state_code: prefix_state)
+
+      assert_likely_frail result
+      assert_evidence result, evidence_row("prefix_e10", AS_OF, :condition)
+    end
+  end
+
+  test "unicode whitespace padded medication code matches in window" do
+    with_tenant(TENANT) do
+      seed_medication(code: "RX_TEST_001\u3000", authored_on: AS_OF)
+
+      result = classify
+
+      assert_likely_frail result
+      assert_evidence result, evidence_row("synthetic_z9981", AS_OF, :medication)
+    end
+  end
+
+  test "unicode whitespace padded claim procedure_code matches in window" do
+    with_tenant(TENANT) do
+      seed_claim_line(procedure_code: "\u00A0HCPCS_TEST_A", serviced_date: AS_OF)
+
+      result = classify
+
+      assert_likely_frail result
+      assert_evidence result, evidence_row("synthetic_z9981", AS_OF, :claim)
+    end
+  end
+
+  test "unicode whitespace padded entered in error clinical_status is ignored" do
+    with_tenant(TENANT) do
+      seed_condition(
+        code: "Z99.81",
+        onset_date: AS_OF,
+        clinical_status: "\u00A0entered-in-error"
+      )
+
+      result = classify
+
+      assert_not_indicated result
+    end
+  end
+
+  test "unreadable condition code invalid utf8 alone yields unknown unreadable_evidence without raising" do
+    with_tenant(TENANT) do
+      bad_code = "E10\xFF".dup.force_encoding("UTF-8")
+      result = nil
+      assert_nothing_raised do
+        result = classify_with(
+          fixed_lists_adapter(
+            conditions: [ synthetic_condition(code: bad_code, onset_date: AS_OF) ]
+          )
+        )
+      end
+
+      assert_unknown result, :unreadable_evidence
+    end
+  end
+
+  test "unreadable medication code invalid utf8 alone yields unknown unreadable_evidence without raising" do
+    with_tenant(TENANT) do
+      bad_code = "\xFF".dup.force_encoding("UTF-8")
+      result = nil
+      assert_nothing_raised do
+        result = classify_with(
+          fixed_lists_adapter(
+            medications: [ synthetic_medication(code: bad_code, authored_on: AS_OF) ]
+          )
+        )
+      end
+
+      assert_unknown result, :unreadable_evidence
+    end
+  end
+
+  test "unreadable condition code utf16le alone yields unknown unreadable_evidence without raising" do
+    with_tenant(TENANT) do
+      bad_code = "E10.9".encode("UTF-16LE")
+      result = nil
+      assert_nothing_raised do
+        result = classify_with(
+          fixed_lists_adapter(
+            conditions: [ synthetic_condition(code: bad_code, onset_date: AS_OF) ]
+          )
+        )
+      end
+
+      assert_unknown result, :unreadable_evidence
+    end
+  end
+
+  test "unreadable condition code_system utf16le alone yields unknown unreadable_evidence without raising" do
+    with_tenant(TENANT) do
+      bad_system = ICD10.encode("UTF-16LE")
+      result = nil
+      assert_nothing_raised do
+        result = classify_with(
+          fixed_lists_adapter(
+            conditions: [ synthetic_condition(code: "E10.9", code_system: bad_system, onset_date: AS_OF) ]
+          )
+        )
+      end
+
+      assert_unknown result, :unreadable_evidence
+    end
+  end
+
+  test "unreadable claim procedure_code utf16le alone yields unknown unreadable_evidence without raising" do
+    with_tenant(TENANT) do
+      bad_code = "G0299".encode("UTF-16LE")
+      result = nil
+      assert_nothing_raised do
+        result = classify_with(
+          fixed_lists_adapter(
+            claims: [ synthetic_claim_line(procedure_code: bad_code, serviced_date: AS_OF) ]
+          )
+        )
+      end
+
+      assert_unknown result, :unreadable_evidence
+    end
+  end
+
+  test "non array medication read yields unknown source_unavailable" do
+    with_tenant(TENANT) do
+      @adapter.define_singleton_method(:get_medications) { |_pid| {} }
+
+      result = classify
+
+      assert_unknown result, :source_unavailable
+    end
+  end
+
+  test "non array claim read yields unknown source_unavailable" do
+    with_tenant(TENANT) do
+      @adapter.define_singleton_method(:list_claims) { |_pid| {} }
+
+      result = classify
+
+      assert_unknown result, :source_unavailable
+    end
+  end
+
   test "twelve month window on month end as_of includes same calendar day prior year" do
     with_tenant(TENANT) do
       as_of = Date.new(2024, 6, 15)
