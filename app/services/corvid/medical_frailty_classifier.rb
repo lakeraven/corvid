@@ -7,8 +7,16 @@ module Corvid
   # Nothing is persisted or logged (ADR 0003).
   #
   # `unknown` when the state is not configured, any of the three reads
-  # returns nil, or the only would-be matches are undated. `not_indicated`
-  # only when every read answered and nothing in the lookback matched.
+  # returns nil, a record is unreadable (`:unreadable_evidence`), or the
+  # only would-be matches are undated. Unreadable evidence takes
+  # precedence over undated evidence. A dated match inside the window is
+  # `likely_frail`; unreadable records are not evidence. Entered-in-error
+  # records are ignored before they are read. `not_indicated` only when
+  # every read answered and nothing in the lookback matched. A readable
+  # condition in another code system is not a match.
+  #
+  # Surrounding whitespace is stripped from codes, code systems, and
+  # statuses before they are validated or compared.
   #
   # The result lists each matching category, date, and source type. It
   # has no display text, codes, dosage text, raw references, or patient
@@ -78,9 +86,11 @@ module Corvid
 
     def decide(criteria, lists, as_of, months)
       rows = []
-      undated = collect(criteria, lists, as_of, months, rows)
+      summaries = collect(criteria, lists, as_of, months, rows)
       return likely(rows) unless rows.empty?
-      return unknown(:undated_evidence) if undated
+
+      reason = failure_reason(summaries)
+      return unknown(reason) if reason
 
       no_evidence
     end
@@ -92,7 +102,15 @@ module Corvid
         scan_conditions(criteria, conditions, window, rows),
         scan_medications(criteria, medications, window, rows),
         scan_claims(criteria, claims, window, rows)
-      ].any?
+      ]
+    end
+
+    # Unreadable outranks undated when no dated in-window match was kept.
+    def failure_reason(summaries)
+      return :unreadable_evidence if summaries.any? { |summary| summary[:unreadable] }
+      return :undated_evidence if summaries.any? { |summary| summary[:undated] }
+
+      nil
     end
 
     def scan_conditions(criteria, conditions, window, rows)
@@ -108,39 +126,62 @@ module Corvid
     end
 
     def scan(items)
-      undated = false
-      items.each { |item| undated = true if yield(item) == :undated }
-      undated
+      items.each_with_object({}) { |item, flags| flag_outcome(flags, yield(item)) }
+    end
+
+    def flag_outcome(flags, outcome)
+      case outcome
+      when :undated, :unreadable
+        flags[outcome] = true
+      end
     end
 
     def add_condition(criteria, condition, window, rows)
-      return unless condition.is_a?(ConditionReference)
+      return :unreadable unless condition.is_a?(ConditionReference)
       return if entered_in_error?(condition.clinical_status)
-      return unless condition.code_system == ICD10_CM
 
-      names = category_names(criteria) { |category| icd10_match?(category, condition.code) }
+      code = stripped_text(condition.code)
+      system = stripped_text(condition.code_system)
+      return :unreadable unless readable_condition?(code, system)
+      return unless system == ICD10_CM
+
+      names = category_names(criteria) { |category| icd10_match?(category, code) }
       return if names.empty?
 
       record(names, condition.onset_date, :condition, window, rows)
     end
 
     def add_medication(criteria, medication, window, rows)
-      return unless medication.is_a?(MedicationReference)
+      return :unreadable unless medication.is_a?(MedicationReference)
       return if entered_in_error?(medication.status)
 
-      names = category_names(criteria) { |category| medication_match?(category, medication) }
+      code = stripped_text(medication.code)
+      system = stripped_text(medication.code_system)
+      return :unreadable if code.nil? || system.nil?
+
+      names = category_names(criteria) { |category| medication_match?(category, system, code) }
       return if names.empty?
 
       record(names, medication.authored_on, :medication, window, rows)
     end
 
     def add_claim(criteria, claim, window, rows)
-      return unless claim.is_a?(ClaimLineReference)
+      return :unreadable unless claim.is_a?(ClaimLineReference)
+      return :unreadable if token_key(claim.procedure_code).nil?
 
       names = category_names(criteria) { |category| procedure_match?(category, claim.procedure_code) }
       return if names.empty?
 
       record(names, claim.serviced_date, :claim, window, rows)
+    end
+
+    # A non-blank code and system are readable. ICD-10-CM also requires a
+    # real ICD-10 shape; another code system does not.
+    def readable_condition?(code, system)
+      return false if code.nil? || system.nil?
+      return true unless system == ICD10_CM
+
+      !icd10_body(code).nil?
     end
 
     def category_names(criteria)
@@ -159,9 +200,9 @@ module Corvid
       !prefix_body.nil? && body.start_with?(prefix_body)
     end
 
-    def medication_match?(category, medication)
+    def medication_match?(category, system, code)
       category.medication_codes.any? do |expected|
-        expected[:system] == medication.code_system && expected[:code] == medication.code
+        expected[:system] == system && expected[:code] == code
       end
     end
 
@@ -206,21 +247,33 @@ module Corvid
     end
 
     def entered_in_error?(status)
-      status.is_a?(String) && status.casecmp?(ENTERED_IN_ERROR)
+      text = stripped_text(status)
+      !text.nil? && text.casecmp?(ENTERED_IN_ERROR)
     end
 
     def icd10_body(value)
-      return unless value.is_a?(String)
+      text = stripped_text(value)
+      return if text.nil?
 
-      body = value.upcase(:ascii).delete(".")
+      body = text.upcase(:ascii).delete(".")
       body if MedicalFrailtyCriteria::ICD10_PREFIX.match?(body)
     end
 
     def token_key(value)
+      text = stripped_text(value)
+      return if text.nil?
+
+      key = text.upcase(:ascii)
+      key if MedicalFrailtyCriteria::CODE_TOKEN.match?(key)
+    end
+
+    # Nil for a non-String or a string that is blank once surrounding
+    # whitespace is removed. Callers fail closed on nil.
+    def stripped_text(value)
       return unless value.is_a?(String)
 
-      key = value.upcase(:ascii)
-      key if MedicalFrailtyCriteria::CODE_TOKEN.match?(key)
+      text = value.strip
+      text unless text.empty?
     end
 
     def likely(rows)
