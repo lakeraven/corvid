@@ -730,6 +730,172 @@ class Corvid::PayerAuthorizationRequestTest < ActiveSupport::TestCase
     end
   end
 
+  test "create! with drafted status and submitted_at set is invalid on submitted_at" do
+    with_tenant(TENANT) do
+      before_count = Corvid::PayerAuthorizationRequest.count
+      error = assert_raises(ActiveRecord::RecordInvalid) do
+        Corvid::PayerAuthorizationRequest.create!(
+          payer_identifier: PAYER_A,
+          channel: "pas",
+          status: "drafted",
+          submitted_at: Time.utc(2026, 3, 1, 9, 0, 0)
+        )
+      end
+      assert error.record.errors[:submitted_at].present?
+      assert_equal before_count, Corvid::PayerAuthorizationRequest.count
+    end
+  end
+
+  test "create! with drafted status and submitted_by_identifier set is invalid on submitted_by_identifier" do
+    with_tenant(TENANT) do
+      before_count = Corvid::PayerAuthorizationRequest.count
+      error = assert_raises(ActiveRecord::RecordInvalid) do
+        Corvid::PayerAuthorizationRequest.create!(
+          payer_identifier: PAYER_A,
+          channel: "pas",
+          status: "drafted",
+          submitted_by_identifier: SIGNOFF
+        )
+      end
+      assert error.record.errors[:submitted_by_identifier].present?
+      assert_equal before_count, Corvid::PayerAuthorizationRequest.count
+    end
+  end
+
+  test "create! with drafted status and follow_up_due_at set is invalid on follow_up_due_at" do
+    with_tenant(TENANT) do
+      before_count = Corvid::PayerAuthorizationRequest.count
+      error = assert_raises(ActiveRecord::RecordInvalid) do
+        Corvid::PayerAuthorizationRequest.create!(
+          payer_identifier: PAYER_A,
+          channel: "pas",
+          status: "drafted",
+          follow_up_due_at: Time.utc(2026, 3, 5, 10, 0, 0)
+        )
+      end
+      assert error.record.errors[:follow_up_due_at].present?
+      assert_equal before_count, Corvid::PayerAuthorizationRequest.count
+    end
+  end
+
+  test "drafted row update submitted_at is rejected and row unchanged" do
+    with_tenant(TENANT) do
+      request = create_request
+      bad_at = Time.utc(2026, 3, 1, 9, 0, 0)
+      refute request.update(submitted_at: bad_at)
+      assert_equal "drafted", request.reload.status
+      assert_nil request.submitted_at
+    end
+  end
+
+  test "drafted row update submitted_by_identifier is rejected and row unchanged" do
+    with_tenant(TENANT) do
+      request = create_request
+      refute request.update(submitted_by_identifier: SIGNOFF)
+      assert_equal "drafted", request.reload.status
+      assert_nil request.submitted_by_identifier
+    end
+  end
+
+  test "drafted row update follow_up_due_at is rejected and row unchanged" do
+    with_tenant(TENANT) do
+      request = create_request
+      refute request.update(follow_up_due_at: Time.utc(2026, 3, 5, 10, 0, 0))
+      assert_equal "drafted", request.reload.status
+      assert_nil request.follow_up_due_at
+    end
+  end
+
+  test "expiring excludes request cancelled after approval while still including approved in window" do
+    as_of = Date.new(2026, 6, 1)
+    within = 7.days
+    approved_to = as_of + 3.days
+
+    with_tenant(TENANT) do
+      still_approved = create_request
+      still_approved.submit!(submitted_by_identifier: SIGNOFF, at: Time.utc(2026, 5, 1, 9, 0, 0))
+      still_approved.approve!(
+        payer_authorization_identifier: PAYER_AUTH_ID,
+        approved_from: as_of - 1.day,
+        approved_to: approved_to
+      )
+
+      cancelled_after_approval = create_request
+      cancelled_after_approval.submit!(submitted_by_identifier: SIGNOFF, at: Time.utc(2026, 5, 1, 9, 0, 0))
+      cancelled_after_approval.approve!(
+        payer_authorization_identifier: "PAUTH-TEST-0002",
+        approved_from: as_of - 1.day,
+        approved_to: approved_to
+      )
+      cancelled_after_approval.cancel!
+
+      results = Corvid::PayerAuthorizationRequest.expiring(within: within, as_of: as_of)
+      assert_includes results, still_approved.reload
+      refute_includes results, cancelled_after_approval.reload
+    end
+  end
+
+  test "overdue excludes request cancelled after submission when timer elapsed" do
+    Corvid.configure { |c| c.payer_authorization_turnarounds = { PAYER_A => 3.days } }
+    submitted_at = Time.utc(2026, 3, 1, 9, 0, 0)
+    as_of = Time.utc(2026, 3, 5, 12, 0, 0)
+
+    with_tenant(TENANT) do
+      cancelled = create_request(payer_identifier: PAYER_A)
+      cancelled.submit!(submitted_by_identifier: SIGNOFF, at: submitted_at)
+      cancelled.cancel!
+
+      still_submitted = create_request(payer_identifier: PAYER_A)
+      still_submitted.submit!(submitted_by_identifier: SIGNOFF, at: submitted_at)
+
+      results = Corvid::PayerAuthorizationRequest.overdue(as_of: as_of)
+      refute_includes results, cancelled.reload
+      assert_includes results, still_submitted.reload
+    end
+  end
+
+  test "submitted row cannot move to approved via update without approval fields" do
+    with_tenant(TENANT) do
+      request = request_in("submitted")
+      refute request.update(status: "approved")
+      assert request.errors[:payer_authorization_identifier].present?
+      assert request.errors[:approved_from].present?
+      assert request.errors[:approved_to].present?
+      assert_equal "submitted", request.reload.status
+      refute request.payer_authorization_identifier.present?
+    end
+  end
+
+  test "drafted row cannot move to submitted via save without submission fields" do
+    with_tenant(TENANT) do
+      request = create_request
+      request.status = "submitted"
+      refute request.valid?
+      assert request.errors[:submitted_at].present?
+      assert request.errors[:submitted_by_identifier].present?
+      refute request.save
+      assert_equal "drafted", request.reload.status
+      assert_nil request.submitted_at
+      assert_nil request.submitted_by_identifier
+    end
+  end
+
+  test "submitted row update with approval dates out of order is invalid on approved_to not database" do
+    with_tenant(TENANT) do
+      request = request_in("submitted")
+      request.assign_attributes(
+        status: "approved",
+        payer_authorization_identifier: PAYER_AUTH_ID,
+        approved_from: Date.new(2026, 4, 30),
+        approved_to: Date.new(2026, 4, 1)
+      )
+      refute request.valid?
+      assert request.errors[:approved_to].present? || request.errors[:approved_from].present?
+      assert_raises(ActiveRecord::RecordInvalid) { request.save! }
+      assert_equal "submitted", request.reload.status
+    end
+  end
+
   test "expiring returns approved and partially_approved rows expiring within window for current tenant only" do
     as_of = Date.new(2026, 6, 1)
     within = 7.days

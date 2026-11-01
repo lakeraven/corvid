@@ -144,6 +144,30 @@ class Corvid::PayerAuthorizationRequestCheckConstraintsTest < ActiveSupport::Tes
     end
   end
 
+  test "database rejects drafted row with submitted_at via insert_all!" do
+    with_tenant(TENANT) do
+      assert_raises(ActiveRecord::StatementInvalid) do
+        insert_row!(submitted_at: Time.utc(2026, 3, 1, 9, 0, 0))
+      end
+    end
+  end
+
+  test "database rejects drafted row with submitted_by_identifier via insert_all!" do
+    with_tenant(TENANT) do
+      assert_raises(ActiveRecord::StatementInvalid) do
+        insert_row!(submitted_by_identifier: SIGNOFF)
+      end
+    end
+  end
+
+  test "database rejects drafted row with follow_up_due_at via insert_all!" do
+    with_tenant(TENANT) do
+      assert_raises(ActiveRecord::StatementInvalid) do
+        insert_row!(follow_up_due_at: Time.utc(2026, 3, 5, 10, 0, 0))
+      end
+    end
+  end
+
   test "database rejects denied row carrying approval fields via insert_all!" do
     with_tenant(TENANT) do
       assert_raises(ActiveRecord::StatementInvalid) do
