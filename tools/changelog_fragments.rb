@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require "fileutils"
+
 # Changelog fragments: one file per PR in changelog.d/, assembled under `## [Unreleased]` in
 # CHANGELOG.md at release. Each PR adds a uniquely named file, so two PRs never edit the same lines.
 #
@@ -50,7 +52,7 @@ module Fragments
     type = match[2]
     raise Error, "#{name}: unknown type #{type.inspect} (expected one of #{TYPES.join(', ')})" unless TYPES.include?(type)
 
-    text = File.read(path, encoding: "UTF-8")
+    text = File.read(path, encoding: "UTF-8").gsub("\r\n", "\n")
     raise Error, "#{name}: file is empty" if text.strip.empty?
 
     heading, body = text.split("\n", 2)
@@ -93,7 +95,38 @@ module Fragments
     fragments = self.load(dir)
     return Assembly.new(text: text, files: []) if fragments.empty?
 
-    out = text.sub(UNRELEASED) { |heading| "#{heading}\n\n#{render(fragments).chomp}" }
+    match = UNRELEASED.match(text)
+    rest = match.post_match.sub(/\A(?:[ \t]*\r?\n)+/, "")
+    block = "#{match.pre_match}#{match[0]}\n\n#{render(fragments).chomp}\n"
+    out = rest.empty? ? block : "#{block}\n#{rest}"
     Assembly.new(text: out, files: fragments.map(&:path))
+  end
+
+  # deleter and renamer are injectable so a test can simulate a failure at either step.
+  # All-or-nothing assembly: afterwards either CHANGELOG.md holds every entry and every consumed
+  # fragment is gone, or nothing changed. The new text goes to a temp file beside CHANGELOG.md; the
+  # fragments are then deleted with their bytes held in memory; the temp file is renamed into place
+  # (atomic). A failure at the write, a delete or the rename restores the fragments and removes the
+  # temp file, so a re-run never sees an entry both in CHANGELOG.md and in changelog.d/.
+  def apply(changelog_path:, dir:, deleter: File.method(:delete), renamer: File.method(:rename))
+    result = assemble(changelog_path: changelog_path, dir: dir)
+    return result if result.files.empty?
+
+    temp = "#{changelog_path}.#{Process.pid}.tmp"
+    saved = {}
+    begin
+      File.write(temp, result.text)
+      result.files.each do |path|
+        bytes = File.binread(path)
+        deleter.call(path)
+        saved[path] = bytes
+      end
+      renamer.call(temp, changelog_path)
+    rescue StandardError, ScriptError
+      saved.each { |path, bytes| File.binwrite(path, bytes) }
+      FileUtils.rm_f(temp)
+      raise
+    end
+    result
   end
 end

@@ -53,12 +53,10 @@ namespace :changelog do
   desc "Insert the fragments under [Unreleased] in CHANGELOG.md and delete them (the release step commits)"
   task :assemble do
     require_relative "tools/changelog_fragments"
-    result = Fragments.assemble(changelog_path: changelog, dir: fragments_dir)
+    result = Fragments.apply(changelog_path: changelog, dir: fragments_dir)
     if result.files.empty?
       puts "changelog:assemble: no fragments, CHANGELOG.md unchanged"
     else
-      File.write(changelog, result.text)
-      File.delete(*result.files)
       puts "changelog:assemble: wrote #{result.files.size} fragment(s) into CHANGELOG.md and deleted #{result.files.map { |f| File.basename(f) }.join(', ')}"
     end
   rescue Fragments::Error => e

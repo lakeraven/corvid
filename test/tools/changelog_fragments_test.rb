@@ -242,4 +242,86 @@ class ChangelogFragmentsTest < Minitest::Test
       FileUtils.remove_entry(repo)
     end
   end
+
+  # --- crash safety, line endings, section spacing -------------------------------------------
+
+  def setup_release(frags)
+    @sub = File.join(@dir, "frags")
+    FileUtils.mkdir_p(@sub)
+    frags.each { |name, text| File.write(File.join(@sub, name), text) }
+    @path = File.join(@dir, "CHANGELOG.md")
+    File.write(@path, CHANGELOG)
+  end
+
+  def test_apply_writes_changelog_and_deletes_fragments
+    setup_release("7.added.md" => "New thing (#7)\n", "8.fixed.md" => "Bug (#8)\n")
+    result = Fragments.apply(changelog_path: @path, dir: @sub)
+    assert_equal 2, result.files.size
+    assert_includes File.read(@path), "New thing (#7)"
+    assert_includes File.read(@path), "Bug (#8)"
+    assert_empty Dir.children(@sub)
+    assert_equal [ "CHANGELOG.md", "frags" ], Dir.children(@dir).sort, "no temp file may be left behind"
+  end
+
+  # Design: delete the fragments into memory first, restore them if anything later fails.
+  def test_apply_failing_at_the_delete_step_changes_nothing
+    setup_release("7.added.md" => "New thing (#7)\n", "8.fixed.md" => "Bug (#8)\n")
+    real_delete = File.method(:delete)
+    calls = 0
+    flaky = lambda do |*paths|
+      calls += 1
+      raise Errno::EACCES, "simulated delete failure" if calls == 2
+
+      real_delete.call(*paths)
+    end
+    assert_raises(Errno::EACCES) { Fragments.apply(changelog_path: @path, dir: @sub, deleter: flaky) }
+    assert_equal CHANGELOG, File.read(@path), "CHANGELOG.md must be untouched"
+    assert_equal [ "7.added.md", "8.fixed.md" ], Dir.children(@sub).sort, "every fragment must be restored"
+    assert_equal "New thing (#7)\n", File.read(File.join(@sub, "7.added.md"))
+    assert_equal [ "CHANGELOG.md", "frags" ], Dir.children(@dir).sort, "no temp file may be left behind"
+    # a re-run after the failure assembles exactly once
+    Fragments.apply(changelog_path: @path, dir: @sub)
+    assert_equal 1, File.read(@path).scan("New thing (#7)").size
+    assert_empty Dir.children(@sub)
+  end
+
+  def test_apply_failing_at_the_rename_step_restores_the_fragments
+    setup_release("7.added.md" => "New thing (#7)\n")
+    failing = ->(*) { raise Errno::EIO, "simulated rename failure" }
+    assert_raises(Errno::EIO) { Fragments.apply(changelog_path: @path, dir: @sub, renamer: failing) }
+    assert_equal CHANGELOG, File.read(@path)
+    assert_equal [ "7.added.md" ], Dir.children(@sub)
+    assert_equal [ "CHANGELOG.md", "frags" ], Dir.children(@dir).sort
+  end
+
+  def test_crlf_fragments_render_with_no_carriage_returns
+    frag("9.fixed.md", "Fix\r\nbody\r\n\r\nmore\r\n")
+    out = Fragments.render(Fragments.load(@dir))
+    refute_includes out, "\r"
+    assert_equal "### Fixed\n- Fix\n  body\n\n  more\n", out
+  end
+
+  def test_assemble_leaves_one_blank_line_when_unreleased_is_followed_directly_by_a_heading
+    setup_release("7.added.md" => "New thing (#7)\n")
+    File.write(@path, "# Changelog\n\n## [Unreleased]\n### Changed\n- Existing\n\n## [1.0.0]\n")
+    out = Fragments.assemble(changelog_path: @path, dir: @sub).text
+    assert_match(/New thing \(#7\)[^\n]*\n(\n|(?:[^\n]*\n)*\n)### Changed\n/, out)
+    assert_includes out, "\n\n### Changed\n- Existing\n"
+    refute_match(/\n\n\n/, out)
+  end
+
+  def test_assemble_leaves_exactly_one_blank_line_when_several_blank_lines_follow_unreleased
+    setup_release("7.added.md" => "New thing (#7)\n")
+    File.write(@path, "# Changelog\n\n## [Unreleased]\n\n\n\n### Changed\n- Existing\n")
+    out = Fragments.assemble(changelog_path: @path, dir: @sub).text
+    refute_match(/\n\n\n/, out)
+    assert_includes out, "\n\n### Changed\n- Existing\n"
+  end
+
+  def test_assemble_when_unreleased_is_the_last_section
+    setup_release("7.added.md" => "New thing (#7)\n")
+    File.write(@path, "# Changelog\n\n## [Unreleased]\n")
+    out = Fragments.assemble(changelog_path: @path, dir: @sub).text
+    assert out.end_with?("New thing (#7)\n"), out.inspect
+  end
 end
