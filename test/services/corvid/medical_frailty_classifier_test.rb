@@ -9,6 +9,8 @@ class Corvid::MedicalFrailtyClassifierTest < ActiveSupport::TestCase
   AS_OF = Date.new(2026, 6, 15)
   ICD10 = "http://hl7.org/fhir/sid/icd-10-cm"
   RX_SYSTEM = "http://example.test/rxnorm"
+  AMENDMENT_RX_SYSTEM = "http://example.test/rx"
+  AMENDMENT_RX_CODE = "123"
   DISPLAY_LEAK = "DISPLAY_SHOULD_NOT_LEAK_794"
   DOSAGE_LEAK = "DOSAGE_SHOULD_NOT_LEAK_794"
 
@@ -1303,6 +1305,124 @@ class Corvid::MedicalFrailtyClassifierTest < ActiveSupport::TestCase
     end
   end
 
+  test "adapter medication code with trailing null after cleaning alone yields unknown unreadable_evidence" do
+    register_amendment_rx_criteria!
+
+    with_tenant(TENANT) do
+      seed_empty_conditions_and_claims
+      seed_medication(
+        code: "#{AMENDMENT_RX_CODE}\u0000",
+        code_system: AMENDMENT_RX_SYSTEM,
+        authored_on: AS_OF
+      )
+
+      result = classify
+
+      assert_unknown result, :unreadable_evidence
+    end
+  end
+
+  test "adapter medication system with trailing null after cleaning alone yields unknown unreadable_evidence" do
+    register_amendment_rx_criteria!
+
+    with_tenant(TENANT) do
+      seed_empty_conditions_and_claims
+      seed_medication(
+        code: AMENDMENT_RX_CODE,
+        code_system: "#{AMENDMENT_RX_SYSTEM}\u0000",
+        authored_on: AS_OF
+      )
+
+      result = classify
+
+      assert_unknown result, :unreadable_evidence
+    end
+  end
+
+  test "adapter medication code with interior ascii space after cleaning alone yields unknown unreadable_evidence" do
+    register_amendment_rx_criteria!
+
+    with_tenant(TENANT) do
+      seed_empty_conditions_and_claims
+      seed_medication(
+        code: "12 3",
+        code_system: AMENDMENT_RX_SYSTEM,
+        authored_on: AS_OF
+      )
+
+      result = classify
+
+      assert_unknown result, :unreadable_evidence
+    end
+  end
+
+  test "adapter medication code with interior nbsp after cleaning alone yields unknown unreadable_evidence" do
+    register_amendment_rx_criteria!
+
+    with_tenant(TENANT) do
+      seed_empty_conditions_and_claims
+      seed_medication(
+        code: "12\u00A03",
+        code_system: AMENDMENT_RX_SYSTEM,
+        authored_on: AS_OF
+      )
+
+      result = classify
+
+      assert_unknown result, :unreadable_evidence
+    end
+  end
+
+  test "adapter medication code with trailing tab stripped after cleaning matches in window" do
+    register_amendment_rx_criteria!
+
+    with_tenant(TENANT) do
+      seed_empty_conditions_and_claims
+      seed_medication(
+        code: "#{AMENDMENT_RX_CODE}\t",
+        code_system: AMENDMENT_RX_SYSTEM,
+        authored_on: AS_OF
+      )
+
+      result = classify
+
+      assert_likely_frail result
+      assert_evidence result, evidence_row("synthetic_z9981", AS_OF, :medication)
+    end
+  end
+
+  test "unreadable medication evidence alongside dated in window condition yields likely_frail" do
+    Corvid::MedicalFrailtyCriteria.reset!
+    Corvid::MedicalFrailtyCriteria.register(
+      STATE,
+      categories: {
+        synthetic_z9981: {
+          icd10_prefixes: [ "Z9981" ],
+          medication_codes: [ { system: AMENDMENT_RX_SYSTEM, code: AMENDMENT_RX_CODE } ],
+          procedure_codes: []
+        }
+      }
+    )
+
+    with_tenant(TENANT) do
+      result = classify_with(
+        fixed_lists_adapter(
+          conditions: [ synthetic_condition(code: "Z99.81", onset_date: AS_OF) ],
+          medications: [
+            synthetic_medication(
+              code: "12 3",
+              code_system: AMENDMENT_RX_SYSTEM,
+              authored_on: AS_OF
+            )
+          ]
+        )
+      )
+
+      assert_likely_frail result
+      assert_evidence result, evidence_row("synthetic_z9981", AS_OF, :condition)
+    end
+  end
+
   private
 
   def window_start
@@ -1317,6 +1437,20 @@ class Corvid::MedicalFrailtyClassifierTest < ActiveSupport::TestCase
           icd10_prefixes: [ "Z9981" ],
           medication_codes: [ { system: RX_SYSTEM, code: "RX_TEST_001" } ],
           procedure_codes: [ "HCPCS_TEST_A" ]
+        }
+      }
+    )
+  end
+
+  def register_amendment_rx_criteria!
+    Corvid::MedicalFrailtyCriteria.reset!
+    Corvid::MedicalFrailtyCriteria.register(
+      STATE,
+      categories: {
+        synthetic_z9981: {
+          icd10_prefixes: [],
+          medication_codes: [ { system: AMENDMENT_RX_SYSTEM, code: AMENDMENT_RX_CODE } ],
+          procedure_codes: []
         }
       }
     )
