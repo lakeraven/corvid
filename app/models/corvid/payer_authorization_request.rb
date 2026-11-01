@@ -214,21 +214,24 @@ module Corvid
       submitted_at_in_database.present?
     end
 
-    # Cancelling a draft records no ask. A later save cannot fill the
-    # submission columns. Approval columns stay blank on that row too:
+    # No ask was stored. Drafted and cancelled are the statuses being
+    # saved that still mean the payer was not asked, including the save
+    # that cancels a draft and any later save of that row. status is the
+    # value being saved, as in approval_fields_match_status. The ask and
+    # its timer stay null. Approval columns stay blank on that row too:
     # approval_fields_match_status refuses them when no approval was stored.
     def submission_blank_when_cancelled_from_draft
-      return unless cancelled_from_draft?
+      return unless unsent_status_without_recorded_submission?
 
       %i[submitted_at submitted_by_identifier follow_up_due_at].each do |name|
-        errors.add(name, "must be blank") if self[name].present?
+        errors.add(name, "must be blank") unless self[name].nil?
       end
     end
 
-    def cancelled_from_draft?
-      return false if new_record?
+    def unsent_status_without_recorded_submission?
+      return false unless status == "drafted" || status == "cancelled"
 
-      status_in_database == "cancelled" && submitted_at_in_database.nil?
+      submitted_at_in_database.nil?
     end
 
     # An approval's decision stays as it was recorded, including after

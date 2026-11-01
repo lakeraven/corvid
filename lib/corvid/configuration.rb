@@ -29,9 +29,10 @@ module Corvid
   #
   # payer_authorization_turnarounds maps payer_identifier to a positive
   # ActiveSupport::Duration (default {}). Keys are stored as strings.
-  # The writer rejects a non-Hash, a blank key, a non-duration, a
-  # duration that is not positive, and two keys that normalize to the
-  # same string. It is not secret. It is omitted from
+  # The writer rejects a non-Hash, a blank key, a key that differs from
+  # its stripped form, a non-duration, a duration that is not positive,
+  # and two keys that normalize to the same string. It is not secret.
+  # It is omitted from
   # inspect/as_json/to_yaml with the other operational settings so those
   # methods stay an allow-list of snapshot key versions.
   class Configuration
@@ -130,10 +131,11 @@ module Corvid
       @alternate_resource_check_max_age_overrides
     end
 
-    # Symbol keys become strings. Blank keys, non-durations,
-    # non-positive durations, and two keys that strip to the same string
-    # are rejected. The stored key stays key.to_s. Anything other than a
-    # Hash is rejected before the pairs are read.
+    # Symbol keys become strings. Blank keys, keys whose stripped form
+    # differs, non-durations, non-positive durations, and two keys that
+    # strip to the same string are rejected. The stored key stays
+    # key.to_s. Anything other than a Hash is rejected before the pairs
+    # are read.
     def validated_payer_authorization_turnarounds(turnarounds)
       unless turnarounds.is_a?(Hash)
         raise ArgumentError, "payer authorization turnarounds must be a hash"
@@ -151,6 +153,9 @@ module Corvid
       normalized = payer.strip
       if normalized.empty?
         raise ArgumentError, "payer authorization turnaround payer identifier can't be blank"
+      end
+      if payer != normalized
+        raise ArgumentError, "payer authorization turnaround payer identifier must be stripped"
       end
       if seen.key?(normalized)
         raise ArgumentError, "payer authorization turnaround keys must be unique"
