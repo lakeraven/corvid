@@ -41,7 +41,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   is invalid, including one that has not been saved. The database rejects
   that link with a composite foreign key, and a request with no referral
   is still allowed. When the referral names a facility, the request must
-  name the same one. An unknown or missing decision is not an approval.
+  name the same one, and once the payer was asked, `prc_referral_id` and
+  `facility_identifier` cannot change. An unknown or missing decision is
+  not an approval.
 - ZIP-to-CBSA wage-area crosswalk (#371). `corvid_zip_cbsa_crosswalks`
   stores the CMS crosswalk by federal fiscal year (`zip` is five ASCII
   digits; `cbsa` is a five-digit CBSA or a two-digit rural-state code;

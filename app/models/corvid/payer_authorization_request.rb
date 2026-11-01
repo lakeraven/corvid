@@ -22,8 +22,13 @@ module Corvid
     # Still waiting on the payer. Used by overdue; a decision is not overdue.
     AWAITING_DECISION_STATUSES = %w[submitted pended].freeze
     # Locked once the payer was asked, including after a later cancellation.
-    # payer_identifier and channel are fixed with that evidence.
-    SUBMISSION_EVIDENCE = %i[submitted_at submitted_by_identifier follow_up_due_at payer_identifier channel].freeze
+    # payer_identifier, channel, prc_referral_id, and facility_identifier
+    # are fixed with that evidence. A drafted row may still change the
+    # referral and the facility.
+    SUBMISSION_EVIDENCE = %i[
+      submitted_at submitted_by_identifier follow_up_due_at
+      payer_identifier channel prc_referral_id facility_identifier
+    ].freeze
     # Written by an approval. A later cancellation keeps them.
     APPROVAL_EVIDENCE = %i[payer_authorization_identifier approved_from approved_to approved_units].freeze
 
@@ -337,14 +342,15 @@ module Corvid
       errors.add(:status, "is not an allowed change")
     end
 
-    # An assigned referral, including one that has not been saved, is read
-    # from memory so it is not autosaved before this check. That target is
-    # current only when its id is prc_referral_id. A changed id leaves the
-    # previous target loaded, and an unloaded association has no target.
-    # Both are read with Corvid::PrcReferral.unscoped by the current id and
-    # this request's tenant, so a cross-tenant id is a validation error.
-    # When the referral names a facility, this request must name the same
-    # one, including when this request's facility is nil.
+    # A persisted referral is read from its saved row with
+    # Corvid::PrcReferral.unscoped by the current prc_referral_id, and this
+    # request's tenant is filtered explicitly. An in-memory edit of that
+    # row is not the check, and a changed prc_referral_id is the id that is
+    # read. Only an unsaved referral assigned in memory is read from
+    # memory, and only when its id is still prc_referral_id, so this check
+    # does not autosave it. A cross-tenant id is a validation error. When
+    # the referral names a facility, this request must name the same one,
+    # including when this request's facility is nil.
     def prc_referral_in_same_tenant
       return unless linked_referral?
 
@@ -374,7 +380,7 @@ module Corvid
 
     def current_prc_referral
       referral = association(:prc_referral).target
-      return if referral.nil? || referral.id != prc_referral_id
+      return if referral.nil? || !referral.new_record? || referral.id != prc_referral_id
 
       referral
     end

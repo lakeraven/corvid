@@ -29,8 +29,9 @@ module Corvid
   #
   # payer_authorization_turnarounds maps payer_identifier to a positive
   # ActiveSupport::Duration (default {}). Keys are stored as strings.
-  # The writer rejects a non-Hash, a blank key, a non-duration, and a
-  # duration that is not positive. It is not secret. It is omitted from
+  # The writer rejects a non-Hash, a blank key, a non-duration, a
+  # duration that is not positive, and two keys that normalize to the
+  # same string. It is not secret. It is omitted from
   # inspect/as_json/to_yaml with the other operational settings so those
   # methods stay an allow-list of snapshot key versions.
   class Configuration
@@ -129,28 +130,45 @@ module Corvid
       @alternate_resource_check_max_age_overrides
     end
 
-    # Symbol keys become strings. Blank keys, non-durations, and
-    # non-positive durations are rejected. Anything other than a Hash
-    # is rejected before the pairs are read.
+    # Symbol keys become strings. Blank keys, non-durations,
+    # non-positive durations, and two keys that strip to the same string
+    # are rejected. The stored key stays key.to_s. Anything other than a
+    # Hash is rejected before the pairs are read.
     def validated_payer_authorization_turnarounds(turnarounds)
       unless turnarounds.is_a?(Hash)
         raise ArgumentError, "payer authorization turnarounds must be a hash"
       end
 
+      seen = {}
       turnarounds.to_h { |key, value|
-        payer = key.to_s
-        if payer.strip.empty?
-          raise ArgumentError, "payer authorization turnaround payer identifier can't be blank"
-        end
-        unless value.is_a?(ActiveSupport::Duration)
-          raise ArgumentError, "payer authorization turnaround must be a duration"
-        end
-        unless value.positive?
-          raise ArgumentError, "payer authorization turnaround must be positive"
-        end
-
-        [ payer, value ]
+        payer = payer_authorization_turnaround_key(key, seen)
+        [ payer, payer_authorization_turnaround_value(value) ]
       }.freeze
+    end
+
+    def payer_authorization_turnaround_key(key, seen)
+      payer = key.to_s
+      normalized = payer.strip
+      if normalized.empty?
+        raise ArgumentError, "payer authorization turnaround payer identifier can't be blank"
+      end
+      if seen.key?(normalized)
+        raise ArgumentError, "payer authorization turnaround keys must be unique"
+      end
+
+      seen[normalized] = true
+      payer
+    end
+
+    def payer_authorization_turnaround_value(value)
+      unless value.is_a?(ActiveSupport::Duration)
+        raise ArgumentError, "payer authorization turnaround must be a duration"
+      end
+      unless value.positive?
+        raise ArgumentError, "payer authorization turnaround must be positive"
+      end
+
+      value
     end
 
     # Symbol keys become strings. Unknown types, non-durations, and
