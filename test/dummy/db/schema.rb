@@ -518,6 +518,7 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_31_000003) do
     t.check_constraint "approved_units IS NULL OR approved_units > 0", name: "corvid_payer_auth_requests_approved_units_check"
     t.check_constraint "btrim(tenant_identifier::text) <> ''::text AND btrim(payer_identifier::text) <> ''::text AND (facility_identifier IS NULL OR btrim(facility_identifier::text) <> ''::text) AND (submitted_by_identifier IS NULL OR btrim(submitted_by_identifier::text) <> ''::text) AND (payer_authorization_identifier IS NULL OR btrim(payer_authorization_identifier::text) <> ''::text)", name: "corvid_payer_auth_requests_identifiers_check"
     t.check_constraint "channel::text = ANY (ARRAY['pas'::character varying, 'x12_278'::character varying, 'portal'::character varying, 'fax'::character varying]::text[])", name: "corvid_payer_auth_requests_channel_check"
+    t.check_constraint "status::text <> 'drafted'::text OR submitted_at IS NULL AND submitted_by_identifier IS NULL AND follow_up_due_at IS NULL", name: "corvid_payer_auth_requests_drafted_check"
     t.check_constraint "status::text = ANY (ARRAY['drafted'::character varying, 'submitted'::character varying, 'pended'::character varying, 'approved'::character varying, 'partially_approved'::character varying, 'denied'::character varying, 'cancelled'::character varying]::text[])", name: "corvid_payer_auth_requests_status_check"
   end
 

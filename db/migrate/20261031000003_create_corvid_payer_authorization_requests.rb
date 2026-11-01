@@ -4,7 +4,9 @@
 # is stored here and is not the referral's PRC authorization_number.
 # Channel and status are closed string sets (ADR 0002). A draft can be
 # cancelled without a sign-off; every status that means the payer was
-# asked requires submitted_at and a non-blank sign-off. An approval
+# asked requires submitted_at and a non-blank sign-off. While drafted,
+# submitted_at, submitted_by_identifier, and follow_up_due_at stay null.
+# An approval
 # requires the payer's authorization id and a real date range. Those
 # approval columns stay null unless the status is an approval or a
 # cancellation that kept an earlier approval. Empty strings are not
@@ -89,6 +91,8 @@ class CreateCorvidPayerAuthorizationRequests < ActiveRecord::Migration[8.1]
       name: "corvid_payer_auth_requests_status_check"
     add_check_constraint :corvid_payer_authorization_requests, submission_sql,
       name: "corvid_payer_auth_requests_submitted_check"
+    add_check_constraint :corvid_payer_authorization_requests, drafted_sql,
+      name: "corvid_payer_auth_requests_drafted_check"
     add_check_constraint :corvid_payer_authorization_requests, approval_sql,
       name: "corvid_payer_auth_requests_approval_check"
     add_check_constraint :corvid_payer_authorization_requests, approved_range_sql,
@@ -103,6 +107,12 @@ class CreateCorvidPayerAuthorizationRequests < ActiveRecord::Migration[8.1]
     "#{in_list("status", NO_SUBMISSION_STATUSES)} OR (" \
       "submitted_at IS NOT NULL AND submitted_by_identifier IS NOT NULL AND " \
       "btrim(submitted_by_identifier) <> '')"
+  end
+
+  def drafted_sql
+    "status <> 'drafted' OR (" \
+      "submitted_at IS NULL AND submitted_by_identifier IS NULL AND " \
+      "follow_up_due_at IS NULL)"
   end
 
   def approval_fields_sql

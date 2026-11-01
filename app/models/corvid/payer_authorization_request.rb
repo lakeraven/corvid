@@ -60,6 +60,7 @@ module Corvid
 
     validate :optional_identifiers_not_blank
     validate :submission_recorded_when_sent
+    validate :submission_blank_while_drafted
     validate :submission_evidence_unchanged
     validate :submission_blank_when_cancelled_from_draft
     validate :approval_recorded_when_approved
@@ -293,6 +294,17 @@ module Corvid
 
       errors.add(:submitted_at, "can't be blank") if submitted_at.blank?
       errors.add(:submitted_by_identifier, "can't be blank") if submitted_by_identifier.blank?
+    end
+
+    # A draft was not sent, so the ask and its timer stay null. submit!
+    # writes those columns in the same save that leaves drafted, and this
+    # reads the status being saved.
+    def submission_blank_while_drafted
+      return unless status == "drafted"
+
+      %i[submitted_at submitted_by_identifier follow_up_due_at].each do |name|
+        errors.add(name, "must be blank while drafted") unless self[name].nil?
+      end
     end
 
     def approval_recorded_when_approved
