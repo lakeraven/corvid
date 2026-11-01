@@ -239,6 +239,26 @@ class Corvid::ConfigurationTest < Minitest::Test
     end
   end
 
+  def test_payer_authorization_turnarounds_rejects_keys_whose_stripped_form_differs
+    bad_keys = [ "payer_a ", " payer_a", :"payer_a " ]
+
+    bad_keys.each do |key|
+      error = assert_raises(ArgumentError) do
+        Corvid.configure { |c| c.payer_authorization_turnarounds = { key => 2.days } }
+      end
+      assert_match(/payer authorization turnaround/i, error.message)
+      refute_includes error.message, "payer_a"
+    end
+  end
+
+  def test_payer_authorization_turnarounds_stores_clean_payer_key_as_given
+    Corvid.configure { |c| c.payer_authorization_turnarounds = { "payer_a" => 2.days } }
+
+    turnarounds = Corvid.configuration.payer_authorization_turnarounds
+    assert_equal [ "payer_a" ], turnarounds.keys
+    assert_equal 2.days, turnarounds.fetch("payer_a")
+  end
+
   # -- verification snapshot keys (ADR 0008) ---------------------------------
 
   def test_verification_snapshot_keys_defaults_to_empty_hash

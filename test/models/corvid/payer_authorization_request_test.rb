@@ -870,6 +870,68 @@ class Corvid::PayerAuthorizationRequestTest < ActiveSupport::TestCase
     end
   end
 
+  test "drafted row cannot cancel in the same save with submission evidence fields" do
+    submitted_at = Time.utc(2026, 3, 1, 9, 0, 0)
+    follow_up_due_at = Time.utc(2026, 3, 5, 10, 0, 0)
+    signoff = "pr_signoff_009"
+
+    with_tenant(TENANT) do
+      request = create_request
+      refute request.update(
+        status: "cancelled",
+        submitted_at: submitted_at,
+        submitted_by_identifier: signoff,
+        follow_up_due_at: follow_up_due_at
+      )
+      assert request.errors[:submitted_at].present?
+      assert request.errors[:submitted_by_identifier].present?
+      assert request.errors[:follow_up_due_at].present?
+      assert_equal "drafted", request.reload.status
+      assert_nil request.submitted_at
+      assert_nil request.submitted_by_identifier
+      assert_nil request.follow_up_due_at
+    end
+  end
+
+  test "drafted row cannot cancel in the same save with submitted_at alone" do
+    with_tenant(TENANT) do
+      request = create_request
+      refute request.update(
+        status: "cancelled",
+        submitted_at: Time.utc(2026, 3, 1, 9, 0, 0)
+      )
+      assert request.errors[:submitted_at].present?
+      assert_equal "drafted", request.reload.status
+      assert_nil request.submitted_at
+    end
+  end
+
+  test "drafted row cannot cancel in the same save with submitted_by_identifier alone" do
+    with_tenant(TENANT) do
+      request = create_request
+      refute request.update(
+        status: "cancelled",
+        submitted_by_identifier: "pr_signoff_009"
+      )
+      assert request.errors[:submitted_by_identifier].present?
+      assert_equal "drafted", request.reload.status
+      assert_nil request.submitted_by_identifier
+    end
+  end
+
+  test "drafted row cannot cancel in the same save with follow_up_due_at alone" do
+    with_tenant(TENANT) do
+      request = create_request
+      refute request.update(
+        status: "cancelled",
+        follow_up_due_at: Time.utc(2026, 3, 5, 10, 0, 0)
+      )
+      assert request.errors[:follow_up_due_at].present?
+      assert_equal "drafted", request.reload.status
+      assert_nil request.follow_up_due_at
+    end
+  end
+
   test "expiring excludes request cancelled after approval while still including approved in window" do
     as_of = Date.new(2026, 6, 1)
     within = 7.days
@@ -915,6 +977,40 @@ class Corvid::PayerAuthorizationRequestTest < ActiveSupport::TestCase
       results = Corvid::PayerAuthorizationRequest.overdue(as_of: as_of)
       refute_includes results, cancelled.reload
       assert_includes results, still_submitted.reload
+    end
+  end
+
+  test "overdue excludes decided rows whose follow-up timer elapsed" do
+    Corvid.configure { |c| c.payer_authorization_turnarounds = { PAYER_A => 2.days } }
+    submitted_at = Time.utc(2026, 3, 1, 0, 0, 0)
+    as_of = Time.utc(2026, 3, 10, 0, 0, 0)
+
+    with_tenant(TENANT) do
+      approved = create_request(payer_identifier: PAYER_A)
+      approved.submit!(submitted_by_identifier: SIGNOFF, at: submitted_at)
+      approved.approve!(**approval_kwargs)
+
+      partially_approved = create_request(payer_identifier: PAYER_A)
+      partially_approved.submit!(submitted_by_identifier: SIGNOFF, at: submitted_at)
+      partially_approved.partially_approve!(**approval_kwargs)
+
+      denied = create_request(payer_identifier: PAYER_A)
+      denied.submit!(submitted_by_identifier: SIGNOFF, at: submitted_at)
+      denied.deny!
+
+      still_submitted = create_request(payer_identifier: PAYER_A)
+      still_submitted.submit!(submitted_by_identifier: SIGNOFF, at: submitted_at)
+
+      still_pended = create_request(payer_identifier: PAYER_A)
+      still_pended.submit!(submitted_by_identifier: SIGNOFF, at: submitted_at)
+      still_pended.pend!
+
+      results = Corvid::PayerAuthorizationRequest.overdue(as_of: as_of)
+      refute_includes results, approved.reload
+      refute_includes results, partially_approved.reload
+      refute_includes results, denied.reload
+      assert_includes results, still_submitted.reload
+      assert_includes results, still_pended.reload
     end
   end
 
