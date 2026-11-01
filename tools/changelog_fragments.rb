@@ -123,8 +123,8 @@ module Fragments
       end
       renamer.call(temp, changelog_path)
     rescue StandardError, ScriptError
+      FileUtils.rm_f(temp) # first: a failure while restoring must not leave the temp file behind
       saved.each { |path, bytes| File.binwrite(path, bytes) }
-      FileUtils.rm_f(temp)
       raise
     end
     result
