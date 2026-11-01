@@ -16,6 +16,9 @@ Decide by the kind of decision, not the size of the diff.
 - Take a PR out of draft when its independent review of the current head is clean.
 - Apply labels, split oversized work into issues that each close cleanly, and record blocking
   relations between issues from a decision already written on the issue.
+- After every merge to `main`, bring issues and labels in line: a closed issue loses its
+  in-flight labels (ready, working, awaiting a PR, waiting on a human, blocked), and an open
+  issue whose blockers have all closed loses its blocked label and is picked up next.
 
 **Merge when a clean independent review covers the exact head** (a human or a person
 authorised to merge does it from a local session): the required checks pass, the PR is up to
