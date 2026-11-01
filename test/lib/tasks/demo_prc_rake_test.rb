@@ -35,4 +35,35 @@ class DemoPrcRakeTest < ActiveSupport::TestCase
   ensure
     Corvid.configure { |c| c.adapter = original_adapter }
   end
+
+  test "demo:prc cleanup does not remove legacy enrolled case at another demo-tenant facility" do
+    original_adapter = Corvid.adapter
+    other_facility = "fac_tallgrass_demo_guard"
+    legacy_patient_id = "pt_demo_enrolled"
+
+    with_tenant(TENANT) do
+      Corvid::Case.create!(
+        tenant_identifier: TENANT,
+        facility_identifier: other_facility,
+        patient_identifier: legacy_patient_id,
+        status: "active",
+        lifecycle_status: "intake",
+        intake_at: Time.current
+      )
+    end
+
+    capture_io { Rake::Task["demo:prc"].invoke }
+
+    with_tenant(TENANT) do
+      assert Corvid::Case.exists?(
+        tenant_identifier: TENANT,
+        facility_identifier: other_facility,
+        patient_identifier: legacy_patient_id
+      ), "demo:prc must only delete legacy enrolled id at #{FACILITY}, not at #{other_facility}"
+      assert_equal 1,
+                   Corvid::Case.where(patient_identifier: "pt-demo-enrolled", facility_identifier: FACILITY).count
+    end
+  ensure
+    Corvid.configure { |c| c.adapter = original_adapter }
+  end
 end
