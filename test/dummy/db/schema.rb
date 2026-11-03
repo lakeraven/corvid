@@ -10,8 +10,9 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_10_28_000001) do
+ActiveRecord::Schema[8.1].define(version: 2026_10_31_000001) do
   # These are extensions that must be enabled in order to support this database
+  enable_extension "btree_gist"
   enable_extension "pg_catalog.plpgsql"
 
   create_table "corvid_alternate_resource_checks", force: :cascade do |t|
@@ -93,6 +94,22 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_28_000001) do
     t.datetime "created_at", null: false
     t.datetime "updated_at", null: false
     t.index ["calendar_year", "hcpcs_code"], name: "idx_corvid_asc_hcpcs_rates_cy_hcpcs", unique: true
+  end
+
+  create_table "corvid_billing_system_settings", force: :cascade do |t|
+    t.string "tenant_identifier", null: false
+    t.string "facility_identifier", null: false
+    t.string "visit_type"
+    t.string "system_of_record", null: false
+    t.date "effective_on", null: false
+    t.date "expires_on"
+    t.datetime "created_at", null: false
+    t.datetime "updated_at", null: false
+    t.index ["tenant_identifier", "facility_identifier"], name: "idx_corvid_billing_system_settings_tenant_facility"
+    t.check_constraint "expires_on IS NULL OR expires_on >= effective_on", name: "corvid_billing_system_settings_expires_on_check"
+    t.check_constraint "system_of_record::text = ANY (ARRAY['corvid'::character varying, 'ehr'::character varying]::text[])", name: "corvid_billing_system_settings_system_of_record_check"
+    t.check_constraint "visit_type IS NULL OR btrim(visit_type::text) <> ''::text", name: "corvid_billing_system_settings_visit_type_check"
+    t.exclusion_constraint "tenant_identifier WITH =, facility_identifier WITH =, COALESCE(visit_type, ''::character varying) WITH =, daterange(effective_on, expires_on, '[]'::text) WITH &&", using: :gist, name: "corvid_billing_system_settings_no_overlap"
   end
 
   create_table "corvid_billing_transactions", force: :cascade do |t|

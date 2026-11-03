@@ -8,9 +8,11 @@ require_relative "../../test/dummy/config/environment"
 require "active_support/testing/time_helpers"
 require "minitest/assertions"
 require_relative "alternate_resource_exhaustion_helper"
+require_relative "billing_system_of_record_helper"
 
 World(Minitest::Assertions)
 World(ActiveSupport::Testing::TimeHelpers)
+World(BillingSystemOfRecordHelper)
 
 def assertions
   @assertions ||= 0
@@ -36,6 +38,9 @@ def clean_corvid_tables!
   Corvid::ZipLocality.unscoped.delete_all
   if Corvid.const_defined?(:ZipCbsaCrosswalk, false)
     Corvid::ZipCbsaCrosswalk.unscoped.delete_all
+  end
+  if Corvid.const_defined?(:BillingSystemSetting, false)
+    Corvid::BillingSystemSetting.unscoped.delete_all
   end
   Corvid::LocalityLookup.clear_cache!
   Corvid::ApiCallLog.unscoped.delete_all

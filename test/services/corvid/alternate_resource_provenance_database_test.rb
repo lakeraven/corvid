@@ -17,6 +17,7 @@ class Corvid::AlternateResourceProvenanceDatabaseTest < ActiveSupport::TestCase
   setup do
     @created_referral_ids = []
     @created_claim_ids = []
+    record_system_of_record(facility_identifier: FACILITY, tenant_identifier: TENANT)
   end
 
   teardown do

@@ -10,6 +10,10 @@ class Corvid::AlternateResourceProvenanceTenantTest < ActiveSupport::TestCase
   FACILITY = "fac_tenant_prov"
   PATIENT = "pt-tenant-prov"
 
+  setup do
+    record_system_of_record(facility_identifier: FACILITY, tenant_identifier: TENANT)
+  end
+
   teardown do
     Corvid.reset_configuration!
     Corvid::TenantContext.reset!

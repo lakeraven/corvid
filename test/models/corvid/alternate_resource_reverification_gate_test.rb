@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "test_helper"
+require "minitest/mock"
 
 # Issue #668 (C): authorization and claim gates re-verify stale checks first.
 module Corvid
@@ -10,6 +11,7 @@ module Corvid
     PATIENT = "pt-test-003"
 
     setup do
+      record_system_of_record(facility_identifier: "fac_a", tenant_identifier: TENANT)
       Corvid.adapter.reset! if Corvid.adapter.respond_to?(:reset!)
       @verify_calls = []
       calls = @verify_calls
@@ -214,7 +216,10 @@ module Corvid
         )
         claim.save!
 
-        assert_raises(Corvid::ClaimSubmission::AlternateResourcesNotCurrent) { claim.submit! }
+        # Stub Corvid as system of record so submit! reaches the re-verification gate (nil service date).
+        Corvid::BillingSystemSetting.stub(:system_of_record_for, :corvid) do
+          assert_raises(Corvid::ClaimSubmission::AlternateResourcesNotCurrent) { claim.submit! }
+        end
       end
     end
 

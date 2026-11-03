@@ -1,12 +1,17 @@
 # frozen_string_literal: true
 
 require "test_helper"
+require "minitest/mock"
 
 # A claim has to be traceable to the referral it bills, and the link has to be
 # the right one. These tests pin both the resolution rule and what #submit!
 # does when a claim names a referral it cannot establish.
 class Corvid::ClaimReferralLinkTest < ActiveSupport::TestCase
   TENANT = "tnt_claim_link"
+
+  setup do
+    record_system_of_record(facility_identifier: "fac_a", tenant_identifier: TENANT)
+  end
 
   # --- resolution ----------------------------------------------------------
 
@@ -585,7 +590,10 @@ class Corvid::ClaimReferralLinkTest < ActiveSupport::TestCase
       claim = build_claim(facility: nil, referral_identifier: "REF-AMBIG-1")
       claim.save!
 
-      assert_raises(Corvid::ClaimSubmission::ReferralNotAuthorized) { claim.submit! }
+      # Stub Corvid as system of record so submit! reaches the referral gate (nil facility).
+      Corvid::BillingSystemSetting.stub(:system_of_record_for, :corvid) do
+        assert_raises(Corvid::ClaimSubmission::ReferralNotAuthorized) { claim.submit! }
+      end
     end
   end
 
