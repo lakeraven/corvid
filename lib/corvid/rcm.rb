@@ -6,6 +6,7 @@ require_relative "rcm/remittance"
 require_relative "rcm/edi_835_reader"
 require_relative "rcm/adjustment_reason_codes"
 require_relative "rcm/remittance_classifier"
+require_relative "rcm/claim_status"
 require_relative "rcm/clearinghouse_client"
 require_relative "rcm/fixture_clearinghouse_client"
 require_relative "rcm/scrub_ruleset"
@@ -22,8 +23,9 @@ module Corvid
   # What is here:
   #   Claim / ClaimLine / Coverage / Diagnosis  — FHIR R4-shaped inputs
   #   Scrubber + ScrubRuleset                   — versioned scrub rules as data
+  #   ClaimStatus                               — typed 276/277 claim status
   #   ClearinghouseClient                       — the EDI seam
-  #   FixtureClearinghouseClient                — synthetic 835s, no payer needed
+  #   FixtureClearinghouseClient                — synthetic 835s and 277s, no payer
   #   Edi835Reader                              — X12 835 -> ClaimResponse shapes
   #   AdjustmentReasonCodes                     — CARC/RARC mapping as data
   #   RemittanceClassifier                      — routing, with unmapped -> human
@@ -39,9 +41,16 @@ module Corvid
   # so they cannot blur:
   #
   #   REJECTION — refused at the front door (999/277CA), never adjudicated,
-  #               fix-and-resubmit. See Acknowledgment.
-  #   DENIAL    — adjudicated refusal to pay on the 835, appeal or write off.
-  #               See RemittanceClaim.
+  #               fix-and-resubmit. See Acknowledgment. On a 276/277 status
+  #               inquiry the same fact is category :rejected (A3, A6, A7, A8).
+  #   DENIAL    — adjudicated refusal to pay, appeal or write off. On an 835
+  #               see RemittanceClaim. On a 276/277 inquiry only F2 is category
+  #               :finalized_denied. See ClaimStatus.
+  #
+  # A status inquiry is neither of those documents. ClaimStatus reports one
+  # category. Only F1 is paid. F0, F3, F3F, F3N, F4, and the E-codes are
+  # undetermined: a human decides. A category code that is not in the table is
+  # undetermined too — never paid, never denied.
   module Rcm
   end
 end

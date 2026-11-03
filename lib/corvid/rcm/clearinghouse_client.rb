@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require_relative "acknowledgment"
+require_relative "claim_status"
 require_relative "remittance"
 
 module Corvid
@@ -16,8 +17,11 @@ module Corvid
     #
     # Implementations must be substitutable: `submit_claim` always answers with
     # an `Acknowledgment` (accepted or rejected — never a denial, which can
-    # only come back on an 835), and `fetch_remittances` always answers with
-    # `Remittance` values.
+    # only come back on an 835), `fetch_remittances` always answers with
+    # `Remittance` values, and `check_claim_status` always answers with a
+    # `ClaimStatus`. A status inquiry is a 276/277, not an acknowledgment and
+    # not an 835: a front-end rejection and an adjudicated denial stay
+    # different categories on that answer.
     class ClearinghouseClient
       class TransportError < StandardError; end
 
@@ -44,6 +48,20 @@ module Corvid
       # @return [Array<Corvid::Rcm::Remittance>]
       def fetch_remittances(date_range: nil)
         raise NotImplementedError, "#{self.class}#fetch_remittances not implemented"
+      end
+
+      # Ask whether one claim is acknowledged, pending, paid, denied, rejected,
+      # or not on file (276 request, 277 response).
+      #
+      # This is not `submit_claim` and not `fetch_remittances`. The category on
+      # the answer keeps a front-end rejection distinct from an adjudicated
+      # denial. Only F1 is paid, and only F2 is a denial. The base class does
+      # not invent a status.
+      #
+      # @param claim_identifier [String]
+      # @return [Corvid::Rcm::ClaimStatus]
+      def check_claim_status(claim_identifier)
+        raise NotImplementedError, "#{self.class}#check_claim_status not implemented"
       end
     end
   end

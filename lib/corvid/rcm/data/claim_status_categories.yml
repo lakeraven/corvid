@@ -1,0 +1,43 @@
+# 277 claim status category codes (STC01-1).
+#
+# Only F1 is paid (:finalized_paid) and only F2 is denied (:finalized_denied).
+# F0, F3, F3F, F3N, and F4 are finalized in the X12 sense, but the payment
+# outcome is not one Corvid will guess: they are undetermined, and a human
+# decides. E0 through E4 are errors on the status request, also undetermined,
+# and a human decides. A3, A6, A7, and A8 are front-end rejections — the claim
+# was never adjudicated — and are never denials.
+#
+# Lookup is an exact match on the code as written. Nothing is case-folded or
+# stripped. A code that is not in this table is undetermined, never paid and
+# never denied.
+#
+# Each entry is one code, its category, and a short description of the X12
+# meaning.
+
+A0: acknowledged # Forwarded to another entity.
+A1: acknowledged # Received. Not accepted for adjudication.
+A2: acknowledged # Accepted into the adjudication system.
+A3: rejected # Returned as unprocessable. Front-end rejection, not a denial.
+A4: not_found # Not found in the adjudication system.
+A5: acknowledged # Split on acceptance into adjudication.
+A6: rejected # Rejected for missing information. Not a denial.
+A7: rejected # Rejected for invalid information. Not a denial.
+A8: rejected # Rejected for a relational field in error. Not a denial.
+P0: pending # Pended. No remittance yet, or only part of the claim paid.
+P1: pending # In process in the adjudication system.
+P2: pending # Suspended for payer review.
+P3: pending # Waiting on information already requested from the provider.
+P4: pending # Waiting on information already requested from the patient.
+P5: pending # Payer administrative or system hold.
+F0: undetermined # Finalized, payment outcome not specified. A human decides.
+F1: finalized_paid # Paid. The only code that means paid.
+F2: finalized_denied # Adjudicated denial. The only code that means denied.
+F3: undetermined # Revised adjudication. A human decides.
+F3F: undetermined # Finalized and forwarded. A human decides.
+F3N: undetermined # Finalized and not forwarded. A human decides.
+F4: undetermined # Adjudication complete, no payment forthcoming. A human decides.
+E0: undetermined # Response not possible; error in the request. A human decides.
+E1: undetermined # Response not possible; system status. A human decides.
+E2: undetermined # Information holder is not responding. A human decides.
+E3: undetermined # Correction required; relational fields in error. A human decides.
+E4: undetermined # Trading-partner requirement not met. A human decides.
