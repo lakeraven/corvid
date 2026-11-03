@@ -46,12 +46,12 @@ module Corvid
         raise ArgumentError, "#{label} is not recognized"
       end
 
-      # Read the string's own characters, or Symbol#name. String#to_s can be
-      # overridden and would accept a different value.
+      # Same dispatch as StateMedicaidRules.state_code_characters: case/when
+      # (Module#===), Symbol#name via bind_call, String.new for a String.
+      # A caller is_a?, name, or to_s cannot select a different token.
+      # Anything else is nil, which recognized rejects.
       def token_characters(value)
-        return value.name if value.is_a?(Symbol)
-
-        String.new(value) if value.is_a?(String)
+        StateMedicaidRules.state_code_characters(value)
       end
 
       def undetermined(reason, exemption)

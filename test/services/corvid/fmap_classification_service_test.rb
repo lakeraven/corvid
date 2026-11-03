@@ -76,7 +76,7 @@ module Corvid
       # Expansion-group encounter without AIAN evidence: 90 vs best 100.
       gap = FmapClassificationService.classify(
         date_of_service: Date.new(2026, 3, 1),
-        jurisdiction: "XB",
+        jurisdiction: "XA",
         facility_authority: @contract_638,
         aian_verified: false,
         coverage_group: "expansion_adult",
@@ -266,6 +266,188 @@ module Corvid
       )
 
       assert_equal "fmap_regular", result.category
+    end
+
+    # Issue #680: state_code_characters must use Module#===, not caller is_a? /
+    # name / to_str, so a jurisdiction cannot alias configured expansion XA.
+    test "classify object is_a String spoof is undetermined with no_matching_rule not XA ninety percent" do
+      with_tenant("tnt_test") do
+        result = classify_expansion_adult(jurisdiction: object_is_a_string_to_str_spoof_xa)
+
+        assert result.undetermined?
+        assert_equal FmapClassificationService::UNDETERMINED, result.category
+        assert_equal FmapClassificationService::NO_MATCHING_RULE, result.determination_reason
+        assert_nil result.fmap_percent
+        refute_equal "fmap_90_expansion", result.category
+      end
+    end
+
+    test "classify string subclass xa alias ops uses XB refusal not XA ninety percent tier" do
+      with_tenant("tnt_test") do
+        [ string_subclass_xb_aliases_xa_character_ops, xb_string_with_singleton_upcase_xa ].each do |jurisdiction|
+          result = classify_expansion_adult(jurisdiction: jurisdiction)
+
+          assert result.undetermined?, "expected undetermined for #{jurisdiction.class}"
+          assert_equal FmapClassificationService::UNDETERMINED, result.category
+          assert_equal FmapClassificationService::EXPANSION_STATE_NOT_CONFIGURED, result.determination_reason
+          assert_nil result.fmap_percent
+          refute_equal "fmap_90_expansion", result.category
+        end
+      end
+    end
+
+    test "classify BasicObject jurisdiction is undetermined no_matching_rule without raising" do
+      with_tenant("tnt_test") do
+        result = classify_expansion_adult(jurisdiction: BasicObject.new)
+
+        assert result.undetermined?
+        assert_equal FmapClassificationService::UNDETERMINED, result.category
+        assert_equal FmapClassificationService::NO_MATCHING_RULE, result.determination_reason
+        assert_nil result.fmap_percent
+      end
+    end
+
+    test "classify object overriding nil? true is malformed not missing jurisdiction" do
+      jurisdiction = object_overriding_nil_question_true
+
+      with_tenant("tnt_test") do
+        result = classify_expansion_adult(jurisdiction: jurisdiction)
+
+        assert result.undetermined?
+        assert_equal FmapClassificationService::NO_MATCHING_RULE, result.determination_reason
+      end
+    end
+
+    test "classify! with jurisdiction spoofs never persists XA" do
+      dos = Date.new(2026, 3, 1)
+
+      with_tenant("tnt_test") do
+        xb_spoof = string_subclass_xb_aliases_xa_character_ops
+        determination = FmapClassificationService.classify!(
+          encounter_identifier: "enc_test_680_xb_alias_spoof",
+          date_of_service: dos,
+          jurisdiction: xb_spoof,
+          coverage_group: "expansion_adult",
+          aian_verified: false
+        )
+
+        assert determination.persisted?
+        assert_equal "XB", determination.jurisdiction
+        refute_equal "XA", determination.jurisdiction
+
+        object_spoof = object_is_a_string_to_str_spoof_xa
+        before = FmapDetermination.count
+        error = assert_raises(ArgumentError) do
+          FmapClassificationService.classify!(
+            encounter_identifier: "enc_test_680_is_a_spoof_object",
+            date_of_service: dos,
+            jurisdiction: object_spoof,
+            coverage_group: "expansion_adult",
+            aian_verified: false
+          )
+        end
+        assert_equal "jurisdiction must be two letters", error.message
+        assert_equal before, FmapDetermination.count
+        refute FmapDetermination.where(jurisdiction: "XA", encounter_identifier: "enc_test_680_is_a_spoof_object").exists?
+      end
+    end
+
+    test "classify! BasicObject jurisdiction raises two letters without persisting" do
+      dos = Date.new(2026, 3, 1)
+
+      with_tenant("tnt_test") do
+        before = FmapDetermination.count
+        error = assert_raises(ArgumentError) do
+          FmapClassificationService.classify!(
+            encounter_identifier: "enc_test_680_basic_object_jurisdiction",
+            date_of_service: dos,
+            jurisdiction: BasicObject.new,
+            coverage_group: "expansion_adult",
+            aian_verified: false
+          )
+        end
+
+        assert_equal "jurisdiction must be two letters", error.message
+        assert_equal before, FmapDetermination.count
+        refute_includes error.message, "BasicObject"
+      end
+    end
+
+    test "classify! object overriding nil? true raises two letters not jurisdiction is required" do
+      dos = Date.new(2026, 3, 1)
+      jurisdiction = object_overriding_nil_question_true
+
+      with_tenant("tnt_test") do
+        before = FmapDetermination.count
+        error = assert_raises(ArgumentError) do
+          FmapClassificationService.classify!(
+            encounter_identifier: "enc_test_680_nil_question_spoof_jurisdiction",
+            date_of_service: dos,
+            jurisdiction: jurisdiction,
+            coverage_group: "expansion_adult",
+            aian_verified: false
+          )
+        end
+
+        assert_equal "jurisdiction must be two letters", error.message
+        refute_equal "jurisdiction is required", error.message
+        assert_equal before, FmapDetermination.count
+      end
+    end
+
+    private
+
+    def classify_expansion_adult(jurisdiction:)
+      FmapClassificationService.classify(
+        date_of_service: Date.new(2026, 3, 1),
+        jurisdiction: jurisdiction,
+        coverage_group: "expansion_adult",
+        aian_verified: false
+      )
+    end
+
+    def string_subclass_xb_aliases_xa_character_ops
+      canonical = "XA"
+      lowercase = "xa"
+      Class.new(String) do
+        define_method(:upcase) do |*args|
+          args.empty? ? canonical.dup : super
+        end
+
+        define_method(:upcase!) do
+          replace(canonical)
+          self
+        end
+
+        define_method(:gsub) { |*args, &block| canonical.gsub(*args, &block) }
+        define_method(:to_str) { canonical.dup }
+        define_method(:to_s) { canonical.dup }
+        define_method(:dup) { canonical.dup }
+        define_method(:==) { |other| canonical == other || lowercase == other }
+        define_method(:eql?) { |other| other.is_a?(String) && (other == canonical || other == lowercase) }
+        define_method(:hash) { canonical.hash }
+      end.new("XB")
+    end
+
+    def xb_string_with_singleton_upcase_xa
+      value = +"XB"
+      value.define_singleton_method(:upcase) { "XA" }
+      value
+    end
+
+    def object_overriding_nil_question_true
+      Object.new.tap { |value| value.define_singleton_method(:nil?) { true } }
+    end
+
+    def object_is_a_string_to_str_spoof_xa
+      Object.new.tap do |value|
+        value.define_singleton_method(:is_a?) do |type|
+          return true if type == String
+
+          super(type)
+        end
+        value.define_singleton_method(:to_str) { "xa" }
+      end
     end
   end
 end
