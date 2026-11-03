@@ -83,6 +83,18 @@ module Corvid
           conversion_factor: OPPS_CONVERSION_FACTOR, wage_index: OPPS_WAGE_INDEX,
           release_label: OPPS_RELEASE_LABEL
         )
+        # CY 2026 OPPS labor-related share is 60% (CY 2026 OPPS/ASC Final
+        # Rule). At wage index 1.0 the adjustment factor is 1, so the
+        # published MLR dollars are unchanged. A missing row would leave
+        # the rate undetermined.
+        Corvid::CmsLaborShare.where(payment_system: "opps", calendar_year: OPPS_CALENDAR_YEAR).delete_all
+        Corvid::CmsLaborShare.create!(
+          payment_system: "opps",
+          calendar_year: OPPS_CALENDAR_YEAR,
+          labor_share: BigDecimal("0.6000"),
+          source: "CY 2026 OPPS/ASC Final Rule",
+          release_label: OPPS_RELEASE_LABEL
+        )
       end
 
       # Register dictionary entries keyed by the billed code itself — stock

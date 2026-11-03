@@ -5,6 +5,7 @@ ENV["RAILS_ENV"] = "test"
 require_relative "dummy/config/environment"
 require "rails/test_help"
 require_relative "../features/support/alternate_resource_exhaustion_helper"
+require_relative "support/cms_labor_share_helpers"
 
 # FK-correct table cleanup. Mirrors features/support/env.rb so minitest
 # and cucumber share the same deletion order.
@@ -18,6 +19,9 @@ def clean_corvid_tables!
   Corvid::IppsHospitalRate.unscoped.delete_all
   Corvid::OppsApcWeight.unscoped.delete_all
   Corvid::OppsConversionFactor.unscoped.delete_all
+  if Corvid.const_defined?(:CmsLaborShare, false)
+    Corvid::CmsLaborShare.unscoped.delete_all
+  end
   Corvid::ZipLocality.unscoped.delete_all
   if Corvid.const_defined?(:ZipCbsaCrosswalk, false)
     Corvid::ZipCbsaCrosswalk.unscoped.delete_all
@@ -50,6 +54,8 @@ end
 # Reset state between tests
 module ActiveSupport
   class TestCase
+    include CmsLaborShareHelpers
+
     setup do
       Corvid::TenantContext.reset!
       Corvid.configure { |c| c.adapter = Corvid::Adapters::MockAdapter.new }

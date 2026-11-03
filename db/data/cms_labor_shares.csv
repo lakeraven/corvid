@@ -1,0 +1,47 @@
+# CMS OPPS and ASC labor-related shares by calendar year.
+# CMS prices calendar year N OPPS and ASC services with the fiscal year N IPPS wage index,
+# applied only to the labor-related share: rate * (labor_share * wage_index + (1 - labor_share)).
+# OPPS labor-related share is 60% and ASC is 50% in each year's OPPS/ASC final rule.
+# Years match the CMS OPPS/ASC final-rule rate data Corvid covers (OPPS CY 2007-CY 2026; ASC CY 2008-CY 2026).
+# ASC CY 2007 is omitted: the 50% ASC labor share starts with the revised ASC payment system in CY 2008,
+# so that year stays undetermined rather than guessed.
+payment_system,calendar_year,labor_share,source,release_label
+opps,2007,0.6000,CY 2007 OPPS/ASC Final Rule,cms_opps_cy2007_final_rule
+opps,2008,0.6000,CY 2008 OPPS/ASC Final Rule,cms_opps_cy2008_final_rule
+asc,2008,0.5000,CY 2008 OPPS/ASC Final Rule,cms_asc_cy2008_final_rule
+opps,2009,0.6000,CY 2009 OPPS/ASC Final Rule,cms_opps_cy2009_final_rule
+asc,2009,0.5000,CY 2009 OPPS/ASC Final Rule,cms_asc_cy2009_final_rule
+opps,2010,0.6000,CY 2010 OPPS/ASC Final Rule,cms_opps_cy2010_final_rule
+asc,2010,0.5000,CY 2010 OPPS/ASC Final Rule,cms_asc_cy2010_final_rule
+opps,2011,0.6000,CY 2011 OPPS/ASC Final Rule,cms_opps_cy2011_final_rule
+asc,2011,0.5000,CY 2011 OPPS/ASC Final Rule,cms_asc_cy2011_final_rule
+opps,2012,0.6000,CY 2012 OPPS/ASC Final Rule,cms_opps_cy2012_final_rule
+asc,2012,0.5000,CY 2012 OPPS/ASC Final Rule,cms_asc_cy2012_final_rule
+opps,2013,0.6000,CY 2013 OPPS/ASC Final Rule,cms_opps_cy2013_final_rule
+asc,2013,0.5000,CY 2013 OPPS/ASC Final Rule,cms_asc_cy2013_final_rule
+opps,2014,0.6000,CY 2014 OPPS/ASC Final Rule,cms_opps_cy2014_final_rule
+asc,2014,0.5000,CY 2014 OPPS/ASC Final Rule,cms_asc_cy2014_final_rule
+opps,2015,0.6000,CY 2015 OPPS/ASC Final Rule,cms_opps_cy2015_final_rule
+asc,2015,0.5000,CY 2015 OPPS/ASC Final Rule,cms_asc_cy2015_final_rule
+opps,2016,0.6000,CY 2016 OPPS/ASC Final Rule,cms_opps_cy2016_final_rule
+asc,2016,0.5000,CY 2016 OPPS/ASC Final Rule,cms_asc_cy2016_final_rule
+opps,2017,0.6000,CY 2017 OPPS/ASC Final Rule,cms_opps_cy2017_final_rule
+asc,2017,0.5000,CY 2017 OPPS/ASC Final Rule,cms_asc_cy2017_final_rule
+opps,2018,0.6000,CY 2018 OPPS/ASC Final Rule,cms_opps_cy2018_final_rule
+asc,2018,0.5000,CY 2018 OPPS/ASC Final Rule,cms_asc_cy2018_final_rule
+opps,2019,0.6000,CY 2019 OPPS/ASC Final Rule,cms_opps_cy2019_final_rule
+asc,2019,0.5000,CY 2019 OPPS/ASC Final Rule,cms_asc_cy2019_final_rule
+opps,2020,0.6000,CY 2020 OPPS/ASC Final Rule,cms_opps_cy2020_final_rule
+asc,2020,0.5000,CY 2020 OPPS/ASC Final Rule,cms_asc_cy2020_final_rule
+opps,2021,0.6000,CY 2021 OPPS/ASC Final Rule,cms_opps_cy2021_final_rule
+asc,2021,0.5000,CY 2021 OPPS/ASC Final Rule,cms_asc_cy2021_final_rule
+opps,2022,0.6000,CY 2022 OPPS/ASC Final Rule,cms_opps_cy2022_final_rule
+asc,2022,0.5000,CY 2022 OPPS/ASC Final Rule,cms_asc_cy2022_final_rule
+opps,2023,0.6000,CY 2023 OPPS/ASC Final Rule,cms_opps_cy2023_final_rule
+asc,2023,0.5000,CY 2023 OPPS/ASC Final Rule,cms_asc_cy2023_final_rule
+opps,2024,0.6000,CY 2024 OPPS/ASC Final Rule,cms_opps_cy2024_final_rule
+asc,2024,0.5000,CY 2024 OPPS/ASC Final Rule,cms_asc_cy2024_final_rule
+opps,2025,0.6000,CY 2025 OPPS/ASC Final Rule,cms_opps_cy2025_final_rule
+asc,2025,0.5000,CY 2025 OPPS/ASC Final Rule,cms_asc_cy2025_final_rule
+opps,2026,0.6000,CY 2026 OPPS/ASC Final Rule,cms_opps_cy2026_final_rule
+asc,2026,0.5000,CY 2026 OPPS/ASC Final Rule,cms_asc_cy2026_final_rule

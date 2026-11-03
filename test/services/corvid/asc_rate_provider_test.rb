@@ -27,24 +27,31 @@ class Corvid::AscRateProviderTest < ActiveSupport::TestCase
     Corvid::IppsHospitalRate.create!(
       fiscal_year: @cy, locality: "01", base_rate: 6_752.61, wage_index: 1.085
     )
+    seed_asc_labor_share(calendar_year: @cy)
   end
 
-  test "rate_for computes weight times conversion factor times wage index" do
+  test "rate_for computes weight times conversion factor times labor-adjusted wage factor" do
     rate = Corvid::AscRateProvider.rate_for(
       hcpcs_code: "0102T",
       locality: "NATIONAL",
       date: Date.new(2026, 6, 15)
     )
-    assert_in_delta 1_644.87, rate, 0.01
+    expected = asc_labor_adjusted_rate(
+      weight: 29.2047, conversion_factor: 56.322, wage_index: 1.0
+    )
+    assert_equal expected, rate
   end
 
-  test "rate_for applies locality-specific wage index" do
+  test "rate_for applies locality-specific wage index through labor share" do
     rate = Corvid::AscRateProvider.rate_for(
       hcpcs_code: "0102T",
       locality: "01",
       date: Date.new(2026, 6, 15)
     )
-    assert_in_delta 1_784.68, rate, 0.01
+    expected = asc_labor_adjusted_rate(
+      weight: 29.2047, conversion_factor: 56.322, wage_index: 1.085
+    )
+    assert_equal expected, rate
   end
 
   test "rate_for applies CBSA-coded locality and falls back to NATIONAL for unknown CBSA" do
@@ -72,6 +79,7 @@ class Corvid::AscRateProviderTest < ActiveSupport::TestCase
     Corvid::IppsHospitalRate.create!(
       fiscal_year: 2026, locality: "10180", base_rate: 6_752.61, wage_index: 0.92
     )
+    seed_asc_labor_share(calendar_year: 2026)
 
     cbsa_rate = Corvid::AscRateProvider.rate_for(
       hcpcs_code: "0102T", locality: "10180", date: Date.new(2026, 6, 15)
@@ -80,10 +88,12 @@ class Corvid::AscRateProviderTest < ActiveSupport::TestCase
       hcpcs_code: "0102T", locality: "99999", date: Date.new(2026, 6, 15)
     )
 
-    # 29.2047 × 56.322 × 0.92 = 1513.28
-    assert_in_delta 1_513.28, cbsa_rate, 0.01
-    # Unknown CBSA falls back to NATIONAL: 29.2047 × 56.322 × 1.0 = 1644.87
-    assert_in_delta 1_644.87, unknown_cbsa_rate, 0.01
+    assert_equal asc_labor_adjusted_rate(
+      weight: 29.2047, conversion_factor: 56.322, wage_index: 0.92
+    ), cbsa_rate
+    assert_equal asc_labor_adjusted_rate(
+      weight: 29.2047, conversion_factor: 56.322, wage_index: 1.0
+    ), unknown_cbsa_rate
   end
 
   test "changing the IPPS wage index for a CBSA changes the ASC rate for that CBSA (#369)" do
@@ -108,13 +118,87 @@ class Corvid::AscRateProviderTest < ActiveSupport::TestCase
     rate = Corvid::AscRateProvider.rate_for(
       hcpcs_code: "0102T", locality: "NATIONAL", date: Date.new(2026, 6, 15)
     )
-    # 29.2047 × 56.322 × 1.0 = 1644.87
-    assert_in_delta 1_644.87, rate, 0.01
+    expected = asc_labor_adjusted_rate(
+      weight: 29.2047, conversion_factor: 56.322, wage_index: 1.0
+    )
+    assert_equal expected, rate
   end
 
-  test "rate_for uses CALENDAR year — Jan 1 boundary, not Oct 1" do
-    # A November 2026 service date stays in CY 2026 (vs IPPS which
-    # would convert to FY 2027 for the same date).
+  test "lookup_for leaves wage_index_fiscal_year nil when defaulting wage index to 1.0 with no IPPS row (#722)" do
+    Corvid::IppsHospitalRate.unscoped.delete_all
+    lookup = Corvid::AscRateProvider.lookup_for(
+      hcpcs_code: "0102T", locality: "NATIONAL", date: Date.new(2026, 6, 15)
+    )
+    refute_nil lookup
+    assert_nil lookup.wage_index_fiscal_year,
+               "no FY wage-index row was used; default 1.0 must not invent an FY"
+  end
+
+  test "January CY 2026 service maps calendar year to FY 2026 wage index (#722)" do
+    Corvid::IppsHospitalRate.unscoped.delete_all
+    Corvid::IppsHospitalRate.create!(
+      fiscal_year: 2026, locality: "NATIONAL", base_rate: 6_752.61, wage_index: 1.12
+    )
+    Corvid::IppsHospitalRate.create!(
+      fiscal_year: 2025, locality: "NATIONAL", base_rate: 6_752.61, wage_index: 0.80
+    )
+
+    lookup = Corvid::AscRateProvider.lookup_for(
+      hcpcs_code: "0102T", locality: "NATIONAL", date: Date.new(2026, 1, 15)
+    )
+    expected = asc_labor_adjusted_rate(
+      weight: 29.2047, conversion_factor: 56.322, wage_index: 1.12
+    )
+
+    assert_equal expected, lookup.rate
+    assert_equal 2026, lookup.wage_index_fiscal_year
+    assert_equal ASC_LABOR_SHARE, lookup.labor_share
+  end
+
+  test "Oct-Dec CY 2026 service uses FY 2026 wage index not FY 2027 (#722)" do
+    Corvid::IppsHospitalRate.unscoped.delete_all
+    Corvid::IppsHospitalRate.create!(
+      fiscal_year: 2026, locality: "NATIONAL", base_rate: 6_752.61, wage_index: 1.10
+    )
+    Corvid::IppsHospitalRate.create!(
+      fiscal_year: 2027, locality: "NATIONAL", base_rate: 6_752.61, wage_index: 2.00
+    )
+
+    lookup = Corvid::AscRateProvider.lookup_for(
+      hcpcs_code: "0102T", locality: "NATIONAL", date: Date.new(2026, 11, 15)
+    )
+    expected = asc_labor_adjusted_rate(
+      weight: 29.2047, conversion_factor: 56.322, wage_index: 1.10
+    )
+
+    assert_equal expected, lookup.rate
+    assert_equal 2026, lookup.wage_index_fiscal_year
+  end
+
+  test "lookup_for prices with labor share read from the loaded row not a hardcoded constant (#722)" do
+    share = BigDecimal("0.4700")
+    Corvid::CmsLaborShare.unscoped.delete_all
+    seed_asc_labor_share(calendar_year: @cy, labor_share: share)
+
+    lookup = Corvid::AscRateProvider.lookup_for(
+      hcpcs_code: "0102T", locality: "01", date: Date.new(2026, 6, 15)
+    )
+    expected = asc_labor_adjusted_rate(
+      weight: 29.2047, conversion_factor: 56.322, wage_index: 1.085, labor_share: share
+    )
+
+    assert_equal expected, lookup.rate
+    assert_equal share, lookup.labor_share
+  end
+
+  test "lookup_for returns nil when no labor share row exists for the calendar year" do
+    Corvid::CmsLaborShare.unscoped.delete_all
+    assert_nil Corvid::AscRateProvider.lookup_for(
+      hcpcs_code: "0102T", locality: "NATIONAL", date: Date.new(2026, 6, 15)
+    )
+  end
+
+  test "rate_for uses CALENDAR year for ASC weight and CF — Jan 1 boundary, not Oct 1" do
     rate = Corvid::AscRateProvider.rate_for(
       hcpcs_code: "0102T",
       locality: "NATIONAL",
@@ -140,6 +224,8 @@ class Corvid::AscRateProviderTest < ActiveSupport::TestCase
       calendar_year: 2027, locality: "NATIONAL",
       conversion_factor: 60.0, wage_index: 1.0
     )
+    seed_asc_labor_share(calendar_year: 2026)
+    seed_asc_labor_share(calendar_year: 2027)
 
     dec_31 = Corvid::AscRateProvider.rate_for(
       hcpcs_code: "0102T", locality: "NATIONAL", date: Date.new(2026, 12, 31)
@@ -152,13 +238,7 @@ class Corvid::AscRateProviderTest < ActiveSupport::TestCase
     assert_in_delta 1_800.0, jan_1,  0.01, "Jan 1, 2027 should price against CY 2027 rows"
   end
 
-  test "wage index tracks the federal fiscal year, independent of the ASC calendar-year price switch" do
-    # The ASC weight/CF table switches on the CY boundary (Jan 1); the
-    # IPPS-sourced wage index switches on the FY boundary (Oct 1) —
-    # different calendars, per #369's design. Dec 31 2026 and Jan 1
-    # 2027 both fall in FY 2027 (which started Oct 1 2026), so they
-    # share the same wage index even though they price against
-    # different CY weight/CF rows.
+  test "CY N service maps to FY N wage index while ASC weight and CF stay calendar-year keyed (#722)" do
     Corvid::AscHcpcsRate.unscoped.delete_all
     Corvid::AscConversionFactor.unscoped.delete_all
     Corvid::IppsHospitalRate.unscoped.delete_all
@@ -175,14 +255,17 @@ class Corvid::AscRateProviderTest < ActiveSupport::TestCase
     Corvid::AscConversionFactor.create!(
       calendar_year: 2027, locality: "NATIONAL", conversion_factor: 60.0
     )
-    # FY 2027 (Oct 2026 – Sep 2027) wage index for locality "01" covers
-    # both Dec 31, 2026 and Jan 1, 2027 service dates.
     Corvid::IppsHospitalRate.create!(
-      fiscal_year: 2027, locality: "NATIONAL", base_rate: 6_752.61, wage_index: 1.0
+      fiscal_year: 2026, locality: "NATIONAL", base_rate: 6_752.61, wage_index: 1.0
     )
     Corvid::IppsHospitalRate.create!(
-      fiscal_year: 2027, locality: "01", base_rate: 6_752.61, wage_index: 1.085
+      fiscal_year: 2026, locality: "01", base_rate: 6_752.61, wage_index: 1.085
     )
+    Corvid::IppsHospitalRate.create!(
+      fiscal_year: 2027, locality: "01", base_rate: 6_752.61, wage_index: 1.200
+    )
+    seed_asc_labor_share(calendar_year: 2026)
+    seed_asc_labor_share(calendar_year: 2027)
 
     dec_31_locality_01 = Corvid::AscRateProvider.rate_for(
       hcpcs_code: "0102T", locality: "01", date: Date.new(2026, 12, 31)
@@ -191,13 +274,14 @@ class Corvid::AscRateProviderTest < ActiveSupport::TestCase
       hcpcs_code: "0102T", locality: "01", date: Date.new(2027, 1, 1)
     )
 
-    # Dec 31, 2026: CY 2026 weight/CF (20.0 × 50.0) × FY 2027 wage index (1.085) = 1085.00
-    assert_in_delta 1_085.0, dec_31_locality_01, 0.01
-    # Jan 1, 2027: CY 2027 weight/CF (30.0 × 60.0) × same FY 2027 wage index (1.085) = 1953.00
-    assert_in_delta 1_953.0, jan_1_locality_01, 0.01
+    assert_equal asc_labor_adjusted_rate(
+      weight: 20.0, conversion_factor: 50.0, wage_index: 1.085
+    ), dec_31_locality_01
+    assert_equal asc_labor_adjusted_rate(
+      weight: 30.0, conversion_factor: 60.0, wage_index: 1.200
+    ), jan_1_locality_01
 
-    refute_in_delta dec_31_locality_01, jan_1_locality_01, 0.01,
-                    "Jan 1 switches the CY weight/CF table even though the FY wage index doesn't turn over until Oct 1"
+    refute_equal dec_31_locality_01, jan_1_locality_01
   end
 
   test "rate_for returns nil on Jan 1 when next calendar year rows are missing" do
@@ -210,6 +294,7 @@ class Corvid::AscRateProviderTest < ActiveSupport::TestCase
       calendar_year: 2026, locality: "NATIONAL",
       conversion_factor: 50.0, wage_index: 1.0
     )
+    seed_asc_labor_share(calendar_year: 2026)
 
     dec_31 = Corvid::AscRateProvider.rate_for(
       hcpcs_code: "0102T", locality: "NATIONAL", date: Date.new(2026, 12, 31)
@@ -246,7 +331,9 @@ class Corvid::AscRateProviderTest < ActiveSupport::TestCase
       locality: "99",
       date: Date.new(2026, 6, 15)
     )
-    assert_in_delta 1_644.87, rate, 0.01
+    assert_in_delta asc_labor_adjusted_rate(
+      weight: 29.2047, conversion_factor: 56.322, wage_index: 1.0
+    ), rate, 0.01
   end
 
   test "rate_for normalizes nil and blank locality to NATIONAL" do
@@ -256,7 +343,9 @@ class Corvid::AscRateProviderTest < ActiveSupport::TestCase
         locality: loc,
         date: Date.new(2026, 6, 15)
       )
-      assert_in_delta 1_644.87, rate, 0.01
+      assert_in_delta asc_labor_adjusted_rate(
+      weight: 29.2047, conversion_factor: 56.322, wage_index: 1.0
+    ), rate, 0.01
     end
   end
 

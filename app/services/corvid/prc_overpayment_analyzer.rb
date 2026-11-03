@@ -26,12 +26,24 @@ module Corvid
   # **Screening estimate, not adjudication.** The IPPS pricing formula
   # (`weight × base_rate × wage_index`) is the standard operating
   # payment, intentionally without IME, DSH, capital, outlier, or
-  # transfer adjustments. The OPPS formula
-  # (`apc_weight × conversion_factor × wage_index`) similarly omits
-  # status-indicator packaging, copay/coinsurance, outlier, and
-  # device/drug pass-through adjustments. Both are recovery-triage
-  # screening estimates — not claim-adjudication amounts. Demand-letter
-  # dollar figures should cite the analyzer's source/confidence labels
+  # transfer adjustments. The OPPS and ASC formulas apply the wage
+  # index only to the labor-related share
+  # (`weight × conversion_factor × (labor_share × wage_index + (1 − labor_share))`)
+  # and still omit status-indicator packaging, copay/coinsurance,
+  # outlier, and device/drug pass-through adjustments. CMS prices
+  # calendar year N with the fiscal year N IPPS wage index. A calendar
+  # year with no labor-share row is undetermined and uses the stub
+  # provider rather than pricing at a 100% labor share. When the OPPS
+  # APC weight and conversion factor are loaded and the labor share is
+  # missing, the stub note names that missing share; a missing APC
+  # weight keeps the generic unavailable-rate note. An ASC facility
+  # whose ASC rate and conversion factor are loaded but whose ASC labor
+  # share is missing does not fall through to OPPS; a missing ASC rate
+  # still does. When no IPPS wage-index row is loaded, the index
+  # defaults to 1.0, the lookup's wage-index fiscal year is nil, and
+  # the note names that default. These are recovery-triage screening
+  # estimates — not claim-adjudication amounts. Demand-letter dollar
+  # figures should cite the analyzer's source/confidence labels
   # alongside any total.
   #
   # Public contract notes for callers:
@@ -242,88 +254,159 @@ module Corvid
       end
 
       def analyze_outpatient(obligation, proc_info, facility)
-        # OPPS lookup (#277): real CMS data first; fall back to in-code
-        # stub provider when no row is loaded. Mirrors the IPPS analyze_
-        # inpatient pattern — release_label drives confidence label.
+        # OPPS lookup (#277, #722): real CMS data first; fall back to the
+        # in-code stub provider when the price cannot be computed.
+        # release_label drives the confidence label, same as IPPS. A
+        # missing labor share names that share in the stub note. A
+        # missing APC weight keeps the generic unavailable-rate note.
         #
-        # ASC routing (#278): when the obligation's vendor is in the
-        # corvid_asc_facilities registry on the service date, route to
-        # AscRateProvider. ASC publishes rates per HCPCS (not per APC),
-        # so we pass proc_info.hcpcs — different lookup key than OPPS.
-        # If the ASC lookup misses (procedure isn't ASC-covered, or
-        # our Addendum AA data isn't loaded for that year), fall
-        # through to the OPPS path as a conservative default rather
-        # than dropping straight to the stub provider.
-        is_asc = Corvid::AscFacility.applies?(
+        # ASC routing (#278, #722): an ASC-registry vendor is priced
+        # from AscRateProvider (HCPCS, not APC). A missing ASC rate or
+        # conversion factor falls through to OPPS. A loaded ASC rate
+        # and conversion factor with no ASC labor share is undetermined
+        # and takes the stub path instead of OPPS.
+        analyze_asc(obligation, proc_info, facility) ||
+          analyze_opps(obligation, proc_info, facility)
+      end
+
+      def analyze_asc(obligation, proc_info, facility)
+        return unless Corvid::AscFacility.applies?(
           vendor_id: obligation.vendor_id, on: obligation.service_date
         )
-        asc_lookup = is_asc ? Corvid::AscRateProvider.lookup_for(
+
+        outcome = Corvid::AscRateProvider.lookup_outcome(
           hcpcs_code: proc_info.hcpcs,
           locality: wage_area(facility),
           date: obligation.service_date
-        ) : nil
-
-        if asc_lookup
-          stub_derived = asc_lookup.release_label.to_s.start_with?("stub")
-          return Result.new(
-            base_fields(obligation, proc_info, facility).merge(
-              medicare_equivalent: asc_lookup.rate,
-              overpayment: [ obligation.paid_amount.to_f - asc_lookup.rate, 0 ].max.round(2),
-              payment_system: :asc,
-              rate_source: stub_derived ? :stub : :real,
-              recovery_confidence: stub_derived ? :stub_estimate : :clear,
-              rate_source_release: asc_lookup.release_label.presence,
-              notes: stub_derived ?
-                "Ambulatory surgical center (HCPCS #{proc_info.hcpcs}). Priced via " \
-                "stub-derived ASC canonical CSV (release=#{asc_lookup.release_label})." :
-                "Ambulatory surgical center (HCPCS #{proc_info.hcpcs}). " \
-                "Priced via real CMS ASC Final Rule (release=#{asc_lookup.release_label})."
-            )
-          )
+        )
+        # :missing_rate and :missing_conversion_factor return nil so
+        # the caller falls through to OPPS. A missing labor share does not.
+        case outcome.reason
+        when :priced
+          priced_asc_result(obligation, proc_info, facility, outcome.lookup)
+        when :missing_labor_share
+          undetermined_asc_result(obligation, proc_info, facility)
         end
+      end
 
-        lookup = Corvid::OppsRateProvider.lookup_for(
+      def priced_asc_result(obligation, proc_info, facility, lookup)
+        stub_derived = lookup.release_label.to_s.start_with?("stub")
+        Result.new(
+          base_fields(obligation, proc_info, facility).merge(
+            medicare_equivalent: lookup.rate,
+            overpayment: [ obligation.paid_amount.to_f - lookup.rate, 0 ].max.round(2),
+            payment_system: :asc,
+            rate_source: stub_derived ? :stub : :real,
+            recovery_confidence: stub_derived ? :stub_estimate : :clear,
+            rate_source_release: lookup.release_label.presence,
+            notes: (stub_derived ?
+              "Ambulatory surgical center (HCPCS #{proc_info.hcpcs}). Priced via " \
+              "stub-derived ASC canonical CSV (release=#{lookup.release_label})." :
+              "Ambulatory surgical center (HCPCS #{proc_info.hcpcs}). " \
+              "Priced via real CMS ASC Final Rule (release=#{lookup.release_label}).") +
+              wage_and_labor_note(lookup, calendar_year: obligation.service_date.year)
+          )
+        )
+      end
+
+      def undetermined_asc_result(obligation, proc_info, facility)
+        stub_rate = outpatient_stub_rate(proc_info, facility, obligation)
+        Result.new(
+          base_fields(obligation, proc_info, facility).merge(
+            medicare_equivalent: stub_rate,
+            overpayment: stub_overpayment(obligation, stub_rate),
+            payment_system: :asc,
+            rate_source: stub_rate ? :stub : nil,
+            recovery_confidence: stub_rate ? :stub_estimate : :no_rate_for_year,
+            notes: "Ambulatory surgical center (HCPCS #{proc_info.hcpcs}). Missing ASC labor share " \
+                   "for calendar year #{obligation.service_date.year}; real ASC price is undetermined. " \
+                   "Using stub national-average estimate."
+          )
+        )
+      end
+
+      def analyze_opps(obligation, proc_info, facility)
+        outcome = Corvid::OppsRateProvider.lookup_outcome(
           apc_code: proc_info.apc,
           locality: wage_area(facility),
           date: obligation.service_date
         )
-
-        if lookup
-          stub_derived = lookup.release_label.to_s.start_with?("stub")
-          Result.new(
-            base_fields(obligation, proc_info, facility).merge(
-              medicare_equivalent: lookup.rate,
-              overpayment: [ obligation.paid_amount.to_f - lookup.rate, 0 ].max.round(2),
-              payment_system: :opps,
-              rate_source: stub_derived ? :stub : :real,
-              recovery_confidence: stub_derived ? :stub_estimate : :clear,
-              rate_source_release: lookup.release_label.presence,
-              notes: stub_derived ?
-                "Hospital outpatient (APC #{proc_info.apc}). Priced via " \
-                "stub-derived OPPS canonical CSV (release=#{lookup.release_label})." :
-                "Hospital outpatient (APC #{proc_info.apc}). " \
-                "Priced via real CMS OPPS Final Rule (release=#{lookup.release_label})."
-            )
+        # :missing_weight and :missing_conversion_factor keep the generic
+        # unavailable-rate note. A missing labor share names that share.
+        case outcome.reason
+        when :priced
+          priced_opps_result(obligation, proc_info, facility, outcome.lookup)
+        when :missing_labor_share
+          stub_opps_result(
+            obligation, proc_info, facility,
+            notes: missing_opps_labor_share_note(obligation, proc_info)
           )
         else
-          stub_rate = Corvid::OppsStubRateProvider.rate_for(
-            apc_code: proc_info.apc,
-            locality: facility.locality,
-            date: obligation.service_date
-          )
-          Result.new(
-            base_fields(obligation, proc_info, facility).merge(
-              medicare_equivalent: stub_rate,
-              overpayment: stub_rate ? [ obligation.paid_amount.to_f - stub_rate, 0 ].max.round(2) : nil,
-              payment_system: :opps,
-              rate_source: stub_rate ? :stub : nil,
-              recovery_confidence: stub_rate ? :stub_estimate : :no_rate_for_year,
-              notes: "Hospital outpatient (APC #{proc_info.apc}). Real OPPS " \
-                     "rate unavailable for this (year, APC, locality); using " \
-                     "stub national-average estimate."
-            )
+          stub_opps_result(
+            obligation, proc_info, facility,
+            notes: unavailable_opps_rate_note(proc_info)
           )
         end
+      end
+
+      def priced_opps_result(obligation, proc_info, facility, lookup)
+        stub_derived = lookup.release_label.to_s.start_with?("stub")
+        Result.new(
+          base_fields(obligation, proc_info, facility).merge(
+            medicare_equivalent: lookup.rate,
+            overpayment: [ obligation.paid_amount.to_f - lookup.rate, 0 ].max.round(2),
+            payment_system: :opps,
+            rate_source: stub_derived ? :stub : :real,
+            recovery_confidence: stub_derived ? :stub_estimate : :clear,
+            rate_source_release: lookup.release_label.presence,
+            notes: (stub_derived ?
+              "Hospital outpatient (APC #{proc_info.apc}). Priced via " \
+              "stub-derived OPPS canonical CSV (release=#{lookup.release_label})." :
+              "Hospital outpatient (APC #{proc_info.apc}). " \
+              "Priced via real CMS OPPS Final Rule (release=#{lookup.release_label}).") +
+              wage_and_labor_note(lookup, calendar_year: obligation.service_date.year)
+          )
+        )
+      end
+
+      def stub_opps_result(obligation, proc_info, facility, notes:)
+        stub_rate = outpatient_stub_rate(proc_info, facility, obligation)
+        Result.new(
+          base_fields(obligation, proc_info, facility).merge(
+            medicare_equivalent: stub_rate,
+            overpayment: stub_overpayment(obligation, stub_rate),
+            payment_system: :opps,
+            rate_source: stub_rate ? :stub : nil,
+            recovery_confidence: stub_rate ? :stub_estimate : :no_rate_for_year,
+            notes: notes
+          )
+        )
+      end
+
+      def missing_opps_labor_share_note(obligation, proc_info)
+        "Hospital outpatient (APC #{proc_info.apc}). Missing OPPS labor share " \
+          "for calendar year #{obligation.service_date.year}; " \
+          "real OPPS price is undetermined. Using stub national-average estimate."
+      end
+
+      def unavailable_opps_rate_note(proc_info)
+        "Hospital outpatient (APC #{proc_info.apc}). Real OPPS " \
+          "rate unavailable for this (year, APC, locality); using " \
+          "stub national-average estimate."
+      end
+
+      def outpatient_stub_rate(proc_info, facility, obligation)
+        Corvid::OppsStubRateProvider.rate_for(
+          apc_code: proc_info.apc,
+          locality: facility.locality,
+          date: obligation.service_date
+        )
+      end
+
+      def stub_overpayment(obligation, stub_rate)
+        return nil unless stub_rate
+
+        [ obligation.paid_amount.to_f - stub_rate, 0 ].max.round(2)
       end
 
       def unmapped_procedure(obligation, facility)
@@ -372,6 +455,23 @@ module Corvid
           notes: "Obligation has no parseable service_date (upstream date malformed); " \
                  "cannot select a fee schedule. Clean the obligation row, then re-import."
         )
+      end
+
+      # Provenance for a real OPPS or ASC lookup. A wage-index row records
+      # its fiscal year (CY N → FY N). The 1.0 default, used when no row
+      # was loaded, does not invent that year. `calendar_year` is the
+      # year the lookup asked for.
+      def wage_and_labor_note(lookup, calendar_year:)
+        share = format("%.4f", lookup.labor_share)
+        if lookup.wage_index_fiscal_year
+          format(" Wage index FY %d, labor share %s.", lookup.wage_index_fiscal_year, share)
+        else
+          format(
+            " Wage index 1.0 (no FY %d wage-index row), labor share %s.",
+            calendar_year,
+            share
+          )
+        end
       end
 
       # The IPPS/OPPS/ASC providers key their wage index by CMS wage

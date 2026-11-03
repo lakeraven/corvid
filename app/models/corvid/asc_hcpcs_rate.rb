@@ -9,7 +9,9 @@ module Corvid
   # `payment_indicator` carries the ASC PI code (e.g., G2, J8, R2, P2)
   # which the analyzer can use for future per-PI pricing logic. For
   # screening-estimate purposes today, any row with payment_weight > 0
-  # is priced via the ASC formula: weight × ASC_CF × wage_index.
+  # is priced via the ASC formula: weight × ASC_CF ×
+  # (labor_share × wage_index + (1 − labor_share)). The labor share
+  # is the calendar year's corvid_cms_labor_shares row.
   class AscHcpcsRate < ::ActiveRecord::Base
     self.table_name = "corvid_asc_hcpcs_rates"
 

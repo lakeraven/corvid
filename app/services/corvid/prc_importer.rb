@@ -137,6 +137,11 @@ module Corvid
       # Run PrcOverpaymentAnalyzer over every imported obligation in the
       # tenant; append one corvid_prc_overpayment_analyses row per obligation.
       # Existing analyses are preserved.
+      #
+      # Labor shares are reference data. Operators load them with
+      # `rake cms:labor_shares:import` (demo seeds insert a share too).
+      # This method does not: an empty table leaves the OPPS or ASC
+      # price undetermined, and the analyzer takes the stub path.
       def reanalyze(tenant:)
         analyses_written = 0
 
