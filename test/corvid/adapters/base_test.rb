@@ -94,6 +94,10 @@ class Corvid::Adapters::BaseTest < Minitest::Test
     assert_raises(NotImplementedError) { @adapter.verify_eligibility("pt_test", "medicaid") }
   end
 
+  def test_search_payers_raises_not_implemented
+    assert_raises(NotImplementedError) { @adapter.search_payers("SYNTHETIC") }
+  end
+
   # -- Optional clinical reads default to undetermined (nil) on Base ----------
 
   def test_get_conditions_defaults_to_nil

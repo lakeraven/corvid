@@ -6,6 +6,7 @@ require_relative "rcm/remittance"
 require_relative "rcm/edi_835_reader"
 require_relative "rcm/adjustment_reason_codes"
 require_relative "rcm/remittance_classifier"
+require_relative "rcm/payer_directory"
 require_relative "rcm/clearinghouse_client"
 require_relative "rcm/fixture_clearinghouse_client"
 require_relative "rcm/scrub_ruleset"
@@ -22,8 +23,9 @@ module Corvid
   # What is here:
   #   Claim / ClaimLine / Coverage / Diagnosis  — FHIR R4-shaped inputs
   #   Scrubber + ScrubRuleset                   — versioned scrub rules as data
+  #   PayerDirectoryEntry                       — per-transaction payer support
   #   ClearinghouseClient                       — the EDI seam
-  #   FixtureClearinghouseClient                — synthetic 835s, no payer needed
+  #   FixtureClearinghouseClient                — synthetic 835s and a payer directory
   #   Edi835Reader                              — X12 835 -> ClaimResponse shapes
   #   AdjustmentReasonCodes                     — CARC/RARC mapping as data
   #   RemittanceClassifier                      — routing, with unmapped -> human
