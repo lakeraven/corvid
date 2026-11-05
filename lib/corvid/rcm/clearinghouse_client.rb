@@ -2,6 +2,7 @@
 
 require_relative "acknowledgment"
 require_relative "remittance"
+require_relative "eligibility"
 
 module Corvid
   module Rcm
@@ -16,10 +17,15 @@ module Corvid
     #
     # Implementations must be substitutable: `submit_claim` always answers with
     # an `Acknowledgment` (accepted or rejected — never a denial, which can
-    # only come back on an 835), and `fetch_remittances` always answers with
-    # `Remittance` values.
+    # only come back on an 835), `fetch_remittances` always answers with
+    # `Remittance` values, and `check_eligibility` always answers with an
+    # `EligibilityResponse`. A malformed 271 is that response with outcome
+    # `:undetermined`, not a raised parse error.
     class ClearinghouseClient
       class TransportError < StandardError; end
+
+      # Fixed so a rejected argument cannot carry a patient or member token.
+      INQUIRY_REQUIRED_MESSAGE = "expected an eligibility inquiry"
 
       # Submit one professional claim (837P).
       #
@@ -44,6 +50,34 @@ module Corvid
       # @return [Array<Corvid::Rcm::Remittance>]
       def fetch_remittances(date_range: nil)
         raise NotImplementedError, "#{self.class}#fetch_remittances not implemented"
+      end
+
+      # Real-time eligibility (X12 271).
+      #
+      # Unknown is never a no. Only an explicit inactive answer is `:inactive`;
+      # an error, a timeout, a malformed 271, or an unmapped answer is
+      # `:undetermined` (42 CFR 136.61). Implementations always return an
+      # `EligibilityResponse`: a 271 the reader cannot parse is an
+      # undetermined answer, not an exception that carries the inquiry.
+      # Whatever this raises must not name the patient or the member — the
+      # inquiry is not interpolated into the message. The argument has to be
+      # an `EligibilityInquiry`. Anything else raises ArgumentError with
+      # {INQUIRY_REQUIRED_MESSAGE}.
+      #
+      # @param inquiry [Corvid::Rcm::EligibilityInquiry]
+      # @return [Corvid::Rcm::EligibilityResponse]
+      # @raise [ArgumentError] when `inquiry` is not an {EligibilityInquiry}
+      def check_eligibility(inquiry)
+        require_eligibility_inquiry!(inquiry)
+        raise NotImplementedError, "#{self.class}#check_eligibility not implemented"
+      end
+
+      private
+
+      def require_eligibility_inquiry!(inquiry)
+        return if inquiry.is_a?(EligibilityInquiry)
+
+        raise ArgumentError, INQUIRY_REQUIRED_MESSAGE
       end
     end
   end

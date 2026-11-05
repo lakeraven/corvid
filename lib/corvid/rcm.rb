@@ -4,6 +4,8 @@ require_relative "rcm/claim"
 require_relative "rcm/acknowledgment"
 require_relative "rcm/remittance"
 require_relative "rcm/edi_835_reader"
+require_relative "rcm/eligibility"
+require_relative "rcm/edi_271_reader"
 require_relative "rcm/adjustment_reason_codes"
 require_relative "rcm/remittance_classifier"
 require_relative "rcm/clearinghouse_client"
@@ -23,8 +25,10 @@ module Corvid
   #   Claim / ClaimLine / Coverage / Diagnosis  — FHIR R4-shaped inputs
   #   Scrubber + ScrubRuleset                   — versioned scrub rules as data
   #   ClearinghouseClient                       — the EDI seam
-  #   FixtureClearinghouseClient                — synthetic 835s, no payer needed
+  #   FixtureClearinghouseClient                — synthetic 835s and 271s, no payer
   #   Edi835Reader                              — X12 835 -> ClaimResponse shapes
+  #   Edi271Reader                              — X12 271 -> eligibility shapes
+  #   EligibilityInquiry / EligibilityResponse  — fixture-backed typed 271 check
   #   AdjustmentReasonCodes                     — CARC/RARC mapping as data
   #   RemittanceClassifier                      — routing, with unmapped -> human
   #
@@ -32,8 +36,8 @@ module Corvid
   #   - persistence of any kind (tables, models, the claim event log with #507)
   #   - work queues as durable objects rather than routing destinations
   #   - collections-fee accrual and invoicing
-  #   - live clearinghouse transport
-  #   - eligibility 270/271 and carve-out routing
+  #   - live clearinghouse transport and 270 inquiry generation
+  #   - eligibility carve-out routing
   #
   # Two distinctions the whole module is built around, kept in separate files
   # so they cannot blur:
