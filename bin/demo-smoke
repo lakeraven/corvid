@@ -6,16 +6,17 @@
 # up live. Deliberately independent of the minitest/cucumber suites: it shells
 # out to the same bin/demo-* scripts a presenter runs.
 #
-#   bin/demo-smoke            # all three
-#   bin/demo-smoke overlay    # one of: overlay, prc-migration, prc
+#   bin/demo-smoke            # all demos + mlr-doc
+#   bin/demo-smoke overlay    # one of: overlay, prc-migration, prc, mlr-doc
 set -uo pipefail
 cd "$(dirname "$0")/.." || exit 1
+ROOT="$PWD"
 
 only="${1:-all}"
 case "$only" in
-  all | overlay | prc-migration | prc) ;;
+  all | overlay | prc-migration | prc | mlr-doc) ;;
   *)
-    printf 'demo-smoke: unknown demo: %s (one of: overlay, prc-migration, prc)\n' "$only" >&2
+    printf 'demo-smoke: unknown demo: %s (one of: overlay, prc-migration, prc, mlr-doc)\n' "$only" >&2
     exit 64
     ;;
 esac
@@ -31,7 +32,7 @@ check() {
   printf '== smoke: %s\n' "$name"
   if ! "$script" >"$log" 2>&1; then
     printf '   FAIL: %s exited non-zero\n' "$script"
-    tail -20 "$log" | sed 's/^/   | /'
+    tail -20 "$log" | mlr_doc_redact | sed 's/^/   | /'
     failures=$((failures + 1))
     return 0
   fi
@@ -47,6 +48,747 @@ check() {
     failures=$((failures + 1))
   else
     printf '   ok (%s assertions)\n' "$#"
+  fi
+}
+
+mlr_doc_write_pg_env() {
+  # DATABASE_URL unset: keep the developer's PG* and only fill gaps.
+  # URI::InvalidURIError echoes the raw URL, so rescue it and print a fixed line.
+  OUT="$1" ruby -ruri -rshellwords -e '
+    def write_env(host, port, user, pass)
+      File.open(ENV.fetch("OUT"), "w") do |f|
+        f.puts "PGHOST=#{Shellwords.shellescape(host.to_s)}"
+        f.puts "PGPORT=#{Shellwords.shellescape(port.to_s)}"
+        f.puts "PGUSER=#{Shellwords.shellescape(user.to_s)}"
+        f.puts "PGPASSWORD=#{Shellwords.shellescape(pass.to_s)}"
+      end
+    end
+
+    raw = ENV["DATABASE_URL"]
+    if raw.nil? || raw.empty?
+      write_env(
+        ENV.fetch("PGHOST", "localhost"),
+        ENV.fetch("PGPORT", "5432"),
+        ENV.fetch("PGUSER", "postgres"),
+        ENV.fetch("PGPASSWORD", "postgres")
+      )
+      exit 0
+    end
+
+    begin
+      u = URI(raw)
+      decode = URI.method(:decode_www_form_component)
+      user = u.user ? decode.call(u.user) : "postgres"
+      pass = u.password ? decode.call(u.password) : "postgres"
+    rescue URI::InvalidURIError, ArgumentError
+      abort "DATABASE_URL is not a valid URI"
+    end
+    write_env(u.host || "localhost", u.port || 5432, user, pass)
+  '
+}
+
+mlr_doc_test_database_name() {
+  ruby -ryaml -e '
+    cfg = YAML.load_file("test/dummy/config/database.yml", aliases: true)
+    puts cfg.fetch("test").fetch("database")
+  '
+}
+
+# Prints the database name Rails' ConnectionUrlResolver would use for
+# DATABASE_URL, or nothing when it is unset or blank.
+# Opaque URLs (postgres:name) use the opaque part, which wins over a query
+# parameter. Otherwise a query parameter named database wins over the path.
+# The name is percent-decoded. Unparseable URLs exit non-zero with a fixed
+# message (the URL is not printed).
+mlr_doc_database_url_name() {
+  ruby -ruri -e '
+    raw = ENV["DATABASE_URL"]
+    exit 0 if raw.nil? || raw.empty?
+
+    parser = URI::RFC2396_Parser.new
+    begin
+      uri = parser.parse(raw)
+    rescue StandardError
+      abort "DATABASE_URL is not a valid URI"
+    end
+
+    query_str = nil
+    opaque = nil
+    if uri.opaque
+      opaque, query_str = uri.opaque.split("?", 2)
+    else
+      query_str = uri.query
+    end
+
+    query = {}
+    (query_str || "").split("&").each do |pair|
+      next if pair.empty?
+      key, value = pair.split("=", 2)
+      query[key] = value
+    end
+
+    if !opaque.nil?
+      name = opaque
+    elsif query.key?("database")
+      name = query["database"]
+    else
+      name = uri.path.to_s.delete_prefix("/")
+    end
+
+    # Rails compact_blank runs on the raw value, then percent-decodes what remains.
+    # "%20" is kept and becomes a space; a raw blank string is dropped.
+    if !name.is_a?(String) || name.empty? || name.match?(/\A[[:space:]]*\z/)
+      exit 0
+    end
+    begin
+      name = parser.unescape(name)
+    rescue StandardError
+      abort "DATABASE_URL is not a valid URI"
+    end
+    puts name
+  '
+}
+
+# Fixed-string redaction. Secrets are read from the environment (never argv)
+# so values with any characters can be replaced safely. Also redacts JSON
+# "password" values, any *_PASSWORD= assignment, and pwd=/pwd: through
+# the end of the line.
+mlr_doc_redact() {
+  ruby -ruri -e '
+    def remember(list, value)
+      return if value.nil? || value.empty?
+      list << value.dup.force_encoding(Encoding::ASCII_8BIT)
+    end
+
+    STDIN.binmode
+    STDOUT.binmode
+    blob = STDIN.read.to_s.force_encoding(Encoding::ASCII_8BIT)
+    urls = []
+    passwords = []
+    remember(urls, ENV["DATABASE_URL"])
+    remember(passwords, ENV["PGPASSWORD"])
+
+    raw_url = ENV["DATABASE_URL"]
+    if raw_url && !raw_url.empty?
+      parses = []
+      begin
+        parses << URI::RFC2396_Parser.new.parse(raw_url)
+      rescue StandardError
+      end
+      begin
+        parses << URI(raw_url)
+      rescue StandardError
+      end
+      parser = URI::RFC2396_Parser.new
+      parses.each do |uri|
+        pass = uri.password
+        next if pass.nil? || pass.empty?
+        remember(passwords, pass)
+        begin
+          remember(passwords, parser.unescape(pass))
+        rescue StandardError
+        end
+        begin
+          remember(passwords, URI.decode_www_form_component(pass))
+        rescue StandardError
+        end
+      end
+    end
+
+    token = "\x00".b
+    secrets = urls + passwords
+    while blob.include?(token) || secrets.any? { |s| s.include?(token) }
+      token += "\x00".b
+    end
+
+    urls.uniq.sort_by { |s| -s.bytesize }.each { |s| blob.gsub!(s, token) }
+    blob.gsub!(%r{postgres(?:ql)?://[^\s"\x27]+}n, token)
+    # Quoted JSON first so a later same-line assignment cannot hide the value.
+    json_pw = /("password"[ \t]*:[ \t]*")(?:\\.|[^"\\\n])*(")/in
+    blob.gsub!(json_pw) { ($1 + token + $2).force_encoding(Encoding::ASCII_8BIT) }
+    key_re = /(^|[^\w])(password|pgpassword|database_url)(\s*[:=]\s*)[^\n]*/in
+    blob.gsub!(key_re) { ($1 + $2 + $3 + token).force_encoding(Encoding::ASCII_8BIT) }
+    env_pw = /(^|[^\w])(\w+_password)([ \t]*=[ \t]*)[^\n]*/in
+    blob.gsub!(env_pw) { ($1 + $2 + $3 + token).force_encoding(Encoding::ASCII_8BIT) }
+    pwd_re = /(^|[^\w])(pwd)([ \t]*[:=][ \t]*)[^\n]*/in
+    blob.gsub!(pwd_re) { ($1 + $2 + $3 + token).force_encoding(Encoding::ASCII_8BIT) }
+    passwords.uniq.sort_by { |s| -s.bytesize }.each { |s| blob.gsub!(s, token) }
+    blob.gsub!(token, "[REDACTED]".b)
+    STDOUT.write(blob)
+  '
+}
+
+mlr_doc_log_tail() {
+  local logfile="$1"
+  tail -30 "$logfile" | mlr_doc_redact | sed 's/^/   | /'
+}
+
+# Writes query rows for a public relation, or the line "missing" when it does not exist.
+# Connection failures stay probe errors. rel is one of the two catalog tables below.
+mlr_doc_capture_relation() {
+  local test_db="$1"
+  local rel="$2"
+  local query="$3"
+  local outfile="$4"
+  local errfile="$5"
+  local snap_err="$6"
+  local flag
+
+  case "$rel" in
+    schema_migrations | ar_internal_metadata) ;;
+    *)
+      printf '%s\n' 'snapshot probe failed' >"$errfile"
+      return 1
+      ;;
+  esac
+
+  if ! flag="$(psql -X -q -d "$test_db" -v ON_ERROR_STOP=1 -tAc \
+    "SELECT CASE WHEN to_regclass('public.${rel}') IS NULL THEN 'missing' ELSE 'present' END" \
+    2>"$snap_err")"; then
+    mlr_doc_copy_err "$snap_err" "$errfile"
+    return 1
+  fi
+  flag="$(printf '%s' "$flag" | tr -d '[:space:]')"
+  if [ "$flag" = "missing" ]; then
+    printf '%s\n' missing >"$outfile"
+    return 0
+  fi
+  if [ "$flag" != "present" ]; then
+    printf '%s\n' 'snapshot probe failed' >"$errfile"
+    return 1
+  fi
+  if ! psql -X -q -d "$test_db" -v ON_ERROR_STOP=1 -tAc "$query" >"$outfile" 2>"$snap_err"; then
+    mlr_doc_copy_err "$snap_err" "$errfile"
+    return 1
+  fi
+}
+
+# `cat "$src" >"$dest"` truncates dest before reading when they are the same file.
+mlr_doc_copy_err() {
+  local src="$1"
+  local dest="$2"
+  if [ "$src" -ef "$dest" ]; then
+    return 0
+  fi
+  cat "$src" >"$dest"
+}
+
+# Writes "absent" or a sha256 hex digest to $1. Fails (non-zero) on probe/connection errors.
+# A missing schema_migrations or ar_internal_metadata relation is part of the snapshot
+# ("missing"), not a probe error.
+# User schemas are every schema except pg_catalog, information_schema, pg_toast, and
+# the session temp schemas pg_temp_* / pg_toast_temp_*. The digest covers that sorted
+# schema list, a column fingerprint per table (schema, table, column, data type,
+# ordinal), each table's row count and content md5, and each sequence's last_value
+# and is_called. Identifiers are quoted with format(%I) or PG::Connection#quote_ident.
+# Counts miss a delete+reinsert of the same rows, so the content md5 is included.
+# An insert/delete that only advances a sequence still changes the digest, and
+# ADD COLUMN on an empty table changes the column fingerprint.
+# Every psql call uses -X (ignore ~/.psqlrc and $PSQLRC) and -q so timing chatter
+# and startup messages cannot change the captured rows. ON_ERROR_STOP is set on each call.
+mlr_doc_test_db_snapshot() {
+  local outfile="$1"
+  local test_db="$2"
+  local errfile="$3"
+  local snap_err="$tmp/mlr-doc-snapshot-probe.err"
+  local body="$tmp/mlr-doc-snapshot-body.txt"
+
+  export MLR_DOC_TEST_DB="$test_db"
+
+  if command -v psql >/dev/null 2>&1; then
+    if ! psql -X -q -d postgres -v ON_ERROR_STOP=1 -tAc "SELECT 1" >"$snap_err" 2>&1; then
+      mlr_doc_copy_err "$snap_err" "$errfile"
+      return 1
+    fi
+    if ! psql -X -q -d postgres -v ON_ERROR_STOP=1 -tAc \
+      "SELECT 1 FROM pg_database WHERE datname = '${test_db}'" >"$tmp/mlr-doc-db-exists.txt" 2>"$snap_err"; then
+      mlr_doc_copy_err "$snap_err" "$errfile"
+      return 1
+    fi
+    if [ "$(tr -d '[:space:]' <"$tmp/mlr-doc-db-exists.txt")" != "1" ]; then
+      printf '%s\n' absent >"$outfile"
+      return 0
+    fi
+    if ! mlr_doc_capture_relation "$test_db" schema_migrations \
+      "SELECT version FROM schema_migrations ORDER BY version" \
+      "$tmp/mlr-doc-migrations.txt" "$errfile" "$snap_err"; then
+      return 1
+    fi
+    if ! mlr_doc_capture_relation "$test_db" ar_internal_metadata \
+      "SELECT key, value, created_at, updated_at FROM ar_internal_metadata ORDER BY key" \
+      "$tmp/mlr-doc-metadata.txt" "$errfile" "$snap_err"; then
+      return 1
+    fi
+    if ! psql -X -q -d "$test_db" -v ON_ERROR_STOP=1 -tA -F "$(printf '\t')" \
+      >"$tmp/mlr-doc-schemas.txt" 2>"$snap_err" <<'SQL'
+SELECT nspname
+FROM pg_namespace
+WHERE nspname <> 'pg_catalog'
+  AND nspname <> 'information_schema'
+  AND nspname <> 'pg_toast'
+  AND nspname !~ '^pg_temp_'
+  AND nspname !~ '^pg_toast_temp_'
+ORDER BY nspname
+SQL
+    then
+      mlr_doc_copy_err "$snap_err" "$errfile"
+      return 1
+    fi
+    if ! psql -X -q -d "$test_db" -v ON_ERROR_STOP=1 -tA -F "$(printf '\t')" \
+      >"$tmp/mlr-doc-columns.txt" 2>"$snap_err" <<'SQL'
+SELECT c.table_schema, c.table_name, c.column_name, c.data_type, c.ordinal_position::text
+FROM information_schema.columns c
+WHERE c.table_schema <> 'pg_catalog'
+  AND c.table_schema <> 'information_schema'
+  AND c.table_schema <> 'pg_toast'
+  AND c.table_schema !~ '^pg_temp_'
+  AND c.table_schema !~ '^pg_toast_temp_'
+  AND EXISTS (
+    SELECT 1
+    FROM pg_tables t
+    WHERE t.schemaname = c.table_schema
+      AND t.tablename = c.table_name
+  )
+ORDER BY c.table_schema, c.table_name, c.ordinal_position, c.column_name
+SQL
+    then
+      mlr_doc_copy_err "$snap_err" "$errfile"
+      return 1
+    fi
+    # format(%I) quotes identifiers. \gexec runs one content query per table.
+    if ! psql -X -q -d "$test_db" -v ON_ERROR_STOP=1 -tA -F "$(printf '\t')" \
+      >"$tmp/mlr-doc-tables.txt" 2>"$snap_err" <<'SQL'
+SELECT format(
+  'SELECT %L, %L, COUNT(*)::bigint, md5(COALESCE(string_agg(t::text, chr(10) ORDER BY t::text), %L)) FROM %I.%I AS t',
+  schemaname, tablename, '', schemaname, tablename
+)
+FROM pg_tables
+WHERE schemaname <> 'pg_catalog'
+  AND schemaname <> 'information_schema'
+  AND schemaname <> 'pg_toast'
+  AND schemaname !~ '^pg_temp_'
+  AND schemaname !~ '^pg_toast_temp_'
+ORDER BY schemaname, tablename
+\gexec
+SQL
+    then
+      mlr_doc_copy_err "$snap_err" "$errfile"
+      return 1
+    fi
+    if ! psql -X -q -d "$test_db" -v ON_ERROR_STOP=1 -tA -F "$(printf '\t')" \
+      >"$tmp/mlr-doc-sequences.txt" 2>"$snap_err" <<'SQL'
+SELECT format(
+  'SELECT %L, %L, COALESCE(last_value::text, %L), CASE WHEN is_called THEN %L ELSE %L END FROM %I.%I',
+  schemaname, sequencename, '', 't', 'f', schemaname, sequencename
+)
+FROM pg_sequences
+WHERE schemaname <> 'pg_catalog'
+  AND schemaname <> 'information_schema'
+  AND schemaname <> 'pg_toast'
+  AND schemaname !~ '^pg_temp_'
+  AND schemaname !~ '^pg_toast_temp_'
+ORDER BY schemaname, sequencename
+\gexec
+SQL
+    then
+      mlr_doc_copy_err "$snap_err" "$errfile"
+      return 1
+    fi
+    {
+      printf '%s\n' 'schemas'
+      cat "$tmp/mlr-doc-schemas.txt"
+      printf '%s\n' 'columns'
+      cat "$tmp/mlr-doc-columns.txt"
+      printf '%s\n' 'schema_migrations'
+      cat "$tmp/mlr-doc-migrations.txt"
+      printf '%s\n' 'ar_internal_metadata'
+      cat "$tmp/mlr-doc-metadata.txt"
+      printf '%s\n' 'tables'
+      cat "$tmp/mlr-doc-tables.txt"
+      printf '%s\n' 'sequences'
+      cat "$tmp/mlr-doc-sequences.txt"
+    } >"$body"
+    if ! sha256sum "$body" >"$tmp/mlr-doc-snapshot.sha"; then
+      printf '%s\n' 'snapshot digest failed' >"$errfile"
+      return 1
+    fi
+    awk '{print $1}' "$tmp/mlr-doc-snapshot.sha" >"$outfile"
+    return 0
+  fi
+
+  if ! bundle exec ruby -rpg -rdigest >"$outfile" 2>"$snap_err" <<'RUBY'
+    test_db = ENV.fetch("MLR_DOC_TEST_DB")
+
+    def user_schema_sql(column)
+      "#{column} <> 'pg_catalog'" \
+        " AND #{column} <> 'information_schema'" \
+        " AND #{column} <> 'pg_toast'" \
+        " AND #{column} !~ '^pg_temp_'" \
+        " AND #{column} !~ '^pg_toast_temp_'"
+    end
+
+    def section(title, rows)
+      ([title] + rows).join("\n") + "\n"
+    end
+
+    def relation_present(conn, name)
+      !conn.exec_params("SELECT to_regclass($1) AS rel", [name]).first["rel"].nil?
+    end
+
+    def connect_db(dbname)
+      PG.connect(
+        host: ENV.fetch("PGHOST"),
+        port: ENV.fetch("PGPORT", "5432"),
+        user: ENV.fetch("PGUSER"),
+        password: ENV.fetch("PGPASSWORD"),
+        dbname: dbname
+      )
+    end
+
+    conn = connect_db("postgres")
+    exists = conn.exec_params("SELECT 1 FROM pg_database WHERE datname = $1", [test_db]).ntuples.positive?
+    conn.close
+    unless exists
+      puts "absent"
+      exit 0
+    end
+
+    conn = connect_db(test_db)
+    schemas = conn.exec("SELECT nspname FROM pg_namespace WHERE #{user_schema_sql("nspname")} ORDER BY nspname")
+      .map { |row| row["nspname"] }
+
+    columns = conn.exec(<<~SQL).map { |row| row.values.join("\t") }
+      SELECT c.table_schema, c.table_name, c.column_name, c.data_type, c.ordinal_position::text
+      FROM information_schema.columns c
+      WHERE #{user_schema_sql("c.table_schema")}
+        AND EXISTS (
+          SELECT 1 FROM pg_tables t
+          WHERE t.schemaname = c.table_schema AND t.tablename = c.table_name
+        )
+      ORDER BY c.table_schema, c.table_name, c.ordinal_position, c.column_name
+    SQL
+
+    if relation_present(conn, "public.schema_migrations")
+      mig = conn.exec("SELECT version FROM schema_migrations ORDER BY version").map { |row| row["version"] }
+    else
+      mig = ["missing"]
+    end
+    if relation_present(conn, "public.ar_internal_metadata")
+      meta = conn.exec("SELECT key, value, created_at, updated_at FROM ar_internal_metadata ORDER BY key")
+        .map { |row| row.values.join("\t") }
+    else
+      meta = ["missing"]
+    end
+
+    empty_md5 = Digest::MD5.hexdigest("")
+    tables = conn.exec("SELECT schemaname, tablename FROM pg_tables WHERE #{user_schema_sql("schemaname")} ORDER BY schemaname, tablename")
+    table_rows = tables.map do |row|
+      schema = row["schemaname"]
+      tbl = row["tablename"]
+      quoted = "#{conn.quote_ident(schema)}.#{conn.quote_ident(tbl)}"
+      got = conn.exec(
+        "SELECT COUNT(*)::bigint AS c, md5(COALESCE(string_agg(t::text, chr(10) ORDER BY t::text), '')) AS h FROM #{quoted} AS t"
+      ).first
+      [schema, tbl, got["c"], got["h"] || empty_md5].join("\t")
+    end
+
+    sequences = conn.exec("SELECT schemaname, sequencename FROM pg_sequences WHERE #{user_schema_sql("schemaname")} ORDER BY schemaname, sequencename")
+    seq_rows = sequences.map do |row|
+      schema = row["schemaname"]
+      name = row["sequencename"]
+      quoted = "#{conn.quote_ident(schema)}.#{conn.quote_ident(name)}"
+      got = conn.exec(
+        "SELECT COALESCE(last_value::text, '') AS last_value, CASE WHEN is_called THEN 't' ELSE 'f' END AS is_called FROM #{quoted}"
+      ).first
+      [schema, name, got["last_value"].to_s, got["is_called"].to_s].join("\t")
+    end
+    conn.close
+
+    body = section("schemas", schemas) \
+      + section("columns", columns) \
+      + section("schema_migrations", mig) \
+      + section("ar_internal_metadata", meta) \
+      + section("tables", table_rows) \
+      + section("sequences", seq_rows)
+    puts Digest::SHA256.hexdigest(body)
+RUBY
+  then
+    mlr_doc_copy_err "$snap_err" "$errfile"
+    return 1
+  fi
+}
+
+mlr_doc_assert_pass() {
+  local logfile="$1"
+  local pass_label="$2"
+  local missing=0 pattern mlr_doc_pwd
+
+  for pattern in "docs/gm6_mlr_savings_methodology.md." "savings=$"; do
+    if ! grep -qF -- "$pattern" "$logfile"; then
+      printf '   FAIL: pass %s expected output missing: %s\n' "$pass_label" "$pattern"
+      missing=1
+    fi
+  done
+
+  mlr_doc_pwd="$(grep '^MLR_DOC_PWD=' "$logfile" | tail -1)"
+  if [ "$mlr_doc_pwd" != "MLR_DOC_PWD=$ROOT" ]; then
+    printf '   FAIL: pass %s must end in repo root (expected MLR_DOC_PWD=%s, got %s)\n' \
+      "$pass_label" "$ROOT" "${mlr_doc_pwd#MLR_DOC_PWD=}"
+    missing=1
+  fi
+
+  return "$missing"
+}
+
+# Prints line numbers of rails/rake commands that lack RAILS_ENV=development,
+# and of any other line that contains RAILS_ENV=test or the test database
+# name from test/dummy/config/database.yml. Backslash-newline continuations
+# are joined first; the reported number is the first physical line.
+# Shell comments (# at line start or after whitespace) are stripped before
+# the check. A # inside a word or a URL is kept. The line text is not printed.
+# Exits non-zero only when the file or database.yml cannot be scanned.
+#
+# The methodology doc cites RAILS_ENV=test and the test database name as
+# prohibitions. Those two exact lines are not violations. Any other line
+# that contains either string is, including a copy of the citation with a
+# command added.
+mlr_doc_rails_env_violations() {
+  ruby - "$1" <<'RUBY'
+require "yaml"
+
+# Exact prose lines from docs/gm6_mlr_savings_methodology.md. They name the
+# forbidden settings so a reader will not use them. Matching is exact, so
+# editing either line (to add a command, for example) removes the exemption.
+ALLOWED_CITATIONS = [
+  "`RAILS_ENV=test`. It deletes and reinserts the demo's rate rows and claim",
+  "(as CI's demo-smoke job does) or be unset — never `corvid_dummy_test`."
+].freeze
+
+# rails or rake as a command token, with an optional path prefix
+# (bin/, ./bin/, ../bin/, ~/bin/, test/dummy/bin/, /usr/bin/, ...).
+COMMAND = /(?:^|[\s;|&(`])(?:~(?=\/))?(?:\.{1,2}(?=\/))?\/?(?:[\w.+@%-]+\/)*(?:rails|rake)(?![\w])/
+
+def continues?(line)
+  in_single = false
+  in_double = false
+  i = 0
+  while i < line.length
+    ch = line[i]
+    if ch == "\\" && !in_single
+      return true if i + 1 == line.length
+      i += 2
+      next
+    end
+    if ch == "'" && !in_double
+      in_single = !in_single
+    elsif ch == '"' && !in_single
+      in_double = !in_double
+    end
+    i += 1
+  end
+  false
+end
+
+def join_continuations(lines)
+  joined = []
+  i = 0
+  while i < lines.length
+    start = i + 1
+    buf = lines[i].dup
+    while continues?(buf) && i + 1 < lines.length
+      buf = buf[0...-1]
+      i += 1
+      buf << lines[i]
+    end
+    joined << [start, buf]
+    i += 1
+  end
+  joined
+end
+
+def strip_shell_comment(line)
+  # # starts a comment only at column 0 or after whitespace.
+  line.sub(/(?:^|\s)\K#.*\z/, "")
+end
+
+def violation?(raw, stripped, test_db)
+  cited = ALLOWED_CITATIONS.include?(raw)
+  unless cited
+    return true if stripped.include?("RAILS_ENV=test")
+    return true if !test_db.empty? && stripped.include?(test_db)
+  end
+  if stripped.match?(COMMAND) && !stripped.include?("RAILS_ENV=development")
+    return true
+  end
+  false
+end
+
+path = ARGV.fetch(0)
+cfg = YAML.load_file("test/dummy/config/database.yml", aliases: true)
+test_db = cfg.fetch("test").fetch("database").to_s
+lines = File.foreach(path, mode: "r:UTF-8").map { |line| line.sub(/\r?\n\z/, "") }
+join_continuations(lines).each do |lineno, raw|
+  puts lineno if violation?(raw, strip_shell_comment(raw), test_db)
+end
+RUBY
+}
+
+check_mlr_doc() {
+  local name="mlr-doc"
+  if [ "$only" != "all" ] && [ "$only" != "$name" ]; then return 0; fi
+
+  local script="$tmp/mlr-doc-reproduce.sh"
+  local doc="docs/gm6_mlr_savings_methodology.md"
+  local log_a="$tmp/mlr-doc-pass-a.log"
+  local log_b="$tmp/mlr-doc-pass-b.log"
+  local snapshot_before="$tmp/mlr-doc-snapshot-before.txt"
+  local snapshot_after="$tmp/mlr-doc-snapshot-after.txt"
+  local snapshot_err="$tmp/mlr-doc-snapshot.err"
+  local pg_env="$tmp/mlr-doc-pg.env"
+  local test_db missing=0 assertions=0 url_db url_err
+  local static_failed=0 pass_failed=0 lineno violations
+
+  printf '== smoke: %s\n' "$name"
+
+  # Every rails/rake command in the doc must carry RAILS_ENV=development on
+  # that same logical line, and no line may select the test database.
+  # Continuations are joined before the check. A violation is reported by
+  # line number and the run still continues, so a test-database write is
+  # also caught by the snapshot comparison below.
+  if ! violations="$(mlr_doc_rails_env_violations "$doc" 2>"$tmp/mlr-doc-rails-env.err")"; then
+    printf '   FAIL: could not scan %s for rails/rake commands\n' "$doc"
+    mlr_doc_redact <"$tmp/mlr-doc-rails-env.err" | sed 's/^/   | /'
+    failures=$((failures + 1))
+    return 0
+  fi
+  while IFS= read -r lineno; do
+    [ -n "$lineno" ] || continue
+    printf '   FAIL: %s:%s: rails/rake must set RAILS_ENV=development and must not target the test database\n' "$doc" "$lineno"
+    static_failed=1
+  done <<< "$violations"
+
+  if ! awk '
+    BEGIN { after = 0; capturing = 0; got = 0 }
+    /\*\*Reproduce:\*\*/ { after = 1; next }
+    after && !got && /^```bash$/ { capturing = 1; got = 1; next }
+    capturing && /^```$/ { capturing = 0; exit 0 }
+    capturing { print }
+    END { if (!got) exit 1 }
+  ' "$doc" >"$tmp/mlr-doc-block.txt"; then
+    printf '   FAIL: no ```bash block after **Reproduce:** in %s\n' "$doc"
+    failures=$((failures + 1))
+    return 0
+  fi
+
+  if [ ! -s "$tmp/mlr-doc-block.txt" ]; then
+    printf '   FAIL: empty ```bash block after **Reproduce:** in %s\n' "$doc"
+    failures=$((failures + 1))
+    return 0
+  fi
+
+  if ! test_db="$(mlr_doc_test_database_name)"; then
+    printf '   FAIL: could not read test database name from test/dummy/config/database.yml\n'
+    failures=$((failures + 1))
+    return 0
+  fi
+
+  url_err="$tmp/mlr-doc-url.err"
+  if ! url_db="$(mlr_doc_database_url_name 2>"$url_err")"; then
+    printf '   FAIL: could not parse DATABASE_URL server parameters\n'
+    mlr_doc_redact <"$url_err" | sed 's/^/   | /'
+    failures=$((failures + 1))
+    return 0
+  fi
+  # DATABASE_URL overrides RAILS_ENV. A URL Rails would open as the test
+  # database would run the reproduce block against it — refuse before any probe.
+  if [ -n "$url_db" ] && [ "$url_db" = "$test_db" ]; then
+    printf '   FAIL: DATABASE_URL names the test database\n'
+    failures=$((failures + 1))
+    return 0
+  fi
+
+  if ! mlr_doc_write_pg_env "$pg_env" 2>"$tmp/mlr-doc-pg.err"; then
+    printf '   FAIL: could not parse DATABASE_URL server parameters\n'
+    mlr_doc_redact <"$tmp/mlr-doc-pg.err" | sed 's/^/   | /'
+    failures=$((failures + 1))
+    return 0
+  fi
+  # shellcheck source=/dev/null
+  set -a && . "$pg_env" && set +a
+
+  if ! mlr_doc_test_db_snapshot "$snapshot_before" "$test_db" "$snapshot_err"; then
+    printf '   FAIL: test database snapshot before reproduce (probe error)\n'
+    mlr_doc_redact <"$snapshot_err" | sed 's/^/   | /'
+    failures=$((failures + 1))
+    return 0
+  fi
+  assertions=$((assertions + 1))
+
+  {
+    printf '%s\n' '#!/usr/bin/env bash'
+    printf '%s\n' 'set -e'
+    cat "$tmp/mlr-doc-block.txt"
+    # shellcheck disable=SC2016 # $PWD expands in the generated script, not here
+    printf '%s\n' 'echo "MLR_DOC_PWD=$PWD"'
+  } >"$script"
+  chmod +x "$script"
+
+  if ! env RAILS_ENV=test bash -e "$script" >"$log_a" 2>&1; then
+    printf '   FAIL: reproduce block pass A (DATABASE_URL inherited) exited non-zero\n'
+    mlr_doc_log_tail "$log_a"
+    pass_failed=1
+  elif ! mlr_doc_assert_pass "$log_a" A; then
+    missing=1
+  else
+    assertions=$((assertions + 3))
+  fi
+
+  # A failed pass used to return before the after-snapshot, so a test-database
+  # change was reported only as that pass failure. Still run pass B when pass A
+  # exited 0, then always snapshot if the before-snapshot succeeded.
+  if [ "$pass_failed" -eq 0 ]; then
+    # PGPASSWORD is already exported by set -a. Passing it as an env(1)
+    # argument would put the secret on the process command line.
+    if ! env -u DATABASE_URL RAILS_ENV=test \
+      PGHOST="$PGHOST" PGPORT="$PGPORT" PGUSER="$PGUSER" \
+      bash -e "$script" >"$log_b" 2>&1; then
+      printf '   FAIL: reproduce block pass B (DATABASE_URL unset, TCP via PG*) exited non-zero\n'
+      mlr_doc_log_tail "$log_b"
+      pass_failed=1
+    elif ! mlr_doc_assert_pass "$log_b" B; then
+      missing=1
+    else
+      assertions=$((assertions + 3))
+    fi
+  fi
+
+  if ! mlr_doc_test_db_snapshot "$snapshot_after" "$test_db" "$snapshot_err"; then
+    printf '   FAIL: test database snapshot after reproduce (probe error)\n'
+    mlr_doc_redact <"$snapshot_err" | sed 's/^/   | /'
+    failures=$((failures + 1))
+    return 0
+  fi
+  assertions=$((assertions + 1))
+
+  if ! cmp -s "$snapshot_before" "$snapshot_after"; then
+    printf '   FAIL: test database %s changed (snapshot before reproduce != after)\n' "$test_db"
+    missing=1
+  else
+    assertions=$((assertions + 1))
+  fi
+
+  if [ "$static_failed" -eq 1 ] || [ "$pass_failed" -eq 1 ] || [ "$missing" -eq 1 ]; then
+    # Pass non-zero already printed its own log tail. Assertion and snapshot
+    # mismatches still show both passes when those passes actually ran.
+    if [ "$missing" -eq 1 ] && [ "$pass_failed" -eq 0 ]; then
+      printf '   log tail pass A:\n'
+      mlr_doc_log_tail "$log_a"
+      printf '   log tail pass B:\n'
+      mlr_doc_log_tail "$log_b"
+    fi
+    failures=$((failures + 1))
+  else
+    printf '   ok (%s assertions)\n' "$assertions"
   fi
 }
 
@@ -80,6 +822,8 @@ check prc-migration bin/demo-prc-migration \
   "-> HALTED    Data Governance Board consent not granted" \
   "determination approved" \
   "determination denied"
+
+check_mlr_doc
 
 if [ "$failures" -gt 0 ]; then
   printf '\ndemo-smoke: %d demo(s) failed\n' "$failures"
