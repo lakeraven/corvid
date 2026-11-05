@@ -16,11 +16,13 @@ class Corvid::Rcm::ClaimTest < Minitest::Test
     lib = File.expand_path("../../../lib", __dir__)
     script = <<~RUBY
       require "corvid/rcm"
+      require "corvid/rcm/charge_builder"
       abort("ActiveRecord was loaded") if defined?(ActiveRecord::Base)
       abort("Rails was loaded") if defined?(Rails)
       claim = Corvid::Rcm::Claim.new(identifier: "CLM-X", patient_identifier: "pt_x")
       abort("scrub produced nothing") if Corvid::Rcm::Scrubber.new.scrub(claim).findings.empty?
       abort("no fixtures") if Corvid::Rcm::FixtureClearinghouseClient.new.fetch_remittances.empty?
+      abort("ChargeBuilder missing") unless Corvid::Rcm.const_defined?(:ChargeBuilder, false)
     RUBY
 
     assert system(RbConfig.ruby, "-I", lib, "-e", script),
