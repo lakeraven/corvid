@@ -7,7 +7,7 @@ module Corvid
   # resting on a facility authority must rest on its own facility's
   # authority, however it was written.
   class FmapDeterminationFacilityTest < ActiveSupport::TestCase
-    AIAN_EVIDENCE = { "supports" => "aian_status", "ref" => "attestation:tok_example_aian" }.freeze
+    AIAN_EVIDENCE = { "supports" => "aian_status", "ref" => "at_01HK8B7Z9XCQVG3F8N5K0R4MWB" }.freeze
 
     setup do
       Corvid::TenantContext.current_tenant_identifier = "tnt_example"

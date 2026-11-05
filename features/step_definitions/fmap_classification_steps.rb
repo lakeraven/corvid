@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+AIAN_EVIDENCE_REF = "at_01HK8B7Z9XCQVG3F8N5K0R4MWB"
+
 Given("a tenant {string} with the default FMAP rule set loaded") do |tenant|
   @tenant = tenant
   Corvid::TenantContext.current_tenant_identifier = tenant
@@ -24,7 +26,7 @@ When("an encounter at {string} with date of service {string} is classified for F
     jurisdiction: "XA",
     facility_authority: @facility_authorities.fetch(facility),
     aian_verified: true,
-    evidence_refs: [ { "supports" => "aian_status", "ref" => "attestation:tok_example_aian" } ]
+    evidence_refs: [ { "supports" => "aian_status", "ref" => AIAN_EVIDENCE_REF } ]
   )
 end
 
@@ -59,8 +61,8 @@ When("an encounter at {string} with date of service {string} is classified and r
     jurisdiction: "XA",
     facility_authority: @facility_authorities.fetch(facility),
     aian_verified: true,
-    evidence_refs: [ { "supports" => "aian_status", "ref" => "attestation:tok_example_aian" } ],
-    claim_reference: claim
+    evidence_refs: [ { "supports" => "aian_status", "ref" => AIAN_EVIDENCE_REF } ],
+    claim_identifier: claim
   )
 end
 

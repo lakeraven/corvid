@@ -76,7 +76,7 @@ class Corvid::ValueObjectsTest < Minitest::Test
   # -- CareTeamMemberReference ------------------------------------------------
 
   def test_care_team_member_reference_has_expected_fields
-    assert_equal %i[practitioner_identifier role name status],
+    assert_equal %i[practitioner_identifier role_code name status],
                  Corvid::CareTeamMemberReference.members
   end
 

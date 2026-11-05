@@ -15,13 +15,17 @@ module Corvid
 
     validates :name, presence: true
 
-    def add_member!(role:, practitioner_identifier:, lead: false, start_date: nil, end_date: nil)
+    # Coding system for CareTeam.participant.role. Display comes from
+    # CareTeamMember#role_display, not from free text.
+    FHIR_ROLE_SYSTEM = "urn:corvid:care-team-role"
+
+    def add_member!(role_code:, practitioner_identifier:, lead: false, start_date: nil, end_date: nil)
       # Wrap in a transaction so a validation failure on the new member
       # doesn't leave the team lead-less (we used to demote first, then
       # create; if create! raised, the old lead stayed demoted).
       transaction do
         new_member = care_team_members.create!(
-          role: role,
+          role_code: role_code,
           practitioner_identifier: practitioner_identifier,
           lead: lead,
           start_date: start_date,
@@ -65,8 +69,8 @@ module Corvid
     # Lightweight FHIR R4 CareTeam projection for host apps that want a
     # JSON preview (e.g. dashboards). NOT validated against the FHIR R4
     # profile or any IG — status code system is omitted, participant
-    # role is a free-text CodeableConcept, and the resource is not
-    # rendered through an R4 model. Host apps that need conformance
+    # role is the engine code plus its derived display, and the resource
+    # is not rendered through an R4 model. Host apps that need conformance
     # should re-serialize through fhir_models or similar.
     def to_fhir
       {
@@ -75,13 +79,27 @@ module Corvid
         status: status,
         name: name,
         managingOrganization: facility_identifier.present? ? [ { reference: "Organization/#{facility_identifier}" } ] : nil,
-        participant: care_team_members.active.map do |m|
-          {
-            role: [ { text: m.role } ],
-            member: { reference: "Practitioner/#{m.practitioner_identifier}" }
-          }
-        end
+        participant: care_team_members.active.map { |member| fhir_participant(member) }
       }.compact
+    end
+
+    private
+
+    def fhir_participant(member)
+      {
+        role: [ fhir_role(member) ],
+        member: { reference: "Practitioner/#{member.practitioner_identifier}" }
+      }
+    end
+
+    def fhir_role(member)
+      {
+        coding: [ {
+          system: FHIR_ROLE_SYSTEM,
+          code: member.role_code,
+          display: member.role_display
+        } ]
+      }
     end
   end
 end

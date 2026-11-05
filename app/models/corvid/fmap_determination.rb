@@ -61,6 +61,12 @@ module Corvid
     validates :authority_type, inclusion: { in: FacilityAuthority::AUTHORITY_TYPES }, allow_nil: true
     validates :coverage_group, inclusion: { in: FmapClassificationService::COVERAGE_GROUPS }, allow_nil: true
     validates :determination_reason, inclusion: { in: FmapClassificationService::REASONS }, allow_nil: true
+    # Nil, a vault token (OpaqueToken::FORMAT), or Corvid's own CLM_<ULID>.
+    # Nothing else. The message does not include the value. The migration
+    # keeps its own copy of this pattern and does not read this constant.
+    CLM_FORMAT = /\ACLM_[0-9A-HJKMNP-TV-Z]{26}\z/
+    validate :claim_identifier_is_opaque_token
+    validate :evidence_refs_are_opaque_tokens
     validate :immutable_once_claimed
     validate :supersession_is_final
     # Checked when the decided fields are written, not when only the
@@ -82,7 +88,7 @@ module Corvid
     scope :for_encounter, ->(identifier) { where(encounter_identifier: identifier) }
 
     def claimed?
-      claim_reference.present?
+      claim_identifier.present?
     end
 
     def misclassification_gap?
@@ -250,6 +256,65 @@ module Corvid
       errors.add(:superseded_by_id, "cannot change once set")
     end
 
+    def claim_identifier_is_opaque_token
+      value = claim_identifier
+      return if value.nil?
+      return if OpaqueToken.valid?(value) || CLM_FORMAT.match?(value)
+
+      errors.add(:claim_identifier, "must be an opaque token")
+    end
+
+    # Each element is exactly { "supports" => kind, "ref" => token }:
+    # kind in FmapRule::CALLER_EVIDENCE_KINDS, ref an opaque token.
+    # Messages name the contract and do not include the stored value.
+    # A non-array is rejected. One non-token ref rejects the list even
+    # when another entry is valid. An empty array is no evidence.
+    def evidence_refs_are_opaque_tokens
+      return if evidence_refs.is_a?(Array) && evidence_refs.empty?
+      unless evidence_refs.is_a?(Array)
+        add_evidence_entry_contract_error(nil)
+        return
+      end
+
+      add_evidence_entry_contract_error(evidence_refs)
+      add_evidence_supports_kind_error(evidence_refs)
+    end
+
+    def add_evidence_entry_contract_error(entries)
+      return if entries&.all? { |entry| evidence_entry_contract?(entry) }
+
+      errors.add(:evidence_refs, 'must be { "supports" => kind, "ref" => token } entries')
+    end
+
+    def add_evidence_supports_kind_error(entries)
+      return unless entries&.any? { |entry| evidence_supports_rejected?(entry) }
+
+      errors.add(:evidence_refs, "may only support #{FmapRule::CALLER_EVIDENCE_KINDS.join(', ')}")
+    end
+
+    def evidence_entry_contract?(entry)
+      evidence_entry_keys?(entry) && OpaqueToken.valid?(evidence_entry_value(entry, "ref"))
+    end
+
+    def evidence_entry_keys?(entry)
+      return false unless entry.is_a?(Hash)
+
+      entry.keys.map(&:to_s).sort == %w[ref supports]
+    end
+
+    def evidence_supports_rejected?(entry)
+      return false unless entry.is_a?(Hash)
+      return false unless entry.key?("supports") || entry.key?(:supports)
+
+      !FmapRule::CALLER_EVIDENCE_KINDS.include?(evidence_entry_value(entry, "supports"))
+    end
+
+    def evidence_entry_value(entry, key)
+      return entry[key] if entry.key?(key)
+
+      entry[key.to_sym] if entry.key?(key.to_sym)
+    end
+
     def missing_evidence_in_vocabulary
       gaps = missing_evidence
       vocabulary = FmapClassificationService::MISSING_EVIDENCE
@@ -259,13 +324,15 @@ module Corvid
     end
 
     def immutable_once_claimed
-      return unless persisted? && claim_reference_was.present?
+      return unless persisted?
+      return unless claim_identifier_was.present?
+
       illegal = changes.keys - %w[superseded_by_id updated_at]
       return if illegal.empty?
+
       errors.add(
         :base,
-        "determination is immutable once referenced by a claim " \
-        "(#{claim_reference_was}); corrections must append via supersede_with!"
+        "determination is immutable once referenced by a claim; corrections must append via supersede_with!"
       )
     end
   end

@@ -83,7 +83,12 @@ class Corvid::Adapters::MockAdapterTest < Minitest::Test
 
   def test_get_care_team_returns_array_of_references
     @adapter.add_care_team("pt_001", [
-      { practitioner_identifier: "pr_001", role: "primary_care", name: "Primary Team", status: "active" }
+      {
+        practitioner_identifier: "pr_001",
+        role_code: "primary_care_provider",
+        name: "Primary Team",
+        status: "active"
+      }
     ])
     result = @adapter.get_care_team("pt_001")
     assert_equal 1, result.size

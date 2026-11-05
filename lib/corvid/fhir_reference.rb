@@ -25,13 +25,15 @@ module Corvid
   module FhirReference
     RESOURCE_TYPE = /\A[A-Z][A-Za-z0-9]*\z/
     ID_SYNTAX = /\A[A-Za-z0-9\-\.]{1,64}\z/
-    # Vault tokens that appear in references (ADR 0001, ADR 0003).
-    # MockAdapter#dereference resolves pt_, pr_, and rf_. store_text
-    # prefixes are text tokens and never appear in references, so they are
-    # not an exception. The prefix is paired with the reference's own
-    # resource type: pt_ on Patient; pr_ on Practitioner and
-    # PractitionerRole; rf_ on ServiceRequest. One underscore, then FHIR id
-    # characters, 64 characters total. The _history version stays ID_SYNTAX.
+    # Reference ids that carry a Corvid token (ADR 0001, ADR 0003, #672).
+    # pt_ and pr_ are vault tokens; this codebase does not generate them.
+    # MockAdapter#create_referral generates rf_. MockAdapter#dereference
+    # resolves pt_, pr_, and rf_. store_text prefixes are text tokens and
+    # never appear in references, so they are not an exception. The prefix
+    # is paired with the reference's own resource type: pt_ on Patient;
+    # pr_ on Practitioner and PractitionerRole; rf_ on ServiceRequest.
+    # One underscore, then FHIR id characters, 64 characters total. The
+    # _history version stays ID_SYNTAX.
     CORVID_TOKEN_TYPES = {
       "pt" => %w[Patient].freeze,
       "pr" => %w[Practitioner PractitionerRole].freeze,

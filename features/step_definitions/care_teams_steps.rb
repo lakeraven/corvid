@@ -60,20 +60,24 @@ When("I am working at facility {string}") do |facility|
   @facility = facility.downcase.tr(" ", "_")
 end
 
-Given("the care team has a member with role {string} and practitioner IEN {string}") do |role, ien|
-  @member = @care_team.add_member!(role: role, practitioner_identifier: ien)
+Given("the care team has a member with role code {string} and practitioner IEN {string}") do |role_code, ien|
+  @member = @care_team.add_member!(role_code: role_code, practitioner_identifier: ien)
 end
 
-Given("the care team has a member with role {string} ending {string}") do |role, end_date|
+Given("the care team has a member with role code {string} ending {string}") do |role_code, end_date|
   @member = @care_team.add_member!(
-    role: role,
+    role_code: role_code,
     practitioner_identifier: "pr_#{SecureRandom.hex(3)}",
     end_date: Date.parse(end_date)
   )
 end
 
 Given("the care team has a lead with practitioner IEN {string}") do |ien|
-  @member = @care_team.add_member!(role: "Lead", practitioner_identifier: ien, lead: true)
+  @member = @care_team.add_member!(
+    role_code: "care_manager",
+    practitioner_identifier: ien,
+    lead: true
+  )
 end
 
 Given("a case exists for patient {string}") do |_name|
@@ -94,12 +98,20 @@ Given("a case exists for patient {string} assigned to {string}") do |_name, team
   )
 end
 
-When("I add a member with role {string} and practitioner IEN {string}") do |role, ien|
-  @member = @care_team.add_member!(role: role, practitioner_identifier: ien)
+When("I add a member with role code {string} and practitioner IEN {string}") do |role_code, ien|
+  @member = @care_team.add_member!(role_code: role_code, practitioner_identifier: ien)
 end
 
-When("I try to add a member without a role") do
+When("I try to add a member without a role code") do
   @member = @care_team.care_team_members.new(practitioner_identifier: "pr_001")
+  @member.valid?
+end
+
+When("I try to add a member with role code {string} and practitioner IEN {string}") do |role_code, ien|
+  @member = @care_team.care_team_members.new(
+    role_code: role_code,
+    practitioner_identifier: ien
+  )
   @member.valid?
 end
 
@@ -107,12 +119,20 @@ When("I remove the member with practitioner IEN {string}") do |ien|
   @care_team.remove_member!(ien)
 end
 
-When("I add a member with role {string} and practitioner IEN {string} starting {string}") do |role, ien, start_date|
-  @member = @care_team.add_member!(role: role, practitioner_identifier: ien, start_date: Date.parse(start_date))
+When("I add a member with role code {string} and practitioner IEN {string} starting {string}") do |role_code, ien, start_date|
+  @member = @care_team.add_member!(
+    role_code: role_code,
+    practitioner_identifier: ien,
+    start_date: Date.parse(start_date)
+  )
 end
 
-When("I add a member with role {string} and practitioner IEN {string} as lead") do |role, ien|
-  @member = @care_team.add_member!(role: role, practitioner_identifier: ien, lead: true)
+When("I add a member with role code {string} and practitioner IEN {string} as lead") do |role_code, ien|
+  @member = @care_team.add_member!(
+    role_code: role_code,
+    practitioner_identifier: ien,
+    lead: true
+  )
 end
 
 When("I assign the case to care team {string}") do |team_name|
@@ -135,7 +155,10 @@ end
 
 Given("the care team has the following members:") do |table|
   table.hashes.each do |row|
-    @care_team.add_member!(role: row["role"], practitioner_identifier: row["practitioner_ien"])
+    @care_team.add_member!(
+      role_code: row["role_code"],
+      practitioner_identifier: row["practitioner_ien"]
+    )
   end
 end
 
@@ -198,6 +221,21 @@ end
 
 Then("there should be an error on member {string}") do |field|
   assert @member.errors[field.to_sym].any?
+end
+
+Then("the member error messages should not include {string}") do |text|
+  @member.errors.full_messages.each do |message|
+    refute_includes message, text
+  end
+end
+
+Then("the member should have role display {string}") do |display|
+  assert_equal display, @member.role_display
+end
+
+Then("the member with practitioner IEN {string} should have role display {string}") do |ien, display|
+  member = @care_team.care_team_members.find_by!(practitioner_identifier: ien)
+  assert_equal display, member.role_display
 end
 
 Then("the member should have start date {string}") do |date|

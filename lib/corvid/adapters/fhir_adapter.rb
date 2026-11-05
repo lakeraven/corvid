@@ -54,6 +54,19 @@ module Corvid
       ].freeze
       BILLING_CODE_SYSTEMS = ([ CPT_SYSTEM ] + HCPCS_SYSTEMS).freeze
 
+      # CareTeam.participant.role (system, code) -> role_code. SNOMED
+      # 446050000 is primary_care_provider. A coding whose system is
+      # CareTeam::FHIR_ROLE_SYSTEM (the system CareTeam#to_fhir emits)
+      # maps to that code when it is one of CareTeamMember's role codes.
+      # Anything else under that system, and a foreign system whose code
+      # merely equals an engine role code, is "other". Missing or
+      # malformed roles are "other". A bad role does not fail the read.
+      SNOMED_SYSTEM = "http://snomed.info/sct"
+      SNOMED_PRIMARY_CARE_PHYSICIAN = "446050000"
+      CARE_TEAM_ROLE_BY_CODING = {
+        [ SNOMED_SYSTEM, SNOMED_PRIMARY_CARE_PHYSICIAN ] => "primary_care_provider"
+      }.freeze
+
       # Standard FHIR ServiceRequest fields safe to update directly.
       UPDATABLE_SERVICE_REQUEST_FIELDS = %w[
         status priority reasonCode note category chs_approval_status
@@ -1340,11 +1353,75 @@ module Corvid
 
       def care_team_member(resource, participant)
         Corvid::CareTeamMemberReference.new(
-          practitioner_identifier: id_from_reference(participant.dig("member", "reference"), type: "Practitioner"),
-          role: participant.dig("role", 0, "coding", 0, "code"),
+          practitioner_identifier: care_team_practitioner_identifier(participant),
+          role_code: care_team_role_code(participant),
           name: resource["name"],
           status: resource["status"]
         )
+      end
+
+      def care_team_practitioner_identifier(participant)
+        return unless participant.is_a?(Hash)
+
+        member = participant["member"]
+        return unless member.is_a?(Hash)
+
+        id_from_reference(member["reference"], type: "Practitioner")
+      end
+
+      def care_team_role_code(participant)
+        mapped_care_team_role(participant) || "other"
+      end
+
+      def mapped_care_team_role(participant)
+        return unless participant.is_a?(Hash)
+
+        roles = participant["role"]
+        return unless roles.is_a?(Array)
+
+        roles.each do |role|
+          mapped = mapped_care_team_role_coding(role)
+          return mapped if mapped
+        end
+        nil
+      end
+
+      def mapped_care_team_role_coding(role)
+        return unless role.is_a?(Hash)
+
+        codings = role["coding"]
+        return unless codings.is_a?(Array)
+
+        codings.each do |coding|
+          mapped = care_team_role_for(coding)
+          return mapped if mapped
+        end
+        nil
+      end
+
+      def care_team_role_for(coding)
+        pair = care_team_coding_pair(coding)
+        return unless pair
+
+        CARE_TEAM_ROLE_BY_CODING[pair] || engine_care_team_role_code(pair)
+      end
+
+      # Only the system CareTeam#to_fhir emits, and only a real role code.
+      # A matching code on any other system is not this vocabulary.
+      def engine_care_team_role_code(pair)
+        system, code = pair
+        return unless system == Corvid::CareTeam::FHIR_ROLE_SYSTEM
+        return unless Corvid::CareTeamMember.role_codes.value?(code)
+
+        code
+      end
+
+      def care_team_coding_pair(coding)
+        return unless coding.is_a?(Hash)
+
+        system = coding["system"]
+        code = coding["code"]
+        [ system, code ] if system.is_a?(String) && code.is_a?(String)
       end
 
       # nil when the search did not answer; [] when it answered with no

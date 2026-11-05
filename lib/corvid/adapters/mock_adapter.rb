@@ -297,7 +297,7 @@ module Corvid
         members.map do |attrs|
           Corvid::CareTeamMemberReference.new(
             practitioner_identifier: attrs[:practitioner_identifier],
-            role: attrs[:role],
+            role_code: attrs[:role_code],
             name: attrs[:name],
             status: attrs[:status]
           )

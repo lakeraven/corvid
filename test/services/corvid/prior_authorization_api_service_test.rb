@@ -30,6 +30,7 @@ class Corvid::PriorAuthorizationApiServiceTest < ActiveSupport::TestCase
 
       referral = Corvid::PrcReferral.order(created_at: :desc).first
       assert_equal "submitted", referral.status
+      assert_equal "submitted_via_fhir_pas", referral.current_activity_code
       assert_equal "pt-pa-unit-001", referral.case.patient_identifier
     ensure
       Corvid::TenantContext.reset!

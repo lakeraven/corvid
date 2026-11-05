@@ -11,7 +11,7 @@ class Corvid::CareTeamMemberTest < ActiveSupport::TestCase
 
   test "active? is true when end_date is nil" do
     with_tenant(TENANT) do
-      member = build_team.add_member!(role: "PCP", practitioner_identifier: "pr_a")
+      member = build_team.add_member!(role_code: "primary_care_provider", practitioner_identifier: "pr_a")
       assert member.active?
       refute member.inactive?
     end
@@ -20,9 +20,9 @@ class Corvid::CareTeamMemberTest < ActiveSupport::TestCase
   test "active? is true when end_date is today or in the future" do
     with_tenant(TENANT) do
       team = build_team
-      today = team.add_member!(role: "PCP", practitioner_identifier: "pr_a",
+      today = team.add_member!(role_code: "primary_care_provider", practitioner_identifier: "pr_a",
         end_date: Date.current)
-      future = team.add_member!(role: "Consultant", practitioner_identifier: "pr_b",
+      future = team.add_member!(role_code: "consultant", practitioner_identifier: "pr_b",
         end_date: Date.current + 30)
       assert today.active?
       assert future.active?
@@ -31,20 +31,20 @@ class Corvid::CareTeamMemberTest < ActiveSupport::TestCase
 
   test "active? is false when end_date is in the past" do
     with_tenant(TENANT) do
-      member = build_team.add_member!(role: "Former", practitioner_identifier: "pr_x",
+      member = build_team.add_member!(role_code: "other", practitioner_identifier: "pr_x",
         end_date: Date.current - 1)
       refute member.active?
       assert member.inactive?
     end
   end
 
-  test "role is required" do
+  test "role_code is required" do
     with_tenant(TENANT) do
       team = build_team
       err = assert_raises(ActiveRecord::RecordInvalid) do
-        team.care_team_members.create!(practitioner_identifier: "pr_x", role: nil)
+        team.care_team_members.create!(practitioner_identifier: "pr_x", role_code: nil)
       end
-      assert_match(/Role/, err.message)
+      assert_match(/Role code/i, err.message)
     end
   end
 end

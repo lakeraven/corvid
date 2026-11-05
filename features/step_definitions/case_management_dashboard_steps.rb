@@ -7,7 +7,7 @@ Given("I am a member of {string}") do |team_name|
   # RecordNotFound instead of a confusing NoMethodError on nil.add_member!
   @care_team ||= Corvid::CareTeam.find_by!(name: team_name)
   @provider_identifier = "pr_dashboard_001"
-  @care_team.add_member!(role: "Care Manager", practitioner_identifier: @provider_identifier)
+  @care_team.add_member!(role_code: "care_manager", practitioner_identifier: @provider_identifier)
 end
 
 Given("there are {int} active cases for {string}") do |count, team_name|

@@ -150,7 +150,11 @@ class Corvid::CaseDashboardServiceTest < ActiveSupport::TestCase
   def setup_team_and_provider
     provider = "pr_dash_101"
     team = Corvid::CareTeam.create!(name: "Test Team", facility_identifier: "fac_test")
-    Corvid::CareTeamMember.create!(care_team: team, practitioner_identifier: provider, role: "provider")
+    Corvid::CareTeamMember.create!(
+      care_team: team,
+      practitioner_identifier: provider,
+      role_code: "care_manager"
+    )
     [ team, provider ]
   end
 end

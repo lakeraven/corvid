@@ -135,7 +135,7 @@ module Corvid
       # chain the determination rests on, together with the authority
       # and basis classification used.
       def classify!(encounter_identifier:, person_identifier: nil, facility_identifier: nil,
-                    evidence_refs: [], claim_reference: nil, **classify_opts)
+                    evidence_refs: [], claim_identifier: nil, **classify_opts)
         authority = stored_authority(classify_opts[:facility_authority])
         if authority && facility_identifier.present? && authority.facility_identifier != facility_identifier
           raise ArgumentError, "facility authority belongs to a different facility than the encounter"
@@ -169,7 +169,7 @@ module Corvid
           missing_evidence: result.missing_evidence,
           state_share_delta_cents: result.state_share_delta_cents,
           determination_reason: result.determination_reason,
-          claim_reference: claim_reference,
+          claim_identifier: claim_identifier,
           determined_at: Time.current
         )
       end
@@ -230,10 +230,19 @@ module Corvid
         end
 
         evidence = FmapRule.normalize_evidence(entries)
+        reject_non_token_evidence!(evidence)
         if evidence.any? { |e| !FmapRule::CALLER_EVIDENCE_KINDS.include?(e["supports"]) }
           raise ArgumentError, "evidence_refs may only support #{FmapRule::CALLER_EVIDENCE_KINDS.join(', ')}"
         end
         evidence
+      end
+
+      # After normalize_evidence drops blank refs. The message has no value
+      # (ADR 0003).
+      def reject_non_token_evidence!(evidence)
+        return if evidence.all? { |entry| OpaqueToken.valid?(entry["ref"]) }
+
+        raise ArgumentError, "evidence_refs ref must be an opaque token"
       end
 
       def best_match(rules, authority_type:, aian_verified:, basis:, coverage_group:)

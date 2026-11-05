@@ -1,0 +1,418 @@
+# frozen_string_literal: true
+
+require "test_helper"
+require_relative "../../support/opaque_token_check_mutants"
+
+module Corvid
+  # Issue #705: claim_identifier and evidence_refs[].ref must be vault tokens.
+  class FmapDeterminationIdentifiersTest < ActiveSupport::TestCase
+    AIAN_EVIDENCE = { "supports" => "aian_status", "ref" => "at_01HK8B7Z9XCQVG3F8N5K0R4MWB" }.freeze
+    CLAIM_TOKEN = "cl_01HK8B7Z9XCQVG3F8N5K0R4MWC"
+    CLM_CLAIM = "CLM_01HK8B7Z9XCQVG3F8N5K0R4MWC"
+    CLM_OPAQUE_CLAIM = OpaqueTokenCheckMutants.valid_clm_opaque_claim_identifier
+    VALID_ULID_BODY = "01HK8B7Z9XCQVG3F8N5K0R4MWB"
+    BAD_CLAIM = "clm_example_1"
+    BAD_EVIDENCE_REF = "attestation:tok_example_aian"
+
+    setup do
+      Corvid::TenantContext.current_tenant_identifier = "tnt_example"
+      FmapRuleLoader.load_defaults!
+      @uio = FacilityAuthority.create!(
+        facility_identifier: "fac_uio_example",
+        authority_type: "uio",
+        effective_on: Date.new(2020, 1, 1)
+      )
+    end
+
+    test "classify! accepts claim_identifier and rejects claim_reference" do
+      assert_opaque_token_implemented!
+
+      determination = FmapClassificationService.classify!(
+        encounter_identifier: "enc_claim_id_1",
+        date_of_service: Date.new(2022, 6, 1),
+        jurisdiction: "XA",
+        facility_authority: @uio,
+        aian_verified: true,
+        evidence_refs: [ AIAN_EVIDENCE ],
+        claim_identifier: CLAIM_TOKEN
+      )
+      assert_equal CLAIM_TOKEN, determination.claim_identifier
+
+      assert_raises(ArgumentError, ActiveRecord::UnknownAttributeError) do
+        FmapClassificationService.classify!(
+          encounter_identifier: "enc_claim_id_2",
+          date_of_service: Date.new(2022, 6, 1),
+          jurisdiction: "XA",
+          facility_authority: @uio,
+          aian_verified: true,
+          evidence_refs: [ AIAN_EVIDENCE ],
+          claim_reference: CLAIM_TOKEN
+        )
+      end
+    end
+
+    test "G3 an empty claim_identifier makes the model invalid" do
+      assert_opaque_token_implemented!
+      rule = FmapRule.find_by!(rule_key: "us-arpa-9815-uio-100")
+      determination = FmapDetermination.new(
+        encounter_identifier: "enc_empty_claim_model",
+        date_of_service: Date.new(2022, 6, 1),
+        jurisdiction: "XA",
+        determined_at: Time.current,
+        category: rule.category,
+        rule_key: rule.rule_key,
+        fmap_percent: rule.fmap_percent,
+        rule_citations: [ rule.statutory_citation ],
+        aian_verified: true,
+        evidence_refs: [ AIAN_EVIDENCE ],
+        claim_identifier: ""
+      )
+      refute determination.valid?
+      assert_includes determination.errors[:claim_identifier], "must be an opaque token"
+    end
+
+    test "G3 a claimed row cannot be un-claimed via update!" do
+      assert_opaque_token_implemented!
+      determination = classified_determination(claim_identifier: CLAIM_TOKEN)
+      error = assert_raises(ActiveRecord::RecordInvalid) do
+        determination.update!(claim_identifier: nil)
+      end
+      assert error.record.errors[:base].any?
+      assert_equal CLAIM_TOKEN, determination.reload.claim_identifier
+    end
+
+    test "a non-token claim_identifier makes the model invalid" do
+      assert_opaque_token_implemented!
+      rule = FmapRule.find_by!(rule_key: "us-arpa-9815-uio-100")
+      determination = FmapDetermination.new(
+        encounter_identifier: "enc_bad_claim_model",
+        date_of_service: Date.new(2022, 6, 1),
+        jurisdiction: "XA",
+        determined_at: Time.current,
+        category: rule.category,
+        rule_key: rule.rule_key,
+        fmap_percent: rule.fmap_percent,
+        rule_citations: [ rule.statutory_citation ],
+        aian_verified: true,
+        evidence_refs: [ AIAN_EVIDENCE ],
+        claim_identifier: BAD_CLAIM
+      )
+      refute determination.valid?
+      assert determination.errors[:claim_identifier].any?
+      determination.errors[:claim_identifier].each do |message|
+        refute_includes message, BAD_CLAIM
+      end
+    end
+
+    test "classify! with a non-token claim_identifier raises and stores nothing" do
+      assert_opaque_token_implemented!
+      before = FmapDetermination.count
+      error = assert_raises(ActiveRecord::RecordInvalid) do
+        FmapClassificationService.classify!(
+          encounter_identifier: "enc_bad_claim",
+          date_of_service: Date.new(2022, 6, 1),
+          jurisdiction: "XA",
+          facility_authority: @uio,
+          aian_verified: true,
+          evidence_refs: [ AIAN_EVIDENCE ],
+          claim_identifier: BAD_CLAIM
+        )
+      end
+      assert_equal before, FmapDetermination.count
+      error.record.errors[:claim_identifier].each do |message|
+        refute_includes message, BAD_CLAIM
+      end
+    end
+
+    test "the database rejects a non-token claim_identifier written with update_columns" do
+      assert_opaque_token_implemented!
+      row = classified_determination
+      assert_raises(ActiveRecord::StatementInvalid, ActiveRecord::CheckViolation) do
+        FmapDetermination.transaction(requires_new: true) do
+          row.update_columns(claim_identifier: BAD_CLAIM)
+        end
+      end
+      assert_nil row.reload.read_attribute(:claim_identifier)
+    end
+
+    test "NULL claim_identifier is allowed at the database" do
+      assert_opaque_token_implemented!
+      row = classified_determination
+      FmapDetermination.transaction(requires_new: true) do
+        row.update_columns(claim_identifier: nil)
+      end
+      assert_nil row.reload.claim_identifier
+    end
+
+    test "a claimed row stays immutable when keyed on claim_identifier" do
+      assert_opaque_token_implemented!
+      determination = classified_determination(claim_identifier: CLAIM_TOKEN)
+      determination.category = "non_medicaid"
+      assert_raises(ActiveRecord::RecordInvalid) { determination.save! }
+
+      determination.reload
+      determination.claim_identifier = "cl_01HK8B7Z9XCQVG3F8N5K0R4MWD"
+      refute determination.valid?
+      determination.errors.full_messages.each do |message|
+        refute_includes message, CLAIM_TOKEN
+        refute_includes message, "cl_01HK8B7Z9XCQVG3F8N5K0R4MWD"
+      end
+    end
+
+    test "classify rejects a non-token evidence ref before persisting" do
+      assert_opaque_token_implemented!
+      before = FmapDetermination.count
+      error = assert_raises(ArgumentError) do
+        FmapClassificationService.classify!(
+          encounter_identifier: "enc_bad_evidence",
+          date_of_service: Date.new(2022, 6, 1),
+          jurisdiction: "XA",
+          facility_authority: @uio,
+          aian_verified: true,
+          evidence_refs: [ { "supports" => "aian_status", "ref" => BAD_EVIDENCE_REF } ]
+        )
+      end
+      assert_equal before, FmapDetermination.count
+      refute_includes error.message, BAD_EVIDENCE_REF
+    end
+
+    test "classify! rejects a non-token evidence ref before persisting" do
+      assert_opaque_token_implemented!
+      before = FmapDetermination.count
+      error = assert_raises(ArgumentError) do
+        FmapClassificationService.classify!(
+          encounter_identifier: "enc_bad_evidence_bang",
+          date_of_service: Date.new(2022, 6, 1),
+          jurisdiction: "XA",
+          facility_authority: @uio,
+          aian_verified: true,
+          evidence_refs: [ { "supports" => "aian_status", "ref" => BAD_EVIDENCE_REF } ]
+        )
+      end
+      assert_equal before, FmapDetermination.count
+      refute_includes error.message, BAD_EVIDENCE_REF
+    end
+
+    test "the model is invalid when any evidence ref is not a token" do
+      assert_opaque_token_implemented!
+      rule = FmapRule.find_by!(rule_key: "us-arpa-9815-uio-100")
+      determination = FmapDetermination.new(
+        encounter_identifier: "enc_evidence_invalid",
+        date_of_service: Date.new(2022, 6, 1),
+        jurisdiction: "XA",
+        determined_at: Time.current,
+        category: rule.category,
+        rule_key: rule.rule_key,
+        fmap_percent: rule.fmap_percent,
+        rule_citations: [ rule.statutory_citation ],
+        aian_verified: true,
+        evidence_refs: [ AIAN_EVIDENCE, { "supports" => "aian_status", "ref" => BAD_EVIDENCE_REF } ]
+      )
+      refute determination.valid?
+      assert determination.errors[:evidence_refs].any?
+    end
+
+    test "M9 the database rejects claim_identifier longer than a token via update_columns" do
+      assert_opaque_token_implemented!
+      row = classified_determination
+      too_long = "#{CLAIM_TOKEN}x"
+      assert_raises(ActiveRecord::StatementInvalid, ActiveRecord::CheckViolation) do
+        FmapDetermination.transaction(requires_new: true) do
+          row.update_columns(claim_identifier: too_long)
+        end
+      end
+      assert_nil row.reload.read_attribute(:claim_identifier)
+    end
+
+    test "the database rejects evidence_refs containing a non-token ref via update_columns" do
+      assert_opaque_token_implemented!
+      row = classified_determination
+      bad_refs = [ AIAN_EVIDENCE, { "supports" => "aian_status", "ref" => BAD_EVIDENCE_REF } ]
+      assert_raises(ActiveRecord::StatementInvalid, ActiveRecord::CheckViolation) do
+        FmapDetermination.transaction(requires_new: true) do
+          row.update_columns(evidence_refs: bad_refs)
+        end
+      end
+      assert_equal [ AIAN_EVIDENCE ], row.reload.evidence_refs
+    end
+
+    test "P4 OpaqueToken rejects a lowercase ULID body after a valid prefix" do
+      assert_opaque_token_implemented!
+      refute OpaqueToken.valid?("ab_#{VALID_ULID_BODY.downcase}")
+    end
+
+    test "P2 database CHECK rejects malformed claim_identifier anchors on normal schema" do
+      assert_opaque_token_implemented!
+      row = classified_determination
+      OpaqueTokenCheckMutants.malformed_opaque_token_anchors(prefix: "cl").each do |bad_claim|
+        assert_raises(ActiveRecord::StatementInvalid, ActiveRecord::CheckViolation) do
+          FmapDetermination.transaction(requires_new: true) do
+            row.update_columns(claim_identifier: bad_claim)
+          end
+        end
+        assert_nil row.reload.read_attribute(:claim_identifier)
+      end
+    end
+
+    test "issue 705 database CHECK rejects malformed CLM claim_identifier anchors on normal schema" do
+      assert_opaque_token_implemented!
+      row = classified_determination
+      OpaqueTokenCheckMutants.malformed_clm_claim_identifiers.each do |bad_claim|
+        assert_raises(ActiveRecord::StatementInvalid, ActiveRecord::CheckViolation) do
+          FmapDetermination.transaction(requires_new: true) do
+            row.update_columns(claim_identifier: bad_claim)
+          end
+        end
+        assert_nil row.reload.read_attribute(:claim_identifier)
+      end
+    end
+
+    test "issue 705 classify! persists Corvid CLM_<ULID> claim_identifier" do
+      with_tenant("tnt_test") do
+        assert_opaque_token_implemented!
+        uio = FacilityAuthority.create!(
+          facility_identifier: "fac_clm_classify",
+          authority_type: "uio",
+          effective_on: Date.new(2020, 1, 1)
+        )
+        clm = "CLM_#{ULID.generate}"
+        determination = FmapClassificationService.classify!(
+          encounter_identifier: "enc_clm_classify",
+          date_of_service: Date.new(2022, 6, 1),
+          jurisdiction: "XA",
+          facility_authority: uio,
+          aian_verified: true,
+          evidence_refs: [ AIAN_EVIDENCE ],
+          claim_identifier: clm
+        )
+        assert_equal clm, determination.claim_identifier
+      end
+    end
+
+    test "issue 705 classify! persists lowercase clm_<Crockford> opaque claim_identifier" do
+      with_tenant("tnt_test") do
+        assert_opaque_token_implemented!
+        uio = FacilityAuthority.create!(
+          facility_identifier: "fac_clm_opaque_classify",
+          authority_type: "uio",
+          effective_on: Date.new(2020, 1, 1)
+        )
+        clm = CLM_OPAQUE_CLAIM
+        determination = FmapClassificationService.classify!(
+          encounter_identifier: "enc_clm_opaque_classify",
+          date_of_service: Date.new(2022, 6, 1),
+          jurisdiction: "XA",
+          facility_authority: uio,
+          aian_verified: true,
+          evidence_refs: [ AIAN_EVIDENCE ],
+          claim_identifier: clm
+        )
+        assert_equal clm, determination.claim_identifier
+      end
+    end
+
+    test "issue 705 model accepts nil opaque token CLM_<ULID> or clm_<Crockford> claim_identifier" do
+      assert_opaque_token_implemented!
+
+      base_attrs = {
+        encounter_identifier: "enc_claim_shape",
+        date_of_service: Date.new(2022, 6, 1),
+        jurisdiction: "XA",
+        determined_at: Time.current,
+        category: FmapClassificationService::UNDETERMINED,
+        determination_reason: FmapClassificationService::NO_RULES_IN_FORCE,
+        evidence_refs: []
+      }
+
+      nil_claim = FmapDetermination.new(base_attrs.merge(claim_identifier: nil, encounter_identifier: "enc_nil_claim"))
+      assert_predicate nil_claim, :valid?
+
+      clm_claim = FmapDetermination.new(base_attrs.merge(claim_identifier: CLM_CLAIM, encounter_identifier: "enc_clm_claim"))
+      assert_predicate clm_claim, :valid?
+
+      clm_opaque = FmapDetermination.new(
+        base_attrs.merge(claim_identifier: CLM_OPAQUE_CLAIM, encounter_identifier: "enc_clm_opaque_claim")
+      )
+      assert_predicate clm_opaque, :valid?
+
+      token_claim = FmapDetermination.new(base_attrs.merge(claim_identifier: CLAIM_TOKEN, encounter_identifier: "enc_token_claim"))
+      assert_predicate token_claim, :valid?
+    end
+
+    test "issue 705 malformed CLM and non-token claim_identifier values are rejected without echoing the value" do
+      assert_opaque_token_implemented!
+      rule = FmapRule.find_by!(rule_key: "us-arpa-9815-uio-100")
+
+      (OpaqueTokenCheckMutants.malformed_clm_claim_identifiers + [ BAD_CLAIM ]).each do |bad_claim|
+        determination = FmapDetermination.new(
+          encounter_identifier: "enc_bad_clm_#{SecureRandom.hex(2)}",
+          date_of_service: Date.new(2022, 6, 1),
+          jurisdiction: "XA",
+          determined_at: Time.current,
+          category: rule.category,
+          rule_key: rule.rule_key,
+          fmap_percent: rule.fmap_percent,
+          rule_citations: [ rule.statutory_citation ],
+          aian_verified: true,
+          evidence_refs: [ AIAN_EVIDENCE ],
+          claim_identifier: bad_claim
+        )
+        refute determination.valid?
+        assert determination.errors[:claim_identifier].any?
+        determination.errors[:claim_identifier].each do |message|
+          refute_includes message, bad_claim
+        end
+      end
+    end
+
+    test "issue 705 database CHECK accepts CLM_<ULID> and clm_<Crockford> claim_identifier via update_columns" do
+      assert_opaque_token_implemented!
+      row = classified_determination
+      FmapDetermination.transaction(requires_new: true) do
+        row.update_columns(claim_identifier: CLM_CLAIM)
+      end
+      assert_equal CLM_CLAIM, row.reload.claim_identifier
+
+      FmapDetermination.transaction(requires_new: true) do
+        row.update_columns(claim_identifier: CLM_OPAQUE_CLAIM)
+      end
+      assert_equal CLM_OPAQUE_CLAIM, row.reload.claim_identifier
+    end
+
+    test "P6 unclaimed determination can be claimed and is immutable afterwards" do
+      assert_opaque_token_implemented!
+      determination = classified_determination
+      assert_nil determination.claim_identifier
+
+      determination.update!(claim_identifier: CLAIM_TOKEN)
+      assert_equal CLAIM_TOKEN, determination.reload.claim_identifier
+
+      determination.category = FmapClassificationService::UNDETERMINED
+      assert_raises(ActiveRecord::RecordInvalid) { determination.save! }
+      assert_equal CLAIM_TOKEN, determination.reload.claim_identifier
+    end
+
+    private
+
+    def malformed_claim_anchor_tokens
+      OpaqueTokenCheckMutants.malformed_opaque_token_anchors(prefix: "cl") +
+        OpaqueTokenCheckMutants.malformed_clm_claim_identifiers
+    end
+
+    def assert_opaque_token_implemented!
+      assert defined?(OpaqueToken), "Corvid::OpaqueToken must be implemented"
+    end
+
+    def classified_determination(claim_identifier: nil)
+      FmapClassificationService.classify!(
+        encounter_identifier: "enc_id_#{SecureRandom.hex(3)}",
+        date_of_service: Date.new(2022, 6, 1),
+        jurisdiction: "XA",
+        facility_authority: @uio,
+        aian_verified: true,
+        evidence_refs: [ AIAN_EVIDENCE ],
+        claim_identifier: claim_identifier
+      )
+    end
+  end
+end

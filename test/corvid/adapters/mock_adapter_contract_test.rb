@@ -112,7 +112,7 @@ class Corvid::Adapters::MockAdapterContractTest < Minitest::Test
       [
         {
           practitioner_identifier: "pr_contract_001",
-          role: "practitioner",
+          role_code: "other",
           name: "TEST CARE TEAM",
           status: "active"
         }
