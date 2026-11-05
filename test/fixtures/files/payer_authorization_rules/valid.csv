@@ -1,0 +1,6 @@
+payer_identifier,service_code,code_from,code_to,place_of_service,plan_identifier,requirement,effective_on,expires_on
+payer_a,,70540,70559,,,required,2025-01-01,
+payer_a,99213,,,,,not_required,2025-01-01,
+payer_a,99213,,,11,,required,2025-01-01,
+payer_a,99213,,,,plan_gold,documentation_only,2025-01-01,
+payer_a,J1234,,,22,,required,2025-01-01,

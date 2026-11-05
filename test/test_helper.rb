@@ -22,6 +22,9 @@ def clean_corvid_tables!
   if Corvid.const_defined?(:ZipCbsaCrosswalk, false)
     Corvid::ZipCbsaCrosswalk.unscoped.delete_all
   end
+  if Corvid.const_defined?(:PayerAuthorizationRule, false)
+    Corvid::PayerAuthorizationRule.unscoped.delete_all
+  end
   Corvid::LocalityLookup.clear_cache!
   Corvid::ApiCallLog.unscoped.delete_all
   Corvid::Payment.unscoped.delete_all
