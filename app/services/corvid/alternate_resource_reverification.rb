@@ -9,6 +9,9 @@ module Corvid
     class << self
       # adapter defaults to Corvid.adapter for model callers. A service
       # that holds an injected adapter passes it (ADR 0005).
+      # date_of_service is the date being judged. It is forwarded to
+      # verify! unchanged. A non-Date raises ArgumentError there and is
+      # not coerced.
       def reverify_stale!(prc_referral, date_of_service:, as_of: Time.current, adapter: Corvid.adapter)
         stale_checks(prc_referral, date_of_service, as_of).map { |check|
           confirm_check(check, date_of_service, as_of, adapter: adapter)
@@ -59,10 +62,11 @@ module Corvid
 
       # One savepoint per check. A host adapter that raises a database
       # error must not leave the caller's transaction aborted; this check
-      # stays unconfirmed and the transition is refused.
+      # stays unconfirmed and the transition is refused. The judged date
+      # is passed through to verify!.
       def confirm_check(check, date_of_service, as_of, adapter:)
         verified = check.class.transaction(requires_new: true) do
-          check.verify!(adapter: adapter)
+          check.verify!(date_of_service: date_of_service, adapter: adapter)
         end
         return false unless verified
 

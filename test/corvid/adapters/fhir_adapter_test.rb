@@ -8,11 +8,20 @@ require "net/protocol"
 require "uri"
 require "zlib"
 require "active_support/all" # adapter uses AS ext (Time.current, String#last, present?); loaded by the host app in real use
+require "active_support/testing/time_helpers"
 require "corvid/adapters/fhir_adapter"
 
 class Corvid::Adapters::FhirAdapterTest < Minitest::Test
+  include ActiveSupport::Testing::TimeHelpers
+
   def setup
+    @saved_time_zone = Time.zone
+    Time.zone = "UTC"
     @adapter = Corvid::Adapters::FhirAdapter.new(base_url: "https://fhir.example.com/r4")
+  end
+
+  def teardown
+    Time.zone = @saved_time_zone
   end
 
   def test_initializes_with_base_url
@@ -2150,7 +2159,7 @@ class Corvid::Adapters::FhirAdapterTest < Minitest::Test
             "resourceType" => "Coverage",
             "id" => "cov_test_medicare",
             "status" => "active",
-            "type" => { "coding" => [ { "code" => "MCRSC" } ] },
+            "type" => { "coding" => [ { "code" => "medicare_a" } ] },
             "payor" => [ { "display" => "TEST MEDICARE PAYER" } ]
           }
         },
@@ -2210,9 +2219,242 @@ class Corvid::Adapters::FhirAdapterTest < Minitest::Test
   end
 
   def test_verify_eligibility_malformed_period_dates_stay_nil
-    result = eligibility_for_period("start" => "2026-13", "end" => "not-a-date")
-    assert_nil result[:coverage_start]
-    assert_nil result[:coverage_end]
+    malformed_start = "2026-13"
+    malformed_end = "not-a-date"
+    result = eligibility_for_period("start" => malformed_start, "end" => malformed_end)
+    assert_nil result,
+             "Present but invalid FHIR period bounds must make verify_eligibility unknown"
+    [ malformed_start, malformed_end ].each do |bad|
+      refute result.is_a?(Hash) &&
+               result.values_at(:coverage_start, :coverage_end).include?(bad),
+             "Malformed period bound #{bad.inspect} must not be echoed as a string"
+    end
+  end
+
+  # Issue #712 R11 / R12: pick covering active Coverage; period bounds vs inquiry date.
+  def test_verify_eligibility_prefers_active_coverage_covering_inquiry_over_ended_first_match
+    bundle = {
+      "resourceType" => "Bundle",
+      "entry" => [
+        {
+          "resource" => {
+            "resourceType" => "Coverage",
+            "id" => "cov_ended",
+            "status" => "active",
+            "type" => { "coding" => [ { "code" => "MCDSC" } ] },
+            "payor" => [ { "display" => "ENDED PAYER" } ],
+            "period" => { "start" => "2025-01-01", "end" => "2025-12-31" }
+          }
+        },
+        {
+          "resource" => {
+            "resourceType" => "Coverage",
+            "id" => "cov_active",
+            "status" => "active",
+            "type" => { "coding" => [ { "code" => "MCDSC" } ] },
+            "payor" => [ { "display" => "ACTIVE PAYER 712" } ],
+            "period" => { "start" => "2026-01-01", "end" => "2026-12-31" }
+          }
+        }
+      ]
+    }
+    inquiry = Date.new(2026, 10, 15)
+
+    @adapter.stub(:fhir_search, bundle) do
+      result = @adapter.verify_eligibility("pt_test_001", "medicaid", date_of_service: inquiry)
+      assert result[:eligible], "Must answer from coverage whose period covers the inquiry (issue #712 R11)"
+      assert_equal "ACTIVE PAYER 712", result[:payer_name]
+      assert_equal Date.new(2026, 1, 1), result[:coverage_start]
+      assert_equal Date.new(2026, 12, 31), result[:coverage_end]
+    end
+  end
+
+  def test_verify_eligibility_false_when_period_start_is_after_inquiry_date
+    bundle = coverage_bundle("start" => "2026-11-01", "end" => "2026-12-31")
+    bundle["entry"].first["resource"]["status"] = "active"
+
+    @adapter.stub(:fhir_search, bundle) do
+      result = @adapter.verify_eligibility("pt_test_001", "medicaid", date_of_service: Date.new(2026, 10, 15))
+      refute result[:eligible]
+    end
+  end
+
+  def test_verify_eligibility_false_when_period_end_is_before_inquiry_date
+    bundle = coverage_bundle("start" => "2026-01-01", "end" => "2026-09-30")
+    bundle["entry"].first["resource"]["status"] = "active"
+
+    @adapter.stub(:fhir_search, bundle) do
+      result = @adapter.verify_eligibility("pt_test_001", "medicaid", date_of_service: Date.new(2026, 10, 15))
+      refute result[:eligible]
+    end
+  end
+
+  # Issue #712 round 2: month-scoped active coverage vs full period bounds.
+  def test_verify_eligibility_active_no_period_undetermined_outside_current_month
+    bundle = coverage_bundle({})
+    bundle["entry"].first["resource"]["status"] = "active"
+    inquiry = Date.new(2026, 12, 15)
+
+    travel_to Time.zone.local(2026, 10, 27, 9, 0, 0) do
+      @adapter.stub(:fhir_search, bundle) do
+        result = @adapter.verify_eligibility("pt_test_001", "medicaid", date_of_service: inquiry)
+        assert_nil result,
+                   "Active coverage with no period must not answer outside the current month (issue #712 S4)"
+      end
+    end
+  end
+
+  def test_verify_eligibility_active_no_period_true_in_current_month
+    bundle = coverage_bundle({})
+    bundle["entry"].first["resource"]["status"] = "active"
+    inquiry = Date.new(2026, 10, 15)
+
+    travel_to Time.zone.local(2026, 10, 27, 9, 0, 0) do
+      @adapter.stub(:fhir_search, bundle) do
+        result = @adapter.verify_eligibility("pt_test_001", "medicaid", date_of_service: inquiry)
+        assert result[:eligible], "Active coverage with no period must cover an inquiry in the current month (issue #712)"
+        assert_equal inquiry, result[:date_of_service]
+      end
+    end
+  end
+
+  def test_verify_eligibility_active_start_only_undetermined_for_future_month_inquiry
+    bundle = coverage_bundle("start" => "2026-01-01")
+    bundle["entry"].first["resource"]["status"] = "active"
+    inquiry = Date.new(2026, 12, 15)
+
+    travel_to Time.zone.local(2026, 10, 27, 9, 0, 0) do
+      @adapter.stub(:fhir_search, bundle) do
+        result = @adapter.verify_eligibility("pt_test_001", "medicaid", date_of_service: inquiry)
+        assert_nil result,
+                   "Start-only period must not answer outside the current month without an end bound (issue #712 S4)"
+      end
+    end
+  end
+
+  def test_verify_eligibility_active_full_period_true_for_inquiry_inside_bounds
+    bundle = coverage_bundle("start" => "2026-01-01", "end" => "2026-12-31")
+    bundle["entry"].first["resource"]["status"] = "active"
+    inquiry = Date.new(2026, 12, 15)
+
+    travel_to Time.zone.local(2026, 10, 27, 9, 0, 0) do
+      @adapter.stub(:fhir_search, bundle) do
+        result = @adapter.verify_eligibility("pt_test_001", "medicaid", date_of_service: inquiry)
+        assert result[:eligible], "Full period must cover an inquiry inside start and end (issue #712)"
+        assert_equal inquiry, result[:date_of_service]
+      end
+    end
+  end
+
+  def test_verify_eligibility_active_no_period_undetermined_for_past_month_inquiry
+    bundle = coverage_bundle({})
+    bundle["entry"].first["resource"]["status"] = "active"
+    inquiry = Date.new(2025, 3, 1)
+
+    travel_to Time.zone.local(2026, 10, 27, 9, 0, 0) do
+      @adapter.stub(:fhir_search, bundle) do
+        result = @adapter.verify_eligibility("pt_test_001", "medicaid", date_of_service: inquiry)
+        assert_nil result,
+                   "Active coverage with no period must not answer for a past-month inquiry (issue #712 S4)"
+      end
+    end
+  end
+
+  def test_verify_eligibility_cancelled_status_false_when_period_covers_inquiry_in_current_month
+    bundle = coverage_bundle("start" => "2026-01-01", "end" => "2026-12-31")
+    bundle["entry"].first["resource"]["status"] = "cancelled"
+    inquiry = Date.new(2026, 10, 15)
+
+    travel_to Time.zone.local(2026, 10, 27, 9, 0, 0) do
+      @adapter.stub(:fhir_search, bundle) do
+        result = @adapter.verify_eligibility("pt_test_001", "medicaid", date_of_service: inquiry)
+        assert_instance_of Hash, result
+        refute result[:eligible],
+               "Non-active status with covering bounds in the current month must be eligible: false (issue #712)"
+      end
+    end
+  end
+
+  def test_verify_eligibility_does_not_use_first_matching_coverage_when_only_later_active_applies
+    bundle = {
+      "resourceType" => "Bundle",
+      "entry" => [
+        {
+          "resource" => {
+            "resourceType" => "Coverage",
+            "id" => "cov_cancelled",
+            "status" => "cancelled",
+            "type" => { "coding" => [ { "code" => "MCDSC" } ] },
+            "payor" => [ { "display" => "OLD TERMINATED PAYER" } ],
+            "period" => { "start" => "2024-01-01", "end" => "2025-12-31" }
+          }
+        },
+        {
+          "resource" => {
+            "resourceType" => "Coverage",
+            "id" => "cov_active_open",
+            "status" => "active",
+            "type" => { "coding" => [ { "code" => "MCDSC" } ] },
+            "payor" => [ { "display" => "CURRENT PAYER 712" } ],
+            "period" => { "start" => "2026-01-01" }
+          }
+        }
+      ]
+    }
+    inquiry = Date.new(2026, 9, 15)
+
+    travel_to Time.zone.local(2026, 10, 27, 9, 0, 0) do
+      @adapter.stub(:fhir_search, bundle) do
+        result = @adapter.verify_eligibility("pt_test_001", "medicaid", date_of_service: inquiry)
+        assert_nil result,
+                   "Must not answer not_enrolled from terminated Coverage when a later active row applies (issue #712 B1)"
+      end
+    end
+  end
+
+  def test_verify_eligibility_unknown_status_without_period_is_undetermined_in_current_month
+    %w[draft entered-in-error].each do |status|
+      bundle = coverage_bundle({})
+      bundle["entry"].first["resource"]["status"] = status
+      bundle["entry"].first["resource"].delete("period")
+      inquiry = Date.new(2026, 10, 15)
+
+      travel_to Time.zone.local(2026, 10, 27, 9, 0, 0) do
+        @adapter.stub(:fhir_search, bundle) do
+          result = @adapter.verify_eligibility("pt_test_001", "medicaid", date_of_service: inquiry)
+          assert_nil result,
+                     "#{status.inspect} without period must be undetermined, not eligible: false (issue #712 B2)"
+        end
+      end
+    end
+  end
+
+  def test_verify_eligibility_absent_status_without_period_is_undetermined_in_current_month
+    bundle = coverage_bundle({})
+    bundle["entry"].first["resource"].delete("status")
+    bundle["entry"].first["resource"].delete("period")
+    inquiry = Date.new(2026, 10, 15)
+
+    travel_to Time.zone.local(2026, 10, 27, 9, 0, 0) do
+      @adapter.stub(:fhir_search, bundle) do
+        result = @adapter.verify_eligibility("pt_test_001", "medicaid", date_of_service: inquiry)
+        assert_nil result, "Absent status must be undetermined (issue #712 B2)"
+      end
+    end
+  end
+
+  def test_verify_eligibility_cancelled_with_covering_bounds_outside_current_month_is_undetermined
+    bundle = coverage_bundle("start" => "2025-01-01", "end" => "2025-12-31")
+    bundle["entry"].first["resource"]["status"] = "cancelled"
+    inquiry = Date.new(2025, 6, 15)
+
+    travel_to Time.zone.local(2026, 10, 27, 9, 0, 0) do
+      @adapter.stub(:fhir_search, bundle) do
+        result = @adapter.verify_eligibility("pt_test_001", "medicaid", date_of_service: inquiry)
+        assert_nil result,
+                   "Cancelled coverage outside the current month must not answer eligible: false (issue #712 B2)"
+      end
+    end
   end
 
   def test_partial_birth_date_still_parses_to_nil

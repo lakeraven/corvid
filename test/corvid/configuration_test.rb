@@ -177,6 +177,16 @@ class Corvid::ConfigurationTest < Minitest::Test
     end
   end
 
+  # -- issue #712 defaults ----------------------------------------------------
+
+  def test_fresh_configuration_issue_712_defaults
+    config = Corvid::Configuration.new
+
+    assert_equal %w[medicaid], config.month_bounded_eligibility_resource_types
+    assert_equal [ Date.new(9999, 12, 31) ], config.placeholder_coverage_end_dates
+    assert_equal 25, config.placeholder_coverage_end_horizon_years
+  end
+
   # -- verification snapshot keys (ADR 0008) ---------------------------------
 
   def test_verification_snapshot_keys_defaults_to_empty_hash

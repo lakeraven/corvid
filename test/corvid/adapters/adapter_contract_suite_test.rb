@@ -34,20 +34,20 @@ class Corvid::Adapters::AdapterContractSuiteTest < Minitest::Test
 
   # base.rb: coverage_start, coverage_end and renewal_date are Date or nil.
   class StringCoverageDateAdapter < Corvid::Adapters::MockAdapter
-    def verify_eligibility(patient_identifier, resource_type)
-      super&.merge(coverage_start: "2026-01-01")
+    def verify_eligibility(patient_identifier, resource_type, date_of_service: nil)
+      super(patient_identifier, resource_type, date_of_service: date_of_service)&.merge(coverage_start: "2026-01-01")
     end
   end
 
   class StringRenewalDateAdapter < Corvid::Adapters::MockAdapter
-    def verify_eligibility(patient_identifier, resource_type)
-      super&.merge(renewal_date: "2026-12-31")
+    def verify_eligibility(patient_identifier, resource_type, date_of_service: nil)
+      super(patient_identifier, resource_type, date_of_service: date_of_service)&.merge(renewal_date: "2026-12-31")
     end
   end
 
   class StringAsOfAdapter < Corvid::Adapters::MockAdapter
-    def verify_eligibility(patient_identifier, resource_type)
-      super&.merge(as_of: "2026-10-01T12:00:00Z")
+    def verify_eligibility(patient_identifier, resource_type, date_of_service: nil)
+      super(patient_identifier, resource_type, date_of_service: date_of_service)&.merge(as_of: "2026-10-01T12:00:00Z")
     end
   end
 
@@ -58,8 +58,8 @@ class Corvid::Adapters::AdapterContractSuiteTest < Minitest::Test
       end
     end
 
-    def verify_eligibility(patient_identifier, resource_type)
-      result = super(patient_identifier, resource_type)
+    def verify_eligibility(patient_identifier, resource_type, date_of_service: nil)
+      result = super(patient_identifier, resource_type, date_of_service: date_of_service)
       return result unless result.is_a?(Hash)
 
       result.merge(as_of: result[:as_of] || Time.now)
@@ -72,15 +72,15 @@ class Corvid::Adapters::AdapterContractSuiteTest < Minitest::Test
       super(patient_identifier).map { |row| row.merge(as_of: nil) }
     end
 
-    def verify_eligibility(patient_identifier, resource_type)
-      super&.merge(as_of: nil)
+    def verify_eligibility(patient_identifier, resource_type, date_of_service: nil)
+      super(patient_identifier, resource_type, date_of_service: date_of_service)&.merge(as_of: nil)
     end
   end
 
   # Answers from the first seeded coverage when resource_type is blank (contract violation).
   class VerifyEligibilityOnBlankResourceTypeAdapter < Corvid::Adapters::MockAdapter
-    def verify_eligibility(patient_identifier, resource_type)
-      return super unless resource_type.to_s.strip.empty?
+    def verify_eligibility(patient_identifier, resource_type, date_of_service: nil)
+      return super(patient_identifier, resource_type, date_of_service: date_of_service) unless resource_type.to_s.strip.empty?
 
       coverages = @coverages[patient_identifier.to_s]
       coverage = coverages&.first
@@ -92,7 +92,7 @@ class Corvid::Adapters::AdapterContractSuiteTest < Minitest::Test
 
   # Implements coverage-type eligibility but has no 270/271 exchange.
   class NoDetailedEligibilityAdapter < Corvid::Adapters::MockAdapter
-    def check_eligibility_detailed(_patient_identifier, _payer_identifier)
+    def check_eligibility_detailed(_patient_identifier, _payer_identifier, date_of_service: nil)
       raise NotImplementedError, "#{self.class}#check_eligibility_detailed not implemented"
     end
   end
@@ -148,8 +148,8 @@ class Corvid::Adapters::AdapterContractSuiteTest < Minitest::Test
       end
     end
     nil_answer = Class.new(Corvid::Adapters::MockAdapter) do
-      def verify_eligibility(patient_identifier, resource_type)
-        super&.merge(as_of: nil)
+      def verify_eligibility(patient_identifier, resource_type, date_of_service: nil)
+        super(patient_identifier, resource_type, date_of_service: date_of_service)&.merge(as_of: nil)
       end
     end
 

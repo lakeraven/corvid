@@ -1,5 +1,6 @@
 # frozen_string_literal: true
 
+require "active_support/testing/time_helpers"
 require "corvid/adapters/base"
 require "corvid/value_objects"
 
@@ -208,6 +209,7 @@ module AdapterContractTests
     base_methods = Corvid::Adapters::Base.public_instance_methods(false).sort
 
     base.class_eval do
+      include ActiveSupport::Testing::TimeHelpers
       include AdapterContractTests::Assertions
 
       define_method(:test_contract_unknown_identifier_policy_exhaustive) do
@@ -605,6 +607,7 @@ module AdapterContractTests
         assert_get_coverages_answer_as_of_policy(seed)
       when :verify_eligibility
         assert_coverage_resource_type_guards(seed)
+        assert_eligibility_inquiry_date_contract(adapter, seed, method: :verify_eligibility)
         assert_verify_eligibility_answer_as_of_policy(seed)
       when :check_eligibility_detailed
         wrong_payer = adapter.check_eligibility_detailed(
@@ -612,6 +615,7 @@ module AdapterContractTests
           seed[:unknown_payer_identifier]
         )
         assert_eligibility_detailed_unknown(wrong_payer)
+        assert_eligibility_inquiry_date_contract(adapter, seed, method: :check_eligibility_detailed)
       when :verify_tribal_enrollment
         if seed[:patient_identifier_tribal_no_confidence]
           result = adapter.verify_tribal_enrollment(seed[:patient_identifier_tribal_no_confidence])
@@ -892,6 +896,48 @@ module AdapterContractTests
       refute status == true, "refund_payment(unknown) must not report success status"
     end
 
+    def assert_eligibility_inquiry_date_contract(adapter, seed, method:)
+      saved_zone = Time.zone
+      explicit_dos = Date.new(2026, 6, 15)
+      args =
+        case method
+        when :verify_eligibility
+          [ seed[:patient_identifier], seed[:coverage_resource_type] ]
+        when :check_eligibility_detailed
+          [ seed[:patient_identifier], seed[:payer_identifier] ]
+        else
+          flunk("unsupported eligibility inquiry date contract for #{method}")
+        end
+
+      explicit = adapter.public_send(method, *args, date_of_service: explicit_dos)
+      assert_instance_of Hash, explicit, "#{method}(explicit date_of_service) must return a Hash"
+      assert_keys(explicit, %i[date_of_service date_of_service_defaulted])
+      assert_equal explicit_dos, explicit[:date_of_service]
+      refute explicit[:date_of_service_defaulted], "#{method} must set date_of_service_defaulted false when DOS passed"
+
+      defaulted = adapter.public_send(method, *args)
+      assert_instance_of Hash, defaulted, "#{method}(default) must return a Hash"
+      assert_keys(defaulted, %i[date_of_service date_of_service_defaulted])
+      assert_instance_of Date, defaulted[:date_of_service]
+      assert defaulted[:date_of_service_defaulted], "#{method} must set date_of_service_defaulted true when DOS omitted"
+
+      [ "2026-06-15", Time.utc(2026, 6, 15, 12, 0, 0), DateTime.new(2026, 6, 15, 12, 0, 0) ].each do |invalid_dos|
+        assert_raises(ArgumentError) do
+          adapter.public_send(method, *args, date_of_service: invalid_dos)
+        end
+      end
+
+      Time.zone = "Pacific/Kiritimati"
+      travel_to Time.utc(2025, 12, 31, 12, 0, 0) do
+        zoned = adapter.public_send(method, *args)
+        assert_equal Date.current, zoned[:date_of_service],
+                     "#{method} default date_of_service must be Date.current in Time.zone, not Date.today (issue #712)"
+        refute_equal Date.today, zoned[:date_of_service] if Date.today != Date.current
+      end
+    ensure
+      Time.zone = saved_zone
+    end
+
     def assert_verify_eligibility_unknown(result)
       return if result.nil?
 
@@ -987,8 +1033,10 @@ module AdapterContractTests
       when :check_claim_status
         assert_check_claim_status_shape(result)
       when :check_eligibility_detailed
-        assert_keys(result, %i[eligible])
+        assert_keys(result, %i[eligible date_of_service date_of_service_defaulted])
         assert_includes [ true, false ], result[:eligible]
+        assert_instance_of Date, result[:date_of_service]
+        assert_includes [ true, false ], result[:date_of_service_defaulted]
       when :process_payment
         assert_billing_mutation_shape(result, id_key: :payment_identifier)
       when :refund_payment
@@ -1062,6 +1110,9 @@ module AdapterContractTests
       return if value.nil?
 
       assert_instance_of Hash, value
+      assert_keys(value, %i[date_of_service date_of_service_defaulted])
+      assert_instance_of Date, value[:date_of_service]
+      assert_includes [ true, false ], value[:date_of_service_defaulted]
       assert value.key?(:as_of), "verify_eligibility must include :as_of"
       assert_answer_as_of(value[:as_of], context: "verify_eligibility")
       # base.rb: these dates are Date or nil when present.

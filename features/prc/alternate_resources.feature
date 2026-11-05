@@ -291,3 +291,13 @@ Feature: Alternate resource tracking (payer of last resort)
     And the adapter has eligible medicaid coverage for patient "pt_001" in state "XA"
     When I verify the enrollment status
     Then the medicaid alternate resource check should have eligibility group "expansion_adult" with source "inferred"
+
+  # =============================================================================
+  # MEDICAID MONTH-SCOPED ELIGIBILITY (issue #712)
+  # =============================================================================
+
+  Scenario: Medicaid verified late in October is not current for a November referral date
+    Given an alternate resource check for "medicaid" exists with status "not_checked"
+    And the adapter has medicaid active through year end for patient "pt_001"
+    When I verify medicaid enrollment for date of service "2026-10-31"
+    Then the medicaid check should not be current for date of service "2026-11-01"

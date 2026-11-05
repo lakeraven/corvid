@@ -1,5 +1,9 @@
 # frozen_string_literal: true
 
+require "active_support/testing/time_helpers"
+
+World(ActiveSupport::Testing::TimeHelpers)
+
 # Alternate resource step definitions (ported from the predecessor app)
 
 When("I create an alternate resource check for {string}") do |resource_type|
@@ -49,6 +53,37 @@ Given("the adapter has eligible coverage for patient {string} for resource type 
                               payer_name: "MOCK #{resource_type.upcase.tr('_', ' ')} PAYER",
                               plan_name: "Mock Plan",
                               eligible: true)
+end
+
+Given("the adapter has medicaid active through year end for patient {string}") do |patient_id|
+  Corvid.adapter.add_coverage(
+    patient_id,
+    coverage_type: "medicaid",
+    payer_name: "MOCK MEDICAID PAYER",
+    plan_name: "TEST PLAN 712",
+    eligible: true,
+    coverage_start: Date.new(2026, 1, 1),
+    coverage_end: Date.new(2026, 12, 31)
+  )
+end
+
+When("I verify medicaid enrollment for date of service {string}") do |dos_string|
+  dos = Date.parse(dos_string)
+  travel_to Time.zone.local(dos.year, dos.month, dos.day, 23, 0, 0) do
+    unless @check.method(:verify!).parameters.any? { |type, name| type == :key && name == :date_of_service }
+      raise "verify! must accept date_of_service: (issue #712)"
+    end
+    @check.verify!(date_of_service: dos)
+    @check.reload
+  end
+end
+
+Then("the medicaid check should not be current for date of service {string}") do |dos_string|
+  dos = Date.parse(dos_string)
+  travel_to Time.zone.local(dos.year, dos.month, dos.day, 12, 0, 0) do
+    refute @check.current_for?(dos),
+           "Medicaid check must not be current for #{dos} after October verification (issue #712)"
+  end
 end
 
 Given("the adapter has eligible medicaid coverage for patient {string} stating eligibility group {string}") do |patient_id, group|
@@ -301,24 +336,28 @@ end
 
 Given("only {int} checks have been verified") do |count|
   @referral.alternate_resource_checks.order(:id).limit(count).each do |check|
-    check.update!(status: :not_enrolled, checked_at: Time.current)
+    check.update!(status: :not_enrolled)
+    stamp_alternate_resource_check_current!(check)
   end
 end
 
 Given("all checks are verified as not enrolled or exhausted") do
   @referral.alternate_resource_checks.each do |check|
-    check.update!(status: :not_enrolled, checked_at: Time.current)
+    check.update!(status: :not_enrolled)
+    stamp_alternate_resource_check_current!(check)
   end
 end
 
 Given("{string} is verified as enrolled") do |resource_type|
   check = @referral.alternate_resource_checks.find_by!(resource_type: resource_type)
-  check.update!(status: :enrolled, checked_at: Time.current)
+  check.update!(status: :enrolled)
+  stamp_alternate_resource_check_current!(check)
 end
 
 Given("all other checks are verified as not enrolled") do
   @referral.alternate_resource_checks.where.not(status: :enrolled).each do |check|
-    check.update!(status: :not_enrolled, checked_at: Time.current)
+    check.update!(status: :not_enrolled)
+    stamp_alternate_resource_check_current!(check)
   end
 end
 

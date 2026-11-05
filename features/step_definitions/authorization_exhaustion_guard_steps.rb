@@ -33,9 +33,9 @@ Given("the adapter confirms {string} as not enrolled when re-verified") do |reso
   patient_id = @referral.case.patient_identifier
   @reverified_types = []
   reverified = @reverified_types
-  Corvid.adapter.define_singleton_method(:verify_eligibility) do |pid, type|
+  Corvid.adapter.define_singleton_method(:verify_eligibility) do |pid, type, date_of_service: nil|
     reverified << type if pid == patient_id && type == resource_type
-    { eligible: false }
+    echo_verify_eligibility_date({ eligible: false }, date_of_service)
   end
 end
 

@@ -152,16 +152,20 @@ namespace :demo do
 
       # Synthetic current determinations. The demo does not query a payer;
       # each resource is recorded not_enrolled and fresh so the exhaustion
-      # guard can pass without inventing coverage.
+      # guard can pass without inventing coverage. Medicaid is current only
+      # in the month of its inquiry date, and this demo judges Date.current,
+      # so that seed is stamped with today.
       Corvid::AlternateResourceCheck::RESOURCE_TYPES.each do |type|
         check = referral.alternate_resource_checks.find_or_create_by!(resource_type: type)
-        check.update!(
+        attributes = {
           status: "not_enrolled",
           checked_at: Time.current,
           coverage_start: nil,
           coverage_end: nil,
           renewal_date: nil
-        )
+        }
+        attributes[:inquiry_date_of_service] = Date.current if type == "medicaid"
+        check.update!(attributes)
       end
       referral.alternate_resource_checks.reload
       beat(

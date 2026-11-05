@@ -3,10 +3,12 @@
 require "minitest/autorun"
 require "ostruct"
 require "active_support/all"
+require "active_support/testing/time_helpers"
 require "corvid/adapters/mock_adapter"
 require_relative "../../support/adapter_contract_tests"
 
 class Corvid::Adapters::MockAdapterContractTest < Minitest::Test
+  include ActiveSupport::Testing::TimeHelpers
   include AdapterContractTests
 
   def contract_adapter

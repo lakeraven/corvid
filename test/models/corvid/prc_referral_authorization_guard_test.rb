@@ -326,7 +326,7 @@ module Corvid
         check.status = status_overrides.fetch(type, "not_enrolled")
         check.save!
         # Issue #668: authorization gates require current determinations, not any-age rows.
-        stamp_alternate_resource_check_current!(check) unless check.not_checked? || check.checking?
+        stamp_alternate_resource_check_current!(check, date_of_service: Date.current) unless check.not_checked? || check.checking?
       end
       referral.alternate_resource_checks.reload
     end

@@ -308,11 +308,17 @@ module Corvid
       # Eligibility
       # ----------------------------------------------------------------------
 
-      def verify_eligibility(patient_identifier, resource_type)
+      def verify_eligibility(patient_identifier, resource_type, date_of_service: nil)
+        answered_on, defaulted = resolve_inquiry_date(date_of_service)
         coverage = coverage_for(patient_identifier, resource_type, :coverage_type)
         return nil unless coverage
 
-        eligibility_from_coverage(patient_identifier, resource_type, coverage)
+        result = eligibility_from_coverage(patient_identifier, resource_type, coverage)
+        return nil unless result
+
+        apply_medicaid_scenario!(result, coverage, answered_on)
+        mark_ineligible_outside_inquiry!(result, answered_on)
+        result.merge(date_of_service: answered_on, date_of_service_defaulted: defaulted)
       end
 
       # ----------------------------------------------------------------------
@@ -389,13 +395,19 @@ module Corvid
       end
 
       # A check that names no payer is undetermined, never the first coverage.
-      def check_eligibility_detailed(patient_identifier, payer_identifier)
-        return undetermined_detailed_eligibility if payer_identifier.to_s.strip.empty?
-
-        coverage = coverage_for(patient_identifier, payer_identifier, :payer_identifier)
-        return undetermined_detailed_eligibility unless coverage
-
-        detailed_eligibility_from_coverage(payer_identifier, coverage)
+      # The same coverage row and date as verify_eligibility: seeded scenario
+      # dates apply, an explicit nil coverage_end stays nil, and plan dates
+      # that miss the inquiry are not eligible. service_active is passed
+      # only when it is exactly true or false. A non-boolean service_active
+      # or a non-boolean eligible is undetermined (eligible nil), not a denial.
+      def check_eligibility_detailed(patient_identifier, payer_identifier, date_of_service: nil)
+        answered_on, defaulted = resolve_inquiry_date(date_of_service)
+        result = detailed_eligibility_result(patient_identifier, payer_identifier, answered_on)
+        mark_ineligible_outside_inquiry!(result, answered_on)
+        result.merge(
+          date_of_service: answered_on,
+          date_of_service_defaulted: defaulted
+        )
       end
 
       def search_payers(query)
@@ -464,6 +476,24 @@ module Corvid
         row = attrs.is_a?(Hash) ? attrs.merge(extra) : extra
         @coverages[patient_identifier.to_s] ||= []
         @coverages[patient_identifier.to_s] << row
+      end
+
+      # Synthetic Medicaid answers for issue #712. Most scenario dates
+      # follow the inquiry month. :active_this_month_only stores the
+      # first and last day of Date.current's month at seeding time.
+      MEDICAID_ELIGIBILITY_SCENARIOS = %i[
+        active_this_month_only
+        mid_month_end
+        placeholder_end
+        inactive_with_covering_dates
+      ].freeze
+
+      def seed_medicaid_eligibility_scenario(patient_identifier, scenario)
+        unless MEDICAID_ELIGIBILITY_SCENARIOS.include?(scenario)
+          raise ArgumentError, "unknown medicaid eligibility scenario"
+        end
+
+        add_coverage(patient_identifier, medicaid_scenario_coverage(scenario))
       end
 
       # Copies, so a caller cannot change the stored rows. :as_of is
@@ -603,10 +633,13 @@ module Corvid
       end
 
       # Only an explicit eligible: true verifies; a coverage that does not
-      # say is not eligible. A non-boolean answer stays undetermined (nil).
+      # say is not eligible. A non-boolean eligible stays undetermined (nil).
+      # service_active is copied only when it is exactly true or false. A
+      # present non-boolean service_active is undetermined (nil).
       def eligibility_from_coverage(patient_identifier, resource_type, coverage)
         eligible = coverage[:eligible]
         return nil if coverage.key?(:eligible) && eligible != true && eligible != false
+        return nil if non_boolean_service_active?(coverage)
 
         result = {
           eligible: eligible == true,
@@ -616,17 +649,145 @@ module Corvid
           coverage_end: year_end,
           as_of: copied_answer_time(stored_answer_time(coverage))
         }
+        copy_service_active!(result, coverage)
         apply_recorded_dates(result, coverage)
       end
 
-      def detailed_eligibility_from_coverage(payer_identifier, coverage)
+      def detailed_eligibility_result(patient_identifier, payer_identifier, inquiry_date)
+        return undetermined_detailed_eligibility if payer_identifier.to_s.strip.empty?
+
+        coverage = coverage_for_detailed(patient_identifier, payer_identifier)
+        return undetermined_detailed_eligibility unless coverage
+        return undetermined_service_detail if undetermined_coverage_detail?(coverage)
+
+        detailed_eligibility_from_coverage(payer_identifier, coverage, inquiry_date)
+      end
+
+      # Payer identifier wins. The same string verify_eligibility uses as a
+      # resource type still selects that row, so both reads judge one record.
+      def coverage_for_detailed(patient_identifier, payer_identifier)
+        coverage_for(patient_identifier, payer_identifier, :payer_identifier) ||
+          coverage_for(patient_identifier, payer_identifier, :coverage_type)
+      end
+
+      def undetermined_coverage_detail?(coverage)
+        non_boolean_eligible?(coverage) || non_boolean_service_active?(coverage)
+      end
+
+      # A present eligible that is not exactly true or false, including nil.
+      def non_boolean_eligible?(coverage)
+        return false unless coverage.key?(:eligible)
+
+        value = coverage[:eligible]
+        value != true && value != false
+      end
+
+      def non_boolean_service_active?(coverage)
+        return false unless coverage.key?(:service_active)
+
+        value = coverage[:service_active]
+        !value.nil? && value != true && value != false
+      end
+
+      def copy_service_active!(result, coverage)
+        value = coverage[:service_active]
+        result[:service_active] = value if value == true || value == false
+      end
+
+      # Not a denial. Same blank payer, plan, and dates as an unknown
+      # detailed check, with eligible left nil.
+      def undetermined_service_detail
+        undetermined_detailed_eligibility.merge(eligible: nil)
+      end
+
+      def medicaid_scenario_coverage(scenario)
         {
+          coverage_type: "medicaid",
+          payer_name: "MOCK MEDICAID PAYER",
+          plan_name: "TEST PLAN 712",
+          eligible: true,
+          medicaid_eligibility_scenario: scenario
+        }.merge(seeded_scenario_dates(scenario))
+      end
+
+      # The seed month, not the inquiry month. Other scenarios omit dates
+      # here and apply them when the inquiry is known.
+      def seeded_scenario_dates(scenario)
+        return {} unless scenario == :active_this_month_only
+
+        month = Date.current
+        {
+          coverage_start: Date.new(month.year, month.month, 1),
+          coverage_end: Date.new(month.year, month.month, -1)
+        }
+      end
+
+      # Plan dates follow the inquiry month. :active_this_month_only keeps
+      # the month stored on the row at seeding; the plan-date check then
+      # decides eligibility. Inactive service stays eligible at the plan
+      # level and reports service_active false.
+      def apply_medicaid_scenario!(result, coverage, inquiry_date)
+        scenario = coverage[:medicaid_eligibility_scenario]
+        return unless MEDICAID_ELIGIBILITY_SCENARIOS.include?(scenario)
+
+        apply_inquiry_month_dates!(result, scenario, inquiry_date)
+        result[:eligible] = true
+        result[:service_active] = false if scenario == :inactive_with_covering_dates
+      end
+
+      def apply_inquiry_month_dates!(result, scenario, inquiry_date)
+        return if scenario == :active_this_month_only
+
+        result[:coverage_start] = Date.new(inquiry_date.year, inquiry_date.month, 1)
+        result[:coverage_end] = scenario_coverage_end(scenario, inquiry_date)
+      end
+
+      # Plan dates that miss the inquiry are not eligible. verify_eligibility
+      # and check_eligibility_detailed share this, including a seeded
+      # scenario.
+      def mark_ineligible_outside_inquiry!(result, inquiry_date)
+        return unless result[:eligible] == true
+        return unless outside_inquiry_period?(result[:coverage_start], result[:coverage_end], inquiry_date)
+
+        result[:eligible] = false
+      end
+
+      # A start after the inquiry, or an end before it, misses. A nil
+      # bound does not.
+      def outside_inquiry_period?(coverage_start, coverage_end, inquiry_date)
+        return false unless inquiry_date.is_a?(Date)
+
+        (coverage_start.is_a?(Date) && coverage_start > inquiry_date) ||
+          (coverage_end.is_a?(Date) && coverage_end < inquiry_date)
+      end
+
+      def scenario_coverage_end(scenario, inquiry_date)
+        case scenario
+        when :mid_month_end
+          Date.new(inquiry_date.year, inquiry_date.month, 14)
+        when :placeholder_end
+          Date.new(9999, 12, 31)
+        else
+          Date.new(inquiry_date.year, inquiry_date.month, -1)
+        end
+      end
+
+      def detailed_eligibility_from_coverage(payer_identifier, coverage, inquiry_date)
+        result = {
           eligible: coverage[:eligible] == true,
           payer_name: coverage[:payer_name] || "MOCK #{payer_identifier}",
           plan_name: coverage[:plan_name] || "Mock Plan",
-          coverage_start: coverage[:coverage_start] || year_start,
-          coverage_end: coverage[:coverage_end] || year_end
+          coverage_start: stated_date(coverage, :coverage_start, year_start),
+          coverage_end: stated_date(coverage, :coverage_end, year_end)
         }
+        copy_service_active!(result, coverage)
+        apply_medicaid_scenario!(result, coverage, inquiry_date)
+        result
+      end
+
+      # An explicit nil stays nil. An omitted key keeps the default.
+      def stated_date(coverage, key, default)
+        coverage.key?(key) ? coverage[key] : default
       end
 
       def undetermined_detailed_eligibility

@@ -37,5 +37,32 @@ def stamp_alternate_resource_check_current!(check, date_of_service: Date.current
     attrs[:renewal_date] = nil
   end
 
+  if month_bounded_alternate_resource_type?(check.resource_type)
+    attrs[:inquiry_date_of_service] = date_of_service
+  end
+
   check.update!(attrs)
+end
+
+# Re-stamp all checks for a claim's service date so month-bounded Medicaid
+# answers match the date claim submission gates judge (issue #712).
+def stamp_alternate_resources_for_claim_service_date!(referral, service_date, as_of: Time.current)
+  exhaust_alternate_resources!(referral, date_of_service: service_date, as_of: as_of)
+end
+
+def month_bounded_alternate_resource_type?(resource_type)
+  return true if resource_type.to_s.casecmp("medicaid").zero?
+
+  types = Corvid.configuration.month_bounded_eligibility_resource_types
+  return false unless types.is_a?(Array)
+
+  types.any? { |type| type.to_s.casecmp(resource_type.to_s).zero? }
+end
+
+def echo_verify_eligibility_date(result, date_of_service)
+  return result unless date_of_service.instance_of?(Date)
+  return result unless result.is_a?(Hash)
+  return result unless result[:eligible] == true || result[:eligible] == false
+
+  result.merge(date_of_service: date_of_service, date_of_service_defaulted: false)
 end
