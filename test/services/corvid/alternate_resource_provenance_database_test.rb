@@ -239,6 +239,7 @@ class Corvid::AlternateResourceProvenanceDatabaseTest < ActiveSupport::TestCase
     Corvid::CommitteeReview.unscoped.where(prc_referral_id: ids).delete_all
     Corvid::AlternateResourceCheck.unscoped.where(prc_referral_id: ids).delete_all
     Corvid::EligibilityChecklist.unscoped.where(prc_referral_id: ids).delete_all
+    Corvid::ReferralFulfilmentReport.unscoped.where(prc_referral_id: ids).delete_all
     case_ids = Corvid::PrcReferral.unscoped.where(id: ids).pluck(:case_id)
     Corvid::PrcReferral.unscoped.where(id: ids).delete_all
     Corvid::Case.unscoped.where(id: case_ids).delete_all
@@ -326,6 +327,7 @@ class Corvid::AlternateResourceProvenanceDatabaseTest < ActiveSupport::TestCase
     referral.complete_priority_assignment!
     referral.authorize! if referral.may_authorize?
     referral.reload
+    record_delivered_fulfilment!(referral)
   end
 
   def authorized_referral_ready_to_authorize!

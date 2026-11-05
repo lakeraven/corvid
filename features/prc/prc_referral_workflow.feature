@@ -28,6 +28,7 @@ Feature: PRC referral workflow — staff view
     Then the referral should be "in alternate-resource review"
     When the Referral Specialist verifies alternate resources
     Then the referral should be "in priority assignment"
+    And the referral estimated cost is "$5,000"
     When the Referral Specialist completes priority assignment
     Then the referral should be "authorized"
 
@@ -52,8 +53,16 @@ Feature: PRC referral workflow — staff view
   Scenario: A low-cost referral is authorized without committee review
     Given the referral has reached "in priority assignment"
     And the referral does not require committee review
+    And the referral estimated cost is "$5,000"
     When the Referral Specialist completes priority assignment
     Then the referral should be "authorized"
+
+  Scenario: A referral with no cost stays in priority assignment instead of authorizing
+    Given the referral has reached "in priority assignment"
+    And the referral does not require committee review
+    And no cost estimate is provided
+    When the Referral Specialist completes priority assignment
+    Then the referral should be "in priority assignment"
 
   Scenario: A referral that requires committee review goes before the committee first
     Given the referral has reached "in priority assignment"

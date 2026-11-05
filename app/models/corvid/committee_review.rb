@@ -40,20 +40,11 @@ module Corvid
         .where("committee_date >= ? AND committee_date <= ?", Date.current, Date.current + days.days)
     end
 
+    # Cost, priority, and the review flag are PrcReferral#requires_committee?.
+    # That method reads EHR cost and priority when the service request has
+    # them. Keeping a second comparison here would drift from it.
     def self.requires_committee_review?(referral)
-      threshold = referral.respond_to?(:committee_threshold) ? referral.committee_threshold : 50_000
-      # estimated_cost is now a Money; coerce to BigDecimal-of-dollars for
-      # comparison against the numeric threshold. Multi-currency thresholds
-      # would belong on the tenant config alongside default_currency_iso —
-      # not yet a real requirement.
-      cost_dollars = referral.estimated_cost ? referral.estimated_cost.to_d : 0
-      priority = referral.medical_priority
-
-      return true if cost_dollars >= threshold
-      return true if priority.present? && priority >= 3
-      return true if referral.respond_to?(:flagged_for_review?) && referral.flagged_for_review?
-
-      false
+      referral.requires_committee?
     end
 
     def reviewer

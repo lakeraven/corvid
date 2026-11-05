@@ -122,6 +122,7 @@ module Corvid
         r
       when :authorized
         exhaust_alternate_resources!(r)
+        r.update!(medical_priority: 1)
         r.complete_priority_assignment! # low cost → authorized directly
         r
       when :denied

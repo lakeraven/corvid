@@ -426,5 +426,6 @@ class Corvid::AlternateResourceProvenanceTest < ActiveSupport::TestCase
     referral.complete_priority_assignment!
     referral.authorize! if referral.may_authorize?
     referral.reload
+    record_delivered_fulfilment!(referral)
   end
 end

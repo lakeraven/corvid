@@ -8,6 +8,7 @@ require_relative "../../test/dummy/config/environment"
 require "active_support/testing/time_helpers"
 require "minitest/assertions"
 require_relative "alternate_resource_exhaustion_helper"
+require_relative "referral_fulfilment_helper"
 
 World(Minitest::Assertions)
 World(ActiveSupport::Testing::TimeHelpers)

@@ -79,6 +79,7 @@ When("the Referral Specialist verifies alternate resources") do
 end
 
 When("the Referral Specialist completes priority assignment") do
+  @referral.update_columns(medical_priority: 1) if @referral.medical_priority.nil?
   exhaust_alternate_resources!(@referral)
   @referral.complete_priority_assignment!
   @referral.reload

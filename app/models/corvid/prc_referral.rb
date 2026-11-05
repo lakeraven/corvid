@@ -48,6 +48,10 @@ module Corvid
     # MedicalPriorityService writes only this. Null until a priority is assigned.
     # Same set as corvid_prc_referrals_priority_system_check (ADR 0002).
     PRIORITY_SYSTEMS = %w[corvid_v1].freeze
+
+    # Optional "$", plain digits or comma-grouped thousands, optional cents.
+    COMMITTEE_COST_FORMAT = /\A\$?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d{1,2})?\z/
+    COMMITTEE_PRIORITY_FORMAT = /\A\d+\z/
     validates :priority_system, inclusion: { in: PRIORITY_SYSTEMS }, allow_nil: true
 
     # Referrals for a given patient. Joins the parent Case since the
@@ -121,7 +125,13 @@ module Corvid
 
       event :complete_priority_assignment, before: :reverify_before_complete_priority_assignment do
         transitions from: :priority_assignment, to: :committee_review, guard: :requires_committee?
-        transitions from: :priority_assignment, to: :authorized, guard: :alternate_resources_exhausted?
+        # The authorized sync is published once after commit
+        # (publish_committed_referral_status); committee_review does not sync.
+        # Both costs absent does not require committee. It also must not
+        # authorize. The cost guard reads the service request the
+        # before-callback just refreshed.
+        transitions from: :priority_assignment, to: :authorized,
+                    guard: [ :alternate_resources_exhausted?, :priority_assignment_cost_known? ]
       end
 
       event :authorize, before: :reverify_before_authorize do
@@ -165,6 +175,14 @@ module Corvid
 
     def service_request
       @service_request ||= Corvid.adapter.find_referral(referral_identifier) if referral_identifier.present?
+    end
+
+    # Committee routing and the unknown-cost rule read this memo. Drop it
+    # so the next read is the EHR's current service request. reload does
+    # this too. complete_priority_assignment! does it before its guards,
+    # so those guards and a refusal that follows them share one read.
+    def clear_service_request_memo
+      @service_request = nil
     end
 
     # 42 CFR 136.61 — PRC pays last. True only when every alternate resource
@@ -214,16 +232,23 @@ module Corvid
       [ "referral: #{status}" ]
     end
 
+    # EHR cost when it is not nil, otherwise the local column. An unknown
+    # cost or priority requires committee. Both costs absent does not.
+    # Absence is not authorization: the authorized branch requires
+    # priority_assignment_cost_known?. A known priority in 1..4 requires
+    # review at 3 or 4. Nil priority does too, and so does a priority
+    # outside 1..4. A non-finite, negative, or non-USD cost is unknown.
     def requires_committee?
-      # Money's `>=` is currency-aware (raises across mismatched currencies);
-      # the threshold is a numeric (USD-equivalent dollar amount) by
-      # convention, so coerce Money → BigDecimal-of-dollars for comparison.
-      cost = service_request&.estimated_cost || estimated_cost
-      cost_dollars = cost.respond_to?(:to_d) ? cost.to_d : cost
-      priority = medical_priority
-      (cost_dollars.present? && cost_dollars >= committee_threshold) ||
-        (priority.present? && priority >= 3) ||
-        flagged_for_review?
+      committee_cost_requires_review? || committee_priority_requires_review? || flagged_for_review?
+    end
+
+    # A parsed amount from the EHR service request when that cost is
+    # present, otherwise from the local column. Nil from both is not a
+    # cost. Zero is a known cost. An unparseable cost is not known; it
+    # also requires committee, so this is the authorized branch's check
+    # that absence cannot authorize.
+    def priority_assignment_cost_known?
+      parse_committee_cost(committee_cost_value).is_a?(Numeric)
     end
 
     def committee_threshold
@@ -289,6 +314,15 @@ module Corvid
       medical_priority_cached_at < CACHE_STALENESS_THRESHOLD_HOURS.hours.ago
     end
 
+    # Priority for a decision. The service request's level when it is
+    # not nil, otherwise the local column. Blank and other present
+    # values are kept. This is a read: it does not refresh the cache
+    # the way cached_medical_priority does.
+    def effective_medical_priority
+      rcis_priority = service_request&.medical_priority_level
+      rcis_priority.nil? ? medical_priority : rcis_priority
+    end
+
     def cached_medical_priority
       rcis_priority = service_request&.medical_priority_level
 
@@ -301,7 +335,7 @@ module Corvid
     end
 
     def refresh_medical_priority_from_rcis!
-      @service_request = nil
+      clear_service_request_memo
 
       rcis_priority = service_request&.medical_priority_level
 
@@ -333,7 +367,7 @@ module Corvid
     end
 
     def refresh_authorization_number_from_rcis!
-      @service_request = nil
+      clear_service_request_memo
 
       rcis_auth = service_request&.identifier
 
@@ -450,8 +484,15 @@ module Corvid
       result
     end
 
+    # ActiveRecord reload refreshes columns only. Committee routing reads
+    # priority and cost from the service-request memo, so a reload drops it
+    # and takes the EHR's current service request on the next read. It also
+    # drops any pending publication mark.
     def reload(...)
-      super.tap { reset_referral_publication_mark }
+      super.tap do
+        clear_service_request_memo
+        reset_referral_publication_mark
+      end
     end
 
     # dup copies instance variables, including a mark left by an unsaved
@@ -617,7 +658,13 @@ module Corvid
       reverify_for_event(:verify_alternate_resources)
     end
 
+    # requires_committee? and priority_assignment_cost_known? read
+    # priority and cost from the service-request memo. Drop it before
+    # those guards so one fresh EHR read routes this decision. An absent
+    # cost on that read cannot take the authorized branch. A direct read
+    # keeps the memo. reload clears it for the next read.
     def reverify_before_complete_priority_assignment
+      clear_service_request_memo
       reverify_for_event(:complete_priority_assignment)
     end
 
@@ -659,6 +706,98 @@ module Corvid
         medical_priority: priority_value,
         medical_priority_cached_at: Time.current
       )
+    end
+
+    # Parsed dollars, or :unknown. Nil means both sources were absent.
+    def committee_cost_requires_review?
+      dollars = parse_committee_cost(committee_cost_value)
+      return false if dollars.nil?
+      return true if dollars == :unknown
+
+      dollars >= committee_threshold
+    end
+
+    def committee_cost_value
+      ehr_cost = service_request&.estimated_cost
+      ehr_cost.nil? ? estimated_cost : ehr_cost
+    end
+
+    # USD Money contributes its amount. Integer and BigDecimal are taken
+    # as-is. Float uses BigDecimal(float.to_s). A string must match
+    # COMMITTEE_COST_FORMAT. A parsed amount that is non-finite (NaN or
+    # infinity) or negative is :unknown, and so is a Money whose currency
+    # is not USD. No conversion across currencies (ADR 0004). Anything
+    # else present is :unknown. The same rules apply to the EHR cost and
+    # the local cost.
+    def parse_committee_cost(value)
+      return nil if value.nil?
+
+      amount = committee_cost_amount(value)
+      return :unknown if amount == :unknown
+      return :unknown unless finite_non_negative_committee_cost?(amount)
+
+      amount
+    end
+
+    def committee_cost_amount(value)
+      return usd_committee_money_amount(value) if value.is_a?(Money)
+      return value if value.is_a?(Integer) || value.is_a?(BigDecimal)
+      return BigDecimal(value.to_s) if value.is_a?(Float)
+      return parse_committee_cost_string(value) if value.is_a?(String)
+
+      :unknown
+    end
+
+    def usd_committee_money_amount(value)
+      return :unknown unless value.currency.iso_code == "USD"
+
+      value.amount
+    end
+
+    def finite_non_negative_committee_cost?(amount)
+      amount.finite? && !amount.negative?
+    end
+
+    def parse_committee_cost_string(value)
+      stripped = value.strip
+      return :unknown unless stripped.match?(COMMITTEE_COST_FORMAT)
+
+      BigDecimal(stripped.delete(",").delete_prefix("$"))
+    end
+
+    # Nil is absent and requires review. An Integer in 1..4 is kept.
+    # ASCII digits, after strip, become an Integer and are kept only in
+    # 1..4. A parsed priority outside 1..4 is :unknown. Any other present
+    # value is :unknown. This does not raise.
+    def committee_priority_requires_review?
+      priority = parse_committee_priority(effective_medical_priority)
+      return true unless priority.is_a?(Integer)
+
+      priority >= 3
+    end
+
+    def parse_committee_priority(value)
+      return nil if value.nil?
+
+      parsed = raw_committee_priority(value)
+      return :unknown unless parsed.is_a?(Integer)
+      return :unknown unless parsed.between?(1, 4)
+
+      parsed
+    end
+
+    def raw_committee_priority(value)
+      return value if value.is_a?(Integer)
+      return parse_priority_digits(value) if value.is_a?(String)
+
+      :unknown
+    end
+
+    def parse_priority_digits(value)
+      digits = value.strip
+      return :unknown unless digits.match?(COMMITTEE_PRIORITY_FORMAT)
+
+      digits.to_i
     end
 
     def refresh_authorization_number_cache!(auth_number_value)

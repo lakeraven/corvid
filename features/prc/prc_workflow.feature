@@ -39,5 +39,6 @@ Feature: Service Request PRC Authorization Workflow
     And the status history should record the assignment
 
   Scenario: Authorization expiration
-    Given an authorized service request from 181 days ago
+    Given the referral estimated cost is "$5,000"
+    And an authorized service request from 181 days ago
     Then the authorization should be expired
