@@ -22,8 +22,8 @@ module Corvid
   # What is here:
   #   Claim / ClaimLine / Coverage / Diagnosis  — FHIR R4-shaped inputs
   #   Scrubber + ScrubRuleset                   — versioned scrub rules as data
-  #   ClearinghouseClient                       — the EDI seam
-  #   FixtureClearinghouseClient                — synthetic 835s, no payer needed
+  #   ClearinghouseClient                       — the EDI seam, including later 277CA
+  #   FixtureClearinghouseClient                — synthetic 835s and canned acknowledgments
   #   Edi835Reader                              — X12 835 -> ClaimResponse shapes
   #   AdjustmentReasonCodes                     — CARC/RARC mapping as data
   #   RemittanceClassifier                      — routing, with unmapped -> human
@@ -38,8 +38,9 @@ module Corvid
   # Two distinctions the whole module is built around, kept in separate files
   # so they cannot blur:
   #
-  #   REJECTION — refused at the front door (999/277CA), never adjudicated,
-  #               fix-and-resubmit. See Acknowledgment.
+  #   REJECTION — refused at the front door (999/277CA), or later by the payer
+  #               on a 277CA after the clearinghouse accepted the claim. Never
+  #               adjudicated, fix-and-resubmit. See Acknowledgment.
   #   DENIAL    — adjudicated refusal to pay on the 835, appeal or write off.
   #               See RemittanceClaim.
   module Rcm

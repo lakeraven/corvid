@@ -16,8 +16,11 @@ module Corvid
     #
     # Implementations must be substitutable: `submit_claim` always answers with
     # an `Acknowledgment` (accepted or rejected — never a denial, which can
-    # only come back on an 835), and `fetch_remittances` always answers with
-    # `Remittance` values.
+    # only come back on an 835), `fetch_acknowledgments` always answers with
+    # the later acknowledgments received at or after `since` (a 277CA can
+    # arrive hours or days later, including a payer rejection of a claim the
+    # clearinghouse already accepted), and `fetch_remittances` always answers
+    # with `Remittance` values.
     class ClearinghouseClient
       class TransportError < StandardError; end
 
@@ -29,6 +32,22 @@ module Corvid
       #   decision; a rejected one is NOT a denial.
       def submit_claim(claim)
         raise NotImplementedError, "#{self.class}#submit_claim not implemented"
+      end
+
+      # Fetch acknowledgments that arrived after submission.
+      #
+      # A 277CA, including a payer-level rejection, can arrive hours or days
+      # after `submit_claim` returned. It is still an acknowledgment: the
+      # claim was not adjudicated, and a rejection here is not a denial.
+      #
+      # @param since [Time, nil] only acknowledgments with `received_at` at or
+      #   after this instant, inclusive. nil returns every later
+      #   acknowledgment. Anything else is refused with
+      #   `ArgumentError, "since must be a Time"`.
+      # @return [Array<Corvid::Rcm::Acknowledgment>] a new array, in submission
+      #   order
+      def fetch_acknowledgments(since: nil)
+        raise NotImplementedError, "#{self.class}#fetch_acknowledgments not implemented"
       end
 
       # Fetch available remittance advice (835).
