@@ -34,6 +34,11 @@ module Corvid
     PROGRAM_FIELDS = %w[code description_pattern].freeze
     # Two ASCII letters, checked before ASCII-upcasing. Stored codes are uppercase UTF-8.
     STATE_CODE = /\A[A-Za-z]{2}\z/
+    # Federal retroactive coverage for an application filed before H.R. 1
+    # (2027-01-01): three calendar months. RetroactiveCoverageWindow uses
+    # this when the member's rule set has a configured window, and leaves
+    # an unconfigured or invalid window undetermined.
+    PRE_HR1_RETRO_COVERAGE_MONTHS = 3
 
     # Shared by plan descriptions and program codes. Text is read as UTF-8;
     # text that cannot be (binary with high bytes, an invalid or

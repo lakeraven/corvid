@@ -2,15 +2,21 @@
 
 module Corvid
   # Computes the retroactive coverage window for a Medicaid application
-  # under 42 U.S.C. 1396a(a)(34) as amended by H.R. 1. Window months come
-  # from the member's MedicaidRuleSet, which is the state configuration
-  # resolved for that member.
+  # under 42 U.S.C. 1396a(a)(34) as amended by H.R. 1. On and after
+  # 2027-01-01, window months come from the member's MedicaidRuleSet,
+  # the state configuration resolved for that member.
   #
-  # Pre-2027 applications are undetermined because pre-H.R. 1 rules are
-  # not configured.
+  # An application before that date uses the prior federal three-month
+  # window (StateMedicaidRules::PRE_HR1_RETRO_COVERAGE_MONTHS) when the
+  # rule set has a configured window. An unconfigured state, an unknown
+  # eligibility group, or an invalid window stays undetermined.
   #
-  # Read-only. Recording the application date, the worklist, and PRC hold
-  # logic are follow-ups on #639.
+  # filing_deadline is the latest filing date that still covers a date
+  # of service under that same split. An undetermined window has none.
+  #
+  # Read-only. AlternateResourceCheck records the application date and
+  # ClaimSubmission holds the bill. The worklist is still a follow-up
+  # on #639.
   class RetroactiveCoverageWindow
     HR1_EFFECTIVE_DATE = Date.new(2027, 1, 1)
 
@@ -19,9 +25,8 @@ module Corvid
         application_date = require_application_date(application_date)
         require_rule_set(rule_set)
         return not_applied(rule_set) if application_date.nil?
-        return predates_hr1(rule_set) if application_date < HR1_EFFECTIVE_DATE
 
-        months = non_negative_window_months(rule_set)
+        months = applicable_window_months(application_date, rule_set)
         return window_undetermined(rule_set) if months.nil?
 
         determined(application_date, months, rule_set)
@@ -42,11 +47,32 @@ module Corvid
         months = non_negative_window_months(rule_set)
         return if months.nil?
 
-        deadline = (date_of_service >> months).end_of_month.gregorian
-        deadline unless deadline < HR1_EFFECTIVE_DATE
+        latest_filing_date(date_of_service, months)
       end
 
       private
+
+      # Before 2027-01-01 the federal three-month window applies, not the
+      # state's. A state deadline on or after that date is already the
+      # latest filing date. Otherwise cap a later federal deadline at the
+      # last pre-H.R. 1 day.
+      def latest_filing_date(date_of_service, months)
+        state_deadline = end_of_month_after(date_of_service, months)
+        return state_deadline if state_deadline >= HR1_EFFECTIVE_DATE
+
+        pre_hr1_filing_deadline(date_of_service)
+      end
+
+      def pre_hr1_filing_deadline(date_of_service)
+        deadline = end_of_month_after(date_of_service, StateMedicaidRules::PRE_HR1_RETRO_COVERAGE_MONTHS)
+        return HR1_EFFECTIVE_DATE - 1 if deadline >= HR1_EFFECTIVE_DATE
+
+        deadline
+      end
+
+      def end_of_month_after(date, months)
+        (date >> months).end_of_month.gregorian
+      end
 
       def not_applied(rule_set)
         months = non_negative_window_months(rule_set)
@@ -60,15 +86,6 @@ module Corvid
           window_months: months,
           status: "not_applied",
           reasons:
-        )
-      end
-
-      def predates_hr1(rule_set)
-        retroactive_window(
-          earliest_covered_date: nil,
-          window_months: nil,
-          status: "undetermined",
-          reasons: merged_reasons("application_predates_hr1", rule_set)
         )
       end
 
@@ -97,6 +114,17 @@ module Corvid
           reasons << reason unless reasons.include?(reason)
         end
         reasons
+      end
+
+      # A configured window is a non-negative Integer. Before H.R. 1 that
+      # window is the federal three months, not the state's later rule.
+      # Nil means unconfigured, unknown, or invalid: stay undetermined.
+      def applicable_window_months(application_date, rule_set)
+        months = non_negative_window_months(rule_set)
+        return if months.nil?
+        return StateMedicaidRules::PRE_HR1_RETRO_COVERAGE_MONTHS if application_date < HR1_EFFECTIVE_DATE
+
+        months
       end
 
       # Zero is a real window: the state has no retroactive coverage.

@@ -20,6 +20,7 @@ module Corvid
       deferred: "deferred",
       pending_review: "pending_review"
     }
+    alias_method :outcome_approved?, :approved?
 
     validate :determinable_in_same_tenant
     validates :determined_by_identifier, presence: true, unless: :decision_method_automated?
