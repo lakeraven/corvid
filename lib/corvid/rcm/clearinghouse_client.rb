@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require_relative "acknowledgment"
+require_relative "claim_validation"
 require_relative "remittance"
 
 module Corvid
@@ -14,12 +15,29 @@ module Corvid
     # private repo — the same way vendor EHR adapters do (see
     # `Corvid::Adapters::Base`).
     #
-    # Implementations must be substitutable: `submit_claim` always answers with
-    # an `Acknowledgment` (accepted or rejected — never a denial, which can
-    # only come back on an 835), and `fetch_remittances` always answers with
-    # `Remittance` values.
+    # Implementations must be substitutable: `validate_claim` always answers
+    # with a `ClaimValidation` (front-end edits — a rejection, never a
+    # denial), `submit_claim` always answers with an `Acknowledgment`
+    # (accepted or rejected — never a denial, which can only come back on an
+    # 835), and `fetch_remittances` always answers with `Remittance` values.
+    # Corvid's own scrub runs first. `validate_claim` runs last and does not
+    # submit; only `submit_claim` sends the claim.
     class ClearinghouseClient
       class TransportError < StandardError; end
+
+      # Validate one professional claim against the clearinghouse's front-end
+      # edits. Runs after Corvid's own scrub and before `submit_claim`. It
+      # does not submit the claim.
+      #
+      # A failure is a front-end problem, never a denial. The
+      # `ClaimValidation` it returns becomes a rejected `Acknowledgment`
+      # with transaction_set "validation", which routes like a rejected 277CA.
+      #
+      # @param claim [Corvid::Rcm::Claim]
+      # @return [Corvid::Rcm::ClaimValidation]
+      def validate_claim(claim)
+        raise NotImplementedError, "#{self.class}#validate_claim not implemented"
+      end
 
       # Submit one professional claim (837P).
       #

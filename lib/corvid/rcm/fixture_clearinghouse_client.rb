@@ -2,6 +2,7 @@
 
 require "yaml"
 
+require_relative "blank"
 require_relative "clearinghouse_client"
 require_relative "edi_835_reader"
 
@@ -11,6 +12,9 @@ module Corvid
     # acknowledgment table. No network, no credentials, no clock skew — the
     # same inputs always produce the same outputs, so the posting and routing
     # logic can be tested against real X12 syntax without a payer connection.
+    #
+    # Validation and submission share one edit list (`rejection_edits`).
+    # Validating does not record a submission; only `submit_claim` does.
     #
     # The 835 fixtures are parsed, not hand-built as hashes: if the reader
     # mis-parses a segment the tests fail, which is the point.
@@ -47,6 +51,7 @@ module Corvid
         @fixture_dir = fixture_dir
         @clock = clock
         @table = YAML.safe_load_file(acknowledgment_table)
+        @rejections = string_keyed_rejections(@table)
         @submitted = []
       end
 
@@ -54,9 +59,24 @@ module Corvid
       # the submission event log (wave 2, with #507).
       attr_reader :submitted
 
-      def submit_claim(claim)
-        @submitted << claim
+      # Front-end edits for this claim, from the same list `submit_claim`
+      # will apply. Does not append to `submitted`. `raw_reference` stays
+      # nil: this client has no transport handle to return.
+      def validate_claim(claim)
+        raise ArgumentError, "validate_claim expects a Claim" unless claim.is_a?(Claim)
+
         edits = rejection_edits(claim)
+        ClaimValidation.new(
+          claim_identifier: claim.identifier,
+          valid: edits.empty?,
+          edits: edits,
+          raw_reference: nil
+        )
+      end
+
+      def submit_claim(claim)
+        edits = rejection_edits(claim)
+        @submitted << claim
         return acknowledgment(claim, :accepted, transaction_set: default_transaction_set) if edits.empty?
 
         acknowledgment(claim, :rejected,
@@ -91,7 +111,26 @@ module Corvid
       end
 
       def rejections
-        @table.fetch("rejections", {})
+        @rejections
+      end
+
+      # Index `rejections` by each key's string form so a YAML integer matches
+      # a claim identifier of the same digits. Two keys that share a string
+      # form raise at construction. The message is fixed and names neither
+      # key. A table that is not a hash, or a `rejections` value that is not
+      # a hash, is left unchanged.
+      def string_keyed_rejections(table)
+        raw = table.is_a?(Hash) ? table.fetch("rejections", {}) : nil
+        return raw unless raw.is_a?(Hash)
+
+        indexed = {}
+        raw.each do |key, entry|
+          name = key.to_s
+          raise ArgumentError, "rejection keys collide" if indexed.key?(name)
+
+          indexed[name] = entry
+        end
+        indexed
       end
 
       def default_transaction_set
@@ -102,18 +141,58 @@ module Corvid
         rejections.dig(claim.identifier.to_s, "transaction_set") || default_transaction_set
       end
 
+      # One edit list for `validate_claim` and `submit_claim`, so the two
+      # cannot disagree about the same claim. Listing is the string form of
+      # the table key, indexed when the client is built.
+      #
+      # A claim listed under `rejections` — the key is present, whatever its
+      # value — must yield at least one edit, and every canned edit must
+      # have a non-blank code and a non-blank description (`Blank.blank?`).
+      # Otherwise this raises ArgumentError ("canned rejection has no usable
+      # edit"), and that message does not include the claim identifier. A
+      # missing `code` or `description` key still fails closed through
+      # `Hash#fetch`. A claim that is not listed keeps the front-door rule:
+      # a blank billing provider NPI (`Blank.blank?`) is the missing-NPI
+      # edit, and any other claim is clean.
       def rejection_edits(claim)
-        canned = Array(rejections.dig(claim.identifier.to_s, "edits")).map do |edit|
-          AcknowledgmentEdit.new(
-            code: edit.fetch("code"),
-            description: edit.fetch("description"),
-            element: edit["element"],
-            level: edit.fetch("level", "claim")
-          )
-        end
-        return canned if canned.any?
+        identifier = claim.identifier.to_s
+        return front_door_edits(claim) unless rejections.key?(identifier)
 
-        claim.billing_provider_npi.to_s.strip.empty? ? [ MISSING_BILLING_NPI_EDIT ] : []
+        listed_rejection_edits(rejections.fetch(identifier))
+      end
+
+      def front_door_edits(claim)
+        return [ MISSING_BILLING_NPI_EDIT ] if Blank.blank?(claim.billing_provider_npi)
+
+        []
+      end
+
+      def listed_rejection_edits(entry)
+        raw = entry.is_a?(Hash) ? entry["edits"] : nil
+        raise_unusable_canned_rejection! if !raw.is_a?(Array) || raw.empty?
+
+        raw.map { |edit| canned_edit(edit) }
+      end
+
+      def canned_edit(edit)
+        raise_unusable_canned_rejection! unless edit.is_a?(Hash)
+
+        code = edit.fetch("code")
+        description = edit.fetch("description")
+        if Blank.blank?(code) || Blank.blank?(description)
+          raise_unusable_canned_rejection!
+        end
+
+        AcknowledgmentEdit.new(
+          code: code,
+          description: description,
+          element: edit["element"],
+          level: edit.fetch("level", "claim")
+        )
+      end
+
+      def raise_unusable_canned_rejection!
+        raise ArgumentError, "canned rejection has no usable edit"
       end
 
       def acknowledgment(claim, outcome, transaction_set:, edits: [])

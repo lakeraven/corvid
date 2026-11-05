@@ -7,9 +7,13 @@ module Corvid
     #
     #   REJECTION (this file) — the claim was refused at the front door by the
     #     clearinghouse or the payer's intake edits (999 syntax acknowledgment,
-    #     277CA claim acknowledgment). It was NEVER ADJUDICATED. There is no
-    #     payment decision to appeal. The only correct response is
-    #     fix-and-resubmit, and the claim is still "unbilled" for aging.
+    #     277CA claim acknowledgment), or by pre-submission validation
+    #     (claim_validation.rb) before anything was sent. It was NEVER
+    #     ADJUDICATED. There is no payment decision to appeal. The only
+    #     correct response is fix-and-resubmit, and the claim is still
+    #     "unbilled" for aging. A validation failure is returned as a rejected
+    #     Acknowledgment with transaction_set "validation"; disposition and
+    #     work queue follow that rejection, the same as a rejected 277CA.
     #
     #   DENIAL (see remittance.rb) — the payer adjudicated the claim and
     #     refused payment on the 835. It carries CARC/RARC codes, it is a
@@ -20,7 +24,8 @@ module Corvid
     # queue that has nothing to appeal, while the filing clock runs.
 
     # One intake edit. On a 999 this is the IK3/IK4 segment pair; on a 277CA it
-    # is the STC status composite. Both collapse to the same shape: a code, a
+    # is the STC status composite; on a pre-submission validation it is the
+    # same front-end edit. All three collapse to the same shape: a code, a
     # human-readable description, and the element at fault.
     AcknowledgmentEdit = Data.define(:code, :description, :element, :level) do
       def initialize(code:, description:, element: nil, level: "claim")
@@ -34,8 +39,12 @@ module Corvid
 
     ACKNOWLEDGMENT_OUTCOMES = %i[accepted rejected].freeze
 
-    # The response to a claim submission — 999 and/or 277CA collapsed into one
-    # answer to "did this claim get in the door?".
+    # The response to "did this claim get in the door?". A submission arrives
+    # as 999 or 277CA. A pre-submission validation failure arrives with
+    # transaction_set "validation". `Acknowledgment` stores that string as
+    # given; routing does not switch on it. A rejected acknowledgment —
+    # whichever of those transaction sets it came from — has disposition
+    # :fix_and_resubmit and work queue :claim_rework.
     Acknowledgment = Data.define(
       :claim_identifier,
       :trace_number,
