@@ -177,6 +177,88 @@ class Corvid::ConfigurationTest < Minitest::Test
     end
   end
 
+  # -- payer_authorization_turnarounds (#793) -------------------------------
+
+  def test_payer_authorization_turnarounds_defaults_to_empty_hash
+    assert_equal({}, Corvid.configuration.payer_authorization_turnarounds)
+  end
+
+  def test_payer_authorization_turnarounds_normalizes_symbol_keys_to_strings
+    Corvid.configure { |c| c.payer_authorization_turnarounds = { payer_a: 2.days } }
+
+    turnarounds = Corvid.configuration.payer_authorization_turnarounds
+    assert_equal 2.days, turnarounds.fetch("payer_a")
+  end
+
+  def test_payer_authorization_turnarounds_rejects_non_duration_values
+    error = assert_raises(ArgumentError) do
+      Corvid.configure { |c| c.payer_authorization_turnarounds = { "payer_a" => 3 } }
+    end
+    assert_match(/duration/i, error.message)
+  end
+
+  def test_payer_authorization_turnarounds_rejects_non_positive_duration
+    error = assert_raises(ArgumentError) do
+      Corvid.configure { |c| c.payer_authorization_turnarounds = { "payer_a" => 0.days } }
+    end
+    assert_match(/positive/i, error.message)
+
+    assert_raises(ArgumentError) do
+      Corvid.configure { |c| c.payer_authorization_turnarounds = { "payer_a" => -1.day } }
+    end
+  end
+
+  def test_payer_authorization_turnarounds_rejects_blank_payer_keys
+    assert_raises(ArgumentError) do
+      Corvid.configure { |c| c.payer_authorization_turnarounds = { "" => 2.days } }
+    end
+
+    assert_raises(ArgumentError) do
+      Corvid.configure { |c| c.payer_authorization_turnarounds = { "   " => 2.days } }
+    end
+  end
+
+  def test_payer_authorization_turnarounds_rejects_non_hash
+    assert_raises(ArgumentError) do
+      Corvid.configure { |c| c.payer_authorization_turnarounds = 3.days }
+    end
+  end
+
+  def test_payer_authorization_turnarounds_rejects_duplicate_keys_after_normalization
+    duplicate_pairs = [
+      { payer_p: 30.days, "payer_p" => 1.day },
+      { " payer_a " => 2.days, "payer_a" => 1.day }
+    ]
+
+    duplicate_pairs.each do |turnarounds|
+      error = assert_raises(ArgumentError) do
+        Corvid.configure { |c| c.payer_authorization_turnarounds = turnarounds }
+      end
+      refute_includes error.message, "payer_p"
+      refute_includes error.message, "payer_a"
+    end
+  end
+
+  def test_payer_authorization_turnarounds_rejects_keys_whose_stripped_form_differs
+    bad_keys = [ "payer_a ", " payer_a", :"payer_a " ]
+
+    bad_keys.each do |key|
+      error = assert_raises(ArgumentError) do
+        Corvid.configure { |c| c.payer_authorization_turnarounds = { key => 2.days } }
+      end
+      assert_match(/payer authorization turnaround/i, error.message)
+      refute_includes error.message, "payer_a"
+    end
+  end
+
+  def test_payer_authorization_turnarounds_stores_clean_payer_key_as_given
+    Corvid.configure { |c| c.payer_authorization_turnarounds = { "payer_a" => 2.days } }
+
+    turnarounds = Corvid.configuration.payer_authorization_turnarounds
+    assert_equal [ "payer_a" ], turnarounds.keys
+    assert_equal 2.days, turnarounds.fetch("payer_a")
+  end
+
   # -- verification snapshot keys (ADR 0008) ---------------------------------
 
   def test_verification_snapshot_keys_defaults_to_empty_hash

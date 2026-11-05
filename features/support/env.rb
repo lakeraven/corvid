@@ -52,6 +52,9 @@ def clean_corvid_tables!
   Corvid::PrcPayment.unscoped.delete_all
   Corvid::PrcObligation.unscoped.delete_all
   Corvid::Task.unscoped.delete_all
+  if Corvid.const_defined?(:PayerAuthorizationRequest, false)
+    Corvid::PayerAuthorizationRequest.unscoped.delete_all
+  end
   Corvid::PrcReferral.unscoped.delete_all
   Corvid::CaseProgram.unscoped.delete_all
   Corvid::Case.unscoped.delete_all

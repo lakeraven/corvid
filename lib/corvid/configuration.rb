@@ -26,6 +26,15 @@ module Corvid
   # #inspect lists verification snapshot key versions and does not reveal
   # key material. #as_json, #to_json, and #to_yaml emit those same redacted
   # fields and omit key bytes.
+  #
+  # payer_authorization_turnarounds maps payer_identifier to a positive
+  # ActiveSupport::Duration (default {}). Keys are stored as strings.
+  # The writer rejects a non-Hash, a blank key, a key that differs from
+  # its stripped form, a non-duration, a duration that is not positive,
+  # and two keys that normalize to the same string. It is not secret.
+  # It is omitted from
+  # inspect/as_json/to_yaml with the other operational settings so those
+  # methods stay an allow-list of snapshot key versions.
   class Configuration
     # Alternate-resource types whose check freshness is configurable (#640).
     # Duplicated so configuration can boot without loading app models.
@@ -50,6 +59,15 @@ module Corvid
       @fetch_provenance = ->(**) { [] }
       @verification_snapshot_keys = {}
       @verification_snapshot_key_version = nil
+      @payer_authorization_turnarounds = {}.freeze
+    end
+
+    def payer_authorization_turnarounds
+      @payer_authorization_turnarounds
+    end
+
+    def payer_authorization_turnarounds=(turnarounds)
+      @payer_authorization_turnarounds = validated_payer_authorization_turnarounds(turnarounds)
     end
 
     def inspect
@@ -111,6 +129,51 @@ module Corvid
       return {} unless defined?(@alternate_resource_check_max_age_overrides)
 
       @alternate_resource_check_max_age_overrides
+    end
+
+    # Symbol keys become strings. Blank keys, keys whose stripped form
+    # differs, non-durations, non-positive durations, and two keys that
+    # strip to the same string are rejected. The stored key stays
+    # key.to_s. Anything other than a Hash is rejected before the pairs
+    # are read.
+    def validated_payer_authorization_turnarounds(turnarounds)
+      unless turnarounds.is_a?(Hash)
+        raise ArgumentError, "payer authorization turnarounds must be a hash"
+      end
+
+      seen = {}
+      turnarounds.to_h { |key, value|
+        payer = payer_authorization_turnaround_key(key, seen)
+        [ payer, payer_authorization_turnaround_value(value) ]
+      }.freeze
+    end
+
+    def payer_authorization_turnaround_key(key, seen)
+      payer = key.to_s
+      normalized = payer.strip
+      if normalized.empty?
+        raise ArgumentError, "payer authorization turnaround payer identifier can't be blank"
+      end
+      if payer != normalized
+        raise ArgumentError, "payer authorization turnaround payer identifier must be stripped"
+      end
+      if seen.key?(normalized)
+        raise ArgumentError, "payer authorization turnaround keys must be unique"
+      end
+
+      seen[normalized] = true
+      payer
+    end
+
+    def payer_authorization_turnaround_value(value)
+      unless value.is_a?(ActiveSupport::Duration)
+        raise ArgumentError, "payer authorization turnaround must be a duration"
+      end
+      unless value.positive?
+        raise ArgumentError, "payer authorization turnaround must be positive"
+      end
+
+      value
     end
 
     # Symbol keys become strings. Unknown types, non-durations, and
