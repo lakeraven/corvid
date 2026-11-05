@@ -22,6 +22,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   instead of `denial_reason_token`.
 
 ### Added
+- PAS Request Bundle parsing (#787). `Corvid::Pas::RequestBundle.parse`
+  reads a Da Vinci PAS Request Bundle in memory: the Claim must be the
+  first entry, and every reference reachable from it must resolve inside
+  the Bundle (`urn:uuid:` and client `fullUrl`s, relative `Type/id`,
+  `_history` and contained `#id` references). It returns the Claim, the
+  Claim's references and the reachable resources, or one
+  `OperationOutcome` with an issue code and element path and no resource
+  content. Nothing is stored or logged; an unexpected error is raised
+  with a message passed through `Corvid.sanitize_phi`.
 - ZIP-to-CBSA wage-area crosswalk (#371). `corvid_zip_cbsa_crosswalks`
   stores the CMS crosswalk by federal fiscal year (`zip` is five ASCII
   digits; `cbsa` is a five-digit CBSA or a two-digit rural-state code;
