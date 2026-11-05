@@ -65,6 +65,7 @@ end
 
 Before do
   Corvid::PrcFacilityDictionary.reset!
+  Corvid::PrcProcedureDictionary.reset!
   Corvid::TenantContext.reset!
   # Replace adapter with fresh instance to discard any singleton methods
   # added by scenarios (e.g., mocking submit_claim to raise).

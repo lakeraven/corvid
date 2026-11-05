@@ -6,6 +6,12 @@ class Corvid::PrcOverpaymentAnalyzerTest < ActiveSupport::TestCase
   TEST_LOCALITY = "02"
   TEST_DATE = Date.new(2009, 5, 4)
 
+  # Synthetic wage-area fixtures for #372 — not real zip→CBSA facts.
+  SYNTH_ZIP = "77001"
+  SYNTH_CBSA = "77077"
+  SYNTH_ZIP_FY2026_ONLY = "77002"
+  LOW_WAGE_INDEX = BigDecimal("0.85")
+
   def setup
     Corvid::FeeScheduleEntry.connection.execute("TRUNCATE corvid_fee_schedule_entries")
     seed_pfs_rate(cpt: "27130", rate_components: hip_27130_inputs)
@@ -578,6 +584,157 @@ class Corvid::PrcOverpaymentAnalyzerTest < ActiveSupport::TestCase
     assert_in_delta 840.00, result.medicare_equivalent.to_f, 0.01
   end
 
+  # -- Facility CBSA as institutional wage area (#372) -------------------------
+
+  test "inpatient IPPS uses CBSA from facility zip via crosswalk with low wage index" do
+    register_facility_for_cbsa(code: "CBSA", zip: SYNTH_ZIP)
+    seed_cbsa_crosswalk_and_wage_area(fiscal_year: 2009, zip: SYNTH_ZIP, cbsa: SYNTH_CBSA)
+    Corvid::IppsDrgWeight.create!(fiscal_year: 2009, drg_code: "470", relative_weight: 2.0743)
+
+    result = analyze_with_facility(
+      facility_code: "CBSA", procedure: "HIP_REPLACE_THR", paid: 42_000
+    ).results.first
+
+    assert_equal :ipps, result.payment_system
+    assert_equal :clear, result.recovery_confidence
+    assert_in_delta expected_ipps_cbsa_rate, result.medicare_equivalent.to_f, 0.01
+    refute_in_delta expected_ipps_national_rate, result.medicare_equivalent.to_f, 0.01
+  end
+
+  test "outpatient OPPS uses CBSA from facility zip via crosswalk with low wage index" do
+    register_outpatient_procedure!
+    register_facility_for_cbsa(code: "CBSA", zip: SYNTH_ZIP)
+    seed_cbsa_crosswalk_and_wage_area(fiscal_year: 2009, zip: SYNTH_ZIP, cbsa: SYNTH_CBSA)
+    seed_opps_national_rows(calendar_year: 2009)
+
+    result = analyze_with_facility(
+      facility_code: "CBSA", procedure: "OUTPATIENT_TEST", paid: 5_000
+    ).results.first
+
+    assert_equal :opps, result.payment_system
+    assert_in_delta expected_opps_cbsa_rate, result.medicare_equivalent.to_f, 0.01
+    refute_in_delta expected_opps_national_rate, result.medicare_equivalent.to_f, 0.01
+  end
+
+  test "outpatient ASC uses CBSA from facility zip via crosswalk with low wage index" do
+    register_outpatient_procedure!
+    register_facility_for_cbsa(code: "CBSA", zip: SYNTH_ZIP)
+    seed_cbsa_crosswalk_and_wage_area(fiscal_year: 2009, zip: SYNTH_ZIP, cbsa: SYNTH_CBSA)
+    seed_asc_national_rows(calendar_year: 2009)
+    Corvid::AscFacility.create!(ccn: "ASC-VENDOR-1", effective_date: Date.new(2009, 1, 1))
+
+    result = analyze_with_facility(
+      facility_code: "CBSA", procedure: "OUTPATIENT_TEST", paid: 1_000, vendor_id: "ASC-VENDOR-1"
+    ).results.first
+
+    assert_equal :asc, result.payment_system
+    assert_in_delta expected_asc_cbsa_rate, result.medicare_equivalent.to_f, 0.01
+    refute_in_delta expected_asc_national_rate, result.medicare_equivalent.to_f, 0.01
+  end
+
+  test "institutional pricing ignores PFS locality digits when zip has no crosswalk row" do
+    Corvid::IppsDrgWeight.create!(fiscal_year: 2009, drg_code: "470", relative_weight: 2.0743)
+    seed_colliding_wage_areas(fiscal_year: 2009)
+
+    result = analyze_single_obligation(procedure: "HIP_REPLACE_THR", paid: 42_000).results.first
+
+    assert_in_delta expected_ipps_national_rate, result.medicare_equivalent.to_f, 0.01,
+                    "PFS locality 02 must not select wage area 02 without a CBSA crosswalk"
+  end
+
+  test "professional PFS repricing still uses facility locality when zip resolves to a CBSA" do
+    register_facility_for_cbsa(code: "CBSA", zip: SYNTH_ZIP, locality: TEST_LOCALITY)
+    Corvid::ZipCbsaCrosswalk.create!(
+      fiscal_year: 2009, zip: SYNTH_ZIP, cbsa: SYNTH_CBSA
+    )
+
+    result = analyze_with_facility(
+      facility_code: "CBSA", procedure: "OFFICE_VISIT_EST", paid: 250
+    ).results.first
+
+    assert_equal :pfs, result.payment_system
+    assert_in_delta office_99213_rate, result.medicare_equivalent.to_f, 0.01
+  end
+
+  test "institutional pricing falls back to NATIONAL when crosswalk has no row for the zip" do
+    register_outpatient_procedure!
+    register_facility_for_cbsa(code: "NATL", zip: "88999")
+    seed_cbsa_crosswalk_and_wage_area(fiscal_year: 2009, zip: SYNTH_ZIP, cbsa: SYNTH_CBSA)
+    seed_opps_national_rows(calendar_year: 2009)
+
+    result = analyze_with_facility(
+      facility_code: "NATL", procedure: "OUTPATIENT_TEST", paid: 5_000
+    ).results.first
+
+    assert_in_delta expected_opps_national_rate, result.medicare_equivalent.to_f, 0.01
+  end
+
+  test "institutional pricing falls back to NATIONAL when facility zip is missing" do
+    register_outpatient_procedure!
+    Corvid::PrcFacilityDictionary.register(
+      "NOZIP", name: "No ZIP site", city: "Test", state: "TS", zip: nil, locality: TEST_LOCALITY
+    )
+    seed_cbsa_crosswalk_and_wage_area(fiscal_year: 2009, zip: SYNTH_ZIP, cbsa: SYNTH_CBSA)
+    seed_opps_national_rows(calendar_year: 2009)
+
+    result = analyze_with_facility(
+      facility_code: "NOZIP", procedure: "OUTPATIENT_TEST", paid: 5_000
+    ).results.first
+
+    assert_in_delta expected_opps_national_rate, result.medicare_equivalent.to_f, 0.01
+  end
+
+  test "institutional pricing falls back to NATIONAL when facility zip is malformed" do
+    register_outpatient_procedure!
+    Corvid::PrcFacilityDictionary.register(
+      "BADZIP", name: "Bad ZIP site", city: "Test", state: "TS", zip: "BADZIP", locality: TEST_LOCALITY
+    )
+    seed_cbsa_crosswalk_and_wage_area(fiscal_year: 2009, zip: SYNTH_ZIP, cbsa: SYNTH_CBSA)
+    seed_opps_national_rows(calendar_year: 2009)
+
+    result = analyze_with_facility(
+      facility_code: "BADZIP", procedure: "OUTPATIENT_TEST", paid: 5_000
+    ).results.first
+
+    assert_in_delta expected_opps_national_rate, result.medicare_equivalent.to_f, 0.01
+  end
+
+  test "cbsa_for fiscal year follows obligation service date across the Oct 1 boundary" do
+    register_outpatient_procedure!
+    register_facility_for_cbsa(code: "FYB", zip: SYNTH_ZIP_FY2026_ONLY)
+    seed_cbsa_crosswalk_and_wage_area(fiscal_year: 2026, zip: SYNTH_ZIP_FY2026_ONLY, cbsa: SYNTH_CBSA)
+    seed_opps_national_rows(calendar_year: 2025)
+
+    in_fy = analyze_with_facility(
+      facility_code: "FYB", procedure: "OUTPATIENT_TEST", paid: 5_000,
+      service_date: Date.new(2025, 10, 1)
+    ).results.first
+    before_fy = analyze_with_facility(
+      facility_code: "FYB", procedure: "OUTPATIENT_TEST", paid: 5_000,
+      service_date: Date.new(2025, 9, 30)
+    ).results.first
+
+    assert_in_delta expected_opps_cbsa_rate, in_fy.medicare_equivalent.to_f, 0.01
+    assert_in_delta expected_opps_national_rate, before_fy.medicare_equivalent.to_f, 0.01
+  end
+
+  test "registered facility code resolves zip to CBSA for institutional repricing" do
+    register_outpatient_procedure!
+    Corvid::PrcFacilityDictionary.register(
+      "REG01",
+      name: "Registered site", city: "Test", state: "TS",
+      zip: SYNTH_ZIP, locality: "99"
+    )
+    seed_cbsa_crosswalk_and_wage_area(fiscal_year: 2009, zip: SYNTH_ZIP, cbsa: SYNTH_CBSA)
+    seed_opps_national_rows(calendar_year: 2009)
+
+    result = analyze_with_facility(
+      facility_code: "REG01", procedure: "OUTPATIENT_TEST", paid: 5_000
+    ).results.first
+
+    assert_in_delta expected_opps_cbsa_rate, result.medicare_equivalent.to_f, 0.01
+  end
+
   # -- Helpers ---------------------------------------------------------------
 
   private
@@ -591,6 +748,87 @@ class Corvid::PrcOverpaymentAnalyzerTest < ActiveSupport::TestCase
     Corvid::IppsHospitalRate.create!(
       fiscal_year: fiscal_year, locality: TEST_LOCALITY, base_rate: 6_000.0, wage_index: 1.3
     )
+  end
+
+  def register_facility_for_cbsa(code:, zip:, locality: TEST_LOCALITY)
+    Corvid::PrcFacilityDictionary.register(
+      code,
+      name: "Synthetic site", city: "Test City", state: "TS",
+      zip: zip, locality: locality
+    )
+  end
+
+  def register_outpatient_procedure!
+    Corvid::PrcProcedureDictionary.register(
+      "OUTPATIENT_TEST", hcpcs: "12345", apc: "5071",
+      description: "Test outpatient procedure"
+    )
+  end
+
+  def seed_cbsa_crosswalk_and_wage_area(fiscal_year:, zip:, cbsa:, wage_index: LOW_WAGE_INDEX)
+    Corvid::ZipCbsaCrosswalk.create!(fiscal_year: fiscal_year, zip: zip, cbsa: cbsa)
+    Corvid::IppsHospitalRate.create!(
+      fiscal_year: fiscal_year, locality: "NATIONAL", base_rate: 6_000.0, wage_index: 1.0
+    )
+    Corvid::IppsHospitalRate.create!(
+      fiscal_year: fiscal_year, locality: cbsa, base_rate: 6_000.0, wage_index: wage_index
+    )
+  end
+
+  def seed_opps_national_rows(calendar_year:)
+    Corvid::OppsApcWeight.create!(
+      calendar_year: calendar_year, apc_code: "5071", relative_weight: 25.4378
+    )
+    Corvid::OppsConversionFactor.create!(
+      calendar_year: calendar_year, locality: "NATIONAL",
+      conversion_factor: 70.0, wage_index: 1.0
+    )
+  end
+
+  def seed_asc_national_rows(calendar_year:)
+    Corvid::AscHcpcsRate.create!(
+      calendar_year: calendar_year, hcpcs_code: "12345",
+      payment_indicator: "G2", payment_weight: 20.0
+    )
+    Corvid::AscConversionFactor.create!(
+      calendar_year: calendar_year, locality: "NATIONAL",
+      conversion_factor: 42.0, wage_index: 1.0
+    )
+  end
+
+  def expected_ipps_national_rate
+    (BigDecimal("2.0743") * 6_000 * 1.0).round(2).to_f
+  end
+
+  def expected_ipps_cbsa_rate
+    (BigDecimal("2.0743") * 6_000 * LOW_WAGE_INDEX).round(2).to_f
+  end
+
+  def expected_opps_national_rate
+    (BigDecimal("25.4378") * 70.0 * 1.0).round(2).to_f
+  end
+
+  def expected_opps_cbsa_rate
+    (BigDecimal("25.4378") * 70.0 * LOW_WAGE_INDEX).round(2).to_f
+  end
+
+  def expected_asc_national_rate
+    (BigDecimal("20.0") * 42.0 * 1.0).round(2).to_f
+  end
+
+  def expected_asc_cbsa_rate
+    (BigDecimal("20.0") * 42.0 * LOW_WAGE_INDEX).round(2).to_f
+  end
+
+  def analyze_with_facility(facility_code:, procedure:, paid:, service_date: TEST_DATE, vendor_id: "V01")
+    paid_str = format("%.2f", paid)
+    sample = <<~PRC
+      H^PRC_EXPORT^#{facility_code}^#{service_date.strftime("%Y%m%d")}^1
+      O^OBL-CBSA-1^DFN001^#{vendor_id}^#{procedure}^#{service_date.strftime("%Y%m%d")}^A^#{paid_str}^#{paid_str}^0.00^0.00^#{service_date.year}
+      T^1^1^0^#{paid_str}^0.00
+    PRC
+    report = Corvid::PrcReportParser.parse(sample)
+    Corvid::PrcOverpaymentAnalyzer.analyze(report)
   end
 
   def analyze_single_obligation(procedure:, paid:, service_date: TEST_DATE, vendor_id: "V01")

@@ -207,20 +207,40 @@ The `wage_index` column on `corvid_opps_conversion_factors` is now
 dead weight (unread by the rate provider) but still present in the
 schema; dropping it is #370, sequenced after #369 proves out.
 
-Passing a real CBSA `locality:` into `OppsRateProvider.rate_for` from
-the analyzer is a separate follow-up, #372. Until that lands the
-analyzer passes no wage area (NATIONAL), not the PFS-style locality
-`PrcFacilityDictionary` resolves, because PFS and wage-area codes
-overlap ("02" is Seattle in PFS and rural Alaska as a wage area). So
-this refactor is plumbing without a change in production analyzer
-output; it's a correctness/architecture fix
-(single source of truth for wage index) that also happens to unlock
-real per-CBSA OPPS pricing the moment #372 wires the locality through.
+`PrcOverpaymentAnalyzer` resolves the facility crosswalk row once per
+institutional obligation with `PrcFacilityDictionary.crosswalk_for`
+and passes that row's wage area into `OppsRateProvider` and into the
+ASC and stub lookups on the same path (#372). PFS locality codes
+overlap wage-area codes ("02" is Seattle in PFS and rural Alaska as a
+wage area), so the wage-area argument is the crosswalk result. Once a
+crosswalk is imported for the service date's fiscal year, outpatient
+claims use that wage index. With no crosswalk row they stay on the
+NATIONAL wage index. Pricing still falls back to NATIONAL when the
+resolved wage area has no wage-index row. The institutional result
+records the wage area of the wage-index row that priced the claim:
+the CBSA when that row was used, and `NATIONAL` when the lookup fell
+back or the stub ignored locality. Notes end with `Wage area: <code>
+(crosswalk release <label>).` when that code's wage-index row priced
+the claim and the crosswalk has a release label, `Wage area: <code>.`
+when that label is blank, `Wage area: NATIONAL (no wage-index row for
+CBSA <code>; crosswalk release <label>).` when the lookup fell back,
+`Wage area: NATIONAL (stub estimate does not use a wage area;
+crosswalk release <label>).` when the stub ignored locality,
+`Wage area: NATIONAL (facility ZIP missing or malformed).` when the
+ZIP is missing or malformed, or `Wage area: NATIONAL (no crosswalk
+row for the facility ZIP in FY <year>).` when the ZIP is well formed
+and that year has no row. The
+sentence stays last, after any CAH text. Notes do not include the
+facility ZIP. A crosswalk `release_label` that starts with `stub`
+marks the result `:stub` / `:stub_estimate` even when the OPPS or ASC
+rows are real CMS data. On those real paths that label is
+`rate_source_release`. The pricing sentence keeps the real-rule
+wording and the real provider release. See
+[ZIP to CBSA crosswalk](cms_ipps_data.md#zip-to-cbsa-crosswalk-371).
 
 For tribal PRC recovery in rural/non-metro areas, the wage adjustment
 can be material — e.g. Billings, MT's real FY2026 wage index (0.8961)
 moves an OPPS APC screening rate ~10% below the flat-NATIONAL figure.
-NATIONAL CF/wage-index is "directionally correct" until #372 lands.
 
 ## ASC parity
 

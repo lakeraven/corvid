@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2026_10_28_000001) do
+ActiveRecord::Schema[8.1].define(version: 2026_10_29_000101) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
@@ -569,11 +569,14 @@ ActiveRecord::Schema[8.1].define(version: 2026_10_28_000001) do
     t.datetime "analyzed_at", null: false
     t.datetime "created_at", null: false
     t.datetime "updated_at", null: false
+    t.string "wage_area"
+    t.string "crosswalk_release"
     t.index ["prc_obligation_id", "analyzed_at"], name: "idx_corvid_prc_overpay_oblig_time"
     t.index ["prc_obligation_id"], name: "idx_corvid_prc_overpay_oblig"
     t.index ["tenant_identifier", "recovery_confidence"], name: "idx_corvid_prc_overpay_confidence"
     t.check_constraint "payment_system IS NULL OR (payment_system::text = ANY (ARRAY['pfs'::character varying, 'ipps'::character varying, 'asc'::character varying, 'opps'::character varying]::text[]))", name: "corvid_prc_overpayment_analyses_payment_system_check"
     t.check_constraint "recovery_confidence::text = ANY (ARRAY['clear'::character varying, 'stub_estimate'::character varying, 'no_rate_for_year'::character varying, 'unmapped_procedure'::character varying, 'unmapped_facility'::character varying, 'missing_service_date'::character varying]::text[])", name: "corvid_prc_overpayment_analyses_recovery_confidence_check"
+    t.check_constraint "wage_area IS NULL OR wage_area::text = 'NATIONAL'::text OR wage_area::text ~ '^([0-9]{5}|[0-9]{2})$'::text", name: "corvid_prc_overpayment_analyses_wage_area_check"
   end
 
   create_table "corvid_prc_payments", force: :cascade do |t|

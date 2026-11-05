@@ -23,7 +23,10 @@ module Corvid
     # confidence. The label travels alongside the rate so a stub-derived
     # row (release_label: "stub_v1") can be reported as :stub_estimate
     # rather than misrepresented as :clear.
-    Lookup = Struct.new(:rate, :release_label, keyword_init: true)
+    # wage_area is hospital_rate.locality: the wage-index row that
+    # entered the formula, including "NATIONAL" when lookup fell back.
+    # Reading it does not issue another query.
+    Lookup = Struct.new(:rate, :release_label, :wage_area, keyword_init: true)
 
     class << self
       def rate_for(drg_code:, locality: nil, date: nil)
@@ -47,7 +50,7 @@ module Corvid
         label = [ weight_row.release_label, hospital_rate.release_label ]
                   .compact.find { |l| l.to_s.start_with?("stub") } ||
                 weight_row.release_label.presence || hospital_rate.release_label.presence
-        Lookup.new(rate: rate, release_label: label)
+        Lookup.new(rate: rate, release_label: label, wage_area: hospital_rate.locality)
       end
 
       def source
