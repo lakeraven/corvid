@@ -1,7 +1,7 @@
 Feature: PRC management approval gate
   As a tribal health officer
   I need every PRC referral to require management approval before advancing
-  So that the 53/60 "no management approval" audit finding is eliminated
+  So that no referral advances without a recorded management approval
 
   Background:
     Given a tenant "tnt_brokenrock" with facility "fac_main_clinic"
