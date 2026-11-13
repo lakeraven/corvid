@@ -38,7 +38,7 @@ corvid#468 said `features/prc/enrollment_demo.feature` + `db/baseroll_people.jso
   (`~/code/lakeraven/rpms/reference/corvid-saas`, `baseroll/mayor/rig`),
   which no longer exists post-flatten (see `d5728fe`). It also demos only the
   eligibility-decision slice, not the full referral → obligation lifecycle.
-- The **GM-4 synthetic UIO panel** (rpms-ops#403) is still open and lives in
+- The **GM-4 synthetic UIO panel** (openrpms#403) is still open and lives in
   RPMS, a different data plane than corvid's Postgres-backed engine. It is
   not wired into any corvid adapter today, so it is not usable for this demo
   yet.
