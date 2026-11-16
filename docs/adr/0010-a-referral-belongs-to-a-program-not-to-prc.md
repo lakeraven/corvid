@@ -30,8 +30,10 @@ What already exists to build on:
 
 - `Corvid::ProgramRegistry` identifies programs by string code, ships IHS defaults, and lets a
   host register more programs from an initializer. `CaseProgram` validates enrollment against it.
-- The alternate-resource checks call payers through the injected adapter (ADR 0005), so the
-  payer calls themselves do not depend on PRC.
+- The payer calls themselves do not depend on PRC. They are not yet tenant-routed, though:
+  ADR 0005 moves services to `adapter:` injection, but `AlternateResourceService.verify_all`
+  takes no adapter, `AlternateResourceCheck#verify!` defaults to `Corvid.adapter`, and its
+  Medicaid coverage lookup calls `Corvid.adapter` directly. Model decoupling is #264.
 - ADR 0007 proposes one FHIR client that reads any certified EHR. A partner that does not run
   RPMS reaches Corvid through it.
 
@@ -39,9 +41,14 @@ What already exists to build on:
 
 1. **The checks attach to a program-neutral referral.** A new `Corvid::ProgramReferral` record
    holds the case, the opaque service-request token (ADR 0001), the program code from
-   `ProgramRegistry`, and a status. `AlternateResourceCheck` and `EligibilityChecklist` move from
-   `belongs_to :prc_referral` to a polymorphic owner, so either record can carry them. The
-   service methods take the owner, not a `PrcReferral`. The owner must be in the check's own
+   `ProgramRegistry`, and a status. `AlternateResourceCheck` moves from
+   `belongs_to :prc_referral` to a polymorphic owner, so either record can carry it. The
+   service methods take the owner, not a `PrcReferral`.
+
+   `EligibilityChecklist` does **not** move. Its `ITEMS` require residency and management
+   approval, `populate!` runs residency verification, and approval invalidation calls a PRC-only
+   transition, so it is PRC policy. A `ProgramReferral` has no checklist; what it must satisfy
+   before a decision comes only from its program's `referral_rules` (decision 3). The owner must be in the check's own
    tenant (the polymorphic same-tenant rule of ADR 0002), and the new status column is a string
    enum with a CHECK constraint.
 
@@ -79,9 +86,8 @@ What already exists to build on:
 
 ### Negative
 - Two referral records exist, and every caller of the check services changes its argument.
-- The polymorphic owner needs a migration on `corvid_alternate_resource_checks` and
-  `corvid_eligibility_checklists` (add owner type and id, backfill from `prc_referral_id`, then
-  drop the old column in a separate release).
+- The polymorphic owner needs a migration on `corvid_alternate_resource_checks` (add owner
+  type and id, backfill from `prc_referral_id`, then drop the old column in a separate release).
 - Payer-of-last-resort rules for urban programs need counsel's reading before `last_resort: true`
   is shipped as a default for any program.
 
@@ -97,8 +103,11 @@ What already exists to build on:
 
 ## Build order (filed as sub-issues of #866 once this is accepted)
 
-1. Polymorphic owner on `AlternateResourceCheck` and `EligibilityChecklist`, with backfill. PRC
-   behaviour unchanged.
+0. **Prerequisite:** the alternate-resource path takes an injected adapter end to end
+   (`AlternateResourceService`, `AlternateResourceCheck#verify!` and its Medicaid lookup), so a
+   check runs on its tenant's payer connection rather than the process-wide `Corvid.adapter`.
+   This is #264's model decoupling for this path; it blocks every slice below.
+1. Polymorphic owner on `AlternateResourceCheck`, with backfill. PRC behaviour unchanged.
 2. `referral_rules` in `ProgramRegistry`, validated at registration; refuse a referral for a
    program without rules.
 3. `ProgramReferral` record and its state machine.
@@ -115,6 +124,7 @@ native read before merge.
   covers the EHR read, not tenancy.
 
 ## References
-- #866, #605 (ADR 0007), ADR 0005
+- #866, #605 (ADR 0007), ADR 0005, #264
 - `app/models/corvid/prc_referral.rb`, `app/models/corvid/alternate_resource_check.rb`,
-  `app/services/corvid/alternate_resource_service.rb`, `lib/corvid/program_registry.rb`
+  `app/models/corvid/eligibility_checklist.rb`, `app/services/corvid/alternate_resource_service.rb`,
+  `lib/corvid/program_registry.rb`
