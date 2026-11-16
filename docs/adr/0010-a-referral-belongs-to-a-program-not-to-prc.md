@@ -41,7 +41,9 @@ What already exists to build on:
    holds the case, the opaque service-request token (ADR 0001), the program code from
    `ProgramRegistry`, and a status. `AlternateResourceCheck` and `EligibilityChecklist` move from
    `belongs_to :prc_referral` to a polymorphic owner, so either record can carry them. The
-   service methods take the owner, not a `PrcReferral`.
+   service methods take the owner, not a `PrcReferral`. The owner must be in the check's own
+   tenant (the polymorphic same-tenant rule of ADR 0002), and the new status column is a string
+   enum with a CHECK constraint.
 
 2. **`PrcReferral` does not change behaviour.** It keeps its state machine, its PRC policy and
    its CHS sync. It becomes one owner of checks among two. No PRC data is migrated.
