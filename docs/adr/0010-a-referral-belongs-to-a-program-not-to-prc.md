@@ -1,6 +1,6 @@
 # ADR 0010: A referral's eligibility checks belong to its program, not to PRC
 
-**Status:** Proposed
+**Status:** Accepted
 **Date:** 2026-11-16
 **Issue:** #866
 **Depends on:** ADR 0005 (adapter injection), ADR 0007 (the engine owns the referral loop and reads any EHR, open as #605)
