@@ -10,7 +10,7 @@ installed; once gems are cached, everything is offline.
 
 ## Prerequisites
 
-- Ruby 4.0.2 (`.ruby-version`), Bundler
+- Ruby 4.0.10 (`.ruby-version`), Bundler
 - PostgreSQL running locally, with permission to create databases
   (`corvid_dummy_development`)
 
