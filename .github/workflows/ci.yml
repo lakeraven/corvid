@@ -18,7 +18,7 @@ jobs:
       - name: Set up Ruby
         uses: ruby/setup-ruby@v1
         with:
-          ruby-version: "4.0.2"
+          ruby-version: "4.0.10"
           bundler-cache: true
       - run: bundle exec rubocop
 
@@ -47,16 +47,16 @@ jobs:
       - name: Set up Ruby
         uses: ruby/setup-ruby@v1
         with:
-          ruby-version: "4.0.2"
+          ruby-version: "4.0.10"
           bundler-cache: true
 
       - name: Cache dummy app gems
         uses: actions/cache@v4
         with:
           path: test/dummy/vendor/bundle
-          key: dummy-gems-${{ runner.os }}-ruby-4.0.2-${{ hashFiles('test/dummy/Gemfile.lock') }}
+          key: dummy-gems-${{ runner.os }}-ruby-4.0.10-${{ hashFiles('test/dummy/Gemfile.lock') }}
           restore-keys: |
-            dummy-gems-${{ runner.os }}-ruby-4.0.2-
+            dummy-gems-${{ runner.os }}-ruby-4.0.10-
 
       - name: Install dummy app dependencies
         run: |
@@ -109,16 +109,16 @@ jobs:
       - name: Set up Ruby
         uses: ruby/setup-ruby@v1
         with:
-          ruby-version: "4.0.2"
+          ruby-version: "4.0.10"
           bundler-cache: true
 
       - name: Cache dummy app gems
         uses: actions/cache@v4
         with:
           path: test/dummy/vendor/bundle
-          key: dummy-gems-${{ runner.os }}-ruby-4.0.2-${{ hashFiles('test/dummy/Gemfile.lock') }}
+          key: dummy-gems-${{ runner.os }}-ruby-4.0.10-${{ hashFiles('test/dummy/Gemfile.lock') }}
           restore-keys: |
-            dummy-gems-${{ runner.os }}-ruby-4.0.2-
+            dummy-gems-${{ runner.os }}-ruby-4.0.10-
 
       - name: Install dummy app dependencies
         run: |
